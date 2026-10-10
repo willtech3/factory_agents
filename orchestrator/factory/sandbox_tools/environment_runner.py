@@ -44,6 +44,9 @@ def digest(value: dict) -> str:
 
 
 def command(text: str, cwd: Path, env: dict, timeout: float, log: Path) -> dict:
+    if timeout <= 0:
+        log.write_text("")
+        return {"status": "not_run", "reason": "environment deadline exceeded"}
     started = time.monotonic()
     with log.open("wb") as output:
         proc = subprocess.Popen([*SHELL, text], cwd=cwd, env=env,
@@ -217,19 +220,19 @@ def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: flo
     for i, text in enumerate(commands):
         junit = junit_dir / f"cmd-{i}.xml"
         addopts = f"{env.get('PYTEST_ADDOPTS', '')} --junitxml={shlex.quote(str(junit))} -o junit_family=xunit1".strip()
-        result = command(text, repo, {**env, "PYTEST_ADDOPTS": addopts}, per_command, logs / f"change-cmd-{i}.log")
+        result = command(text, repo, {**env, "PYTEST_ADDOPTS": addopts}, min(per_command, deadline - time.monotonic()), logs / f"change-cmd-{i}.log")
         row = {"index": i, "command": text, **result}
         if junit.is_file():
             row["pytest"] = parse_junit(junit.read_bytes())
         out["commands"].append(row)
     if change.get("collect_tests"):
         log = logs / "collect.log"
-        result = command('PY="$(command -v python || command -v python3)"; "$PY" -m pytest --collect-only -q', repo, env, per_command, log)
+        result = command('PY="$(command -v python || command -v python3)"; "$PY" -m pytest --collect-only -q', repo, env, min(per_command, deadline - time.monotonic()), log)
         ids = [ln.strip() for ln in log.read_text(errors="replace").splitlines() if NODE_ID_RE.match(ln.strip())][:MAX_NODE_IDS]
         out["collected_tests"] = {"exit_code": result.get("exit_code"), "status": result["status"], "node_ids": ids}
     for entry in entries:
         index = int(entry["index"])
-        if not ready:
+        if not ready and (entry.get("target", "preview") == "preview" or entry.get("visual_request")):
             out["e2e"].append({"index": index, "status": "not_run", "reason": "the app did not start or its services did not become ready"})
             continue
         directory = work / f"e2e-{index}"
@@ -238,8 +241,8 @@ def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: flo
         if entry.get("visual_request"):
             (directory / "request.json").write_text(json.dumps(entry["visual_request"]))
             entry_env["FACTORY_VISUAL_REQUEST"] = str(directory / "request.json")
-        result = command(entry["command"], repo, entry_env, per_command, logs / f"e2e-{index}.log")
-        row = {"index": index, **result}
+        result = command(entry["command"], repo, entry_env, min(per_command, deadline - time.monotonic()), logs / f"e2e-{index}.log")
+        row = {"index": index, "command": entry["command"], "target": entry.get("target", "preview"), **result}
         if entry.get("visual_request"):
             row["files"] = copy_entry_evidence(index, directory, outputs, report)
         out["e2e"].append(row)

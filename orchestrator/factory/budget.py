@@ -26,7 +26,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from .stages import RunContext
 
 STAGE_LABEL = {"decompose": "decomposer", "specify": "spec writer", "judge": "spec judge", "implement": "implementer",
-               "review": "reviewer", "security_review": "security reviewer", "merge_judge": "merge judge", "integrate": "integrator"}
+               "review": "reviewer", "security_review": "security reviewer", "merge_judge": "merge judge", "integrate": "integrator",
+               "verify": "hosted verification"}
 
 
 @dataclass

@@ -146,6 +146,22 @@ NO_SKILL_CLAUSE = ("No platform-contract skill is available for this run (the or
                    "in your assumptions and do not search the filesystem for one.")
 
 
+def hosted_planning_clause(ctx: RunContext) -> str:
+    if ctx.cfg.preview_mode != "managed":
+        return ""
+    return ("\nThis app uses managed verification. Every application, database and browser test must run inside an "
+            "Anthropic-hosted test sandbox built from the repository's approved test_environment recipe. Never depend "
+            "on a person's localhost, Claude in Chrome, factory:browser, or an externally reachable preview URL. "
+            "The controller provides BASE_URL inside that sandbox. Both local and preview e2e targets execute there. "
+            "Declare real browser commands for UI criteria with explicit steps and viewports. They must answer "
+            "FACTORY_VISUAL_REQUEST in FACTORY_EVIDENCE_DIR/result.json with request_id, head_sha, viewport_observed, "
+            "status, summary, per-step observations and screenshot/video media. The recipe's baseline is only a "
+            "readiness check; each changed behavior needs its own evidence. Recipe/network/credential-scope changes "
+            "require re-onboarding and must not be smuggled into the implementation. Production authentication, "
+            "paid inference or unsupported external services must be described as coverage gaps. Post-merge live "
+            "deployment checks require a separate hosted adapter and currently remain blocked in managed mode.")
+
+
 def platform_skill(ctx: RunContext) -> tuple[dict[str, bytes], str]:
     """The upload (`skills/platform-contract/SKILL.md`) and the kickoff sentence that names it, for every stage.
 

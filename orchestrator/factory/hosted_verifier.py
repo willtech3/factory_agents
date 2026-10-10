@@ -3,7 +3,7 @@
 The controller only reads git here (the checkout, the diff, `git archive` of the exact head). Everything that executes
 the repository runs in one fresh hosted session per round: the recipe's prepare/start/seed and its baseline verify,
 the spec's `test_plan.commands` (pytest outcomes summarised from JUnit inside the sandbox), `pytest --collect-only`,
-and the spec's `test_plan.e2e` entries for target "preview" against the app inside that sandbox, each visual entry
+and the spec's `test_plan.e2e` entries for targets "local" and "preview" inside that sandbox, each visual entry
 answering a controller-issued browser request. Results come back bound to the head, the recipe fingerprint and the
 source archive fingerprint; anything missing, unbound or unsupported is recorded as not run, so the deterministic
 checks fail closed. The recipe's baseline check proves the app runs; it never stands in for a spec criterion.
@@ -62,7 +62,7 @@ def preview_record(branch: str, head_sha: str | None, hosted: dict[str, Any] | N
 
 
 def _entries(spec: dict[str, Any]) -> list[tuple[int, dict[str, Any]]]:
-    return [(i, e) for i, e in enumerate(spec["test_plan"].get("e2e", [])) if e.get("target", "preview") == "preview"]
+    return list(enumerate(spec["test_plan"].get("e2e", [])))
 
 
 class HostedVerifier:
@@ -113,17 +113,20 @@ class HostedVerifier:
         blocked: dict[int, str] = {}
         sandbox_entries = []
         for index, entry in _entries(spec):
+            if entry.get("target") not in ("local", "preview"):
+                blocked[index] = "unsupported e2e target; expected local or preview inside the hosted sandbox"
+                continue
             if entry["command"] in UNSUPPORTED_COMMANDS:
                 blocked[index] = UNSUPPORTED_COMMANDS[entry["command"]]
                 continue
-            if base_url is None:
+            if base_url is None and (entry.get("visual") or entry["target"] == "preview"):
                 blocked[index] = "the approved recipe declares no service with id \"app\" for e2e entries to run against"
                 continue
             visual_request = None
             if entry.get("visual"):
                 directory, visual_request = visual.new_request(self.workdir, repo, head, base_url, entry)
                 requests[index] = (directory, visual_request)
-            sandbox_entries.append({"index": index, "command": entry["command"], "target": "preview", "visual_request": visual_request})
+            sandbox_entries.append({"index": index, "command": entry["command"], "target": entry["target"], "visual_request": visual_request})
         cap = float(self.cfg.managed_verify_budget_usd)
         record.update(profile_path=relative, profile_sha256=digest, approved_profile_sha256=approved,
                       source_sha256=hashlib.sha256(source).hexdigest(), vaults_attached=len(self.cfg.test_vault_ids), cap_usd=cap)
@@ -131,9 +134,11 @@ class HostedVerifier:
         client = ctx.driver.client
         environment_id = te.ensure_environment(client, profile, self.cfg.runs_dir / "_test_environments")
         descriptor = {"head_sha": head, "profile_sha256": digest, "source_sha256": record["source_sha256"], "profile_path": relative,
+                      "spec_sha256": te.fingerprint({k: v for k, v in spec.items() if not k.startswith("_")}),
                       "environment_id": environment_id, "provider": "anthropic-cloud",
                       "change": {"spec_id": sid, "round": round_no, "commands": list(spec["test_plan"]["commands"]),
                                  "collect_tests": True, "e2e": sandbox_entries, "command_timeout_seconds": 900}}
+        record["spec_sha256"] = descriptor["spec_sha256"]
         record["environment_id"] = environment_id
         # late import: the stages package imports this module
         from .stages.common import run_session
@@ -157,7 +162,7 @@ class HostedVerifier:
         except ValueError:
             report = {}
         report = report if isinstance(report, dict) else {}
-        bound = all(report.get(k) == descriptor[k] for k in ("head_sha", "profile_sha256", "source_sha256"))
+        bound = all(report.get(k) == descriptor[k] for k in ("head_sha", "profile_sha256", "source_sha256", "spec_sha256"))
         results = ((report.get("change") or {}).get("results") or {}) if bound else {}
         if bound and report.get("missing_secrets"):
             record["missing_secrets"] = [str(x) for x in report["missing_secrets"]][:20]
@@ -196,11 +201,11 @@ class HostedVerifier:
         e2e_by_index = {r.get("index"): r for r in (results or {}).get("e2e", []) if isinstance(r, dict)}
         e2e = []
         for index, entry in _entries(spec):
-            row: dict[str, Any] = {"command": entry["command"], "target": "preview", "covers_ac": list(entry.get("covers_ac", [])),
+            row: dict[str, Any] = {"command": entry["command"], "target": entry.get("target"), "covers_ac": list(entry.get("covers_ac", [])),
                                    "base_url": "sandbox-local", "location": "hosted-sandbox", "stdout_tail": ""}
             r = e2e_by_index.get(index) if ran else None
             reason = blocked.get(index) or (r or {}).get("reason") or why_not
-            if r is None or r.get("status") == "not_run" or index in blocked:
+            if r is None or r.get("command") != entry["command"] or r.get("target") != entry.get("target") or r.get("status") == "not_run" or index in blocked:
                 row.update(exit_code=None, base_url=None, stderr_tail=f"not run: {reason}")
                 if entry.get("visual"):
                     row["visual"] = {**entry["visual"], "description": entry.get("description"), "status": "blocked",

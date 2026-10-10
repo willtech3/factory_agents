@@ -349,6 +349,36 @@ def test_visual_requests_stay_invisible_to_local_workers(tmp_path, root):
     assert visual.pending(tmp_path) == [] and list((tmp_path / "verify" / "hosted" / "visual").glob("*/closed"))
 
 
+@pytest.mark.parametrize("target", ["local", "preview"])
+def test_both_e2e_targets_execute_inside_the_hosted_sandbox(tmp_path, root, target):
+    contract = spec()
+    contract["test_plan"]["e2e"][0]["target"] = target
+    run, _, _ = run_verifier(tmp_path, root, {}, the_spec=contract)
+    assert run.e2e[0]["target"] == target
+    assert run.e2e[0]["exit_code"] == 0 and run.e2e[0]["visual"]["status"] == "passed"
+
+
+def test_wrong_spec_digest_invalidates_same_head_evidence(tmp_path, root):
+    driver = Driver(tmp_path / "unused", tmp_path, tamper=lambda report: report.update(spec_sha256="f" * 64))
+    run, _, _ = run_verifier(tmp_path, root, {}, driver=driver)
+    assert not run.setup.passed and run.commands[0]["exit_code"] is None
+    assert run.e2e[0]["visual"]["status"] == "blocked"
+
+
+def test_unknown_target_is_visible_and_blocked(tmp_path, root):
+    contract = spec()
+    contract["test_plan"]["e2e"][0]["target"] = "unknown"
+    run, _, _ = run_verifier(tmp_path, root, {}, the_spec=contract)
+    assert len(run.e2e) == 1 and run.e2e[0]["exit_code"] is None
+    assert "unsupported e2e target" in run.e2e[0]["visual"]["summary"]
+
+
+def test_an_expired_deadline_never_starts_another_command(tmp_path, monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: pytest.fail("expired command executed"))
+    result = er.command("true", tmp_path, {}, -1, tmp_path / "expired.log")
+    assert result["status"] == "not_run"
+
+
 # ---------------------------------------------------------------------------------------------- the harness itself
 
 def harness(tmp_path, recipe, change):

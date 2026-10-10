@@ -521,6 +521,10 @@ class Console:
             raise HTTPException(400, "mode must be demo, design, or live")
         design = body.mode == "design"
         repo_env = {}
+        if self.cfg.forge_token:
+            # Config may receive the authenticated token from the Console launcher instead of os.environ.
+            # Forward it only to the orchestrator child; never include it in the API response.
+            repo_env["FORGE_TOKEN"] = self.cfg.forge_token
         target = (outcome.get("target_repositories") or [{}])[0]
         if not design and self.cfg.forge == "github" and target.get("url"):
             # The Console selection is per run; do not inherit a different repository from server defaults.
