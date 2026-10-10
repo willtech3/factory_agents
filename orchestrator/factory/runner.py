@@ -74,6 +74,29 @@ def _present(ctx: RunContext, outcome: dict[str, Any], files: dict[str, bytes], 
     return cr_id, urls
 
 
+def notes_by_item(comments: str, item_ids: list[str]) -> dict[str, str]:
+    """Split a decision's comments into per-item guidance. Lines like `wi-x: text` go to that item; other lines go
+    to every item. Used when a gate is approved with notes: approval does not re-run the stage, but the next
+    stage's writers should still hear what the human said about each item."""
+    general, per_item = [], {i: [] for i in item_ids}
+    for line in (comments or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        head, sep, rest = line.partition(":")
+        if sep and head.strip() in per_item:
+            if rest.strip():
+                per_item[head.strip()].append(rest.strip())     # an empty "wi-x:" line says nothing
+        else:
+            general.append(line)
+    out = {}
+    for i in item_ids:
+        parts = general + per_item[i]
+        if parts:
+            out[i] = "# Notes from the owner at Gate 1\n" + "\n".join(f"- {p}" for p in parts)
+    return out
+
+
 def _feedback(ctx: RunContext, design_cr_id: int | None, d: GateDecision) -> str:
     parts = [d.comments] if d.comments.strip() else []
     if ctx.forge is not None and design_cr_id is not None:
@@ -108,6 +131,7 @@ def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
                                       {"decomposition.md": "full", "decomposition.json": "work-items"})
         d = gate_1(ctx, outcome, decomposition, shas, urls)
         if d.decision == Decision.APPROVE:
+            approval_notes = notes_by_item(d.comments, [w["work_item_id"] for w in decomposition["work_items"]])
             break
         if d.decision == Decision.REJECT:
             ctx.event("stage.entered", {"stage": RunStage.CLOSED.value}, stage="gate_1", actor="human")
@@ -115,7 +139,7 @@ def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
         feedback, prior = _feedback(ctx, design_cr_id, d), decomposition
 
     # ---------------- Stage 2 + Gate 2
-    human_comments: dict[str, str] | None = None
+    human_comments: dict[str, str] | None = approval_notes or None     # what the owner said while approving the plan
     while True:
         specs, verdict = run_specify(ctx, outcome, decomposition, human_comments)
         spec_shas = {f"{sid}.json": ctx.store.put_artifact(ctx.run_id, "specify", f"final-{sid}.json",

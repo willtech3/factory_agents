@@ -157,3 +157,11 @@ def test_design_only_runs_complete_at_gate_2(tmp_path):
                           ("stage.entered", {"stage": "gate_2_spec_readiness"}), ("run.completed", {"design_only": True})):
         store.append("run_design", kind, {"type": "orchestrator"}, payload)
     assert store.state("run_design").stage == RunStage.COMPLETED
+
+
+def test_notes_by_item_routes_gate_1_approval_notes():
+    from factory.runner import notes_by_item
+    notes = notes_by_item("keep it small\nwi-a: drop the cache\nwi-b:\nunknown-x: ignore me", ["wi-a", "wi-b"])
+    assert "- keep it small" in notes["wi-a"] and "- drop the cache" in notes["wi-a"]
+    assert notes["wi-b"].count("- ") == 2 and "unknown-x: ignore me" in notes["wi-b"] and "drop the cache" not in notes["wi-b"]
+    assert notes_by_item("", ["wi-a"]) == {}

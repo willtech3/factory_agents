@@ -405,7 +405,7 @@
   function noteField(id, placeholder, notes) {
     const ta = el("textarea", { placeholder, "aria-label": `Note on ${id}` });
     notes.set(id, ta);
-    return el("div", { class: "note" }, el("label", null, "Your note on this item (sent back with Request changes)"), ta);
+    return el("div", { class: "note" }, el("label", null, "Your note on this item (goes to the agent: as feedback with Request changes, as guidance with Approve)"), ta);
   }
   function waves(items) {
     // dependency order: the order the work would happen in
@@ -580,7 +580,7 @@
     comment.addEventListener("input", refresh);
 
     const consequences = {
-      gate_1_decomposition: { approve: "Agents start writing a spec for every work item. You get Gate 2 before any code.", approve_subset: "", request_changes: "The decomposer revises the plan using your notes and asks you again.", reject: "The run closes. Nothing else happens." },
+      gate_1_decomposition: { approve: "Agents start writing a spec for every work item, with your notes as guidance. You get Gate 2 before any code.", approve_subset: "", request_changes: "The decomposer revises the plan using your notes and asks you again.", reject: "The run closes. Nothing else happens." },
       gate_2_spec_readiness: { approve: "Agents start implementing all specs on separate branches; pull requests follow.", approve_subset: "Selected specs are implemented; the others go back to the writer with your notes.", request_changes: "The spec writers revise using your notes; the judge re-checks; you decide again.", reject: "The run closes. Nothing is built." },
       escalation: { approve: "Proceed with the specs as they are.", approve_subset: "Selected specs proceed; the rest go back.", request_changes: "The writers revise using your notes.", reject: "The run closes." },
       deploy_failure: { approve: "The failure was the platform's; the next deploy is watched.", request_changes: "An agent fixes it on a new branch; a follow-up pull request follows.", reject: "This work item is closed." },
