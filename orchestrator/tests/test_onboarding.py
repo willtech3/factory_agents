@@ -196,3 +196,38 @@ def test_setup_feedback_invalidates_review_and_preserves_previous_proposal(manag
     assert r['plan_sha256'] is None and r['plan']==plan and r['status']=='needs_input'
     manager.update(aid,status='verifying')
     with pytest.raises(HTTPException): manager.feedback(aid,'Different instructions')
+
+
+def test_an_unused_recipe_is_rejected_before_cloud_verification(plan,tmp_path,root):
+    plan['profile_path']='verification/factory-onboarding/unused.json'
+    plan['files'][0]['path']=plan['profile_path']
+    with pytest.raises(ValueError,match='change runner selects test_environment.json'):
+        validate_plan(plan,'existing',tmp_path,root/'schemas')
+
+
+def test_an_existing_manifest_selected_recipe_can_be_reused(plan,tmp_path,root):
+    path='verification/current/profile.json'
+    (tmp_path/'verification/current').mkdir(parents=True)
+    (tmp_path/path).write_text(plan['files'][0]['content'])
+    (tmp_path/'service_manifest.json').write_text(json.dumps({'test_environment':{'profile':path}}))
+    plan['profile_path']=path; plan['files']=[]
+    assert validate_plan(plan,'existing',tmp_path,root/'schemas')['profile_path']==path
+
+
+def test_a_root_recipe_cannot_silently_override_an_existing_manifest_pointer(plan,tmp_path,root):
+    (tmp_path/'service_manifest.json').write_text(json.dumps({'test_environment':{'profile':'ops/active.json'}}))
+    with pytest.raises(ValueError,match='change runner selects ops/active.json'):
+        validate_plan(plan,'existing',tmp_path,root/'schemas')
+
+
+def test_greenfield_recipe_and_proposed_manifest_must_agree(plan,tmp_path,root):
+    path='verification/profile.json'
+    plan['profile_path']=path; plan['files'][0]['path']=path
+    plan['files'].append({'path':'service_manifest.json','content':json.dumps({'test_environment':{'profile':path}})})
+    assert validate_plan(plan,'greenfield',tmp_path,root/'schemas')['profile_path']==path
+
+
+def test_custom_manifest_filename_is_used_for_selection(plan,tmp_path,root):
+    (tmp_path/'factory-service.json').write_text(json.dumps({'test_environment':{'profile':'ops/active.json'}}))
+    with pytest.raises(ValueError,match='change runner selects ops/active.json'):
+        validate_plan(plan,'existing',tmp_path,root/'schemas','factory-service.json')

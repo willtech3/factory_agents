@@ -6,7 +6,7 @@ The App Onboarding managed agent reads pinned committed source, dependency decla
 
 ## The reviewed contract
 
-`onboarding_plan.schema.json` describes journeys, planned capabilities, questions, proposed files and limitations. Existing-app changes are confined to onboarding recipe paths; application, CI and security-policy changes require separate work. A recipe can be reused without a new commit or PR. Answering questions invalidates the reviewed plan fingerprint and requires another discovery pass.
+`onboarding_plan.schema.json` describes journeys, planned capabilities, questions, proposed files and limitations. Existing-app changes are confined to onboarding recipe paths; application, CI and security-policy changes require separate work. A recipe can be reused without a new commit or PR. Its path must match the service manifest's `test_environment.profile`, or `test_environment.json` when there is no pointer; a disconnected recipe is rejected before cloud verification. Answering questions invalidates the reviewed plan fingerprint and requires another discovery pass.
 
 `test_environment.schema.json` defines a Linux runtime, prepare/start/seed/verify/stop commands, service health checks, network hosts, declared secret references and one of:
 

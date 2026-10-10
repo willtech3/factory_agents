@@ -27,7 +27,7 @@ from fastapi import HTTPException
 from .config import anthropic_client
 from .forge.github import GitHubForge
 from .sessions import SessionDriver
-from .test_environments import fingerprint, snapshot, validate_profile, run_hosted, ensure_environment
+from .test_environments import fingerprint, snapshot, validate_profile, run_hosted, ensure_environment, recipe_relative
 
 BUSY = {"discovering", "verifying", "publishing"}
 APP_ID = re.compile(r"app_[a-f0-9]{12}")
@@ -89,7 +89,7 @@ def unpack_source(data: bytes, destination: Path, *, strip_root=False):
                 p.chmod(0o755 if m.mode & 0o111 else 0o644)
 
 
-def validate_plan(plan: dict, kind: str, repo: Path, schemas: Path) -> dict:
+def validate_plan(plan: dict, kind: str, repo: Path, schemas: Path, manifest_path: str = "service_manifest.json") -> dict:
     schema = json.loads((schemas / "onboarding_plan.schema.json").read_text())
     if list(jsonschema.Draft202012Validator(schema).iter_errors(plan)):
         raise ValueError("Onboarding agent returned an invalid plan; discovery must be retried")
@@ -111,6 +111,20 @@ def validate_plan(plan: dict, kind: str, repo: Path, schemas: Path) -> dict:
     path = plan["profile_path"]
     if path:
         path = safe_path(path)
+        # Verify the recipe the subsequent change run will actually select, rather than a disconnected file
+        # that can pass onboarding but can never be used after its setup PR merges.
+        manifest_name = safe_path(manifest_path)
+        manifest_text = next((f["content"] for f in plan["files"] if f["path"] == manifest_name), None)
+        existing_manifest = repo / manifest_name
+        if manifest_text is None and existing_manifest.is_file():
+            manifest_text = existing_manifest.read_text()
+        manifest = json.loads(manifest_text) if manifest_text is not None else {}
+        if not isinstance(manifest, dict):
+            raise ValueError("The service manifest must be a JSON object")
+        selected_path = recipe_relative(manifest)
+        if path != selected_path:
+            raise ValueError(f"The change runner selects {selected_path}, not {path}. Use that recipe path, or request "
+                             "a reviewed manifest change before verification; an unused recipe cannot onboard the app.")
         proposed = next((f["content"] for f in plan["files"] if f["path"] == path), None)
         p = repo / path
         if proposed is None and (not p.is_file() or p.is_symlink()):
@@ -350,7 +364,12 @@ class AppOnboarding:
         try:
             result = driver.run(agent_key="app_onboarding", title="Onboard " + r["name"], run_id=app_id, stage="onboarding-discovery",
                 uploads={"source.tar": source, "onboarding-request.json": json.dumps(request).encode()},
-                description="Read onboarding-request.json and source.tar. Produce onboarding-plan.json following your instructions and the uploaded schemas. Do not run application commands. Reuse a valid existing recipe if present.",
+                description=("Read onboarding-request.json and source.tar. Produce onboarding-plan.json following your instructions "
+                             "and the uploaded schemas. Do not run application commands. Reuse a valid existing recipe if present. "
+                             f"The change runner selects {self.cfg.service_manifest_path} test_environment.profile, or "
+                             "test_environment.json when that pointer is absent. profile_path must match that selection in the "
+                             "proposed source. Existing-app onboarding cannot change the manifest; ask a focused question if a "
+                             "manifest change or recipe edit outside the allowed onboarding paths is essential."),
                 rubric_md=None, max_iterations=1, budget_usd=cap, environment_id=env_id, vault_ids=[],
                 schema_names=("onboarding_plan.schema.json", "test_environment.schema.json"))
             self._finished(app_id, {"session_id": result.session_id, "list_cost_usd": result.list_cost_usd, "stop_reason": result.stop_reason})
@@ -360,7 +379,7 @@ class AppOnboarding:
             try:
                 proposal = json.loads(raw)
                 self.update(app_id, last_proposal=proposal)
-                plan = validate_plan(proposal, r["kind"], repo, self.cfg.schemas_dir)
+                plan = validate_plan(proposal, r["kind"], repo, self.cfg.schemas_dir, self.cfg.service_manifest_path)
             except (json.JSONDecodeError, UnicodeError):
                 raise ValueError("The onboarding agent returned unreadable setup JSON") from None
             required = any(q["required"] and not r["answers"].get(q["id"]) for q in plan["questions"])
