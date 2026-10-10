@@ -100,7 +100,7 @@ The run id is printed first. The process blocks at each gate; keep a second term
 4. **Gate 2.** `gate_2.html` with the judge summary, the goal-coverage matrix, and a section per spec. Same decision mechanics, plus `approve-subset`.
 5. **Implement, review, judge.** Issues move to In Progress. The implementer's session mounts your repository at `/workspace/repo` and pushes `factory/<run_id>/<spec_id>`; the preview workflow runs; the orchestrator clones the branch itself, runs the spec's test commands, waits for the preview deployment, runs the e2e entries, and runs the deterministic checks.
 6. **Integrate.** The orchestrator commits `.factory/runs/<run_id>/specs/<spec_id>.{json,md}`, `verdict.json`, and `evidence/<spec_id>/merge_readiness.json` on the branch (fixed author and date, so the commit is reproducible), then the integrator session opens the pull request. The issue moves to In Review with the PR link in a comment. Gate 3 is the pull request itself.
-7. **After you merge.** Stage 5 (`deploy_observe.on_change_request_merged`) is driven by a change-request watcher that is not in this repository yet (roadmap); for the first run, call it by hand from a Python shell or skip it. The item stays `merged`.
+7. **After you merge.** Run `factory watch <run_id>` (or click **Watch for merges** on the run page in the Console; it starts the same command and shows when it last checked). It polls the pull request every minute; when GitHub reports it merged, it records `cr.merged`, follows the `main` workflow run for the merge commit and the `dev` deployment, runs the spec's preview e2e entries against the dev URL from its own checkout, and ends the item at `deployed_dev` or opens a deploy-failure gate in the Inbox. Start it any time after the run, before or after you merge; it is safe to stop and restart and stops by itself when nothing is left to watch. With no `dev` deployment in the sample repository the gate is what you will see first: that is the honest result until the preview workflow's deploy step is real (spike 2a).
 
 ## 7. Deciding gates and answering questions
 
@@ -126,7 +126,8 @@ Both seams are protocols with one implementation each to add or finish:
 
 ## 10. Known gaps before this is routine
 
-- No change-request watcher: `cr.merged` must be fed in by hand for Stage 5 (roadmap).
+- `request_changes` on a deploy-failure gate moves the item back to `implementing` and writes `<spec_id>-deploy_feedback.md`, but nothing starts that follow-up implementer round yet (the run is already complete): start a new run with the feedback in the outcome for now.
+- The watcher polls; a forge webhook endpoint to shorten the minute between a merge and its detection is not in this repository.
 - `ClaudeArtifactPublisher` is a stub; pages are local files.
 - Human comments at Gate 2 are broadcast to every spec's writer; per-spec routing is a small follow-up.
 - Reviewer requests on a personal repository are ignored by GitHub (you cannot review your own PR); the forge tolerates the 422. Use a second account or a collaborator for a real Gate 3.

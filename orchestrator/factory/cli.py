@@ -8,6 +8,7 @@
     factory status <run_id>             # derived state + timeline
     factory replay <run_id>             # re-derive state from the event log (sanity check)
     factory resume <run_id>             # continue a run that died during implementation
+    factory watch <run_id> [--once]     # Gate 3 and Stage 5: follow the run's pull requests to the merge and the dev deploy
     factory web [--port 8765] [--demo]  # the Factory Console: outcomes, runs board, inbox, gate review
 
 Local mode uses a file-backed queue under the runs directory so two processes can talk. With
@@ -104,9 +105,10 @@ def doctor():
     typer.echo("ok")
 
 
-def _context(cfg, outcome: dict, run_id: str, *, forge: bool, design_only: bool):
-    """The RunContext `run` and `resume` share: forge bound to the outcome's repository, the gate surfaces composed,
-    and session starts recorded as events so the Console can link to them."""
+def _context(cfg, outcome: dict, run_id: str, *, forge: bool, design_only: bool, driver: bool = True):
+    """The RunContext `run`, `resume`, and `watch` share: forge bound to the outcome's repository, the gate surfaces
+    composed, and session starts recorded as events so the Console can link to them. `driver=False` (the watcher)
+    skips the platform client: no agent runs, so no API key is needed."""
     from .sessions import SessionDriver
     from .stages import RunContext
     from .surfaces.artifact_pages import make_publisher
@@ -118,7 +120,7 @@ def _context(cfg, outcome: dict, run_id: str, *, forge: bool, design_only: bool)
     if tracker is not None:
         queue, notifier = CompositeQueue(queue, tracker), CompositeNotifier(notifier, tracker)
     ctx = RunContext(
-        cfg=cfg, store=RunStore(cfg.runs_dir), driver=SessionDriver(cfg), queue=queue, notifier=notifier,
+        cfg=cfg, store=RunStore(cfg.runs_dir), driver=SessionDriver(cfg) if driver else None, queue=queue, notifier=notifier,
         forge=forge_obj,
         policy=_policy(outcome, design_only),
         run_id=run_id, tracker=tracker, pages=make_publisher(cfg),
@@ -126,9 +128,10 @@ def _context(cfg, outcome: dict, run_id: str, *, forge: bool, design_only: bool)
     if created:
         ctx.event("repository.created", {"url": created["url"], "default_branch": created.get("default_branch"),
                                          "private": created.get("private"), "forge": cfg.forge}, stage="intake", actor="platform")
-    ctx.driver.on_session_started = lambda info: ctx.event(
-        "session.started", {k: v for k, v in info.items() if k not in ("run_id", "work_item_id")},
-        stage=info["stage"], actor="platform", work_item_id=info.get("work_item_id"))
+    if ctx.driver is not None:
+        ctx.driver.on_session_started = lambda info: ctx.event(
+            "session.started", {k: v for k, v in info.items() if k not in ("run_id", "work_item_id")},
+            stage=info["stage"], actor="platform", work_item_id=info.get("work_item_id"))
     return ctx
 
 
@@ -179,6 +182,7 @@ def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the f
                f"{', design only' if design_only else ''})")
     final = _drive(ctx, lambda c: run_pipeline(c, outcome))
     typer.echo(f"run {run_id} finished in state {final.value}")
+    _watch_hint(ctx, run_id)
 
 
 @app.command()
@@ -203,6 +207,62 @@ def resume(run_id: str, forge: bool = typer.Option(True, help="Talk to the forge
     typer.echo(f"run {run_id} resuming from {store.state(run_id).stage.value} (forge={cfg.forge if ctx.forge else 'none'})")
     final = _drive(ctx, resume_pipeline)
     typer.echo(f"run {run_id} finished in state {final.value}")
+    _watch_hint(ctx, run_id)
+
+
+def _watch_hint(ctx, run_id: str) -> None:
+    from .watcher import pending_work_items
+    try:
+        open_items = pending_work_items(ctx.store.state(run_id))
+    except Exception:  # noqa: BLE001
+        return
+    if open_items:
+        typer.echo(f"{len(open_items)} change request(s) await review on the forge: `factory watch {run_id}` (or Watch in the "
+                   f"Console) records the merge and follows the dev deploy")
+
+
+@app.command()
+def watch(run_id: str, once: bool = typer.Option(False, "--once", help="Poll once, act on what changed, and exit"),
+          poll_seconds: int = typer.Option(60, help="Seconds between polls of the forge"),
+          hours: float = typer.Option(72.0, help="Give up after this long with change requests still open")):
+    """Gate 3 and Stage 5 for a run whose pull requests are open: poll the forge for each change request; on merge
+    record it, watch the default-branch pipeline and the dev deployment, run the spec's e2e entries against the dev
+    URL, and end the item at verified-in-dev or a deploy-failure gate. Safe to stop and start: nothing is recorded twice."""
+    from .watcher import Watcher
+
+    cfg = cfgmod.load()
+    gaps = cfgmod.missing_for_watch(cfg)
+    if gaps:
+        typer.echo("cannot watch; missing: " + ", ".join(gaps))
+        raise typer.Exit(1)
+    store = RunStore(cfg.runs_dir)
+    try:
+        outcome = json.loads(store.get_artifact(run_id, "intake", "outcome.json"))
+    except FileNotFoundError:
+        typer.echo(f"no run {run_id} under {cfg.runs_dir}")
+        raise typer.Exit(1)
+    ctx = _context(cfg, outcome, run_id, forge=True, design_only=False, driver=False)
+    if ctx.forge is None:
+        typer.echo("cannot watch: no forge is configured for this run (FORGE_TOKEN and the outcome's repository url)")
+        raise typer.Exit(1)
+    w = Watcher(ctx, outcome)
+    pending = w.pending()
+    if not pending:
+        typer.echo(f"run {run_id} watching: nothing to watch (no work item at cr_open, merged, or deploying_dev)")
+        return
+    typer.echo(f"run {run_id} watching {len(pending)} work item(s) on {ctx.forge.kind} {ctx.forge.repo}: "
+               + ", ".join(f"{wi.work_item_id} ({wi.stage.value}{', #' + str(wi.cr_id) if wi.cr_id else ''})" for wi in pending)
+               + ("" if once else f"; polling every {poll_seconds}s for up to {hours:g}h"))
+
+    def say(report):
+        typer.echo(f"{__import__('datetime').datetime.now().strftime('%H:%M:%S')} {report.summary()}")
+
+    if once:
+        say(w.tick())
+    else:
+        w.watch(poll_seconds=poll_seconds, timeout_seconds=hours * 3600, on_tick=say)
+    st = store.state(run_id)
+    typer.echo("work items: " + ", ".join(f"{wi.work_item_id}={wi.stage.value}" for wi in st.work_items.values()))
 
 
 @app.command()
