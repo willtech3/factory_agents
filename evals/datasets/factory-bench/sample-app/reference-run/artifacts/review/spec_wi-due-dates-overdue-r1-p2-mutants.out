@@ -1,0 +1,9 @@
+due-today-overdue(<=): caught | pytest rc=1 7 failed, 30 passed, 1 warning in 1.39s | local-all rc=1 7 passed, 3 failed | rollover rc=1   from starlette.testclient import TestClient as TestClient  # noqa
+ignore-done: caught | pytest rc=1 4 failed, 33 passed, 1 warning in 1.33s | local-all rc=1 5 passed, 5 failed | rollover rc=0   from starlette.testclient import TestClient as TestClient  # noqa
+plain-date-field: caught | pytest rc=1 18 failed, 19 passed, 1 warning in 12.05s | local-all rc=1 TypeError: fromisoformat: argument must be str | rollover rc=1   from starlette.testclient import TestClient as TestClient  # noqa
+no-anchor-end: SURVIVED | pytest rc=0 37 passed, 1 warning in 1.41s | local-all rc=0 10 passed, 0 failed | rollover rc=0   from starlette.testclient import TestClient as TestClient  # noqa
+list-dicts-no-lock: SURVIVED | pytest rc=0 37 passed, 1 warning in 1.26s | local-all rc=0 10 passed, 0 failed | rollover rc=0   from starlette.testclient import TestClient as TestClient  # noqa
+local-date-clock: SURVIVED | pytest rc=0 37 passed, 1 warning in 1.08s | local-all rc=0 10 passed, 0 failed | rollover rc=0   from starlette.testclient import TestClient as TestClient  # noqa
+complete-response-stale-overdue: SURVIVED | pytest rc=0 37 passed, 1 warning in 1.43s | local-all rc=0 10 passed, 0 failed | rollover rc=0   from starlette.testclient import TestClient as TestClient  # noqa
+overdue-list-unsorted-reverse-insert: caught | pytest rc=1 1 failed, 36 passed, 1 warning in 1.34s | local-all rc=1 7 passed, 3 failed | rollover rc=0   from starlette.testclient import TestClient as TestClient  # noqa
+post-overdue-always-false: caught | pytest rc=1 3 failed, 34 passed, 1 warning in 1.24s | local-all rc=1 6 passed, 4 failed | rollover rc=0   from starlette.testclient import TestClient as TestClient  # noqa

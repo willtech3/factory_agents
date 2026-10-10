@@ -1,0 +1,33 @@
+UTC now: 2026-10-10T12:33:26  ref: HEAD (93ced45)  python: Python 3.12.3
+--- today_utc() body: return datetime.now(timezone.utc).date()
+39 passed, 1 warning in 0.92s
+pytest exit 0
+starting TZ=<+14>-14 /tmp/impl_venv312/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 47561 --log-level warning
+10 passed, 0 failed
+local-all exit 0
+1 passed, 0 failed
+rollover-local exit 0
+--- today_utc() body: return date.today()
+FAILED tests/test_overdue.py::test_today_utc_is_the_utc_date_not_the_host_date
+1 failed, 38 passed, 1 warning in 1.05s
+pytest exit 1
+starting TZ=<+14>-14 /tmp/impl_venv312/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 39671 --log-level warning
+FAIL boundary: boundary: due 2026-10-10 with UTC today 2026-10-10: POST overdue True, want False
+FAIL listing: listing: {'id': 10, 'title': 'e2e-boundary-2026-10-10', 'done': False, 'created_at': '2026-10-10T12:33:31.174406+00:00', 'due_date': '2026-10-10', 'overdue': True} has overdue True but the rule gives False 
+FAIL overdue-list: overdue-list: own todos in GET /todos/overdue are ['e2e-overdue-a', 'e2e-overdue-e', 'e2e-overdue-f'], want ['e2e-overdue-a', 'e2e-overdue-f'] (UTC today 2026-10-10)
+7 passed, 3 failed
+local-all exit 1
+1 passed, 0 failed
+rollover-local exit 0
+--- today_utc() body: return datetime.now().date()
+FAILED tests/test_overdue.py::test_today_utc_is_the_utc_date_not_the_host_date
+1 failed, 38 passed, 1 warning in 0.95s
+pytest exit 1
+starting TZ=<+14>-14 /tmp/impl_venv312/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 57965 --log-level warning
+FAIL boundary: boundary: due 2026-10-10 with UTC today 2026-10-10: POST overdue True, want False
+FAIL listing: listing: {'id': 10, 'title': 'e2e-boundary-2026-10-10', 'done': False, 'created_at': '2026-10-10T12:33:33.926202+00:00', 'due_date': '2026-10-10', 'overdue': True} has overdue True but the rule gives False 
+FAIL overdue-list: overdue-list: own todos in GET /todos/overdue are ['e2e-overdue-a', 'e2e-overdue-e', 'e2e-overdue-f'], want ['e2e-overdue-a', 'e2e-overdue-f'] (UTC today 2026-10-10)
+7 passed, 3 failed
+local-all exit 1
+1 passed, 0 failed
+rollover-local exit 0

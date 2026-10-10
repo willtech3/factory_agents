@@ -1,0 +1,122 @@
+{
+  "response_id": "rsp_7ad668356d9d",
+  "review_id": "rev_wi-due-dates-overdue011ad433",
+  "spec_id": "spec_wi-due-dates-overdue",
+  "round": 1,
+  "responses": [
+    {
+      "finding_id": "F-1",
+      "disposition": "fixed",
+      "explanation": "Correct: Todo.to_dict() read done twice (asdict(self), then is_overdue()), so a complete() landing between the two reads could make POST /todos answer done=false, overdue=false for a past-due todo. Fixed as the refutation condition (a) asks: to_dict() now takes one copy of the todo (dataclasses.replace) and builds both asdict() and overdue from that copy, so done is read once. The signatures in spec.interfaces are unchanged and the POST routes still call to_dict(); list_dicts keeps building under the lock. Regression test: test_post_response_stays_consistent_when_completed_while_it_is_built wraps app.storage.asdict so store.complete(1) runs right after the fields are read, which is the reviewer's window made deterministic. It asserts the hook fired and that overdue == not done for a 2000-01-01 todo. It fails on the round-1 head (done False, overdue False) and passes at e563e95. The reviewer's part-A probe was not in this sandbox (/mnt/session/outputs/probes does not exist), so I rebuilt it as evidence/probe_race_post_response.py: the same calls, store.create(\"race\", date(2000,1,1)).to_dict() against a thread spinning store.complete(<id just handed out>) with sys.setswitchinterval(1e-6). Round-1 head: 8, 10, 18 torn in 20000 rounds and 34, 67 in 100000. New head: 0 in 20000 and 0 in 100000, run twice.",
+      "evidence": {
+        "commits": [
+          "e563e95"
+        ],
+        "tests_added": [
+          "tests/test_overdue.py::test_post_response_stays_consistent_when_completed_while_it_is_built"
+        ],
+        "reproduction_attempted": "PYTHONPATH=<checkout> python /mnt/session/outputs/evidence/probe_race_post_response.py 20000|100000 (output in evidence/probe_race_post_response.out). 1ad4332: \"18 torn responses in 20000 rounds; example: {'id': 1115, 'title': 'race', 'done': False, ..., 'due_date': '2000-01-01', 'overdue': False}\" and \"34 torn responses in 100000 rounds\". 93ced45: \"0 torn responses in 20000 rounds\" and \"0 torn responses in 100000 rounds\". New test on 1ad4332: \"FAILED tests/test_overdue.py::test_post_response_stays_consistent_when_completed_while_it_is_built, 1 failed, 38 passed\" (evidence/new_tests_on_round1_head.out); at 93ced45: 39 passed.",
+        "locations": [
+          "app/storage.py:27-29 (Todo.to_dict)",
+          "tests/test_overdue.py:111-125"
+        ]
+      }
+    },
+    {
+      "finding_id": "F-2",
+      "disposition": "fixed",
+      "explanation": "Correct: with the clock patched in every pytest test and local-all inheriting a UTC environment, a today_utc() that used the host date passed the whole plan. I applied both suggested fixes. (a) test_today_utc_is_the_utc_date_not_the_host_date replaces app.storage.datetime with a datetime subclass pinned at 1999-12-31T23:30Z. Its now(tz) returns that instant in tz, and its naive now() returns UTC+10 wall time, which is already 2000-01-01. The test asserts storage.today_utc() == date(1999, 12, 31). The forbidden strings are avoided, so plan command 8 still passes. (b) local-all starts the server with a POSIX TZ whose calendar date differs from the UTC date at run time: UTC-12 before 12:00 UTC, else UTC+14. A server that judges by its local date then fails boundary, listing and overdue-list. Refutation-condition run, with TZ=UTC as on the orchestrator and on a clean clone of 93ced45: with `return date.today()` and again with `return datetime.now().date()`, pytest gives 1 failed, 38 passed (exit 1) and local-all gives 7 passed, 3 failed (exit 1). Unmodified HEAD gives 39 passed and 10 passed. rollover-local patches the clock, so it passes either way, which is expected.",
+      "evidence": {
+        "commits": [
+          "93ced45"
+        ],
+        "tests_added": [
+          "tests/test_overdue.py::test_today_utc_is_the_utc_date_not_the_host_date",
+          "tests/e2e_overdue.py local-all: server now runs with TZ=<-12>12 or <+14>-14 (date differs from UTC)"
+        ],
+        "reproduction_attempted": "bash /mnt/session/outputs/evidence/f2_local_clock_mutants.sh /tmp/impl_venv312/bin HEAD (output in evidence/f2_local_clock_mutants.out; UTC 2026-10-10T12:33). head: \"39 passed\", local-all \"10 passed, 0 failed\". date.today(): \"FAILED tests/test_overdue.py::test_today_utc_is_the_utc_date_not_the_host_date / 1 failed, 38 passed / pytest exit 1\"; local-all \"FAIL boundary: due 2026-10-10 with UTC today 2026-10-10: POST overdue True, want False\", \"FAIL listing\", \"FAIL overdue-list: own todos ... are ['e2e-overdue-a', 'e2e-overdue-e', 'e2e-overdue-f']\", \"7 passed, 3 failed / local-all exit 1\". datetime.now().date(): the same failures. The zone choice was checked for every minute of a UTC day: \"0 of 1440\" minutes share the UTC date (evidence/f2_zone_choice_check.py, .out).",
+        "locations": [
+          "tests/test_overdue.py:188-201",
+          "tests/e2e_overdue.py:340-344 (local_all)"
+        ]
+      }
+    },
+    {
+      "finding_id": "F-3",
+      "disposition": "fixed",
+      "explanation": "Correct: d33b244 accepted due_date as a plain `date | None`. I took the reviewer's second suggested fix: the slices are rebuilt so that the first commit accepting due_date already declares it strictly. d33b244 and 23128cd are squashed into 5fd5533, whose tree is byte-identical to 23128cd. 1ad4332 is replayed as 7a5bfd4, tree identical to 1ad4332. The F-1 and F-2 fixes follow as e563e95 and 93ced45. The branch was force-pushed with lease (expected old head 1ad4332). Nothing else changed. Branch history is now 5fd5533, 7a5bfd4, e563e95, 93ced45 on main 6dec694. At every one of these commits the reviewer's reproduction returns 422 for \"2026-11-30T00:00:00\" and for 0, and pytest passes. Even a non-squash merge therefore leaves no commit on main that stores a malformed due date.",
+      "evidence": {
+        "commits": [
+          "5fd5533",
+          "7a5bfd4",
+          "e563e95",
+          "93ced45"
+        ],
+        "tests_added": [],
+        "reproduction_attempted": "bash /mnt/session/outputs/evidence/f3_every_commit_ac9.sh /tmp/impl_venv312/bin HEAD d33b244 (output in evidence/f3_every_commit_ac9.out): the reviewer's TestClient reproduction at each commit in main..HEAD. 5fd5533: 422, 422, pytest 29 passed. 7a5bfd4: 422, 422, 37 passed. e563e95: 422, 422, 38 passed. 93ced45: 422, 422, 39 passed. For comparison, the old d33b244 (no longer on the branch): \"'2026-11-30T00:00:00' -> 201 2026-11-30\" and \"0 -> 201 1970-01-01\". Tree identity: git rev-parse 5fd5533^{tree} == 23128cd^{tree} and 7a5bfd4^{tree} == 1ad4332^{tree} == 71212e44 (evidence/f3_history_rebuild.out).",
+        "locations": [
+          "app/main.py:19-28 (TodoIn, from 5fd5533 on)"
+        ]
+      }
+    },
+    {
+      "finding_id": "DET-ac_test_mapping",
+      "disposition": "fixed",
+      "explanation": "The round-1 report mapped criteria under acceptance_criteria[*].pytest_node_ids. The checker expects implementation_report.json `criteria` ([{ac_id, tests: [...]}]). /mnt/session/outputs/implementation_report.json now has `criteria` with one entry per AC in spec order. Every automated_test criterion, AC-1 to AC-11, lists at least one pytest node id; AC-11 lists all three tests/test_todos.py tests plus every tests/test_overdue.py test. AC-12 and AC-13 (static_check) list their test_plan commands under static_checks. Every listed id is a collected node id: 39 distinct ids, asserted against `pytest --collect-only`. Running them all explicitly by id gives 39 passed. Only the orchestrator's next run on 93ced45 can confirm the check itself.",
+      "evidence": {
+        "commits": [
+          "93ced45"
+        ],
+        "tests_added": [],
+        "reproduction_attempted": "python -m pytest -v $(all ids in implementation_report.json criteria[*].tests) on a clean clone at 93ced45 -> \"39 passed, 1 warning\" (evidence/mapped_test_ids_run.out).",
+        "locations": [
+          "/mnt/session/outputs/implementation_report.json#criteria"
+        ]
+      }
+    }
+  ],
+  "new_head_sha": "93ced45f6f75c244414e70df150301f72e81f147",
+  "tests_after": {
+    "commands": [
+      "python -m pytest -q",
+      "python -m pytest -q tests/test_todos.py tests/test_overdue.py",
+      "test -f tests/test_overdue.py && test -f tests/e2e_overdue.py",
+      "git diff --exit-code main -- tests/test_todos.py pyproject.toml service_manifest.json .github",
+      "test -z \"$( (git diff --name-only main; git ls-files -o --exclude-standard) | grep -vxE 'app/storage\\.py|app/main\\.py|README\\.md|tests/test_overdue\\.py|tests/e2e_overdue\\.py' )\"",
+      "python -c \"import ast,glob,sys; ok=set(sys.stdlib_module_names)|{'app','fastapi','pydantic','uvicorn','pytest','httpx','starlette'}; fs=glob.glob('app/**/*.py',recursive=True)+glob.glob('tests/**/*.py',recursive=True); bad=[(f,m) for f in fs for n in ast.walk(ast.parse(open(f).read())) for m in ([a.name.split('.')[0] for a in n.names] if isinstance(n,ast.Import) else [n.module.split('.')[0]] if isinstance(n,ast.ImportFrom) and n.level==0 else []) if m not in ok]; print('disallowed imports:',bad); sys.exit(bool(bad))\"",
+      "python -c \"import ast; d=ast.get_docstring(ast.parse(open('app/main.py').read())); r=open('README.md').read(); assert 'GET /todos/overdue' in d and 'due_date' in d, 'docstring'; assert all(s in r for s in ['GET /todos/overdue','due_date','overdue','YYYY-MM-DD','strictly before','UTC']), 'README'\"",
+      "! grep -nE \"sleep|datetime\\.now|date\\.today\" tests/test_overdue.py",
+      "! grep -nE \"extra *=|model_config|ConfigDict\" app/main.py",
+      "python tests/e2e_overdue.py local-all",
+      "PYTHONPATH=. python tests/e2e_overdue.py rollover-local"
+    ],
+    "all_passed": true,
+    "summary": "All 11 test_plan.commands exit 0 on a fresh clone at 93ced45 with local main = 6dec694, on python 3.12.3 (manifest runtime) and 3.11.16: pytest 39 passed (3 existing + 36 new) in both pytest commands; scope, protected-file, import, docstring/README and grep checks pass; local-all 10 passed, 0 failed (server under TZ=<+14>-14); rollover-local 1 passed. Local e2e entries pass; the 9 preview entries were not run (no preview reachable) but exit 0 against the manifest entrypoint started locally. Outputs: evidence/test_plan_py312.out, evidence/test_plan_py311.out."
+  },
+  "produced_by": {
+    "agent_name": "implementer",
+    "agent_id": "agent_implementer",
+    "agent_version": 1,
+    "session_id": "sesn_unknown",
+    "thread_id": null,
+    "model": "claude",
+    "effort": null,
+    "outcome_iterations": null,
+    "list_cost_usd": null,
+    "produced_at": "2026-10-10T12:38:51Z",
+    "inputs": [
+      {
+        "artifact": "spec.json",
+        "sha256": "f60a0883cb4187305e7e8ad71c4584016466a9361ac070d1b22fa7a0380adefb"
+      },
+      {
+        "artifact": "findings.json",
+        "sha256": "d5b4533fafb3642ae28b791de958d9bce7be5825a0a89684e5464f87c169d87e"
+      },
+      {
+        "artifact": "preview.json",
+        "sha256": "7c32177e98b74339d8ddb8512d641d5adb8cdb16c51927d2e9d5e890d24158c6"
+      }
+    ]
+  }
+}

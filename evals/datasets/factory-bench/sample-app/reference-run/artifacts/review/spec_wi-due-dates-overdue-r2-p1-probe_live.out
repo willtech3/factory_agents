@@ -1,0 +1,64 @@
+ok   malformed '2026-11-30\r' -> 422
+ok   malformed ' 2026-11-30' -> 422
+ok   malformed '\t2026-11-30' -> 422
+ok   malformed '2026-1-30' -> 422
+ok   malformed '2026-11-3' -> 422
+ok   malformed '+2026-11-30' -> 422
+ok   malformed '2026-11-30Z' -> 422
+ok   malformed '2026-11-30\x00' -> 422
+ok   malformed '２０２６-１１-３０' -> 422
+ok   malformed '٢٠٢٦-١١-٣٠' -> 422
+ok   malformed '2026–11–30' -> 422
+ok   malformed '\ufeff2026-11-30' -> 422
+ok   malformed '2100-02-29' -> 422
+ok   malformed '2026-00-10' -> 422
+ok   malformed '2026-10-00' -> 422
+ok   malformed '2026-04-31' -> 422
+ok   malformed 'null' -> 422
+ok   malformed 'None' -> 422
+ok   malformed '2026-11-30\n\n' -> 422
+ok   malformed '2026/11/30' -> 422
+ok   malformed '30-11-2026' -> 422
+ok   malformed '2026-W48-1' -> 422
+ok   malformed '2026-334' -> 422
+ok   malformed '12026-11-30' -> 422
+ok   malformed '2026-11-30+00:00' -> 422
+ok   malformed 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx -> 422
+ok   malformed {} -> 422
+ok   malformed {'y': 2026} -> 422
+ok   malformed -1 -> 422
+ok   malformed 1e+20 -> 422
+ok   malformed False -> 422
+ok   malformed [] -> 422
+ok   malformed '1900-02-29' -> 422
+ok   malformed '0000-00-00' -> 422
+ok   nothing stored by malformed probes (before 81, after 81)
+ok   accepted 2000-02-29 -> 201 overdue=True
+ok   accepted 2028-02-29 -> 201 overdue=False
+ok   accepted 0001-01-01 -> 201 overdue=True
+ok   accepted 9999-12-31 -> 201 overdue=False
+ok   accepted 2026-10-09 -> 201 overdue=True
+ok   accepted 2026-10-10 -> 201 overdue=False
+ok   spoofed fields ignored -> {'id': 88, 'title': 'probe-spoof', 'done': False, 'created_at': '2026-10-10T12:58:01.605575+00:00', 'due_date': '2000-01-01', 'overdue': True}
+ok   title probe {'title': ''} -> 422, want 422
+ok   title probe {'title': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -> 422, want 422
+ok   title probe {'title': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -> 201, want 201
+ok   title probe {} -> 422, want 422
+ok   title probe {'title': '', 'due_date': 'bad'} -> 422, want 422
+ok   title probe {'due_date': '2026-11-30'} -> 422, want 422
+ok   non-JSON body -> 422
+ok   array body -> 422
+ok   duplicate due_date key, last invalid -> 422
+ok   GET /todos/overdue?x=1 -> 200, want 200 (base behaviour for the last two)
+ok   POST /todos/overdue -> 405, want 405 (base behaviour for the last two)
+ok   GET /todos/1 -> 405, want 405 (base behaviour for the last two)
+ok   GET /openapi.json -> 200, want 200 (base behaviour for the last two)
+ok   DELETE /todos/overdue -> 422, want 422 (base behaviour for the last two)
+ok   POST /todos/overdue/complete -> 422, want 422 (base behaviour for the last two)
+ok   replayed complete idempotent
+ok   unknown / negative id complete -> 404
+ok   deleted overdue todo leaves the list
+ok   HTTP POST/complete race: 0 torn responses in 600 POSTs :: []
+ok   concurrent readers/writers: reads=649 writes=357 errors=0 :: []
+ok   at rest: GET /todos/overdue equals flagged subset of GET /todos (118 of 1007)
+bad=0

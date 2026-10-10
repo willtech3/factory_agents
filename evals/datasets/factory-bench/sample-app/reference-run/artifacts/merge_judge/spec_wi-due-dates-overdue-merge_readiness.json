@@ -1,0 +1,127 @@
+{
+  "verdict_id": "mrv_93ced45judge01",
+  "spec_id": "spec_wi-due-dates-overdue",
+  "round": 1,
+  "result": "ready",
+  "unresolved_findings": [
+    {
+      "finding_id": "F-5",
+      "reviewer_status": "open",
+      "judge_assessment": "Stands, as a nit. Reproduced at 93ced45 with my own probe because the reviewer's probes/ directory is not in this sandbox. I replaced to_dict with `overdue = self.is_overdue(today); return {**asdict(self), \"overdue\": overdue}`. Result: pytest 39 passed, local-all 10/0, rollover-local passed. A race probe (create past-due todo, to_dict, against a thread spinning complete()) shows 110 torn in 20000, e.g. done=true with overdue=true. A second hook test that patches Todo.is_overdue to call complete(1) after the original passes at head and fails on this mutant. Head itself is correct: 0 torn in 20000. The implementer has not responded, because this is new in the reviewer's round 2. It is a gap in regression protection against a hypothetical refactor, not a defect in the change, so it does not block. Optional follow-up: parametrize test_post_response_stays_consistent_when_completed_while_it_is_built over the is_overdue hook point."
+    },
+    {
+      "finding_id": "F-1",
+      "reviewer_status": "withdrawn",
+      "judge_assessment": "Withdrawal confirmed by execution. Refutation condition (a) is met literally: at head the race probe gives 0 torn in 20000. With the round-1 to_dict (`{**asdict(self), 'overdue': self.is_overdue(today)}`) it gives 70 torn in 20000, and test_post_response_stays_consistent_when_completed_while_it_is_built fails (1 failed, 38 passed). The reason for the withdrawal is stated."
+    },
+    {
+      "finding_id": "F-2 (duplicated in findings.json as F-3)",
+      "reviewer_status": "withdrawn",
+      "judge_assessment": "Withdrawal confirmed. With TZ=UTC and app/storage.py:11 replaced by date.today(), by datetime.now().date(), or by datetime.now().astimezone().date(), pytest fails test_today_utc_is_the_utc_date_not_the_host_date, and local-all fails boundary, listing and overdue-list (7 passed, 3 failed). That meets the refutation condition literally. Review hygiene: findings.json carries this claim twice, as F-2 and as F-3 (the F-3 copy has no suggested_fix). The ids no longer line up with review_response.json, where F-3 is the d33b244 finding and here appears as F-4."
+    },
+    {
+      "finding_id": "F-4 (round-1 F-3, d33b244)",
+      "reviewer_status": "withdrawn",
+      "judge_assessment": "Withdrawal accepted, although the literal refutation condition (a squash merge, or d33b244 returning 422) was not met. The premise is gone: git merge-base --is-ancestor shows d33b244, 23128cd and 1ad4332 are not ancestors of HEAD. At 5fd5533, 7a5bfd4 and e563e95, '2026-11-30T00:00:00', 0, 1700000000 and '2027-02-29' all give 422 with 0 todos stored. The reason is stated and checks out."
+    },
+    {
+      "finding_id": "DET-ac_test_mapping",
+      "reviewer_status": "withdrawn",
+      "judge_assessment": "Settled by the orchestrator: deterministic_checks.json reports ac_test_mapping passed. Not mine to override either way."
+    }
+  ],
+  "deterministic_checks": [
+    {
+      "check": "diff_scope",
+      "passed": true,
+      "detail": "all changed files inside allowed_paths"
+    },
+    {
+      "check": "protected_tests",
+      "passed": true,
+      "detail": "no existing tests modified"
+    },
+    {
+      "check": "test_weakening",
+      "passed": true,
+      "detail": "no skip/xfail markers added"
+    },
+    {
+      "check": "ac_test_mapping",
+      "passed": true,
+      "detail": "all automated criteria map to passing tests"
+    },
+    {
+      "check": "test_plan_commands",
+      "passed": true,
+      "detail": "all test plan commands exit 0"
+    },
+    {
+      "check": "e2e_coverage",
+      "passed": true,
+      "detail": "every user_visible criterion has an e2e entry"
+    },
+    {
+      "check": "manifest_valid",
+      "passed": true,
+      "detail": "valid"
+    },
+    {
+      "check": "e2e_preview",
+      "passed": true,
+      "detail": "all 9 e2e entries exit 0 on preview"
+    }
+  ],
+  "residual_risks": [
+    "F-5 (nit, open): the F-1 regression test catches only one read order. An overdue-first to_dict without a snapshot passes the whole plan and re-opens a done/overdue race (110/20000 torn in my probe). Human decision: accept it, or ask for the second hook test as a follow-up.",
+    "Preview evidence is not a deployed environment: test_results.json shows the 9 'preview' e2e entries exit 0 against an orchestrator-started local instance (mode local, http://127.0.0.1:54991). preview.yml deploys nothing, per the owner. The reviewer could not reach that instance, so this rests on the orchestrator's authoritative run.",
+    "AC-10 (overdue flips at a date rollover with no write) has no live evidence, by owner decision. It is proven only with a patched clock: test_overdue_flips_when_the_date_advances_without_a_write and rollover-local, both passing.",
+    "The overdue cutoff is UTC midnight for every user (owner-confirmed, human_comments.md (3)). Users in, for example, UTC-8 see todos go overdue at 16:00 local time on their due date.",
+    "test_today_utc_is_the_utc_date_not_the_host_date patches app.storage.datetime and pins the exact datetime.now(timezone.utc) call. An equivalent but differently written UTC implementation would fail it. That body is what spec.interfaces prescribes, so this is acceptable coupling.",
+    "The reviewer measured (I did not re-measure) that the per-todo replace() copy inside list_dicts runs under the store lock and adds roughly 50-100% lock hold time at 10k-50k todos. The spec sets no performance budget, and this in-memory sample is not expected to hold that many todos.",
+    "local-all picks its fake host TZ once at start, so a run that crosses 12:00 or 00:00 UTC loses its ability to catch a host-date mutant for that run. It cannot cause a false failure.",
+    "Review record hygiene: findings.json renumbers findings across rounds (the F-2 claim appears twice, as F-2 and F-3; round-1 F-3 is now F-4; checks_performed calls the new nit F-4, while the findings array calls it F-5). checks_performed also concatenates two round-2 passes with different figures (118/1007 vs 88/633). There is no code impact, but a later audit should not rely on the ids."
+  ],
+  "summary_for_human": "What changed: POST /todos takes an optional due_date (null, or a real YYYY-MM-DD date; anything else gets 422 and nothing is stored). Every todo response gains due_date and a derived overdue flag (open AND due_date strictly before the current UTC date), and the new GET /todos/overdue returns exactly the overdue todos in id order. 5 files change, all inside allowed_paths: app/storage.py (+today_utc, Todo.is_overdue/to_dict, TodoStore.list_dicts), app/main.py (TodoIn.due_date + validator, new route), README.md, tests/test_overdue.py (36 tests), tests/e2e_overdue.py.\n\nContested and settled (I re-ran each on a clean clone of 93ced45): F-1, a torn done/overdue pair in POST responses under a concurrent complete(): fixed with a snapshot in to_dict. My race probe gives 0 torn in 20000 at head and 70 with the round-1 to_dict, and the new regression test fails on the round-1 code. F-2, today_utc() could use the host date undetected: fixed. With TZ=UTC, the mutants date.today(), datetime.now().date() and datetime.now().astimezone().date() each fail test_today_utc_is_the_utc_date_not_the_host_date and 3 local-all checks. Old F-3, an intermediate commit that stored malformed dates: the history was rebuilt, d33b244 is not an ancestor of HEAD, and every remaining commit gives 422 for the datetime and integer values. All 8 deterministic checks pass.\n\nStill open (nit, non-blocking, reproduced): F-5. The F-1 regression test only catches the asdict-first read order. Rewriting to_dict as `overdue = self.is_overdue(today); return {**asdict(self), ...}` passes all 39 pytest tests, local-all and rollover-local, yet my probe shows 110 torn responses in 20000. Decide whether to accept this or ask for the 10-line second hook (patch Todo.is_overdue) as a follow-up.\n\nEvidence for the criteria: AC-1..AC-9 each have a named test in tests/test_overdue.py, a local-all check and an orchestrator e2e run (test_results.json, 9/9 exit 0). AC-10 rests on test_overdue_flips_when_the_date_advances_without_a_write plus rollover-local. AC-11: 39 passed, with tests/test_todos.py unchanged. AC-12/13: static plan commands exit 0. Know this about the 'preview': it was an orchestrator-started local instance (mode local, 127.0.0.1:54991, not a deployed environment), and the reviewer could not reach it.\n\nRead first: app/storage.py (to_dict snapshot and list_dicts under the lock), then the TodoIn validator in app/main.py, then tests/test_overdue.py tests test_post_response_stays_consistent_when_completed_while_it_is_built and test_today_utc_is_the_utc_date_not_the_host_date.",
+  "produced_by": {
+    "agent_name": "merge-judge",
+    "agent_id": "agent_merge_judge",
+    "agent_version": 1,
+    "session_id": "sesn_unknown",
+    "thread_id": null,
+    "model": "claude",
+    "effort": null,
+    "outcome_iterations": null,
+    "list_cost_usd": null,
+    "produced_at": "2026-10-10T13:30:00Z",
+    "inputs": [
+      {
+        "artifact": "spec.json",
+        "sha256": "f60a0883cb4187305e7e8ad71c4584016466a9361ac070d1b22fa7a0380adefb"
+      },
+      {
+        "artifact": "diff.patch",
+        "sha256": "0788cedfc3470f7d8b494f56546520172a79c4426cff752277fa8922fa74d1ce"
+      },
+      {
+        "artifact": "findings.json",
+        "sha256": "b307d6336aef1bd357252cb768dc5ea1d461f7c8107a3ad8e1d0a2e842033d9d"
+      },
+      {
+        "artifact": "review_response.json",
+        "sha256": "79555d0de394f10ce124f079a61549ab998303b370d7d6f73ce5006bcd0fafec"
+      },
+      {
+        "artifact": "test_results.json",
+        "sha256": "2d07e390720adad128b9f2abf87ac06296cdda2802dcaadc0337209ee907ceea"
+      },
+      {
+        "artifact": "deterministic_checks.json",
+        "sha256": "d2b29c75332eecb3ec65990c248a2b1f7560c1a43c6b4c57348ea4ea9ad59502"
+      }
+    ]
+  },
+  "_head_sha": "93ced45f6f75c244414e70df150301f72e81f147",
+  "_branch": "factory/run_57fde1adc2/spec_wi-due-dates-overdue",
+  "_base_sha": "6dec6943e8333d0a747f0dd34578e3e823e51319"
+}
