@@ -65,3 +65,12 @@ One level of delegation is a platform limit and also the right design: the resea
 ## Instruction budget
 
 Every system prompt is under 80 lines and each rule traces to a failure in `docs/research/`. Repository-specific guidance (build commands, conventions, where tests live) belongs in the target repository's `.claude/skills/`, which Managed Agents loads at session start, not in these prompts. HumanLayer's finding that the model "silently skipped alignment steps" once a planning prompt passed 85 instructions is the reason.
+
+## The security reviewer
+
+One security reviewer session (Fable 5.1, effort high) runs per review round beside the two general adversarial passes, over the same diff at `head_sha`. Its brief (`agents/security_reviewer.md`) is built from primary sources: OWASP's code review guide, ASVS 5.0, the Top 10 and API Top 10, the cheat sheet series, CWE, NIST SSDF, the measured results on LLM vulnerability detection, and practitioner guidance on finding quality; the per-stack sink tables and every source are in `skills/security-review/SKILL.md`, uploaded into the session. What the orchestrator enforces around it:
+
+- **Pre-checks as inputs, never verdicts**: a secret scan over the added lines (also a merge check nobody can override), the dependency delta, a grep for dangerous APIs, and a dependency audit and SAST run when the host has the tools (`orchestrator/factory/security.py`).
+- **A floor on claims**: a security finding without a `confidence` is `pattern`; a `pattern` finding or a `pre_existing` weakness is at most `minor` whatever the reviewer wrote. Findings carry `cwe`, `attack_path`, `exploitability`, `impact`, `scope`, `cvss_vector`, `regression_test`, `evidence.executed` and `evidence.target`; the merge records `corroborated_by` when another pass found the same location.
+- **Advisory first** (`FACTORY_SECURITY_REVIEW_MODE=advisory`, the default): findings are merged, shown to the judge and rendered in the change request, but do not hold the round on their own until the pass's precision is known; `blocking` makes a proven, executed finding stand whatever its label.
+- **Bounded**: a diff above 500 files or 8,000 added lines is not reviewed but gets a major scope finding asking for a split; the per-session cap scales by 1.5 above 1,500 lines; a refusal is retried once on Opus 5.5; a pass that moved the branch is discarded with an event saying so.

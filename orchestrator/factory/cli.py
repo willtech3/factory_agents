@@ -73,6 +73,7 @@ def _policy(outcome: dict, design_only: bool):
                   stage_budget_usd={k: round(v * scale, 2) for k, v in base.stage_budget_usd.items()},
                   reviewer_passes=knob("FACTORY_REVIEWER_PASSES", base.reviewer_passes),
                   security_review=os.environ.get("FACTORY_SECURITY_REVIEW", "1").lower() not in ("0", "false", "no", "off"),
+                  security_review_mode="blocking" if os.environ.get("FACTORY_SECURITY_REVIEW_MODE", "advisory").lower() == "blocking" else "advisory",
                   review_max_rounds=knob("FACTORY_REVIEW_MAX_ROUNDS", base.review_max_rounds),
                   parallel_implementations=knob("FACTORY_PARALLEL_IMPLEMENTATIONS", base.parallel_implementations),
                   outcome_max_iterations=knob("FACTORY_OUTCOME_MAX_ITERATIONS", base.outcome_max_iterations))

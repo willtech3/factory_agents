@@ -88,6 +88,8 @@ cd orchestrator && .venv/bin/factory doctor
 
 It prints the agent ids, the environment, `forge github https://github.com <you>/<repo> token=set`, `gate surface tracker`, a live `platform` line saying how many of the eight agents were found on the platform, and `ok`. Anything missing is listed by variable name, separately for a full run and for a design-only run.
 
+`FACTORY_SECURITY_REVIEW=0` turns the security reviewer pass off; `FACTORY_SECURITY_REVIEW_MODE=blocking` lets its proven findings hold a round (the default, `advisory`, shows them without blocking). `FACTORY_RUN_BUDGET_USD` overrides the outcome's budget for one run; the Start screen sets these for you.
+
 ## 6. Run
 
 ```bash

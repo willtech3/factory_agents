@@ -469,7 +469,7 @@
       el("dl", null,
         tunePair("Run budget", p.run_budget_usd ? `$${p.run_budget_usd}` : "from the outcome"), tunePair("Preview", p.preview_mode || "platform"),
         tunePair("Reviewer passes", p.reviewer_passes ?? "default"), tunePair("Review rounds", p.review_max_rounds ?? "default"),
-        tunePair("Security reviewer", p.security_review === false ? "off" : "on"), tunePair("Items built at once", p.parallel_implementations ?? "default"),
+        tunePair("Security reviewer", p.security_review === false ? "off" : `on, ${p.security_review_mode || "advisory"}`), tunePair("Items built at once", p.parallel_implementations ?? "default"),
         tunePair("Grader iterations", p.outcome_max_iterations ?? "default"), tunePair("Cap per implementer", caps.implement ? `$${caps.implement}` : "default"),
         tunePair("Cap per judge", caps.judge ? `$${caps.judge}` : "default"), tunePair("Cap per review", caps.review ? `$${caps.review}` : "default")),
       el("p", { class: "explain", style: "margin:10px 0 0;font-size:12.5px" }, "Settings are fixed for a run once it starts. ", el("a", { href: "#/start" }, "Tune the next run on the Start screen.")));
@@ -714,10 +714,12 @@
     // more
     const passes = el("input", { type: "number", min: "1", max: "4", value: 2 }), rounds = el("input", { type: "number", min: "1", max: "4", value: 2 });
     const security = el("input", { type: "checkbox", checked: true }), parallel = el("input", { type: "number", min: "1", max: "6", value: 3 });
+    const secMode = el("select", null, el("option", { value: "advisory" }, "Advisory: shown, never blocks on its own"), el("option", { value: "blocking" }, "Blocking: a proven finding holds the round"));
     const scale = el("input", { type: "number", min: "0.2", max: "3", step: "0.1", value: 1 });
     const more = el("div", { class: "tier", hidden: true },
       el("label", null, "Reviewer passes per round", passes), el("label", null, "Review rounds before the judge", rounds),
       el("label", { class: "check" }, security, "Security reviewer on every round"),
+      el("label", null, "Security findings", secMode),
       el("label", null, "Items built at once", parallel), el("label", null, "Scale every per-stage cap by", scale));
     const iterations = el("input", { type: "number", min: "1", max: "6", value: 3 });
     const expert = el("div", { class: "tier", hidden: true },
@@ -741,7 +743,7 @@
     };
     [budget, passes, security, repoUrl, newName].forEach(i => i.addEventListener("input", syncSummary));
     const settings = () => ({ budget_usd: Number(budget.value) || undefined, preview: preview.value, reviewer_passes: Number(passes.value) || undefined, review_rounds: Number(rounds.value) || undefined,
-      security_review: security.checked, parallel_items: Number(parallel.value) || undefined, grader_iterations: Number(iterations.value) || undefined, budget_scale: Number(scale.value) !== 1 ? Number(scale.value) : undefined });
+      security_review: security.checked, security_review_mode: secMode.value, parallel_items: Number(parallel.value) || undefined, grader_iterations: Number(iterations.value) || undefined, budget_scale: Number(scale.value) !== 1 ? Number(scale.value) : undefined });
     async function saveRepo() {
       if (!outcome) return;
       const repo = (outcome.target_repositories || [{}])[0] || {};

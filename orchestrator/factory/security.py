@@ -85,5 +85,34 @@ def _run(tool: str, cmd: list[str], timeout: int, cwd: Path | None = None, ok_co
     return out
 
 
-def prechecks(repo: Path, changed_files: list[str], added_lines_by_file: dict[str, list[str]]) -> dict[str, Any]:
-    return {"secret_scan": secret_scan(added_lines_by_file), "dependency_audit": dependency_audit(repo), "sast": sast(repo, changed_files)}
+MANIFESTS = ("pyproject.toml", "requirements", "uv.lock", "poetry.lock", "Pipfile", "package.json", "package-lock.json", "pnpm-lock.yaml",
+             "yarn.lock", "go.mod", "go.sum", "Cargo.toml", "Cargo.lock", "Gemfile", "Dockerfile", "docker-compose", ".github/workflows/")
+DANGEROUS = re.compile(r"pickle\.loads?\(|marshal\.loads?\(|yaml\.(load|unsafe_load)\(|jsonpickle\.decode|\beval\(|\bexec\(|shell=True|"
+                       r"os\.(system|popen)\(|subprocess\.(call|run|Popen)\(.*shell|importlib\.import_module\(|\.from_statement\(|text\(f?\"|"
+                       r"cursor\.execute\(f|\.execute\(.*%|\.format\(.*(SELECT|INSERT|UPDATE|DELETE)|autoescape\s*=\s*False|jinja2\.Template\(|"
+                       r"verify\s*=\s*False|allow_origins\s*=\s*\[\s*[\"']\*|debug\s*=\s*True|hashlib\.(md5|sha1)\(|random\.(random|randint|choice)\(|"
+                       r"\betree\.|lxml|re\.compile\((?!r?[\"'])|follow_redirects\s*=\s*True|send_file\(|FileResponse\(|open\(.*request")
+
+
+def dependency_delta(added_lines_by_file: dict[str, list[str]], deleted_files: list[str] | None = None) -> dict[str, Any]:
+    """Added lines in manifests, lockfiles, Dockerfiles and workflows: the supply-chain surface this change touches."""
+    touched = {f: lines for f, lines in added_lines_by_file.items() if any(m in f for m in MANIFESTS)}
+    return {"files": sorted(touched), "added_lines": {f: lines[:200] for f, lines in touched.items()},
+            "deleted_manifest_files": [f for f in (deleted_files or []) if any(m in f for m in MANIFESTS)]}
+
+
+def dangerous_api_grep(added_lines_by_file: dict[str, list[str]]) -> list[dict[str, Any]]:
+    """A mechanical starting list of sinks in the added lines; candidates for the reviewer, never findings."""
+    hits = []
+    for path, lines in added_lines_by_file.items():
+        for n, line in enumerate(lines, 1):
+            m = DANGEROUS.search(line)
+            if m:
+                hits.append({"file": path, "added_line_index": n, "pattern": m.group(0)[:40], "excerpt": line.strip()[:160]})
+    return hits[:300]
+
+
+def prechecks(repo: Path, changed_files: list[str], added_lines_by_file: dict[str, list[str]], deleted_files: list[str] | None = None) -> dict[str, Any]:
+    return {"secret_scan": secret_scan(added_lines_by_file), "dependency_delta": dependency_delta(added_lines_by_file, deleted_files),
+            "dependency_audit": dependency_audit(repo), "sast": sast(repo, changed_files), "dangerous_api_grep": dangerous_api_grep(added_lines_by_file),
+            "note": "candidates to triage, never verdicts; a tool marked skipped means the reviewer covers that area by hand"}

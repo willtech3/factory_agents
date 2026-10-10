@@ -12,3 +12,4 @@ evals/results/
 # Secrets never belong here; ant apply's lock file does and must be committed.
 .env
 *.pem
+shell-shim/

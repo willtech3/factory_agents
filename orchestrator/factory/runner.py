@@ -79,7 +79,8 @@ def policy_snapshot(ctx: RunContext) -> dict[str, Any]:
     """What this run was tuned with, recorded on run.created so the Console can show it beside the run."""
     p = ctx.policy
     return {"run_budget_usd": p.run_budget_usd, "reviewer_passes": p.reviewer_passes, "review_max_rounds": p.review_max_rounds,
-            "security_review": getattr(p, "security_review", True), "parallel_implementations": p.parallel_implementations,
+            "security_review": getattr(p, "security_review", True), "security_review_mode": getattr(p, "security_review_mode", "advisory"),
+            "parallel_implementations": p.parallel_implementations,
             "outcome_max_iterations": p.outcome_max_iterations, "stage_budget_usd": dict(p.stage_budget_usd),
             "preview_mode": ctx.cfg.preview_mode, "design_only": p.design_only}
 

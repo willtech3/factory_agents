@@ -198,6 +198,19 @@
             },
             "expected": {
               "type": "string"
+            },
+            "executed": {
+              "type": "boolean",
+              "description": "True only when evidence.reproduction was run in this session and evidence.observed is pasted from its output."
+            },
+            "target": {
+              "type": "string",
+              "enum": [
+                "preview",
+                "local-manifest",
+                "static"
+              ],
+              "description": "Where the reproduction ran."
             }
           }
         },
@@ -263,6 +276,40 @@
             "low"
           ],
           "description": "Security findings: what an attacker gains (data, control, availability)."
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "proven",
+            "reachable",
+            "pattern"
+          ],
+          "description": "Security findings: proven = the reproduction was executed and the impact observed; reachable = the source-to-sink trace is complete but not executed; pattern = a risky construct without a demonstrated path. Missing counts as pattern."
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "introduced",
+            "newly_reachable",
+            "pre_existing"
+          ],
+          "description": "Whether this change introduced the weakness, made a pre-existing one reachable, or merely touched code that already had it."
+        },
+        "cvss_vector": {
+          "type": "string",
+          "pattern": "^CVSS:4\\.0/AV:[NALP]/AC:[LH]/AT:[NP]/PR:[NLH]/UI:[NPA]/VC:[HLN]/VI:[HLN]/VA:[HLN]/SC:[HLN]/SI:[HLN]/SA:[HLN]$",
+          "description": "CVSS 4.0 base vector for the reasonable worst case."
+        },
+        "regression_test": {
+          "type": "string",
+          "description": "The test the fix must add: file, test name, the request sent and what is asserted."
+        },
+        "corroborated_by": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Set by the orchestrator when another pass filed a finding at the same first location."
         }
       }
     }

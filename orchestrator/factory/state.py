@@ -113,6 +113,8 @@ class Policy:
     spec_waves: bool = False             # True: write specs in dependency-order waves instead of all at once
     reviewer_passes: int = 2             # independent reviewer copies per round, findings merged
     security_review: bool = True         # one security reviewer pass per round beside the general reviewers (needs the agent deployed)
+    security_review_mode: str = "advisory"   # advisory: findings are merged and shown but do not stand on their own; blocking: they do.
+                                             # The secret scan is a merge check in both modes. Blocking once the pass's precision is known.
     design_only: bool = False            # stop after Gate 2: real agents for decompose/specify/judge, no code stage, no forge needed
     preview_wait_seconds: int = 1800     # how long verification waits for the platform to deploy head_sha to its preview
     dev_pipeline_timeout_seconds: int = 3600  # Stage 5: how long to watch the dev pipeline before a DEPLOY_FAILURE gate

@@ -140,8 +140,9 @@ SECURITY_REVIEW_DESCRIPTION = """Security review of the change for specification
 This is review round {round}. Two general adversarial reviewers run beside you on the same diff; you cover what they
 do not: trust boundaries, attacker-controlled input, authorisation, secrets, dependencies, and the attack paths the
 diff opens. The orchestrator's deterministic pre-checks are at /mnt/session/uploads/security_prechecks.json (a secret
-scan over the added lines and, when the host has the tools, a dependency audit and a SAST run): inputs to judge, not
-verdicts.{second_round}
+scan over the added lines, the dependency delta, a grep for dangerous APIs and, when the host has the tools, a
+dependency audit and a SAST run): candidates to triage, never verdicts. The sink tables and the sources behind your
+brief are at /mnt/session/uploads/skills/security-review/SKILL.md.{second_round}
 {preview_clause}
 Write findings.json to /mnt/session/outputs/ (category security, or concurrency / data_integrity when that is what the
 defect is; one cwe per finding) and validate it. You never edit source files."""
@@ -710,26 +711,53 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 prior = artifact_json_or_none(ctx, "review", f"{sid}-r{round_no}-sec-findings.json")
                 if prior is not None:
                     return tag_pass(prior, "security")
-            pre = security.prechecks(repo, diff["changed"], diff["added_lines"])
+            n_files, n_lines = len(diff["changed"]) + len(diff["deleted"]), sum(len(v) for v in diff["added_lines"].values())
+            if n_files > SECURITY_DIFF_CEILING[0] or n_lines > SECURITY_DIFF_CEILING[1]:
+                # Too big to review for attack paths in one session: the round cannot be ready with an unreviewed diff.
+                return tag_pass({"checks_performed": [{"what": "security review", "result": f"not run: {n_files} files / {n_lines} added lines exceed the ceiling"}],
+                                 "findings": [{"finding_id": "SEC-ceiling", "severity": "major", "category": "scope", "status": "open",
+                                               "claim": f"The diff ({n_files} files, {n_lines} added lines) exceeds the security review ceiling; split the work item.",
+                                               "evidence": {"locations": ["diff.patch:1"]}, "violates": "security review ceiling",
+                                               "refutation_condition": "a diff under the ceiling, or the owner waives the review for this item"}]}, "security")
+            pre = security.prechecks(repo, diff["changed"], diff["added_lines"], diff["deleted"])
             ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-security_prechecks.json", json.dumps(pre, indent=2).encode())
-            r = ctx.driver.run(
-                agent_key="security_reviewer", title=f"{ctx.run_id} security-review {sid} r{round_no}", run_id=ctx.run_id,
-                stage="review", uploads={**rev_uploads, "security_prechecks.json": json.dumps(pre, indent=2).encode()}, work_item_id=wid,
-                description=SECURITY_REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
-                                                               git=git, round=round_no, second_round=second, skill_clause=skill_clause,
-                                                               preview_clause=rev_preview_clause),
-                rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["security_review"],
-                metadata={"pass": "security"}, repository=mount(branch),
-            )
+            uploads_sec = {**rev_uploads, "security_prechecks.json": json.dumps(pre, indent=2).encode()}
+            skill = ctx.cfg.templates_dir.parent / "skills" / "security-review" / "SKILL.md"
+            if skill.is_file():
+                uploads_sec["skills/security-review/SKILL.md"] = skill.read_bytes()
+            budget = ctx.policy.stage_budget_usd["security_review"] * (1.5 if n_lines > 1500 else 1.0)
+            kwargs = dict(agent_key="security_reviewer", title=f"{ctx.run_id} security-review {sid} r{round_no}", run_id=ctx.run_id,
+                          stage="review", uploads=uploads_sec, work_item_id=wid,
+                          description=SECURITY_REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
+                                                                         git=git, round=round_no, second_round=second, skill_clause=skill_clause,
+                                                                         preview_clause=rev_preview_clause),
+                          rubric_md=None, max_iterations=1, budget_usd=budget, metadata={"pass": "security"}, repository=mount(branch))
+            r = ctx.driver.run(**kwargs)
+            if r.stop_reason == "refusal":
+                # Fable's cyber safeguards declined; one retry on the general reviewer's tier, recorded in produced_by.
+                ctx.event("review.security_pass_retry", {"reason": "refusal", "model": "claude-opus-5-5"}, work_item_id=wid, spec_id=sid)
+                r = ctx.driver.run(**{**kwargs, "metadata": {"pass": "security", "fallback": "refusal"}}, model_override={"id": "claude-opus-5-5", "effort": "high"})
+                if r.stop_reason == "refusal":
+                    return tag_pass({"checks_performed": [{"what": "security review", "result": "not_assessed: the model declined twice"}], "findings": []}, "security")
+            # A read-only pass that moved the branch is not trusted: its findings are dropped and the human sees why.
+            moved = _branch_moved(verifier, branch, head_sha)
+            if moved:
+                ctx.event("review.security_pass_discarded", {"reason": "branch head moved during the pass", "head_before": head_sha, "head_after": moved}, work_item_id=wid, spec_id=sid)
+                persist_outputs(ctx, "review", r, prefix=f"{sid}-r{round_no}-sec-discarded-")
+                return tag_pass({"checks_performed": [{"what": "security review", "result": f"discarded: the branch moved from {head_sha[:10]} to {moved[:10]} during the pass"}], "findings": []}, "security")
             f = require_json(r, "findings.json")
             persist_outputs(ctx, "review", r, prefix=f"{sid}-r{round_no}-sec-")
-            return tag_pass(f, "security")
+            return tag_pass(normalise_security_findings(f), "security")
 
         with ThreadPoolExecutor(max_workers=ctx.policy.reviewer_passes + 1) as pool:
             sec_future = pool.submit(security_pass)
             passes = list(pool.map(one_pass, range(1, ctx.policy.reviewer_passes + 1)))
             sec = sec_future.result()
         findings = merge_findings(passes + ([sec] if sec else []), sid, round_no, base_sha, head_sha, branch)
+        if sec is not None and ctx.policy.security_review_mode != "blocking":
+            for f in findings["findings"]:
+                if f.get("pass") == "security":
+                    f["advisory"] = True       # shown to the judge and in the change request; does not hold the round by itself
         # A failed deterministic check is a finding the implementer must answer; nobody else can clear it.
         findings["findings"].extend(deterministic_findings(det, cmd_results, e2e_results))
         ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-findings.merged.json",
@@ -885,14 +913,22 @@ def merge_findings(passes: list[dict[str, Any]], spec_id: str, round_no: int, ba
                    branch: str) -> dict[str, Any]:
     """Union of independent reviewer passes, de-duplicated by (category, first location)."""
     seen: dict[tuple[str, str], dict[str, Any]] = {}
+    by_location: dict[str, list[str]] = {}
     checks_performed: list[dict[str, Any]] = []
     conformance: dict[str, dict[str, Any]] = {}
     for p in passes:
         checks_performed.extend(p.get("checks_performed", []))
         for f in p.get("findings", []):
-            key = (f["category"], f["evidence"]["locations"][0].split(":")[0] + ":" + f["evidence"]["locations"][0].split(":")[-1][:3])
+            loc = f["evidence"]["locations"][0].split(":")[0] + ":" + f["evidence"]["locations"][0].split(":")[-1][:3]
+            key = (f["category"], loc)
+            by_location.setdefault(loc, []).append(str(f.get("pass", "")))
             if key not in seen or _sev(f) > _sev(seen[key]):
                 seen[key] = f
+    for f in seen.values():
+        loc = f["evidence"]["locations"][0].split(":")[0] + ":" + f["evidence"]["locations"][0].split(":")[-1][:3]
+        others = sorted({p for p in by_location.get(loc, []) if p and p != str(f.get("pass", ""))})
+        if others:
+            f["corroborated_by"] = others
         for row in p.get("spec_conformance", []):
             prev = conformance.get(row["ac_id"])
             # The stricter status wins across passes.
@@ -918,18 +954,48 @@ def tag_pass(findings: dict[str, Any], label: str) -> dict[str, Any]:
     return findings
 
 
+SECURITY_DIFF_CEILING = (500, 8000)      # files, added lines: above this the security pass asks for a split instead of reviewing
+
+
 def standing_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Findings the implementer must answer before the merge judge: open or upheld, and either blocking/major or a
     reproduced security, concurrency or data-integrity defect whatever label the reviewer put on it (reviewers
-    under-rate rare races; see docs/postmortems/2026-10-10-first-live-runs.md issue 8)."""
+    under-rate rare races; see docs/postmortems/2026-10-10-first-live-runs.md issue 8). A finding the security pass
+    filed in advisory mode never stands on its own; for the security pass "reproduced" means evidence.executed."""
     out = []
     for f in findings:
-        if f["status"] not in ("open", "upheld"):
+        if f["status"] not in ("open", "upheld") or f.get("advisory"):
             continue
-        reproduced = bool((f.get("evidence") or {}).get("reproduction"))
+        ev = f.get("evidence") or {}
+        reproduced = bool(ev.get("executed")) if f.get("pass") == "security" else bool(ev.get("reproduction"))
         if f["severity"] in ("blocking", "major") or (f["category"] in ("security", "concurrency", "data_integrity") and reproduced):
             out.append(f)
     return out
+
+
+def normalise_security_findings(findings: dict[str, Any]) -> dict[str, Any]:
+    """The orchestrator's floor on what a security finding may claim: no confidence means `pattern`, and a pattern or
+    a pre-existing weakness is at most `minor` whatever the reviewer wrote."""
+    order = ["nit", "minor", "major", "blocking"]
+    for f in findings.get("findings", []):
+        if f.get("category") not in ("security", "concurrency", "data_integrity"):
+            continue
+        f.setdefault("confidence", "pattern")
+        if f["confidence"] == "pattern" or f.get("scope") == "pre_existing":
+            if order.index(f["severity"]) > order.index("minor"):
+                f["severity_as_filed"] = f["severity"]
+                f["severity"] = "minor"
+    return findings
+
+
+def _branch_moved(verifier: Any, branch: str, head_sha: str) -> str | None:
+    """The branch's head on the forge after a read-only pass; None when it is still `head_sha`."""
+    try:
+        repo = verifier.checkout(branch)
+        now = _git(repo, "rev-parse", "HEAD").strip()
+        return None if now == head_sha else now
+    except Exception:  # noqa: BLE001  (a fetch failure must not discard a pass)
+        return None
 
 
 def _sev(f: dict[str, Any]) -> int:

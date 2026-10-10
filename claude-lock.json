@@ -48,6 +48,13 @@
       "hash": "d6dfc859b30c56dcf9babe7dcf463125",
       "remote_hash": "273beae359ce7fe08e84ed748392d854"
     },
+    "./agents/security_reviewer.md": {
+      "kind": "agent",
+      "id": "agent_014sD4HhWvEK12TiuSJrztnB",
+      "version": "1",
+      "hash": "9b922a8fffcae26c0a816ddd4e706d65",
+      "remote_hash": "70bda783fef7e45f0e1cc50cc0beb354"
+    },
     "./agents/spec_judge.md": {
       "kind": "agent",
       "id": "agent_01XKiVyfY2CfSjzGB4JeJnSs",
