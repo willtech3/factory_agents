@@ -79,11 +79,11 @@ The watcher is a plain process (`factory watch <run_id>`; the Console starts the
 Two months later Priya fills in `measured_at` and `measured_value` on the outcome's success metrics from the Metabase dashboard. No agent does that; it is the one field that closes the loop from code to the business outcome.
 
 ### 9. Escalations (engineer or owner, as needed)
-Escalations open a gate with the reason and the relevant artifacts: a `blocked.md` from an implementer who found two criteria in conflict, a merge judge that saw the same finding survive two rounds, a spec judge that thinks the decomposition itself is wrong, or a session that hit its budget cap. The human can send the run back to a specific stage with comments, raise a budget, or close the work item. Escalations are the factory telling you it is out of its depth, which it should do early and specifically.
+Escalations open a gate with the reason and the relevant artifacts: a `blocked.md` from an implementer who found two criteria in conflict, a merge judge that saw the same finding survive two rounds, a spec judge that thinks the decomposition itself is wrong, or a session that hit its budget cap. The human can send the run back to a specific stage with comments, raise a budget, or close the work item. The **run budget** is its own gate: when the next agent session would take the run past `constraints.budget_usd`, the run parks with nothing running and a `budget` gate shows what was spent, what the next step could cost, and the smallest budget that lets it continue; the owner raises the budget (and the run resumes from exactly where it stopped) or closes the run. Escalations are the factory telling you it is out of its depth, which it should do early and specifically.
 
 ## What the Factory Console shows
 
-**Runs board**: columns = run stages; cards show outcome title, owner, days in stage, cost so far against budget, and a red marker when a gate or question is waiting on a person. Sorted by waiting-on-human first.
+**Runs board**: columns = run stages; cards show outcome title, owner, days in stage, cost so far against budget (the outcome's `constraints.budget_usd`, enforced), and a red marker when a gate or question is waiting on a person. Sorted by waiting-on-human first.
 
 **Run detail**: left, the event timeline (derived from `events.jsonl`) with filters by stage and actor; right, the work-item DAG with state colours (merged items show a dev marker: deploying, verified in dev, or failed); top, cost per stage and the budget; every artifact and session is one click away, as are the preview and dev URLs. Once pull requests exist, a **Pull requests and the dev deploy** card lists what is still open, starts the watcher, and says when it last checked.
 

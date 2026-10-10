@@ -103,10 +103,18 @@ class Policy:
     spec_judge_max_rounds: int = 3
     review_max_rounds: int = 2           # one fresh review per round; see docs/research (Song 2603.16244)
     outcome_max_iterations: int = 4      # platform grader iterations inside a writing session
-    run_budget_usd: float = 150.0
+    run_budget_usd: float = 150.0        # the outcome's constraints.budget_usd: enforced before every session (budget.py)
+    # Per-session dollar caps: observed p95 x ~3 over the first live runs (docs/postmortems/2026-10-10-first-live-runs.md,
+    # issue 17). A session that hits its cap opens a budget gate; the owner raises it or closes the run.
     stage_budget_usd: dict[str, float] = field(default_factory=lambda: {
-        "decompose": 15.0, "specify": 10.0, "judge": 8.0,
-        "implement": 40.0, "review": 15.0, "security_review": 10.0, "merge_judge": 8.0, "integrate": 2.0,
+        "decompose": 4.0, "specify": 3.0, "judge": 6.0,
+        "implement": 15.0, "review": 6.0, "security_review": 6.0, "merge_judge": 3.0, "integrate": 2.0,
+    })
+    # Observed p50 per stage: FACTORY_BUDGET_SCALE never takes a cap below one typical session (a 0.4 scale left the
+    # judge's cap under one round on live run 1 and the verdict was cut off mid-write).
+    stage_budget_floor_usd: dict[str, float] = field(default_factory=lambda: {
+        "decompose": 0.9, "specify": 0.7, "judge": 2.5,
+        "implement": 3.3, "review": 2.6, "security_review": 2.6, "merge_judge": 0.9, "integrate": 0.3,
     })
     parallel_implementations: int = 3    # independent work items implemented at once (separate branches)
     parallel_spec_writers: int = 8       # spec writer sessions at once; all items are written in one go by default
@@ -165,7 +173,9 @@ class RunState:
     work_items: dict[str, WorkItemState] = field(default_factory=dict)
     open_gates: dict[str, dict[str, Any]] = field(default_factory=dict)
     open_questions: dict[str, dict[str, Any]] = field(default_factory=dict)
-    list_cost_usd: float = 0.0
+    list_cost_usd: float = 0.0           # sum of session.finished list_cost_usd: what the run has spent so far
+    sessions_finished: int = 0
+    budget_usd: float | None = None      # the run's cap (run.created), raised by budget.raised; None on logs older than the cap
     last_seq: int = -1
 
     def ready_work_items(self) -> list[WorkItemState]:
@@ -206,6 +216,8 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
 
     if k == "run.created":
         state.outcome_id = p["outcome_id"]
+        if p.get("budget_usd") is not None:
+            state.budget_usd = float(p["budget_usd"])
     elif k == "stage.entered":
         _move_run(state, RunStage(p["stage"]))
     elif k == "artifact.produced" and p.get("artifact_type") == "decomposition" and "work_items" in p:
@@ -229,6 +241,7 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
         state.open_questions.pop(p["question_id"], None)
     elif k == "session.finished":
         state.list_cost_usd += float(p.get("list_cost_usd") or 0.0)
+        state.sessions_finished += 1
     elif k == "work_item.stage":
         _move_item(state, ev.work_item_id, WorkItemStage(p["stage"]))
         wi = state.work_items[ev.work_item_id]
@@ -249,13 +262,24 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
         if "environment_url" in p:
             wi.dev_environment_url = p["environment_url"]
     elif k == "budget.reached":
-        _move_run(state, RunStage.PAUSED_BUDGET)
+        # Two ways here, both parking the run until a human decides: the run cap (budget.py: the next session would take
+        # the run past constraints.budget_usd; the payload carries `next` and the run budget) and one session hitting its
+        # own cap (stages/common.run_session; the payload names the session). Several sessions may hit their caps at
+        # once, so a second pause is informational.
+        if p.get("next") is not None and p.get("budget_usd") is not None:
+            state.budget_usd = float(p["budget_usd"])
+        if state.stage != RunStage.PAUSED_BUDGET:
+            _move_run(state, RunStage.PAUSED_BUDGET)
+    elif k == "budget.raised":
+        state.budget_usd = float(p["budget_usd"])
     elif k == "run.escalated":
-        _move_run(state, RunStage.ESCALATED)
+        if state.stage != RunStage.ESCALATED:       # one escalation per failing spec or session; the run escalates once
+            _move_run(state, RunStage.ESCALATED)
     elif k == "run.failed":
         _move_run(state, RunStage.FAILED)
     elif k == "run.resumed":
-        # `factory resume`: back into the stage the run died in (no-op when the process was killed before run.failed).
+        # `factory resume`: back into the stage the run died or paused in (no-op when the process was killed before
+        # run.failed). From PAUSED_BUDGET the stage is the one the budget check interrupted.
         to = RunStage(p["stage"])
         if state.stage != to:
             _move_run(state, to)

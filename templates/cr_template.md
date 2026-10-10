@@ -75,11 +75,13 @@ There is no dev deployment in local mode; nothing runs after merge.
 
 ## Provenance
 
-| Stage | Agent (version) | Session | List cost |
-|---|---|---|---|
+| Stage | Agent (version) | Session | Duration | List cost |
+|---|---|---|---|---|
 {{#sessions}}
-| {{stage}} | {{agent_name}} v{{agent_version}} | [{{session_id}}]({{console_url}}) | ${{list_cost_usd}} |
+| {{stage}} | {{agent_name}} v{{agent_version}} | [{{session_id}}]({{console_url}}) | {{duration}} | ${{list_cost_usd}} |
 {{/sessions}}
+
+Sessions above: ${{sessions_cost_usd}} over {{sessions_duration}}; whole run so far: ${{list_cost_usd}}.
 
 Spec: `.factory/runs/{{run_id}}/specs/{{spec_id}}.md` and `.json`; spec judge verdict: `.factory/runs/{{run_id}}/verdict.json`; merge judge verdict: `.factory/runs/{{run_id}}/evidence/{{spec_id}}/merge_readiness.json` (all committed on this branch by the orchestrator).
 

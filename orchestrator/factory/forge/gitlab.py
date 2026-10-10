@@ -25,6 +25,12 @@ and configure the same header for push: `git config http.extraHeader "Authorizat
 $GITLAB_TOKEN is an opaque placeholder; the real token is substituted outside the sandbox. Work on branch {branch}
 (create it from {base_branch} if it does not exist) and push it when done."""
 
+GIT_READ_ONLY = """Git access: the repository is NOT pre-mounted. Clone it read-only with
+  git -c http.extraHeader="Authorization: Bearer $GITLAB_TOKEN" clone --branch {branch} {repo_url} /workspace/repo
+($GITLAB_TOKEN is an opaque placeholder; the real token is substituted outside the sandbox). Do not configure push
+credentials: this session is read-only on the repository: never commit, never push, never rewrite history, and write
+everything you produce under /mnt/session/outputs/, not in the working tree."""
+
 
 class GitLabForge:
     kind = "gitlab"
@@ -242,7 +248,9 @@ class GitLabForge:
         """No native GitLab resource exists; the sandbox clones with the vault credential (ADR-0003)."""
         return None
 
-    def sandbox_git_instructions(self, repo_url: str, base_branch: str, branch: str) -> str:
+    def sandbox_git_instructions(self, repo_url: str, base_branch: str, branch: str, read_only: bool = False) -> str:
+        if read_only:
+            return GIT_READ_ONLY.format(repo_url=repo_url, branch=branch)
         return GIT_SETUP.format(repo_url=repo_url, base_branch=base_branch, branch=branch)
 
     def authenticated_url(self, repo_url: str) -> str:
@@ -290,4 +298,4 @@ def parse_pipeline_webhook(payload: dict[str, Any]) -> dict[str, Any] | None:
                                     if b.get("environment")})}
 
 
-__all__ = ["GIT_SETUP", "GitLabClient", "GitLabForge", "PIPELINE_TERMINAL", "parse_pipeline_webhook"]
+__all__ = ["GIT_READ_ONLY", "GIT_SETUP", "GitLabClient", "GitLabForge", "PIPELINE_TERMINAL", "parse_pipeline_webhook"]

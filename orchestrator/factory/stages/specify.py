@@ -8,10 +8,17 @@ Loop shape (see docs/01-pipeline.md):
       if verdict.escalate -> escalation gate
   after max rounds -> escalation gate with the last verdict
 
+Round numbers are monotonic across Gate 2 cycles: a send-back re-enters `run_specify` with `round_offset` set to the
+last round the owner saw and `previous_verdict` set to that cycle's final verdict, so artefact names
+(`{wid}-r{round}-spec.json`, `r{round}-verdict.json`) never collide with what the owner decided on, and the first judge
+after a send-back sees the previous verdict next to the owner's comments (post-mortem issue 1).
+
 Writers run all at once: each gets the decomposition (so it knows what its siblings will do) and, on later
-rounds, the siblings' current specs. Interface mismatches between siblings are the judge's job to catch and
-route back, which is cheaper than serialising the writers along the dependency chain. `Policy.spec_waves`
-restores dependency-order waves for repositories where that trade-off goes the other way.
+rounds, the current specs of the items it depends on or that depend on it (`sibling_specs/`, never its own) plus
+its own previous draft (`prior/spec.json`) so a revision edits in place instead of rewriting with new names
+(post-mortem issue 15). Interface mismatches between siblings are the judge's job to catch and route back, which
+is cheaper than serialising the writers along the dependency chain. `Policy.spec_waves` restores dependency-order
+waves for repositories where that trade-off goes the other way.
 """
 from __future__ import annotations
 
@@ -20,10 +27,11 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from .. import checks
+from ..budget import reserve_budget
 from ..gates import Decision, GateKind
 from ..state import RunStage, WorkItemStage
 from . import RunContext
-from .common import make_ask_human, open_gate_and_wait, persist_outputs, platform_skill, provenance, require_json, rubric_text
+from .common import make_ask_human, open_gate_and_wait, persist_outputs, platform_skill, public, require_json, rubric_text, run_session, stamp_provenance
 
 WRITER_DESCRIPTION = """Write the specification for work item {work_item_id} ({title}).
 Inputs are under /mnt/session/uploads/ (outcome.json, decomposition.json, work_item.json, sibling_specs/,
@@ -56,17 +64,18 @@ def _write_one(ctx: RunContext, outcome, decomposition, work_item, sibling_specs
         "work_item.json": json.dumps(work_item, indent=2).encode(),
     }
     for sid, s in sibling_specs.items():
-        uploads[f"sibling_specs/{sid}.json"] = json.dumps(s, indent=2).encode()
+        uploads[f"sibling_specs/{sid}.json"] = json.dumps(public(s), indent=2).encode()
     if judge_issues is not None:
         uploads["judge_issues.json"] = json.dumps(judge_issues, indent=2).encode()
     if human_comments:
         uploads["human_comments.md"] = human_comments.encode()
     if prior_spec is not None:
-        uploads["prior/spec.json"] = json.dumps(prior_spec, indent=2).encode()   # the draft the owner commented on
+        uploads["prior/spec.json"] = json.dumps(public(prior_spec), indent=2).encode()   # the draft being revised
     from .decompose import repository_access
     mount, repo_clause, repo_available = repository_access(ctx, outcome, REPO_MOUNTED, REPO_ABSENT)
     skill_uploads, skill_clause = platform_skill(ctx)
-    res = ctx.driver.run(
+    res = run_session(
+        ctx, prefix=f"{wid}-r{round_no}-",
         agent_key="spec_writer", title=f"{ctx.run_id} spec {wid} r{round_no}", run_id=ctx.run_id, stage="specify",
         uploads={**uploads, **skill_uploads},
         description=WRITER_DESCRIPTION.format(work_item_id=wid, title=work_item["title"], repo_clause=repo_clause, skill_clause=skill_clause),
@@ -76,9 +85,16 @@ def _write_one(ctx: RunContext, outcome, decomposition, work_item, sibling_specs
     )
     spec = require_json(res, "spec.json")
     spec["revision"] = round_no
-    spec.setdefault("produced_by", provenance(ctx, res, "Spec writer", "claude-sonnet-5-5", {}))
-    res.outputs["spec.json"] = json.dumps(spec, indent=2).encode()
-    persist_outputs(ctx, "specify", res, prefix=f"{wid}-r{round_no}-")
+    stamp_provenance(spec, ctx, res, "Spec writer", "claude-sonnet-5-5")
+    # The writer's own spec.md travels with the spec object (private key, stripped from everything persisted or
+    # uploaded as spec.json) so the judge, the implementer, the reviewers and the merge judge all read this round's
+    # prose, never a lexicographic "latest" from the store that an earlier cycle can win.
+    markdown = res.outputs.get("spec.md", b"").decode(errors="replace").strip()
+    if not markdown:
+        raise RuntimeError(f"session {res.session_id} wrote spec.json for {wid} but no spec.md; outputs: {sorted(res.outputs)}")
+    spec["_markdown"] = markdown
+    res.outputs["spec.json"] = json.dumps(public(spec), indent=2).encode()
+    persist_outputs(ctx, "specify", res, prefix=f"{wid}-r{round_no}-", work_item_id=wid)
     return spec
 
 
@@ -94,7 +110,7 @@ def _judge(ctx: RunContext, outcome, decomposition, specs: dict[str, dict], roun
     for sid, s in specs.items():
         # The JSON is the contract and is normalised so formatting cannot bias the judge; the writer's spec.md is
         # uploaded beside it because the rubric scores its readability (S10) and the judge's prompt names it.
-        uploads[f"specs/{sid}.json"] = json.dumps(s, indent=2, sort_keys=True).encode()
+        uploads[f"specs/{sid}.json"] = json.dumps(public(s), indent=2, sort_keys=True).encode()
         md = s.get("_markdown") or _latest_spec_md(ctx, s["work_item_id"])
         if md:
             uploads[f"specs/{sid}.md"] = md.encode() if isinstance(md, str) else md
@@ -103,7 +119,9 @@ def _judge(ctx: RunContext, outcome, decomposition, specs: dict[str, dict], roun
     if owner_comments:
         uploads["human_comments.md"] = owner_comments.encode()
     skill_uploads, skill_clause = platform_skill(ctx)
-    res = ctx.driver.run(
+    reserve_budget(ctx, "judge")
+    res = run_session(
+        ctx, prefix=f"r{round_no}-",
         agent_key="spec_judge", title=f"{ctx.run_id} spec-judge r{round_no}", run_id=ctx.run_id, stage="judge",
         uploads={**uploads, **skill_uploads},
         description=JUDGE_DESCRIPTION.format(round=round_no, repo_clause=JUDGE_REPO_MOUNTED if repo_available else JUDGE_REPO_ABSENT,
@@ -112,7 +130,7 @@ def _judge(ctx: RunContext, outcome, decomposition, specs: dict[str, dict], roun
     )
     verdict = require_json(res, "verdict.json")
     verdict["round"] = round_no
-    verdict.setdefault("produced_by", provenance(ctx, res, "Spec judge", "claude-opus-5-5", {}))
+    stamp_provenance(verdict, ctx, res, "Spec judge", "claude-opus-5-5")
     res.outputs["verdict.json"] = json.dumps(verdict, indent=2).encode()
     persist_outputs(ctx, "judge", res, prefix=f"r{round_no}-")
     ctx.event("judge.verdict", {"round": round_no, "result": verdict["overall"]["result"],
@@ -121,37 +139,45 @@ def _judge(ctx: RunContext, outcome, decomposition, specs: dict[str, dict], roun
 
 
 def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item: dict[str, str] | None = None,
-                prior_specs: dict[str, dict] | None = None) -> tuple[dict[str, dict], dict[str, Any]]:
+                prior_specs: dict[str, dict] | None = None, *, previous_verdict: dict[str, Any] | None = None,
+                round_offset: int = 0) -> tuple[dict[str, dict], dict[str, Any]]:
     """`human_comments_by_item` are the owner's gate notes per work item (also shown to the judge as settled
     decisions); `prior_specs` are the specs the owner commented on, keyed by work item, so a writer revises
-    rather than restarts after a request-changes at Gate 2."""
-    ctx.event("stage.entered", {"stage": RunStage.SPECIFYING.value}, stage="specify")
+    rather than restarts after a request-changes at Gate 2. On that re-entry `previous_verdict` is the verdict the
+    owner saw and `round_offset` its round number: rounds continue from there (the first judge of the new cycle
+    gets previous_verdict.json together with human_comments.md) and no artefact name is reused."""
+    if ctx.store.state(ctx.run_id).stage != RunStage.SPECIFYING:   # `factory resume` re-enters the stage it paused in
+        ctx.event("stage.entered", {"stage": RunStage.SPECIFYING.value}, stage="specify")
     items = {w["work_item_id"]: w for w in decomposition["work_items"]}
     specs: dict[str, dict] = {}
+    by_item: dict[str, dict] = {}                 # work_item_id -> its current spec (the writer's own prior draft next round)
     issues_by_item: dict[str, list[dict]] = {}
-    verdict: dict[str, Any] | None = None
+    verdict: dict[str, Any] | None = previous_verdict
     to_write = set(items)
+    first_round = round_offset + 1
 
-    for round_no in range(1, ctx.policy.spec_judge_max_rounds + 1):
+    for round_no in range(first_round, first_round + ctx.policy.spec_judge_max_rounds):
         # All writers at once (default), or dependency-order waves when the policy asks for them.
         waves = _topological_waves(items) if ctx.policy.spec_waves else [list(items)]
         for wave in waves:
             batch = [w for w in wave if w in to_write]
             if not batch:
                 continue
+            reserve_budget(ctx, "specify", len(batch))      # the whole batch, before any writer starts
             with ThreadPoolExecutor(max_workers=min(ctx.policy.parallel_spec_writers, len(batch))) as pool:
                 futures = {pool.submit(_write_one, ctx, outcome, decomposition, items[w],
-                                       {s: specs[s] for s in specs if s != w},
+                                       sibling_specs(items, w, specs),
                                        issues_by_item.get(w), (human_comments_by_item or {}).get(w), round_no,
-                                       (prior_specs or {}).get(w) if round_no == 1 else None): w
+                                       by_item.get(w) or ((prior_specs or {}).get(w) if round_no == first_round else None)): w
                            for w in batch}
                 for fut, w in futures.items():
                     spec = fut.result()
                     specs[spec["spec_id"]] = spec
+                    by_item[w] = spec
                     ctx.event("work_item.stage", {"stage": WorkItemStage.SPEC_JUDGING.value, "spec_id": spec["spec_id"]},
                               work_item_id=w, stage="specify")
         # Deterministic pre-checks: schema and traceability, cheap and before the judge spends tokens.
-        det = {sid: [checks.schema_valid(s, ctx.cfg.schemas_dir / "spec.schema.json", ctx.cfg.schemas_dir),
+        det = {sid: [checks.schema_valid(public(s), ctx.cfg.schemas_dir / "spec.schema.json", ctx.cfg.schemas_dir),
                      checks.spec_traceability(s, decomposition)] for sid, s in specs.items()}
         owner_notes = "\n\n".join(f"## {w}\n{c}" for w, c in (human_comments_by_item or {}).items()) or None
         verdict = _judge(ctx, outcome, decomposition, specs, round_no, verdict, owner_notes)
@@ -188,10 +214,22 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
     return specs, verdict
 
 
+def sibling_specs(items: dict[str, dict], work_item_id: str, specs: dict[str, dict]) -> dict[str, dict]:
+    """The current specs of the items `work_item_id` depends on or that depend on it, keyed by spec id: what the
+    writer brief calls sibling_specs/. Never the item's own spec (`specs` is keyed by spec id, the items by work
+    item id; the old filter compared the two and leaked every spec, the writer's own included)."""
+    related = set(items.get(work_item_id, {}).get("depends_on", []))
+    related |= {w for w, it in items.items() if work_item_id in it.get("depends_on", [])}
+    return {sid: s for sid, s in specs.items() if s["work_item_id"] != work_item_id and s["work_item_id"] in related}
+
+
 def _latest_spec_md(ctx: RunContext, work_item_id: str) -> str:
     """The writer's most recent spec.md for a work item, from the artifact store ('' when none)."""
     d = ctx.cfg.runs_dir / ctx.run_id / "artifacts" / "specify"
-    cands = sorted(p for p in d.glob(f"{work_item_id}-r*-spec.md") if not p.name.endswith(".sha256")) if d.exists() else []
+    prefix = f"{work_item_id}-r"
+    cands = [p for p in d.glob(f"{prefix}*-spec.md") if not p.name.endswith(".sha256")] if d.exists() else []
+    cands = sorted((p for p in cands if p.name[len(prefix):-len("-spec.md")].isdigit()),
+                   key=lambda p: int(p.name[len(prefix):-len("-spec.md")]))        # numeric: r10 after r9, not before r2
     return cands[-1].read_text(errors="replace") if cands else ""
 
 

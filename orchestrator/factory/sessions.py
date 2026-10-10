@@ -62,26 +62,45 @@ class StageResult:
 
 class SessionDriver:
     def __init__(self, cfg: Config, client: anthropic.Anthropic | None = None, unattended: bool = True,
-                 on_session_started: Callable[[dict[str, Any]], None] | None = None):
+                 on_session_started: Callable[[dict[str, Any]], None] | None = None,
+                 on_session_finished: Callable[[dict[str, Any]], None] | None = None):
         self.cfg = cfg
         from .config import anthropic_client
         self.client = client or anthropic_client(cfg)
         self.unattended = unattended
         self.on_session_started = on_session_started   # the orchestrator records `session.started` so the Console can link to it
-        self.active: set[str] = set()                   # sessions started by this process that have not finished
+        self.on_session_finished = on_session_finished  # interrupted sessions: the orchestrator records `session.finished` with their spend
+        self.active: dict[str, dict[str, Any]] = {}     # sessions started by this process that have not finished, by id
 
     def interrupt_active(self) -> list[str]:
         """Send `user.interrupt` to every session this driver still has in flight. Called when the orchestrator is
-        stopped or crashes, so a session does not keep spending up to its cap for nobody. Returns the ids reached."""
+        stopped or crashes, so a session does not keep spending up to its cap for nobody. Each one is then retrieved
+        for its spend and reported through `on_session_finished` with stop_reason `interrupted` (live run 1's five
+        interrupted sessions cost $3.33 that no run total counted; post-mortem issue 16). Returns the ids reached."""
         done = []
-        for sid in sorted(self.active):
+        for sid, info in sorted(self.active.items()):
+            reached = False
             try:
                 self.client.beta.sessions.events.send(session_id=sid, events=[{"type": "user.interrupt"}], timeout=SHORT_CALL_TIMEOUT)
+                reached = True
                 done.append(sid)
             except Exception as e:  # noqa: BLE001
                 print(f"[session] could not interrupt {sid}: {str(e)[:120]}")
+            if self.on_session_finished:
+                try:
+                    self.on_session_finished({**info, "session_id": sid, "list_cost_usd": self._list_cost(sid),
+                                              "outcome_result": "interrupted", "stop_reason": "interrupted" if reached else "unreachable"})
+                except Exception as e:  # noqa: BLE001  (bookkeeping must not stop the shutdown)
+                    print(f"[session] could not record the end of {sid}: {str(e)[:120]}")
         self.active.clear()
         return done
+
+    def _list_cost(self, session_id: str) -> float | None:
+        try:
+            final = self.client.beta.sessions.retrieve(session_id=session_id, timeout=SHORT_CALL_TIMEOUT)
+            return int(final.usage.list_cost.amount) / 100.0
+        except Exception:  # noqa: BLE001
+            return None
 
     # ------------------------------------------------------------ uploads
 
@@ -89,6 +108,10 @@ class SessionDriver:
         """Upload each file and return `file` resources mounted under /mnt/session/uploads/<path>."""
         resources = []
         for rel_path, content in files.items():
+            if not content:
+                # A 0-byte spec.md reached every implementer and reviewer of live run 2 (post-mortem issue 1). An empty
+                # upload is always an orchestrator bug: the agent would read nothing and say so in its own words.
+                raise ValueError(f"refusing to upload an empty file as {rel_path}")
             f = self.client.beta.files.upload(file=(Path(rel_path).name, content), timeout=SHORT_CALL_TIMEOUT)
             resources.append({"type": "file", "file_id": f.id, "mount_path": "/" + rel_path.lstrip("/")})
         return resources
@@ -162,7 +185,8 @@ class SessionDriver:
             timeout=SHORT_CALL_TIMEOUT,
         )
         print(f"[session] {stage} {title}: {self.cfg.console_session_url(session.id)}")
-        self.active.add(session.id)
+        self.active[session.id] = {"agent_id": agent_ref.id, "agent_version": agent_ref.version, "agent_key": agent_key,
+                                   "stage": stage, "run_id": run_id, "work_item_id": work_item_id, "title": title}
         if self.on_session_started:
             self.on_session_started({"session_id": session.id, "agent_id": agent_ref.id, "agent_version": agent_ref.version,
                                      "agent_key": agent_key, "stage": stage, "run_id": run_id, "work_item_id": work_item_id,
@@ -270,7 +294,7 @@ class SessionDriver:
             pass
 
         outputs = self._fetch_outputs(session.id)
-        self.active.discard(session.id)
+        self.active.pop(session.id, None)
         return StageResult(
             session_id=session.id,
             agent_id=agent_ref.id,

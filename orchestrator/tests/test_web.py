@@ -319,6 +319,116 @@ def test_resume_is_offered_only_for_failed_runs_that_reached_implementation(clie
     assert not list((runs_dir / "_logs").glob("resume-*.log")) if (runs_dir / "_logs").exists() else True
 
 
+def test_budget_pause_is_shown_decided_and_resumed_from_the_console(client, monkeypatch, schemas_dir):
+    """A run paused at its budget: the run page carries the numbers and the gate, the gate page explains it, a
+    decision needs a usable new budget, and the resume endpoint records the decision and spawns `factory resume`."""
+    from factory.budget import BudgetPaused, reserve_budget
+    from factory.gates import LogNotifier
+    from factory.stages import RunContext
+    from factory.state import Policy
+    from factory.store import RunStore
+
+    runs_dir = client.cfg.runs_dir
+    store = RunStore(runs_dir)
+    rid = "run_budgetpause01"
+    ctx = RunContext(cfg=client.cfg, store=store, driver=None, queue=client.console.queue, notifier=LogNotifier(), forge=None,
+                     policy=Policy(run_budget_usd=60.0, stage_budget_usd={"review": 15.0, "security_review": 10.0, "merge_judge": 8.0}), run_id=rid)
+    ctx.event("run.created", {"outcome_id": "o", "title": "Budgeted", "budget_usd": 60.0})
+    store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "Budgeted", "statement": "s",
+                                                                 "owner": {"name": "P", "handle": "priya"}}).encode())
+    for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness", "implementing"):
+        ctx.event("stage.entered", {"stage": stage})
+    for i, cost in enumerate((6.0, 3.0, 5.0, 12.2, 10.0)):
+        ctx.event("session.finished", {"session_id": f"s{i}", "agent_id": "a", "list_cost_usd": cost}, actor="platform")
+    with pytest.raises(BudgetPaused):
+        reserve_budget(ctx, "review", 2)                     # 36.2 + 30 > 60
+
+    r = client.get(f"/api/runs/{rid}").json()
+    assert r["stage"] == "paused_budget" and r["resumable"] is True
+    b = r["budget"]
+    assert b["budget_usd"] == 60.0 and b["spent_usd"] == 36.2 and b["sessions"] == 5 and b["paused"] is True
+    assert b["pause"]["next"] == {"stage": "review", "label": "reviewer", "sessions": 2, "cap_usd": 30.0} and b["pause"]["needed_usd"] == 66.2
+    gid = b["gate_id"]
+    assert gid and b["decision"] is None and [g["kind"] for g in r["gates"]] == ["budget"]
+    assert [x for x in client.get("/api/runs").json()["runs"] if x["run_id"] == rid][0]["budget_usd"] == 60.0
+    assert [g["kind"] for g in client.get("/api/inbox").json()["gates"] if g["run_id"] == rid] == ["budget"]
+    g = client.get(f"/api/gates/{gid}").json()
+    assert g["review"]["kind"] == "budget" and g["review"]["budget"]["needed_usd"] == 66.2 and g["review"]["spent_now_usd"] == 36.2
+    assert client.get(f"/gates/{gid}/page").status_code == 404        # no standalone page for this kind
+
+    # deciding: approve needs a budget that lets the next step run; nothing can be resumed before a decision
+    assert client.post(f"/api/gates/{gid}/decision", json={"decision": "approve"}).status_code == 400
+    assert client.post(f"/api/gates/{gid}/decision", json={"decision": "approve", "comments": "budget_usd: 50"}).status_code == 400
+    assert client.post(f"/api/gates/{gid}/decision", json={"decision": "request_changes", "comments": "x"}).status_code == 400
+    assert client.post(f"/api/runs/{rid}/resume").status_code == 409
+    assert client.post(f"/api/runs/{rid}/resume", json={"budget_usd": 50}).status_code == 400
+    assert client.console.queue.open_gates()[gid]["recorded"] is None
+
+    # one click from the run page: the decision is recorded, then `factory resume --budget` is spawned
+    calls = []
+
+    class FakeProc:
+        pid = 777
+
+    from factory.web import app as webapp
+    monkeypatch.setattr(webapp.subprocess, "Popen", lambda args, **kw: calls.append((args, kw)) or FakeProc())
+    res = client.post(f"/api/runs/{rid}/resume", json={"budget_usd": 90})
+    assert res.status_code == 409 and "not configured" in res.json()["detail"]     # this cfg has no agents; the decision still stands
+    rec = client.console.queue.open_gates()[gid]["recorded"]
+    assert rec["decision"] == "approve" and rec["comments"] == "budget_usd: 90"
+    assert client.get(f"/api/runs/{rid}").json()["budget"]["decision"]["decision"] == "approve"
+    assert client.post(f"/api/runs/{rid}/resume", json={"budget_usd": 95}).status_code == 409   # a different cap than recorded
+    assert calls == []
+    for ev in store.events(rid):
+        assert checks.schema_valid(ev.to_dict(), schemas_dir / "run_event.schema.json", schemas_dir).passed, ev.kind
+
+    # a configured console spawns the resume with the recorded budget
+    from conftest import make_config
+    from factory.config import AgentRef
+    cfg2 = make_config(schemas_dir.parent, client.cfg.runs_dir, forge_token="t", environment_id="env_1",
+                       agents={k: AgentRef("agent_" + k, 1) for k in ("codebase_researcher", "decomposer", "spec_writer", "spec_judge",
+                                                                      "implementer", "reviewer", "merge_judge", "integrator")})
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    with TestClient(webapp.create_app(cfg2, demo_thread=False)) as c2:
+        out = c2.post(f"/api/runs/{rid}/resume", json={"budget_usd": 90}).json()
+        assert out["mode"] == "resume" and out["pid"] == 777
+        monkeypatch.setattr(webapp.Console, "resuming", lambda self, run_id: 777)
+        duplicate = c2.post(f"/api/runs/{rid}/resume")
+        assert duplicate.status_code == 409 and "already being resumed" in duplicate.json()["detail"]
+        assert len(calls) == 1
+        monkeypatch.setattr(webapp.Console, "resuming", lambda self, run_id: None)  # the first process has exited
+        out2 = c2.post(f"/api/runs/{rid}/resume").json()                            # without a body: applies what is recorded
+        assert out2["pid"] == 777
+    assert calls[0][0][-3:] == ["resume", rid, "--budget=90"] and calls[1][0][-2:] == ["resume", rid]
+
+
+def test_console_shows_a_budget_gate(client):
+    """A budget gate (a session stopped on its cap; post-mortem issue 17) has no artefacts and renders as a summary."""
+    from factory.gates import ArtifactRef, Decision, Gate, GateKind
+
+    store = client.console.store
+    rid = "run_budget0000a"
+    actor = {"type": "orchestrator", "id": "orchestrator"}
+    store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
+    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "Budget run"})
+    for stage in ("decomposing", "gate_1_decomposition", "specifying"):
+        store.append(rid, "stage.entered", actor, {"stage": stage})
+    store.append(rid, "budget.reached", {"type": "platform", "id": "platform"},
+                 {"session_id": "sesn_cut", "title": "run spec-judge r1", "budget_usd": 6.0, "list_cost_usd": 6.02, "reason": "budget_reached"}, stage="judge")
+    gate = Gate(run_id=rid, kind=GateKind.BUDGET, artifacts=(), assignees=("priya.n",), summary="Session sesn_cut hit its $6.00 cap. Approve: raise. Reject: close.",
+                options=(Decision.APPROVE, Decision.REJECT))
+    client.console.queue.open(gate)
+    store.append(rid, "gate.opened", actor, {"gate_id": gate.gate_id, "kind": "budget", "artifacts": [], "assignees": ["priya.n"], "summary": gate.summary}, stage="budget")
+    runs = {r["run_id"]: r for r in client.get("/api/runs").json()["runs"]}
+    assert runs[rid]["stage"] == "paused_budget" and runs[rid]["waiting"]["gates"] == 1
+    g = client.get(f"/api/gates/{gate.gate_id}").json()
+    assert g["gate"]["kind"] == "budget" and g["review"]["kind"] == "other" and "hit its $6.00 cap" in g["gate"]["summary"]
+    assert g["gate"]["options"] == ["approve", "reject"]
+    assert [e["kind"] for e in client.get(f"/api/runs/{rid}").json()["events"]][-2:] == ["budget.reached", "gate.opened"]
+    r = client.post(f"/api/gates/{gate.gate_id}/decision", json={"decision": "approve", "by": "priya"}).json()
+    assert r["ok"] and r["recorded"]["artifact_shas"] == []
+
+
 def test_watch_is_offered_for_live_runs_with_open_pull_requests(client, examples):
     """Demo runs are never watched; a live run with a work item at cr_open is, and starting the watcher with an
     unconfigured forge (or while one is already running) is refused with the reason (nothing is spawned)."""
