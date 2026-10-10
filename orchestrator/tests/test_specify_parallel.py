@@ -42,6 +42,15 @@ class Driver:
                                    outputs={"spec.json": json.dumps(spec).encode(), "spec.md": f"# {wid} as written in round {round_no}".encode()})
         self.judge_uploads = sorted(kw["uploads"])
         verdict = dict(self.examples["verdict_round2"], round=round_no)
+        revise = getattr(self, "revise_first", {})
+        if revise and round_no == 1:                      # round 1: send the named specs back with one issue each
+            import copy
+            verdict = copy.deepcopy(verdict)
+            verdict["overall"].update(result="revise", blocking_issue_count=len(revise))
+            for ps in verdict["per_spec"]:
+                if ps["spec_id"] in revise:
+                    ps["issues"] = [{"issue_id": "I-1", "severity": "blocking", "location": ps["spec_id"],
+                                     "description": "tighten AC-3", "suggested_resolution": "say which clock"}]
         return SimpleNamespace(session_id="j", agent_id="j", agent_version=1, outcome_result=None, outcome_iterations=0,
                                list_cost_usd=0.1, stop_reason="end_turn", events_seen=1, custom_tool_calls=[],
                                outputs={"verdict.json": json.dumps(verdict).encode()})
@@ -124,3 +133,33 @@ def test_gate_2_send_back_keeps_every_round_and_hands_each_consumer_this_rounds_
     rounds = [e.payload["spec_round"] for e in ctx.store.events(ctx.run_id)
               if e.kind == "work_item.stage" and e.work_item_id == wid and "spec_round" in e.payload]
     assert rounds == [1, 2]
+
+
+def test_revise_round_gives_a_writer_its_related_siblings_and_its_own_prior_draft(tmp_path, root, examples):
+    """Post-mortem issue 15: the sibling filter compared spec ids with work item ids and leaked every spec (the writer's
+    own included); the writer's previous draft reached it only on the first round after a Gate 2 send-back."""
+    from factory.stages.specify import sibling_specs
+
+    items = {w["work_item_id"]: w for w in examples["decomposition"]["work_items"]}        # everything depends on smart-retries
+    specs = {f"spec_{w.removeprefix('wi-')}": {"spec_id": f"spec_{w.removeprefix('wi-')}", "work_item_id": w} for w in items}
+    assert set(sibling_specs(items, "wi-dunning-emails", specs)) == {"spec_smart-retries"}             # its dependency, not itself
+    assert set(sibling_specs(items, "wi-smart-retries", specs)) == {"spec_dunning-emails", "spec_at-risk-admin", "spec_suspension-timing"}
+    assert sibling_specs(items, "wi-at-risk-admin", {"spec_at-risk-admin": specs["spec_at-risk-admin"]}) == {}
+
+    ctx = _ctx(tmp_path, root, examples, Policy())
+    ctx.driver.gate = threading.Barrier(1)
+    ctx.driver.revise_first = {"spec_dunning-emails"}
+    specs, verdict = specify.run_specify(ctx, examples["outcome"], examples["decomposition"])
+    assert verdict["round"] == 2 and verdict["overall"]["result"] == "pass"
+    r2 = {c["work_item_id"]: c for c in ctx.driver.calls if c["agent_key"] == "spec_writer" and c["title"].endswith(" r2")}
+    assert "wi-dunning-emails" in r2 and "wi-suspension-timing" not in r2     # sent back (plus the example verdict's coherence routing)
+    up = r2["wi-dunning-emails"]["uploads"]
+    assert "sibling_specs/spec_smart-retries.json" in up and "sibling_specs/spec_dunning-emails.json" not in up   # its dependency, never itself
+    assert not any(k.startswith("sibling_specs/spec_at-risk") or k.startswith("sibling_specs/spec_suspension") for k in up)
+    prior = json.loads(up["prior/spec.json"])
+    assert prior["work_item_id"] == "wi-dunning-emails" and prior["revision"] == 1 and "_markdown" not in prior
+    assert json.loads(up["judge_issues.json"])[0]["issue_id"] == "I-1"
+    root_up = r2["wi-smart-retries"]["uploads"]                                 # the root item sees every dependant, not itself
+    assert {k for k in root_up if k.startswith("sibling_specs/")} == {"sibling_specs/spec_dunning-emails.json", "sibling_specs/spec_at-risk-admin.json",
+                                                                       "sibling_specs/spec_suspension-timing.json"}
+    assert json.loads(root_up["prior/spec.json"])["work_item_id"] == "wi-smart-retries"

@@ -14,9 +14,11 @@ last round the owner saw and `previous_verdict` set to that cycle's final verdic
 after a send-back sees the previous verdict next to the owner's comments (post-mortem issue 1).
 
 Writers run all at once: each gets the decomposition (so it knows what its siblings will do) and, on later
-rounds, the siblings' current specs. Interface mismatches between siblings are the judge's job to catch and
-route back, which is cheaper than serialising the writers along the dependency chain. `Policy.spec_waves`
-restores dependency-order waves for repositories where that trade-off goes the other way.
+rounds, the current specs of the items it depends on or that depend on it (`sibling_specs/`, never its own) plus
+its own previous draft (`prior/spec.json`) so a revision edits in place instead of rewriting with new names
+(post-mortem issue 15). Interface mismatches between siblings are the judge's job to catch and route back, which
+is cheaper than serialising the writers along the dependency chain. `Policy.spec_waves` restores dependency-order
+waves for repositories where that trade-off goes the other way.
 """
 from __future__ import annotations
 
@@ -141,6 +143,7 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
     ctx.event("stage.entered", {"stage": RunStage.SPECIFYING.value}, stage="specify")
     items = {w["work_item_id"]: w for w in decomposition["work_items"]}
     specs: dict[str, dict] = {}
+    by_item: dict[str, dict] = {}                 # work_item_id -> its current spec (the writer's own prior draft next round)
     issues_by_item: dict[str, list[dict]] = {}
     verdict: dict[str, Any] | None = previous_verdict
     to_write = set(items)
@@ -155,13 +158,14 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
                 continue
             with ThreadPoolExecutor(max_workers=min(ctx.policy.parallel_spec_writers, len(batch))) as pool:
                 futures = {pool.submit(_write_one, ctx, outcome, decomposition, items[w],
-                                       {s: specs[s] for s in specs if s != w},
+                                       sibling_specs(items, w, specs),
                                        issues_by_item.get(w), (human_comments_by_item or {}).get(w), round_no,
-                                       (prior_specs or {}).get(w) if round_no == first_round else None): w
+                                       by_item.get(w) or ((prior_specs or {}).get(w) if round_no == first_round else None)): w
                            for w in batch}
                 for fut, w in futures.items():
                     spec = fut.result()
                     specs[spec["spec_id"]] = spec
+                    by_item[w] = spec
                     ctx.event("work_item.stage", {"stage": WorkItemStage.SPEC_JUDGING.value, "spec_id": spec["spec_id"]},
                               work_item_id=w, stage="specify")
         # Deterministic pre-checks: schema and traceability, cheap and before the judge spends tokens.
@@ -200,6 +204,15 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
 
     assert verdict is not None
     return specs, verdict
+
+
+def sibling_specs(items: dict[str, dict], work_item_id: str, specs: dict[str, dict]) -> dict[str, dict]:
+    """The current specs of the items `work_item_id` depends on or that depend on it, keyed by spec id: what the
+    writer brief calls sibling_specs/. Never the item's own spec (`specs` is keyed by spec id, the items by work
+    item id; the old filter compared the two and leaked every spec, the writer's own included)."""
+    related = set(items.get(work_item_id, {}).get("depends_on", []))
+    related |= {w for w, it in items.items() if work_item_id in it.get("depends_on", [])}
+    return {sid: s for sid, s in specs.items() if s["work_item_id"] != work_item_id and s["work_item_id"] in related}
 
 
 def _latest_spec_md(ctx: RunContext, work_item_id: str) -> str:
