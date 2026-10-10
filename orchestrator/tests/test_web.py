@@ -344,3 +344,61 @@ def test_console_shows_a_budget_gate(client):
     assert [e["kind"] for e in client.get(f"/api/runs/{rid}").json()["events"]][-2:] == ["budget.reached", "gate.opened"]
     r = client.post(f"/api/gates/{gate.gate_id}/decision", json={"decision": "approve", "by": "priya"}).json()
     assert r["ok"] and r["recorded"]["artifact_shas"] == []
+
+
+def test_watch_is_offered_for_live_runs_with_open_pull_requests(client, examples):
+    """Demo runs are never watched; a live run with a work item at cr_open is, and starting the watcher with an
+    unconfigured forge (or while one is already running) is refused with the reason (nothing is spawned)."""
+    import json
+    import os
+
+    from factory.store import RunStore
+    from factory.watcher import HEARTBEAT
+
+    demo_id = _seed(client)
+    d = client.get(f"/api/runs/{demo_id}").json()
+    assert d["watch"]["watchable"] is False and d["watch"]["heartbeat"] is None
+    assert client.post(f"/api/runs/{demo_id}/watch").status_code == 409
+    assert client.post("/api/runs/run_nope/watch").status_code == 404
+
+    runs_dir = client.cfg.runs_dir
+    store = RunStore(runs_dir)
+    rid = "run_watchweb001"
+    actor = {"type": "orchestrator", "id": "test"}
+    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "t"})
+    store.put_artifact(rid, "intake", "outcome.json", json.dumps(examples["outcome"]).encode())
+    store.append(rid, "stage.entered", actor, {"stage": "decomposing"})
+    store.append(rid, "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
+                                                              "work_items": examples["decomposition"]["work_items"]})
+    for stage in ("gate_1_decomposition", "specifying", "gate_2_spec_readiness", "implementing"):
+        store.append(rid, "stage.entered", actor, {"stage": stage})
+    wid, sid = "wi-smart-retries", "spec_smart-retries"
+    for stage in ("spec_drafting", "spec_judging", "spec_approved", "implementing", "reviewing", "merge_judging", "integrating"):
+        store.append(rid, "work_item.stage", actor, {"stage": stage, "spec_id": sid}, work_item_id=wid, spec_id=sid)
+    store.append(rid, "cr.opened", actor, {"id": 7, "url": "https://github.com/ledgerline/app/pull/7", "branch": "b", "forge": "github"},
+                 work_item_id=wid, spec_id=sid)
+    store.append(rid, "work_item.stage", actor, {"stage": "cr_open", "cr_id": 7}, work_item_id=wid, spec_id=sid)
+    store.append(rid, "run.completed", actor, {"specs_with_change_requests": [sid]})
+
+    d = client.get(f"/api/runs/{rid}").json()
+    assert d["stage"] == "completed" and d["watch"] == {"pending": [wid], "watchable": True, "heartbeat": None}
+    assert d["work_items"][0]["cr_url"].endswith("/pull/7") and d["work_items"][0]["merge_sha"] is None
+    res = client.post(f"/api/runs/{rid}/watch")
+    assert res.status_code == 409 and "FORGE_TOKEN" in res.json()["detail"]
+    assert not list((runs_dir / "_logs").glob("watch-*.log")) if (runs_dir / "_logs").exists() else True
+
+    # a live heartbeat from a watcher that is still running refuses a second one
+    (runs_dir / rid / HEARTBEAT).write_text(json.dumps({"pid": os.getpid(), "started_at": "t", "last_poll_at": "t", "pending": [wid],
+                                                        "last_tick": {}, "stopped_at": None}))
+    d = client.get(f"/api/runs/{rid}").json()
+    assert d["watch"]["heartbeat"]["alive"] is True
+    res = client.post(f"/api/runs/{rid}/watch")
+    assert res.status_code == 409 and "already running" in res.json()["detail"]
+
+    # the merge recorded by the watcher shows on the work item and in the timeline
+    store.append(rid, "cr.merged", {"type": "human", "id": "human"}, {"id": 7, "merge_commit_sha": "c" * 40, "approved": True, "forge": "github"},
+                 work_item_id=wid, spec_id=sid)
+    store.append(rid, "work_item.stage", actor, {"stage": "merged", "merge_sha": "c" * 40}, work_item_id=wid, spec_id=sid)
+    d = client.get(f"/api/runs/{rid}").json()
+    assert d["work_items"][0]["stage"] == "merged" and d["work_items"][0]["merge_sha"] == "c" * 40
+    assert [e["kind"] for e in d["events"]][-2:] == ["cr.merged", "work_item.stage"] and d["watch"]["pending"] == [wid]

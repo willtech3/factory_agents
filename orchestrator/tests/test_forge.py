@@ -342,3 +342,36 @@ def test_github_seed_retries_while_the_new_repository_is_not_ready_and_reseeds_a
     f3 = GitHubForge("https://github.com", "ghp_test", "will/newapp", transport=httpx.MockTransport(rec3))
     assert ensure_repository(f3, {"url": "https://github.com/will/newapp", "create": True}, tmpl, sleep=lambda s: None) is None
     assert not any(p.endswith("/git/trees") for _, p, _, _ in rec3.calls)
+
+
+def test_existing_repository_gets_the_platform_contract_skill(root):
+    """Issue 12 of the 2026-10-10 post-mortem: sessions on a repository the factory did not create never saw the
+    skill. The seed now runs for every repository whose default branch lacks it, created or not."""
+    from factory.forge import ensure_repository
+    skill = root / "skills" / "platform-contract" / "SKILL.md"
+    routes = {
+        "GET /repos/will/app": {"id": 9, "default_branch": "main"},
+        "GET /repos/will/app/contents/.claude/skills/platform-contract/SKILL.md": (404, {"message": "Not Found"}),
+        "GET /repos/will/app/git/ref/heads/main": {"object": {"sha": "init"}},
+        "GET /repos/will/app/git/commits/init": {"tree": {"sha": "t0"}},
+        "POST /repos/will/app/git/blobs": (201, {"sha": "b1"}),
+        "POST /repos/will/app/git/trees": (201, {"sha": "t1"}),
+        "POST /repos/will/app/git/commits": (201, {"sha": "c1"}),
+        "PATCH /repos/will/app/git/refs/heads/main": {"object": {"sha": "c1"}},
+    }
+    rec = Recorder(routes)
+    f = GitHubForge("https://github.com", "ghp_test", "will/app", transport=httpx.MockTransport(rec))
+    assert ensure_repository(f, {"url": "https://github.com/will/app", "default_branch": "main"}, skill_file=skill, sleep=lambda s: None) is None
+    trees = [b for m, p, _, b in rec.calls if p.endswith("/git/trees")]
+    assert len(trees) == 1 and trees[0]["tree"][0]["path"] == ".claude/skills/platform-contract/SKILL.md"
+    assert not any(p == "/user/repos" for _, p, _, _ in rec.calls) and not any("workflows" in p for _, p, _, _ in rec.calls)
+    # already there: untouched
+    rec2 = Recorder({**routes, "GET /repos/will/app/contents/.claude/skills/platform-contract/SKILL.md": {"sha": "x"}})
+    f2 = GitHubForge("https://github.com", "ghp_test", "will/app", transport=httpx.MockTransport(rec2))
+    assert ensure_repository(f2, {"url": "https://github.com/will/app"}, skill_file=skill, sleep=lambda s: None) is None
+    assert not any(p.endswith("/git/trees") for _, p, _, _ in rec2.calls)
+    # a repository that does not exist and is not to be created: nothing is seeded, nothing is created
+    rec3 = Recorder({"GET /repos/will/app": (404, {"message": "Not Found"})})
+    f3 = GitHubForge("https://github.com", "ghp_test", "will/app", transport=httpx.MockTransport(rec3))
+    assert ensure_repository(f3, {"url": "https://github.com/will/app"}, skill_file=skill, sleep=lambda s: None) is None
+    assert [p for _, p, _, _ in rec3.calls] == ["/repos/will/app"]

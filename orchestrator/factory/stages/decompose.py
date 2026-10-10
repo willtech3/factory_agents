@@ -8,10 +8,10 @@ from .. import checks
 from ..gates import Decision, GateKind
 from ..state import RunStage
 from . import RunContext
-from .common import make_ask_human, open_gate_and_wait, persist_outputs, require_json, rubric_text, run_session, stamp_provenance
+from .common import make_ask_human, open_gate_and_wait, persist_outputs, platform_skill, require_json, rubric_text, run_session, stamp_provenance
 
 DESCRIPTION = """Produce a decomposition of the business outcome in /mnt/session/uploads/outcome.json.
-{repo_clause}
+{repo_clause} {skill_clause}
 Write decomposition.json and decomposition.md to /mnt/session/outputs/ and validate the JSON with
 `python -I /mnt/session/uploads/tools/validate.py /mnt/session/outputs/decomposition.json`.
 {feedback_clause}"""
@@ -55,9 +55,11 @@ def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | N
                            "and address every comment explicitly in decomposition.md. Increment `revision`.")
 
     mount, repo_clause, repo_available = repository_access(ctx, outcome)
+    skill_uploads, skill_clause = platform_skill(ctx)
     res = run_session(
         ctx, agent_key="decomposer", title=f"{ctx.run_id} decompose", run_id=ctx.run_id, stage="decompose",
-        uploads=uploads, description=DESCRIPTION.format(feedback_clause=feedback_clause, repo_clause=repo_clause),
+        uploads={**uploads, **skill_uploads},
+        description=DESCRIPTION.format(feedback_clause=feedback_clause, repo_clause=repo_clause, skill_clause=skill_clause),
         rubric_md=rubric_text(ctx, "decomposition", repo_available), max_iterations=ctx.policy.outcome_max_iterations,
         budget_usd=ctx.policy.stage_budget_usd["decompose"],
         custom_tools={"ask_human": make_ask_human(ctx, "decomposer")}, repository=mount,

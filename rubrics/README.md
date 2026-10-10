@@ -16,5 +16,5 @@ Writing rules for rubric criteria (from `docs/research/`):
 Files:
 - `decomposition.md`: Gate 1 input.
 - `spec.md`: scored by the spec judge per spec; also the writer's outcome rubric.
-- `implementation.md`: the implementer's outcome rubric; the merge judge checks the same items with the orchestrator's deterministic results.
+- `implementation.md`: the implementer's outcome rubric. The grader's copy ends at the marker line (`<!-- grader copy ends here`); the deterministic items below it are computed by the orchestrator and handed to the merge judge.
 - `review_quality.md`: used by the merge judge to audit the reviewer, and by evals to score reviewer output.

@@ -1,10 +1,12 @@
 """The orchestrator's own pytest run is the source of the passing-test set (post-mortem issue 5): node ids come from
 the junit report it asks pytest for, mapped ids are checked against what pytest collects, and a repository pytest
 cannot collect leaves the mapping unverified rather than verified. Runs real pytest in a subprocess, no network."""
+import sys
 from pathlib import Path
 
 from factory import checks
-from factory.stages.implement import LocalVerifier, parse_junit, passed_test_ids
+from factory.checks import CheckResult
+from factory.stages.implement import SETUP_CHECK, LocalVerifier, parse_junit, passed_test_ids
 
 TESTS = '''import pytest
 
@@ -32,9 +34,17 @@ def _repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _verifier(tmp_path: Path) -> LocalVerifier:
+    """A verifier whose per-run environment is the orchestrator's own venv (it has pytest; nothing is installed)."""
+    v = LocalVerifier("unused", tmp_path / "v")
+    v.env_dir = Path(sys.executable).parent.parent
+    v.setup = CheckResult(SETUP_CHECK, True, "the test's own interpreter stands in for the per-run environment")
+    return v
+
+
 def test_run_commands_reports_pytest_node_ids_from_its_own_junit(tmp_path):
     repo = _repo(tmp_path)
-    v = LocalVerifier("unused", tmp_path / "v")
+    v = _verifier(tmp_path)
     out = v.run_commands(repo, ["python -m pytest -q tests", "echo not-a-test-command"], timeout=120)
     assert out[0]["exit_code"] == 1 and "pytest" not in out[1]
     assert out[0]["pytest"]["passed"] == ["tests/test_a.py::test_one", "tests/test_a.py::TestK::test_two",
@@ -50,7 +60,7 @@ def test_run_commands_reports_pytest_node_ids_from_its_own_junit(tmp_path):
 
 def test_collect_test_ids_lists_what_pytest_knows_and_none_elsewhere(tmp_path):
     repo = _repo(tmp_path)
-    v = LocalVerifier("unused", tmp_path / "v")
+    v = _verifier(tmp_path)
     assert v.collect_test_ids(repo) == ["tests/test_a.py::test_one", "tests/test_a.py::TestK::test_two",
                                         "tests/test_a.py::test_p[1]", "tests/test_a.py::test_p[2]", "tests/test_a.py::test_three"]
     empty = tmp_path / "empty"
@@ -60,6 +70,9 @@ def test_collect_test_ids_lists_what_pytest_knows_and_none_elsewhere(tmp_path):
     (broken / "tests").mkdir(parents=True)
     (broken / "tests" / "test_b.py").write_text("import module_that_does_not_exist\n")
     assert v.collect_test_ids(broken) is None                              # collection error: unverifiable
+    unprepared = LocalVerifier("unused", tmp_path / "v2")
+    unprepared.setup = CheckResult(SETUP_CHECK, False, "install failed")
+    assert unprepared.collect_test_ids(repo) is None                        # no environment: nothing is verifiable
 
 
 def test_parse_junit_rebuilds_node_ids_from_file_classname_and_name():

@@ -88,3 +88,41 @@ def test_driver_interrupts_sessions_still_in_flight(tmp_path, root):
     # an interrupted session still finished: its spend is reported so the run total counts it (post-mortem issue 16)
     assert [(f["session_id"], f["stop_reason"], f["list_cost_usd"], f["stage"], f["work_item_id"]) for f in finished] == \
         [("sesn_a", "interrupted", 2.33, "judge", None), ("sesn_b", "interrupted", 2.33, "implement", "wi-x")]
+
+
+def test_design_sessions_get_the_platform_contract_skill_by_path(tmp_path, root, examples):
+    """Issue 12: the brief said "read the skill first" with no location, so decomposers and judges searched the
+    filesystem. Every stage now uploads skills/platform-contract/SKILL.md and names the path in the kickoff."""
+    import json
+    from factory.stages import decompose as dec, specify as spc
+    from factory.stages.common import SKILL_UPLOAD_PATH
+
+    ctx = _ctx(tmp_path, root, None)
+    ctx.event("run.created", {"outcome_id": "o", "title": "t"})
+    calls = []
+
+    class Driver:
+        def run(self, **kw):
+            calls.append(kw)
+            d = examples["decomposition"] if kw["agent_key"] == "decomposer" else (
+                examples["spec_smart_retries"] if kw["agent_key"] == "spec_writer" else examples["verdict_round2"])
+            name = {"decomposer": "decomposition.json", "spec_writer": "spec.json", "spec_judge": "verdict.json"}[kw["agent_key"]]
+            return SimpleNamespace(session_id="s", agent_id="a", agent_version=1, outcome_result="satisfied", outcome_iterations=1,
+                                   list_cost_usd=1.0, stop_reason="end_turn", events_seen=1, custom_tool_calls=[],
+                                   outputs={name: json.dumps(d).encode(), "decomposition.md": b"# d", "spec.md": b"# s"})
+
+    ctx.driver = Driver()
+    dec.run_decompose(ctx, examples["outcome"])
+    item = examples["decomposition"]["work_items"][0]
+    spc._write_one(ctx, examples["outcome"], examples["decomposition"], item, {}, None, None, 1)
+    spc._judge(ctx, examples["outcome"], examples["decomposition"], {"spec_x": examples["spec_smart_retries"]}, 1, None)
+    assert [c["agent_key"] for c in calls] == ["decomposer", "spec_writer", "spec_judge"]
+    expected = (root / "skills" / "platform-contract" / "SKILL.md").read_bytes()
+    for c in calls:
+        assert c["uploads"][SKILL_UPLOAD_PATH] == expected
+        assert "/mnt/session/uploads/skills/platform-contract/SKILL.md" in c["description"] and "do not search the filesystem" in c["description"]
+    # without a skill file the kickoff says so instead of sending agents looking
+    from factory.stages.common import platform_skill
+    ctx.cfg = make_config(root, tmp_path, skills_dir=tmp_path / "no-skills")
+    uploads, clause = platform_skill(ctx)
+    assert uploads == {} and "do not search" in clause and "No platform-contract skill" in clause

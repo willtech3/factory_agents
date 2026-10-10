@@ -33,6 +33,6 @@ def make_config(root: Path, runs_dir: Path, **overrides):
                 service_manifest_path="service_manifest.json", dev_environment_name="dev",
                 preview_environment_prefix="preview/", preview_mode="platform", smoke_commands=(), console_workspace="w", workspace_id=None, runs_dir=runs_dir,
                 schemas_dir=root / "schemas", rubrics_dir=root / "rubrics", templates_dir=root / "templates",
-                pin_agent_versions=True)
+                skills_dir=root / "skills", pin_agent_versions=True)
     base.update(overrides)
     return Config(**base)

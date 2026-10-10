@@ -10,23 +10,23 @@ This repository is built and verified by the software factory's orchestrator on 
 ## What the platform provides
 
 - **Source control**: GitHub, this repository. The factory works on branches named `factory/<run_id>/<spec_id>` cut from `main` (or from a dependency's branch when that dependency is still an open pull request) and opens one pull request per work item.
-- **Preview environment**: the orchestrator starts the service itself from `service_manifest.json` (`runtime.entrypoint`, with the manifest's `runtime.port` replaced by a free port that is also exported as `PORT`), waits up to 60 seconds for `health.path` to answer `health.expect_status` (default 200), and runs every `test_plan.e2e` entry whose target is `preview` with `$BASE_URL` set to that instance. No agent can reach that instance; the implementer runs the `local` entries against a server it starts itself.
+- **Preview environment**: the orchestrator starts the service itself from `service_manifest.json` (`runtime.entrypoint`, with the manifest's `runtime.port` replaced by a free port that is also exported as `PORT`), waits up to 60 seconds for `health.path` to answer `health.expect_status` (default 200), and runs every `test_plan.e2e` entry whose target is `preview` with `$BASE_URL` set to that instance. No agent can reach that instance: `preview.json` says `unreachable_from_sandbox` with no URL, and the implementer and the reviewers start their own instance from the same entrypoint and run the `preview` and `local` entries against it. The orchestrator's run is the one that counts.
 - **CI**: `.github/workflows/preview.yml`, when present, runs on pushes to `factory/**` and `main` and records a placeholder deployment. The platform owns that file.
 - **Dev deployment**: none. Nothing happens after a pull request merges.
-- **Interpreter and packages for verification**: the orchestrator runs the spec's `test_plan.commands` and the service entrypoint from a clean clone with its own Python ({sys_version}) first on `PATH` and **no install step**. Importable there: fastapi, starlette, uvicorn, pydantic, pytest, httpx, anyio, jsonschema, typer, and the standard library. Anything else fails at import time in verification even if it works in the sandbox.
+- **Interpreter and packages for verification**: the orchestrator runs the spec's `test_plan.commands` and the service entrypoint from a clean clone on its own host, inside a fresh per-run virtual environment it builds from the repository: `runtime.setup` from the manifest when the manifest declares one (any install command, run from the repository root with that environment first on `PATH`), otherwise `pip install -e .[dev]` from `pyproject.toml` (the `dev`, `test` or `tests` extra, whichever the project declares; a pyproject with no build system has its declared dependency lists installed instead). Nothing from the orchestrator's own environment is on `PATH`. A setup that fails is a failed deterministic check the implementer must answer. Each command runs in its own process group and is killed when it ends, so a server a command backgrounds does not survive it; commands must not bind a fixed port or assume anything about the host.
 
 ## What the application must define
 
 - `service_manifest.json` at the repository root, valid against the platform's service manifest schema. Required: `service` (string), `runtime` with `kind` (a short name for the runtime family; `python` is right for a process started by a command on this platform), `version`, `entrypoint` (the command the platform runs, for example `uvicorn app.main:app --host 0.0.0.0 --port 8000`) and `port`; `health` with `path` (and optionally `expect_status`, `timeout_seconds`); `env` listing every environment variable the service reads (an empty list when there are none). `migrations` and `resources` are optional.
 - A health endpoint at `health.path` that answers 200 as soon as the process is up.
-- Tests runnable as the spec's `test_plan.commands` say, from the repository root, with the packages above and nothing installed: set pytest's `pythonpath` to the repository root in `pyproject.toml` so the application package imports.
-- A `pyproject.toml` naming the runtime and test dependencies, for humans and for a future platform that does install them.
+- Tests runnable as the spec's `test_plan.commands` say, from the repository root, after the install step above and nothing else: set pytest's `pythonpath` to the repository root in `pyproject.toml` so the application package imports whether or not the project itself was installed.
+- A `pyproject.toml` naming the runtime dependencies and a `dev` extra with the test dependencies; the orchestrator installs exactly those. A repository that needs more than pip (another language, a system package) declares a `runtime.setup` command in the manifest instead.
 
 ## What agents must never touch
 
 - `.github/workflows/` (the platform's), IAM, networking, DNS, containers, cloud projects, secrets. If an item seems to need any of that, it is an open question for the owner, not a work item.
 - Ports other than the manifest's `runtime.port`; hard-coded hosts or URLs for the preview.
-- Dependencies outside the importable set above, unless the outcome explicitly provides for an install step.
+- Dependencies the repository does not declare (in `pyproject.toml` or `runtime.setup`); the verification environment has nothing else.
 
 ## How the factory uses this skill
 

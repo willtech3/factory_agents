@@ -17,10 +17,12 @@ None. The judge found no accepted-risk items.
 
 ## Acceptance criteria
 
-| AC | Given / When / Then | Status | Evidence |
-|---|---|---|---|
+Status and evidence are the merge judge's (`merge_readiness.json` `criteria`); the e2e column lists the orchestrator's own `test_results.json` rows that cover the criterion; the reviewer's `spec_conformance` status is for information.
+
+| AC | Given / When / Then | Judge | Evidence | Orchestrator e2e | Reviewer |
+|---|---|---|---|---|---|
 {{#acceptance_criteria}}
-| {{ac_id}} | {{given}} / {{when}} / {{then}} | {{status}} | {{evidence}} |
+| {{ac_id}} | {{given}} / {{when}} / {{then}} | {{judge_status}} | {{judge_evidence}} | {{e2e_rows}} | {{reviewer_status}} |
 {{/acceptance_criteria}}
 
 ## What was contested
@@ -34,13 +36,23 @@ No findings were disputed.
 
 ## Verification
 
-Run by the orchestrator in a clean sandbox on `{{head_sha}}`:
+{{#preview_platform}}
+Run by the orchestrator through the platform's CI on `{{judged_head_sha}}`:
+{{/preview_platform}}
+{{#preview_local}}
+Run by the orchestrator on its own host on `{{judged_head_sha}}`, in a per-run virtual environment built from this repository ({{environment_installer}}, Python {{environment_python}}, {{environment_install}}); not a clean sandbox and not a deployment:
+{{/preview_local}}
 
 {{#test_commands}}
 - `{{command}}` → {{result}}
 {{/test_commands}}
 
+{{#preview_platform}}
 End-to-end on the preview environment ({{preview_url}}, pipeline {{preview_pipeline_url}}):
+{{/preview_platform}}
+{{#preview_local}}
+End-to-end against the service the orchestrator started from the manifest entrypoint (`{{entrypoint}}`) on its host; reviewers ran the same entries against an instance they started the same way:
+{{/preview_local}}
 
 {{#e2e_results}}
 - `{{command}}` → exit {{exit_code}} (covers {{covers_ac}})
@@ -48,7 +60,12 @@ End-to-end on the preview environment ({{preview_url}}, pipeline {{preview_pipel
 
 Deterministic checks: {{deterministic_checks_summary}}
 
+{{#preview_platform}}
 After merge the orchestrator watches the platform's dev deploy and re-runs the end-to-end checks against dev; the result appears on the run board (and the tracker issue), not in this change request.
+{{/preview_platform}}
+{{#preview_local}}
+There is no dev deployment in local mode; nothing runs after merge.
+{{/preview_local}}
 
 ## Where to start reading
 

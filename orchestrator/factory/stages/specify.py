@@ -30,11 +30,11 @@ from .. import checks
 from ..gates import Decision, GateKind
 from ..state import RunStage, WorkItemStage
 from . import RunContext
-from .common import make_ask_human, open_gate_and_wait, persist_outputs, public, require_json, rubric_text, run_session, stamp_provenance
+from .common import make_ask_human, open_gate_and_wait, persist_outputs, platform_skill, public, require_json, rubric_text, run_session, stamp_provenance
 
 WRITER_DESCRIPTION = """Write the specification for work item {work_item_id} ({title}).
 Inputs are under /mnt/session/uploads/ (outcome.json, decomposition.json, work_item.json, sibling_specs/,
-and on a revision judge_issues.json and human_comments.md). {repo_clause}
+and on a revision judge_issues.json and human_comments.md). {repo_clause} {skill_clause}
 Write spec.json and spec.md to /mnt/session/outputs/ and validate spec.json with the validate.py tool."""
 
 REPO_MOUNTED = "The repository is cloned at /workspace/repo."
@@ -43,7 +43,7 @@ REPO_ABSENT = ("The repository is NOT available in this session: write allowed_p
 
 JUDGE_DESCRIPTION = """Judge the full set of specifications under /mnt/session/uploads/specs/ against rubric.md,
 then judge the set's coherence and goal coverage against outcome.json and decomposition.json. {repo_clause}{owner_clause}
-This is round {round}. Write verdict.json to /mnt/session/outputs/ and validate it."""
+{skill_clause} This is round {round}. Write verdict.json to /mnt/session/outputs/ and validate it."""
 OWNER_CLAUSE = """ The outcome owner's decisions from the previous gate are in /mnt/session/uploads/human_comments.md: treat
 them as settled facts about what is acceptable (do not raise them again as owner decisions); judge whether the specs honour them."""
 JUDGE_REPO_MOUNTED = "The repository is cloned at /workspace/repo for checking paths, commands, and current behaviour."
@@ -72,10 +72,12 @@ def _write_one(ctx: RunContext, outcome, decomposition, work_item, sibling_specs
         uploads["prior/spec.json"] = json.dumps(public(prior_spec), indent=2).encode()   # the draft being revised
     from .decompose import repository_access
     mount, repo_clause, repo_available = repository_access(ctx, outcome, REPO_MOUNTED, REPO_ABSENT)
+    skill_uploads, skill_clause = platform_skill(ctx)
     res = run_session(
         ctx, prefix=f"{wid}-r{round_no}-",
         agent_key="spec_writer", title=f"{ctx.run_id} spec {wid} r{round_no}", run_id=ctx.run_id, stage="specify",
-        uploads=uploads, description=WRITER_DESCRIPTION.format(work_item_id=wid, title=work_item["title"], repo_clause=repo_clause),
+        uploads={**uploads, **skill_uploads},
+        description=WRITER_DESCRIPTION.format(work_item_id=wid, title=work_item["title"], repo_clause=repo_clause, skill_clause=skill_clause),
         rubric_md=rubric_text(ctx, "spec", repo_available), max_iterations=ctx.policy.outcome_max_iterations,
         budget_usd=ctx.policy.stage_budget_usd["specify"], work_item_id=wid,
         custom_tools={"ask_human": make_ask_human(ctx, "spec_writer")}, repository=mount,
@@ -115,11 +117,13 @@ def _judge(ctx: RunContext, outcome, decomposition, specs: dict[str, dict], roun
         uploads["previous_verdict.json"] = json.dumps(previous_verdict, indent=2).encode()
     if owner_comments:
         uploads["human_comments.md"] = owner_comments.encode()
+    skill_uploads, skill_clause = platform_skill(ctx)
     res = run_session(
         ctx, prefix=f"r{round_no}-",
         agent_key="spec_judge", title=f"{ctx.run_id} spec-judge r{round_no}", run_id=ctx.run_id, stage="judge",
-        uploads=uploads, description=JUDGE_DESCRIPTION.format(round=round_no, repo_clause=JUDGE_REPO_MOUNTED if repo_available else JUDGE_REPO_ABSENT,
-                                                              owner_clause=OWNER_CLAUSE if owner_comments else ""),
+        uploads={**uploads, **skill_uploads},
+        description=JUDGE_DESCRIPTION.format(round=round_no, repo_clause=JUDGE_REPO_MOUNTED if repo_available else JUDGE_REPO_ABSENT,
+                                             owner_clause=OWNER_CLAUSE if owner_comments else "", skill_clause=skill_clause),
         rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["judge"], repository=mount,
     )
     verdict = require_json(res, "verdict.json")

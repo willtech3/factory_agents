@@ -235,6 +235,10 @@
           "type": "string",
           "description": "Round 2 and later: the id this finding had in previous_findings.json when it re-adjudicates one (upheld or withdrawn). The orchestrator keeps that id when it merges the passes; a re-adjudication without it is matched on category and location."
         },
+        "environmental": {
+          "type": "boolean",
+          "description": "Set by the orchestrator on a DET-* finding whose failure looks like the verification host's doing (a port already in use) rather than the change's: the implementer answers it, but the fix is usually to make the command robust, and the judge weighs it accordingly."
+        },
         "cwe": {
           "type": "string",
           "pattern": "^CWE-[0-9]+$",

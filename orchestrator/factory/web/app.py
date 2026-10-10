@@ -36,6 +36,8 @@ from ..gates import Decision, GateKind
 from ..store import RunStore
 from ..surfaces.artifact_pages import render_gate1_page, render_gate2_page
 from ..surfaces.filequeue import FileQueue
+from ..watcher import heartbeat as watcher_heartbeat
+from ..watcher import pending_work_items
 from .demo import DemoRunner
 
 STATIC = Path(__file__).parent / "static"
@@ -133,7 +135,7 @@ class Console:
             if ev.kind == "artifact.produced" and ev.payload.get("artifact_type") == "decomposition":
                 titles = {w["work_item_id"]: w.get("title", "") for w in ev.payload.get("work_items", [])}
         items = [{"work_item_id": wi.work_item_id, "title": titles.get(wi.work_item_id, ""), "stage": wi.stage.value,
-                  "spec_id": wi.spec_id, "branch": wi.branch, "cr_id": wi.cr_id, "depends_on": wi.depends_on,
+                  "spec_id": wi.spec_id, "branch": wi.branch, "cr_id": wi.cr_id, "merge_sha": wi.merge_sha, "depends_on": wi.depends_on,
                   "review_round": wi.review_round, "dev_environment_url": wi.dev_environment_url}
                  for wi in st.work_items.values()]
         crs = {ev.spec_id: ev.payload for ev in events if ev.kind == "cr.opened" and ev.spec_id}
@@ -150,9 +152,13 @@ class Console:
         # A run that died in the implementation stage can continue from its artefacts (`factory resume`).
         resumable = (st.stage.value == "failed" and not self.demo.is_demo(run_id)
                      and any(ev.kind == "stage.entered" and ev.payload.get("stage") == "implementing" for ev in events))
+        # Gate 3 and Stage 5 are followed by `factory watch`, a separate process; its heartbeat says whether one is running.
+        pending = [wi.work_item_id for wi in pending_work_items(st)]
+        watch = {"pending": pending, "watchable": bool(pending) and not self.demo.is_demo(run_id),
+                 "heartbeat": watcher_heartbeat(self.cfg.runs_dir, run_id)}
         return {"run_id": run_id, "title": self._title(run_id, events), "outcome": outcome, "stage": st.stage.value,
                 "cost": round(st.list_cost_usd, 2), "demo": self.demo.is_demo(run_id), "design_only": design_only, "work_items": items,
-                "resumable": resumable,
+                "resumable": resumable, "watch": watch,
                 "gates": gates, "questions": questions, "events": timeline, "artifacts": self._artifacts(run_id),
                 "created_at": events[0].at, "updated_at": events[-1].at}
 
@@ -405,13 +411,35 @@ class Console:
                                     env={**os.environ, "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}, start_new_session=True)
         return {"ok": True, "mode": "resume", "run_id": run_id, "pid": proc.pid, "log": log.name}
 
+    def watch_run(self, run_id: str) -> dict[str, Any]:
+        """Start `factory watch <run_id>` in the background: Gate 3 (the merge on the forge) and Stage 5 (the dev deploy
+        and the e2e checks against it) for every open change request of the run. One watcher per run at a time."""
+        detail = self.run_detail(run_id)
+        watch = detail["watch"]
+        if not watch["watchable"]:
+            raise HTTPException(409, f"run {run_id} has nothing to watch: no work item has an open pull request, a merge to observe, "
+                                     "or a dev deploy in flight" + (" (demo runs are not watched)" if detail["demo"] else ""))
+        hb = watch["heartbeat"]
+        if hb and hb.get("alive"):
+            raise HTTPException(409, f"a watcher is already running for {run_id} (pid {hb.get('pid')}, last poll {hb.get('last_poll_at')})")
+        gaps = cfgmod.missing_for_watch(self.cfg)
+        if gaps:
+            raise HTTPException(409, f"the orchestrator is not configured to watch the forge: {', '.join(gaps)}")
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        log = self.logs_dir / f"watch-{run_id}-{int(time.time())}.log"
+        args = [sys.executable, "-u", "-m", "factory.cli", "watch", run_id]
+        with log.open("w") as fh:
+            proc = subprocess.Popen(args, cwd=str(Path(__file__).resolve().parents[2]), stdout=fh, stderr=subprocess.STDOUT,
+                                    env={**os.environ, "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}, start_new_session=True)
+        return {"ok": True, "mode": "watch", "run_id": run_id, "pid": proc.pid, "log": log.name, "pending": watch["pending"]}
+
     def logs(self) -> list[dict[str, Any]]:
         if not self.logs_dir.exists():
             return []
         out = []
         for p in sorted(self.logs_dir.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True):
             text = p.read_text(errors="replace")
-            m = re.search(r"run (run_[a-z0-9]+) (?:started|resuming)", text)
+            m = re.search(r"run (run_[a-z0-9]+) (?:started|resuming|watching)", text)
             out.append({"name": p.name, "bytes": p.stat().st_size, "modified_at": datetime.fromtimestamp(p.stat().st_mtime, timezone.utc).isoformat(),
                         "run_id": m.group(1) if m else None, "tail": redact(text[-1500:])})
         return out
@@ -559,6 +587,10 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
     @app.post("/api/runs/{run_id}/resume")
     def api_resume_run(run_id: str):
         return console.resume_run(run_id)
+
+    @app.post("/api/runs/{run_id}/watch")
+    def api_watch_run(run_id: str):
+        return console.watch_run(run_id)
 
     @app.get("/api/platform")
     def api_platform():
