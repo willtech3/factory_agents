@@ -234,6 +234,8 @@ def test_redaction_and_design_run_argv(client, monkeypatch, tmp_path, root):
         assert r2["mode"] == "live"
     assert calls[0][0][-2:] == [str(cfg.runs_dir / "_outcomes" / f"{oid}.json"), "--design-only"]
     assert "--design-only" not in calls[1][0] and calls[1][1]["env"]["FACTORY_RUNS_DIR"] == str(cfg.runs_dir)
+    assert calls[1][1]["env"]["FORGE_TOKEN"] == cfg.forge_token
+    assert "FORGE_TOKEN" not in json.dumps(r2)
     assert any(l["name"].endswith(".log") for l in c2.get("/api/logs").json()["logs"]) is False or True   # logs exist only once the child writes
 
 

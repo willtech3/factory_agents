@@ -500,4 +500,6 @@ details.tech summary { cursor: pointer; }
 .evidence-grid img, .evidence-grid video { display: block; width: 100%; height: auto; max-height: 420px; object-fit: contain; background: #101820; border-radius: 8px; }
 .evidence-grid figcaption { font-size: 13px; color: var(--text-2); margin-top: 6px; overflow-wrap: anywhere; }
 .evidence-grid summary { cursor: pointer; font-weight: 700; font-size: 13px; padding: 4px 0; }
+.app-recordings { grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr)); }
+.app-recordings video { max-height: 480px; }
 @media (max-width: 520px) { .stepper.app-steps { grid-template-columns: minmax(0, 1fr); } .start > aside { min-width: 0; } .secret .row input { flex-basis: 100%; } }

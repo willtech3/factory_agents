@@ -1670,7 +1670,7 @@
         injection: x.injection ? String(x.injection) : "", purpose: x.description ? String(x.description) : "" }));
   }
   function evidenceGallery(a) {
-    const grid = el("div", {class:"stack"}), videos = el("div", {class:"evidence-grid"}), shots = el("div", {class:"evidence-grid"}), files = el("div", {class:"stack"});
+    const grid = el("div", {class:"stack"}), videos = el("div", {class:"evidence-grid app-recordings"}), shots = el("div", {class:"evidence-grid"}), files = el("div", {class:"stack"});
     let shotCount = 0, fileCount = 0;
     for (const e of a.evidence || []) {
       const url = typeof e.url === "string" && e.url.startsWith(`${appPath(a.app_id)}/evidence/`) ? e.url : null;
@@ -1750,7 +1750,7 @@
             return api(`${appPath(appId)}/discover`, {body:{}});
           });
         };
-        out.push(card("Improve or repair the setup", el("details", {open:a.status === "failed" || !!a.feedback},
+        out.push(card("Improve or repair the setup", el("details", {open:a.status === "failed" || a.status === "needs_input" && !!a.feedback},
           el("summary", null, "Tell the onboarding agent what to change"),
           el("label", {for:"setup-feedback"}, "Setup feedback"), feedback, btn,
           charged(`Uses the previous proposal and failure evidence. Starts a charged discovery session (${appLeft(a)} available).`), line)));
@@ -1770,10 +1770,14 @@
         (plan.files || []).length ? el("div", null, el("h3", { class: "mini-h" }, `Proposed files (${(plan.files || []).length})`), files) : null,
         plan.profile ? el("details", null, el("summary", null, "Raw test recipe JSON"), el("pre", null, JSON.stringify(plan.profile, null, 2))) : null,
         el("details", null, el("summary", null, "Raw plan JSON"), el("pre", null, JSON.stringify(plan, null, 2))));
-      out.push(card("What the agent found", el("div", { class: "stack" },
+      const explanation = plan.summary || "No summary given.";
+      const firstParagraph = explanation.split(/\n\s*\n/)[0];
+      const excerpt = firstParagraph.length > 420 ? `${firstParagraph.slice(0, 420).replace(/\s+\S*$/, "")}…` : firstParagraph;
+      out.push(card("Discovery notes", el("div", { class: "stack" },
         !a.plan_sha256 ? el("div", { class: "notice info", style: "margin:0" }, el("b", null, "This plan is out of date. "), "Your answers are saved. Verification and publishing wait until discovery runs again with them.") : null,
-        el("p", { class: "lead" }, (plan.summary || "No summary given.").split(/\n\s*\n/)[0]),
-        (plan.summary || "").includes("\n\n") ? el("details", null, el("summary", null, "Read the agent’s full setup explanation"), el("p", {class:"reading"}, plan.summary)) : null,
+        a.verification ? el("p", {class:"explain"}, "Written before verification. The evidence above records what actually ran; these notes describe the proposed scope and its limits.") : null,
+        el("p", { class: "lead" }, excerpt),
+        explanation !== excerpt ? el("details", null, el("summary", null, "Read the agent’s full setup explanation"), el("p", {class:"reading"}, explanation)) : null,
         plan.app_kind ? el("p", { class: "explain" }, `Kind of app: ${words(plan.app_kind)}`) : null,
         (plan.journeys || []).length ? el("div", null, el("h3", { class: "mini-h" }, "User journeys it would test"), journeys) : null,
         (plan.capabilities || []).length ? el("div", null, el("h3", { class: "mini-h" }, "What a test run can exercise"), capabilityList(plan)) : null,
