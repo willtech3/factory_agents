@@ -831,7 +831,7 @@
       repoDetails.textContent = selectedRepo ? `Default branch: ${selectedRepo.default_branch}. ${selectedRepo.private ? "Private" : "Public"} repository.` : "";
       syncSummary();
     };
-    repoUrl.oninput = () => { selectedRepo = null; repoSelect.value = ""; repoDetails.textContent = ""; };
+    repoUrl.oninput = () => { selectedRepo = null; repoSelect.value = ""; repoDetails.textContent = ""; syncSummary(); };
     const manual = el("details", null, el("summary", null, "Enter a repository URL instead"), repoUrl);
     const browser = el("div", { class: "stack" }, el("label", null, "Find a repository", searchRepos),
       el("label", null, "GitHub repository", repoSelect), repoDetails, repoStatus, loadMore, manual);

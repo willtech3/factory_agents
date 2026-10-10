@@ -440,3 +440,8 @@ pre.log { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; 
 .repo-choice { display: grid; cursor: default; min-width: 0; }
 .repo-choice > label { font-weight: 700; cursor: pointer; }
 .repo-choice select, .repo-choice input { max-width: 100%; }
+
+.repo-choice > .stack { display: grid; gap: 10px; }
+.repo-choice > .stack > label { display: grid; gap: 6px; font-size: 13px; color: var(--text-2); }
+.repo-choice input:not([type=radio]), .repo-choice select { width: 100%; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; box-sizing: border-box; }
+.repo-choice input[hidden] { display: none; }
