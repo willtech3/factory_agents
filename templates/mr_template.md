@@ -40,7 +40,15 @@ Run by the orchestrator in a clean sandbox on `{{head_sha}}`:
 - `{{command}}` → {{result}}
 {{/test_commands}}
 
+End-to-end on the preview environment ({{preview_url}}, pipeline {{preview_pipeline_url}}):
+
+{{#e2e_results}}
+- `{{command}}` → exit {{exit_code}} (covers {{covers_ac}})
+{{/e2e_results}}
+
 Deterministic checks: {{deterministic_checks_summary}}
+
+After merge the orchestrator watches the platform's dev deploy and re-runs the end-to-end checks against dev; the result appears on the run board, not in this MR.
 
 ## Where to start reading
 

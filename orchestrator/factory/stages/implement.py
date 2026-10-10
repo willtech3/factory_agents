@@ -4,10 +4,17 @@ Each box is its own session with its own context. The reviewer in round 2 is a *
 session that receives the new diff plus the implementer's responses; it is not a
 continuation of round 1 (one fresh pass per round; Song, arXiv:2603.16244). The merge
 judge receives the orchestrator's deterministic checks and may not override them.
+
+Authoritative verification includes the spec's `test_plan.e2e` entries run against the
+branch's **preview environment**. The platform's own GitLab CI deploys every factory branch
+to a per-branch preview; the orchestrator reads the preview URL from the pipeline's
+environment (`GitLabClient.environment_url_for_branch`) and hands it to the implementer and
+reviewer as `preview.json`. No agent deploys anything (docs/05-platform-and-deployment.md).
 """
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -28,13 +35,23 @@ IMPLEMENT_DESCRIPTION = """Implement specification {spec_id} from /mnt/session/u
 {git}
 {review_clause}
 Write implementation_report.json{response_clause} to /mnt/session/outputs/. Run every command in the spec's test_plan
-before finishing and record the results."""
+before finishing and record the results. {preview_clause}"""
 
 REVIEW_DESCRIPTION = """Review the change for specification {spec_id}. The diff is at /mnt/session/uploads/diff.patch
 (base {base_sha}, head {head_sha}); the repository is cloned at /workspace/repo on branch {branch}.
 {git}
 This is review round {round}.{second_round}
+{preview_clause}
 Write findings.json to /mnt/session/outputs/ and validate it. You never edit source files."""
+
+PREVIEW_CLAUSE = """The platform has deployed this branch to a preview environment; its URL and pipeline are in
+/mnt/session/uploads/preview.json. Run every test_plan.e2e entry with target "preview" against that URL (export
+BASE_URL from preview.json) and record each command's exit code and output. The orchestrator re-runs them itself."""
+
+NO_PREVIEW_CLAUSE = """No preview environment exists for this branch yet (see "status" in /mnt/session/uploads/preview.json).
+Push your branch early; the platform's pipeline deploys it. Run the test_plan.e2e entries with target "local" now and
+record the "preview" ones as not run. The orchestrator runs the preview entries against the deployed branch once the
+pipeline for your pushed head finishes; any later round of yours receives preview.json with the URL."""
 
 MERGE_JUDGE_DESCRIPTION = """Decide merge readiness for specification {spec_id}, round {round}.
 Inputs are under /mnt/session/uploads/: spec.json, diff.patch, findings.json, review_response.json,
@@ -93,9 +110,87 @@ class LocalVerifier:
                             "stdout_tail": p.stdout[-4000:], "stderr_tail": p.stderr[-4000:]})
         return results
 
+    def run_e2e(self, preview_url: str | None, e2e_entries: list[dict[str, Any]], repo: Path | None = None,
+                target: str = "preview", timeout: int = 900) -> list[dict[str, Any]]:
+        """Run the spec's `test_plan.e2e` entries for `target` against a running deployment.
+
+        `$BASE_URL` (and the env var BASE_URL) is the environment URL the orchestrator read from the GitLab
+        pipeline's environment, never a URL an agent reported. Entries are run from the checkout so fixtures
+        and e2e specs under the repo are available. If the URL is unknown (no preview deploy yet), every entry
+        is recorded with exit_code None, which `checks.e2e_passed` treats as a failure: not run is not passed
+        (Anthropic, "Effective harnesses": agents declare victory without end-to-end verification).
+        """
+        results = []
+        for e in e2e_entries:
+            if e.get("target", "preview") != target:
+                continue
+            row = {"command": e["command"], "target": target, "covers_ac": list(e.get("covers_ac", [])),
+                   "base_url": preview_url}
+            if target == "preview" and not preview_url:
+                results.append({**row, "exit_code": None, "stderr_tail": "no preview URL available for this branch"})
+                continue
+            env = {**os.environ, "BASE_URL": preview_url or ""}
+            cmd = e["command"].replace("$BASE_URL", preview_url or "")
+            try:
+                p = subprocess.run(cmd, shell=True, cwd=repo or self.workdir, env=env, capture_output=True,
+                                   text=True, timeout=timeout)
+                results.append({**row, "exit_code": p.returncode, "stdout_tail": p.stdout[-4000:],
+                                "stderr_tail": p.stderr[-4000:]})
+            except subprocess.TimeoutExpired:
+                results.append({**row, "exit_code": 124, "stderr_tail": f"timed out after {timeout}s"})
+        return results
+
 
 def _branch_for(run_id: str, spec_id: str) -> str:
     return f"factory/{run_id}/{spec_id}"
+
+
+def wait_for_preview(ctx: RunContext, branch: str, head_sha: str, *, poll_seconds: float = 20.0,
+                     sleep=None, clock=None) -> dict[str, Any]:
+    """Give the platform's pipeline time to deploy `head_sha` before running e2e against the preview.
+
+    Bounded by `policy.preview_wait_seconds`; a preview still `pending` or `unavailable` at the deadline
+    stays that way and `e2e_preview` fails closed (not run is not passed). Polling is the source of truth;
+    a pipeline webhook can shorten the wait but is not relied on.
+    """
+    import time as _t
+    sleep = sleep or _t.sleep
+    clock = clock or _t.monotonic
+    deadline = clock() + ctx.policy.preview_wait_seconds
+    info = preview_info(ctx, branch, head_sha)
+    while info["status"] in ("pending", "unavailable") and ctx.gitlab is not None and clock() < deadline:
+        sleep(poll_seconds)
+        info = preview_info(ctx, branch, head_sha)
+    return info
+
+
+def preview_info(ctx: RunContext, branch: str, head_sha: str | None = None) -> dict[str, Any]:
+    """What the platform knows about this branch's preview deploy, read from GitLab, never from an agent.
+
+    Shape handed to agents as `preview.json`: {branch, status, url, pipeline}. `status` is one of
+    `ready` (pipeline succeeded and an environment URL exists), `pending` (pipeline not finished),
+    `failed`, or `unavailable` (no GitLab client, or no pipeline yet). UNVERIFIED against the live instance.
+    """
+    info: dict[str, Any] = {"branch": branch, "status": "unavailable", "url": None, "pipeline": None,
+                            "head_sha": head_sha}
+    if ctx.gitlab is None:
+        return info
+    try:
+        pipe = ctx.gitlab.latest_pipeline(branch, head_sha)
+        info["pipeline"] = pipe
+        url = ctx.gitlab.environment_url_for_branch(branch, ctx.cfg.preview_environment_prefix)
+        info["url"] = url
+        if pipe is None:
+            info["status"] = "unavailable"
+        elif pipe["status"] == "success" and url:
+            info["status"] = "ready"
+        elif pipe["status"] in ("failed", "canceled"):
+            info["status"] = "failed"
+        else:
+            info["status"] = "pending"
+    except Exception as e:  # network or shape surprises must not take the stage down; the check still fails closed
+        info["error"] = str(e)
+    return info
 
 
 def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base_branch: str,
@@ -117,6 +212,9 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         for dsid, ds in dependency_specs.items():
             uploads[f"dependency_specs/{dsid}.json"] = json.dumps(ds, indent=2).encode()
         review_clause, response_clause = "", ""
+        preview = preview_info(ctx, branch)
+        uploads["preview.json"] = json.dumps(preview, indent=2).encode()
+        preview_clause = PREVIEW_CLAUSE if preview["status"] == "ready" else NO_PREVIEW_CLAUSE
         if findings:
             uploads["findings.json"] = json.dumps(findings, indent=2).encode()
             review_clause = ("Reviewer findings are at /mnt/session/uploads/findings.json. Respond to every finding "
@@ -126,7 +224,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             agent_key="implementer", title=f"{ctx.run_id} implement {sid} r{round_no}", run_id=ctx.run_id,
             stage="implement", uploads=uploads, work_item_id=wid,
             description=IMPLEMENT_DESCRIPTION.format(spec_id=sid, git=git, review_clause=review_clause,
-                                                     response_clause=response_clause),
+                                                     response_clause=response_clause, preview_clause=preview_clause),
             rubric_md=ctx.rubric("implementation"), max_iterations=ctx.policy.outcome_max_iterations,
             budget_usd=ctx.policy.stage_budget_usd["implement"],
         )
@@ -147,16 +245,22 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         head_sha = _git(repo, "rev-parse", "HEAD").strip()
         diff = verifier.analyse(repo, base_sha, head_sha)
         cmd_results = verifier.run_commands(repo, spec["test_plan"]["commands"])
+        # End-to-end against the preview the platform deployed for head_sha. The URL comes from GitLab's
+        # environment record, not from the implementer's report; "not run" counts as failed.
+        preview = wait_for_preview(ctx, branch, head_sha)
+        e2e_results = verifier.run_e2e(preview["url"] if preview["status"] == "ready" else None,
+                                       spec["test_plan"].get("e2e", []), repo=repo)
         passing_tests = [t for m in report.get("criteria_to_tests", []) for t in m.get("tests", [])]  # refined by CI parser
         det = checks.run_all_for_merge(
             spec=spec, changed_files=diff["changed"], deleted_files=diff["deleted"], existing_test_files=diff["existing_tests"],
             added_lines_by_file=diff["added_lines"], implementation_report=report, passing_tests=passing_tests,
-            command_results=cmd_results,
+            command_results=cmd_results, manifest_path=repo / ctx.cfg.service_manifest_path,
+            schema_dir=ctx.cfg.schemas_dir, e2e_results=e2e_results,
         )
         ctx.store.put_artifact(ctx.run_id, "implement", f"{sid}-r{round_no}-deterministic_checks.json",
                                json.dumps([d.to_dict() for d in det], indent=2).encode())
         ctx.store.put_artifact(ctx.run_id, "implement", f"{sid}-r{round_no}-test_results.json",
-                               json.dumps(cmd_results, indent=2).encode())
+                               json.dumps({"commands": cmd_results, "e2e": e2e_results, "preview": preview}, indent=2).encode())
 
         if round_no > ctx.policy.review_max_rounds:
             break  # last implementer response done; go straight to the merge judge
@@ -165,7 +269,9 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         ctx.event("work_item.stage", {"stage": WorkItemStage.REVIEWING.value, "review_round": round_no}, work_item_id=wid, spec_id=sid)
         rev_uploads = {"spec.json": uploads["spec.json"], "spec.md": uploads["spec.md"],
                        "diff.patch": diff["patch"].encode(),
-                       "implementation_report.json": json.dumps(report, indent=2).encode()}
+                       "implementation_report.json": json.dumps(report, indent=2).encode(),
+                       "preview.json": json.dumps(preview, indent=2).encode()}
+        rev_preview_clause = PREVIEW_CLAUSE if preview["status"] == "ready" else NO_PREVIEW_CLAUSE
         second = ""
         if findings and response:
             rev_uploads["previous_findings.json"] = json.dumps(findings, indent=2).encode()
@@ -178,7 +284,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 agent_key="reviewer", title=f"{ctx.run_id} review {sid} r{round_no} p{i}", run_id=ctx.run_id,
                 stage="review", uploads=rev_uploads, work_item_id=wid,
                 description=REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
-                                                      git=git, round=round_no, second_round=second),
+                                                      git=git, round=round_no, second_round=second,
+                                                      preview_clause=rev_preview_clause),
                 rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["review"],
                 metadata={"pass": str(i)},
             )
@@ -205,7 +312,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         "spec.json": json.dumps(spec, indent=2).encode(), "diff.patch": diff["patch"].encode(),
         "findings.json": json.dumps(findings or {"findings": []}, indent=2).encode(),
         "review_response.json": json.dumps(response or {"responses": []}, indent=2).encode(),
-        "test_results.json": json.dumps(cmd_results, indent=2).encode(),
+        "test_results.json": json.dumps({"commands": cmd_results, "e2e": e2e_results, "preview": preview}, indent=2).encode(),
         "deterministic_checks.json": json.dumps([d.to_dict() for d in det], indent=2).encode(),
     }
     res = ctx.driver.run(

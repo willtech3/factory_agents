@@ -86,3 +86,65 @@ def test_gate_decision_binds_artifact_hashes():
                                 artifact_shas=("a" * 64, "b" * 64), approved_subset=("spec_x",))
     with pytest.raises(ValueError):
         validate_decision(gate, wrong_option)
+
+
+def _merge_item(store, run_id, wid):
+    for stage in ("spec_drafting", "spec_judging", "spec_approved", "implementing", "reviewing", "merge_judging",
+                  "integrating", "mr_open", "merged"):
+        store.append(run_id, "work_item.stage", {"type": "orchestrator"}, {"stage": stage}, work_item_id=wid)
+
+
+def test_deploy_stages_follow_merge(tmp_path, examples):
+    store = RunStore(tmp_path)
+    store.append("run_d", "run.created", {"type": "orchestrator"}, {"outcome_id": "o"})
+    store.append("run_d", "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
+                                                                 "work_items": examples["decomposition"]["work_items"]})
+    _merge_item(store, "run_d", "wi-smart-retries")
+    for stage in ("spec_drafting", "spec_judging", "spec_approved"):
+        store.append("run_d", "work_item.stage", {"type": "orchestrator"}, {"stage": stage}, work_item_id="wi-dunning-emails")
+    store.append("run_d", "work_item.stage", {"type": "orchestrator"}, {"stage": "deploying_dev"}, work_item_id="wi-smart-retries")
+    store.append("run_d", "deploy.started", {"type": "platform"}, {"pipeline_id": 77, "sha": "abc"}, work_item_id="wi-smart-retries")
+    st = store.state("run_d")
+    assert st.work_items["wi-smart-retries"].stage == WorkItemStage.DEPLOYING_DEV
+    assert st.work_items["wi-smart-retries"].dev_pipeline_id == 77
+    # A dependant may start once the upstream item is on the default branch, deploy still in flight.
+    assert [w.work_item_id for w in st.ready_work_items()] == ["wi-dunning-emails"]
+    store.append("run_d", "deploy.succeeded", {"type": "platform"}, {"pipeline_id": 77, "environment_url": "https://dev.example.internal"},
+                 work_item_id="wi-smart-retries")
+    store.append("run_d", "e2e.dev_passed", {"type": "orchestrator"}, {"environment_url": "https://dev.example.internal", "results": []},
+                 work_item_id="wi-smart-retries")
+    store.append("run_d", "work_item.stage", {"type": "orchestrator"}, {"stage": "deployed_dev"}, work_item_id="wi-smart-retries")
+    st = store.state("run_d")
+    assert st.work_items["wi-smart-retries"].stage == WorkItemStage.DEPLOYED_DEV
+    assert st.work_items["wi-smart-retries"].dev_environment_url == "https://dev.example.internal"
+
+
+def test_deploy_failure_routes_back_to_implementing(tmp_path, examples):
+    store = RunStore(tmp_path)
+    store.append("run_e", "run.created", {"type": "orchestrator"}, {"outcome_id": "o"})
+    store.append("run_e", "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
+                                                                 "work_items": examples["decomposition"]["work_items"]})
+    _merge_item(store, "run_e", "wi-smart-retries")
+    for stage in ("deploying_dev", "escalated", "implementing"):
+        store.append("run_e", "work_item.stage", {"type": "orchestrator"}, {"stage": stage}, work_item_id="wi-smart-retries")
+    assert store.state("run_e").work_items["wi-smart-retries"].stage == WorkItemStage.IMPLEMENTING
+
+
+def test_illegal_deploy_transitions(tmp_path, examples):
+    store = RunStore(tmp_path)
+    store.append("run_f", "run.created", {"type": "orchestrator"}, {"outcome_id": "o"})
+    store.append("run_f", "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
+                                                                 "work_items": examples["decomposition"]["work_items"]})
+    _merge_item(store, "run_f", "wi-smart-retries")
+    store.append("run_f", "work_item.stage", {"type": "orchestrator"}, {"stage": "deployed_dev"}, work_item_id="wi-smart-retries")
+    with pytest.raises(IllegalTransition):   # merged -> deployed_dev skips the observation
+        store.state("run_f")
+    store2 = RunStore(tmp_path / "g")
+    store2.append("run_g", "run.created", {"type": "orchestrator"}, {"outcome_id": "o"})
+    store2.append("run_g", "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
+                                                                  "work_items": examples["decomposition"]["work_items"]})
+    _merge_item(store2, "run_g", "wi-smart-retries")
+    store2.append("run_g", "work_item.stage", {"type": "orchestrator"}, {"stage": "deploying_dev"}, work_item_id="wi-smart-retries")
+    store2.append("run_g", "work_item.stage", {"type": "orchestrator"}, {"stage": "implementing"}, work_item_id="wi-smart-retries")
+    with pytest.raises(IllegalTransition):   # deploying_dev -> implementing only via the escalation gate
+        store2.state("run_g")

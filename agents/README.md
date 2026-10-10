@@ -29,6 +29,7 @@ Review the plan, then re-run with `--yes` once you agree with it. `claude-lock.j
 - **Tests are a contract.** Implementers may add tests and may not modify or delete existing tests unless the spec's `allowed_paths` explicitly includes them. The orchestrator enforces this deterministically.
 - **Say so when stuck.** Every agent has an explicit way to stop and report rather than improvise: `ask_human` for the planning agents, an `open_questions` block for writers, `escalate` results for judges.
 - **Web off by default.** Only `codebase_researcher` may be given web access, per session, when a spec involves an external API.
+- **The platform is not ours.** Decomposer, spec writer, spec judge, implementer, and reviewer read the `platform-contract` skill (placeholder in `skills/`; the platform team's version replaces it). Nobody deploys; nobody touches IAM, networking, CI templates, or the platform repository. Implementer and reviewer run `test_plan.e2e` against the preview URL the orchestrator hands them in `preview.json`.
 
 ## Self-preference caveat
 

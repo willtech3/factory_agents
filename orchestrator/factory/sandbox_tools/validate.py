@@ -27,6 +27,7 @@ ARTIFACT_TO_SCHEMA = {
     "findings": "review_findings.schema.json",
     "review_response": "review_response.schema.json",
     "merge_readiness": "merge_readiness.schema.json",
+    "service_manifest": "service_manifest.schema.json",
 }
 
 

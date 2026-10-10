@@ -13,19 +13,20 @@
   ],
   "context": "Stripe webhooks arrive at app/controllers/webhooks/stripe_controller.rb:14-40, which verifies the signature and dispatches by event type to Billing::StripeWebhookHandler (app/services/billing/stripe_webhook_handler.rb:8-61). Only invoice.paid and customer.subscription.deleted are handled today (lines 20-31); invoice.payment_failed falls through to the no-op default at line 58. Smart Retries is a Stripe account setting, not an API call; the Stripe Billing dashboard toggle is out of code scope and is listed as an external step. Existing failure path: Billing::FailureNotifier (app/services/billing/failure_notifier.rb:5) sends one email and sets accounts.payment_failed_at.",
   "acceptance_criteria": [
-    {"ac_id": "AC-1", "given": "a Stripe invoice.payment_failed webhook for a known customer", "when": "it is received", "then": "a payment_attempts row is created with stripe_event_id, stripe_invoice_id, attempt_number (from invoice.attempt_count), outcome 'failed', failure_code, and occurred_at", "verification": "automated_test"},
-    {"ac_id": "AC-2", "given": "a Stripe invoice.paid webhook for an invoice that has prior failed attempts", "when": "it is received", "then": "a payment_attempts row with outcome 'succeeded' is created and accounts.payment_failed_at is cleared", "verification": "automated_test"},
-    {"ac_id": "AC-3", "given": "the same Stripe event delivered twice (same stripe_event_id)", "when": "both are processed", "then": "exactly one payment_attempts row exists and the second delivery returns 200", "verification": "automated_test"},
-    {"ac_id": "AC-4", "given": "an invoice.payment_failed webhook whose invoice has next_payment_attempt null (Stripe gave up)", "when": "it is received", "then": "the row is created with final_attempt true and a BillingEvents::RetriesExhausted event is published", "verification": "automated_test"},
-    {"ac_id": "AC-5", "given": "a webhook for a customer id not in our database", "when": "it is received", "then": "no row is created, the event is logged at warn with the customer id, and the response is 200", "verification": "automated_test"},
-    {"ac_id": "AC-6", "given": "the migration", "when": "it runs on a copy of production data", "then": "it is additive only: creates payment_attempts and its indexes, touches no existing table", "verification": "static_check", "verification_note": "Reviewed by reading the migration; enforced by allowed_paths and the must_not constraint."},
-    {"ac_id": "AC-7", "given": "the existing one-off failure email", "when": "invoice.payment_failed is handled", "then": "Billing::FailureNotifier is still invoked exactly once per failed attempt (behaviour unchanged until spec_dunning-emails replaces it)", "verification": "automated_test"},
-    {"ac_id": "AC-8", "given": "any webhook handled by this change", "when": "processing raises", "then": "the exception is reported to the error tracker and the response is 500 so Stripe retries delivery", "verification": "automated_test"}
+    {"ac_id": "AC-1", "user_visible": true, "given": "a Stripe invoice.payment_failed webhook for a known customer", "when": "it is received", "then": "a payment_attempts row is created with stripe_event_id, stripe_invoice_id, attempt_number (from invoice.attempt_count), outcome 'failed', failure_code, and occurred_at", "verification": "automated_test"},
+    {"ac_id": "AC-2", "user_visible": false, "given": "a Stripe invoice.paid webhook for an invoice that has prior failed attempts", "when": "it is received", "then": "a payment_attempts row with outcome 'succeeded' is created and accounts.payment_failed_at is cleared", "verification": "automated_test"},
+    {"ac_id": "AC-3", "user_visible": true, "given": "the same Stripe event delivered twice (same stripe_event_id)", "when": "both are processed", "then": "exactly one payment_attempts row exists and the second delivery returns 200", "verification": "automated_test"},
+    {"ac_id": "AC-4", "user_visible": false, "given": "an invoice.payment_failed webhook whose invoice has next_payment_attempt null (Stripe gave up)", "when": "it is received", "then": "the row is created with final_attempt true and a BillingEvents::RetriesExhausted event is published", "verification": "automated_test"},
+    {"ac_id": "AC-5", "user_visible": true, "given": "a webhook for a customer id not in our database", "when": "it is received", "then": "no row is created, the event is logged at warn with the customer id, and the response is 200", "verification": "automated_test"},
+    {"ac_id": "AC-6", "user_visible": false, "given": "the migration", "when": "it runs on a copy of production data", "then": "it is additive only: creates payment_attempts and its indexes, touches no existing table", "verification": "static_check", "verification_note": "Reviewed by reading the migration; enforced by allowed_paths and the must_not constraint."},
+    {"ac_id": "AC-7", "user_visible": false, "given": "the existing one-off failure email", "when": "invoice.payment_failed is handled", "then": "Billing::FailureNotifier is still invoked exactly once per failed attempt (behaviour unchanged until spec_dunning-emails replaces it)", "verification": "automated_test"},
+    {"ac_id": "AC-8", "user_visible": true, "given": "any webhook handled by this change", "when": "processing raises", "then": "the exception is reported to the error tracker and the response is 500 so Stripe retries delivery", "verification": "automated_test"}
   ],
   "interfaces": [
     {"name": "payment_attempts", "kind": "db_schema", "change": "new", "definition": "payment_attempts(id bigint pk, account_id bigint fk accounts not null, stripe_invoice_id string not null, stripe_event_id string not null unique, attempt_number int not null, outcome enum('failed','succeeded') not null, failure_code string null, final_attempt boolean not null default false, occurred_at timestamptz not null, created_at). Indexes: unique(stripe_event_id); (account_id, occurred_at desc).", "consumed_by_specs": ["spec_at-risk-admin", "spec_suspension-timing"]},
     {"name": "BillingEvents::RetriesExhausted", "kind": "event", "change": "new", "definition": "ActiveSupport::Notifications event 'billing.retries_exhausted' with payload {account_id:, stripe_invoice_id:, last_attempt_at:}. Published once per invoice when Stripe reports no further retry.", "consumed_by_specs": ["spec_suspension-timing", "spec_dunning-emails"]},
-    {"name": "PaymentAttempt model", "kind": "function", "change": "new", "definition": "class PaymentAttempt < ApplicationRecord; scope :open_failures -> accounts whose latest attempt is failed and not final; def self.record_from_stripe_event!(event) -> PaymentAttempt (idempotent on stripe_event_id)", "consumed_by_specs": ["spec_at-risk-admin"]}
+    {"name": "PaymentAttempt model", "kind": "function", "change": "new", "definition": "class PaymentAttempt < ApplicationRecord; scope :open_failures -> accounts whose latest attempt is failed and not final; def self.record_from_stripe_event!(event) -> PaymentAttempt (idempotent on stripe_event_id)", "consumed_by_specs": ["spec_at-risk-admin"]},
+    {"name": "service_manifest.json", "kind": "config", "change": "modified", "definition": "Per the platform contract: env gains {name: STRIPE_WEBHOOK_SECRET, secret: true} if absent; migrations.additive_only stays true. No runtime, health, or resource change.", "consumed_by_specs": []}
   ],
   "allowed_paths": [
     "app/services/billing/stripe_webhook_handler.rb",
@@ -36,7 +37,10 @@
     "db/schema.rb",
     "spec/services/billing/stripe_webhook_handler_spec.rb",
     "spec/models/payment_attempt_spec.rb",
-    "spec/factories/payment_attempts.rb"
+    "spec/factories/payment_attempts.rb",
+    "spec/e2e/stripe_webhook_preview_spec.rb",
+    "spec/fixtures/stripe/*.json",
+    "service_manifest.json"
   ],
   "forbidden_changes": [
     "Any change to app/controllers/webhooks/stripe_controller.rb signature verification",
@@ -57,7 +61,14 @@
       {"covers_ac": ["AC-3"], "description": "duplicate event id is idempotent", "suggested_location": "spec/models/payment_attempt_spec.rb"},
       {"covers_ac": ["AC-4"], "description": "null next_payment_attempt marks final and publishes RetriesExhausted", "suggested_location": "spec/services/billing/stripe_webhook_handler_spec.rb"},
       {"covers_ac": ["AC-5"], "description": "unknown customer logs and returns without a row", "suggested_location": "spec/services/billing/stripe_webhook_handler_spec.rb"},
-      {"covers_ac": ["AC-8"], "description": "handler exceptions are reported and surface as 500", "suggested_location": "spec/services/billing/stripe_webhook_handler_spec.rb"}
+      {"covers_ac": ["AC-8"], "description": "handler exceptions are reported and surface as 500", "suggested_location": "spec/services/billing/stripe_webhook_handler_spec.rb"},
+      {"covers_ac": ["AC-1", "AC-3", "AC-5", "AC-8"], "description": "HTTP-level checks that post signed fixture events to a running instance (used by the e2e entries below)", "suggested_location": "spec/e2e/stripe_webhook_preview_spec.rb"}
+    ],
+    "e2e": [
+      {"covers_ac": ["AC-1", "AC-3"], "command": "E2E_BASE_URL=$BASE_URL bundle exec rspec spec/e2e/stripe_webhook_preview_spec.rb -e 'payment_failed'", "target": "preview", "description": "Posts a signed invoice.payment_failed fixture to the preview's /webhooks/stripe, expects 200; posts it again, expects 200 and the same attempt (idempotency surfaced through the admin JSON endpoint that spec_at-risk-admin adds, or the response header X-Payment-Attempt-Id until then)."},
+      {"covers_ac": ["AC-5"], "command": "E2E_BASE_URL=$BASE_URL bundle exec rspec spec/e2e/stripe_webhook_preview_spec.rb -e 'unknown customer'", "target": "preview", "description": "Posts a fixture for a customer id not in the preview database; expects 200 and no attempt id in the response."},
+      {"covers_ac": ["AC-8"], "command": "E2E_BASE_URL=$BASE_URL bundle exec rspec spec/e2e/stripe_webhook_preview_spec.rb -e 'handler failure'", "target": "preview", "description": "Posts a fixture whose invoice object is malformed so the handler raises; expects 500 so Stripe would retry."},
+      {"covers_ac": ["AC-1", "AC-3", "AC-5", "AC-8"], "command": "bin/with-server bundle exec rspec spec/e2e/stripe_webhook_preview_spec.rb", "target": "local", "description": "Same checks against a locally booted server (bin/with-server starts Rails on :3000 and exports E2E_BASE_URL); lets the implementer iterate before the preview deploy finishes."}
     ]
   },
   "dependencies": {"specs": [], "external": ["Stripe dashboard: enable Smart Retries (owner action, before launch)"]},

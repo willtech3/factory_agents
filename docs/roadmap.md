@@ -15,10 +15,19 @@ Goal: one `decomposer` session end to end on the Ledgerline example outcome agai
 - Wire the design MR: branch, commit files, open draft MR, harvest comments into `feedback.md`. Test request-changes round-trip.
 - Wire `evals/run_eval.py::produce` to the driver and grade the spike's outputs with `--from-artifacts` first.
 
+## Spike 2b: the self-hosted GitLab pipeline and environment API (1 day)
+Goal: confirm the read-only calls Stage 5 and the preview lookup depend on, against the real instance. `gitlab.py`'s pipeline, job, environment, and deployment methods and `parse_pipeline_webhook` follow the GitLab REST docs and are marked unverified.
+- With `GITLAB_URL` pointed at the self-hosted host: list pipelines by `ref` and `sha`; fetch a pipeline, its jobs, and a failed job's trace; list environments by `name` and `search` and confirm `external_url` is populated by the platform's deploy jobs (`environment:url` in the CI template); list deployments by environment.
+- Learn the preview environment naming convention and set `FACTORY_PREVIEW_ENVIRONMENT_PREFIX`; learn the fixed service-manifest path and set `FACTORY_SERVICE_MANIFEST_PATH`; confirm the dev environment name (`FACTORY_DEV_ENVIRONMENT`).
+- Register a Pipeline Hook pointing at a throwaway endpoint and compare the payload with what `parse_pipeline_webhook` expects.
+- Add the preview and dev domains to `environments/factory-cloud.yaml` `allowed_hosts` and confirm a sandbox can `curl` a preview URL.
+- Replace `skills/platform-contract/SKILL.md` with the platform team's real skill and `schemas/service_manifest.schema.json` with their schema; re-run the tests.
+
 ## Spike 3: one implementation through review and MR (3 to 5 days)
 - Implement `spec_smart-retries` on the fork. Replace `LocalVerifier` with a GitLab CI job on the factory branch (same interface: commands, exit codes, diff).
 - Watch the reviewer: are findings falsifiable, do refutation conditions make sense, how many are withdrawn? Tune `reviewer.md` from what you see, one rule per observed failure.
-- Open the MR. Have a real engineer review it and time them.
+- Watch the preview loop: does `preview.json` become `ready` before the implementer finishes, do the `preview` e2e entries run in the sandbox, does `e2e_preview` agree with what the implementer reported?
+- Open the MR. Have a real engineer review it and time them. Merge it and watch Stage 5 end at `DEPLOYED_DEV`; break the next one deliberately and confirm the `DEPLOY_FAILURE` gate carries a useful log excerpt.
 
 ## Milestone A: unattended end-to-end on factory-bench `lintr` (week 3)
 - Build the smallest `factory-bench` repo (the Python CLI) with two outcomes and hidden suites.
@@ -40,12 +49,16 @@ Goal: one `decomposer` session end to end on the Ledgerline example outcome agai
 - **Multiple target repositories per outcome.** Schema allows it; orchestrator handles the first only.
 - **Stacked MRs** for dependent specs. Currently serial: a dependent spec waits for the upstream merge.
 - **Self-hosted sandboxes.** Only if a repository cannot be cloned into Anthropic's cloud environment.
+- **Promotion beyond dev, reverts, and any infrastructure change.** Human and platform-owned by design (ADR-0006); not a future feature.
 
 ## Known gaps in what is here
 
 - `sessions.py`, `gitlab.py`, and the stage modules are written against documented APIs and have not been executed live. Treat field names as hypotheses until spike 1.
 - `run_eval.py::produce` is a stub.
 - The Factory Console is described, not built. Everything it needs is in `events.jsonl` and the queue files.
-- `LocalVerifier` runs test commands on the orchestrator host; production must move this to CI.
+- `LocalVerifier` runs test commands and e2e entries on the orchestrator host; production must move this to CI.
+- `gitlab.py`'s pipeline, job, environment, and deployment reads and the pipeline webhook parser are unverified against the self-hosted instance (spike 2b). `preview_info` fails closed when they misbehave, which blocks merges until fixed.
+- Stage 5 is driven by `deploy_observe.on_mr_merged`, which the MR watcher must call; the watcher and the webhook HTTP endpoint belong to the Factory Console and are not in this repository.
+- `skills/platform-contract/SKILL.md` and `schemas/service_manifest.schema.json` are placeholders; the platform team's versions replace them.
 - `merge_findings` de-duplicates by file and the first three characters of the line number, which is crude; good enough until real findings show what collides.
 - Human comments at Gate 2 are broadcast to every spec's writer; per-spec routing from inline MR positions is straightforward and should be done in spike 2.

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.example/schemas/service_manifest.schema.json",
+  "title": "ServiceManifest",
+  "description": "PLACEHOLDER. The platform team's real service-manifest schema replaces this file; keep the filename so `checks.manifest_valid` and the tests keep working. This minimal version exists so the factory can validate that a work item declared what the platform needs (name, runtime, health endpoint, env vars with a secret flag, migrations command, resources). Every field here is expected to survive in the real schema; the real schema will add more. The manifest lives at a fixed path in the application repository named by the platform-contract skill.",
+  "type": "object",
+  "required": ["service", "runtime", "health", "env"],
+  "properties": {
+    "service": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,62}$",
+      "description": "Service name as the platform knows it; becomes part of the preview URL."
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "description": "Runtime family the platform supports (for example container, cloud-run, function). Enum left open on purpose; the real schema closes it." },
+        "version": { "type": "string" },
+        "entrypoint": { "type": "string", "description": "Command the platform runs to start the service." },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "health": {
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^/", "description": "HTTP path the platform probes for readiness." },
+        "expect_status": { "type": "integer", "default": 200 },
+        "timeout_seconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "env": {
+      "type": "array",
+      "description": "Every environment variable the service reads. Secrets are delivered by the platform; the manifest only declares them.",
+      "items": {
+        "type": "object",
+        "required": ["name", "secret"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+          "secret": { "type": "boolean" },
+          "required": { "type": "boolean", "default": true },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "migrations": {
+      "type": "object",
+      "properties": {
+        "command": { "type": "string", "description": "Run by the platform before the new revision receives traffic." },
+        "additive_only": { "type": "boolean", "description": "Declares that migrations in this revision never drop or rewrite existing data." }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "cpu": { "type": "string" },
+        "memory": { "type": "string" },
+        "min_instances": { "type": "integer", "minimum": 0 },
+        "max_instances": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

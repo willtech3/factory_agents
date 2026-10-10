@@ -61,18 +61,25 @@ GitLab notifies the code owner of MR !418, titled `spec_smart-retries: Enable St
 6. **Where to start reading**: `app/models/payment_attempt.rb` (the idempotent insert), then the two handler branches, then the migration.
 7. **Provenance**: a table of every session, agent version, and cost, each linking to the Console trace.
 
-The engineer reads the code. This is real review: HumanLayer's conclusion after five months of plan-only review was "read the dang code". The factory's job is to make this review take 20 minutes instead of two hours, by having removed the bugs a machine can find and by telling the reviewer exactly where to look and what was already contested. The engineer approves and merges; the webhook records `mr.merged`; the dependent specs become ready.
+The engineer reads the code, and can click the preview URL in the Verification section to poke the deployed branch themselves: the three preview end-to-end checks the spec declared are listed with the orchestrator's exit codes, next to the reviewer's own probes of the deployed instance. This is real review: HumanLayer's conclusion after five months of plan-only review was "read the dang code". The factory's job is to make this review take 20 minutes instead of two hours, by having removed the bugs a machine can find and by telling the reviewer exactly where to look and what was already contested. The engineer approves and merges; the webhook records `mr.merged`; the dependent specs become ready.
 
 If the engineer wants a change, they comment on the MR as usual. The operator (or an automation on a label) can send the comments back as a new implementer round; the engineer does not have to take the branch over.
 
-### 8. Escalations (engineer or owner, as needed)
+### 8. After the merge: the dev verification result (engineer, 0 to 10 minutes)
+Nothing for the engineer to do when it works. The platform's pipeline deploys `main` to dev as it would for any merge; the run board shows the work item as **Deploying to dev** with the pipeline link, then **Deployed to dev** once the orchestrator has watched the pipeline succeed and re-run the spec's three end-to-end checks and the team's smoke suite against the dev URL. The timeline entry reads: *deploy.succeeded (pipeline #4812, 6m 40s) · e2e on https://dev.ledgerline.internal: 3 of 3 passed · smoke: 2 of 2*. Slack: *"spec_smart-retries is live in dev and verified."* Promotion beyond dev is the team's normal release process; the factory does not touch it.
+
+When it does not work, the engineer gets a **Deploy failure** gate instead, with the failed job's log tail (or the failing e2e command and its output) and three buttons: **Request changes** sends the item back to an implementer on a fresh branch with the engineer's comment as the first finding, so a follow-up MR appears without anyone taking the branch over; **Approve** says the pipeline failure was the platform's (a flaky runner) and the next pipeline should be watched; **Reject** closes the item. In the Ledgerline run, the migration needed an extension the preview database had but dev did not; the engineer wrote one line, the follow-up MR arrived 40 minutes later with the additive fix and the dev checks green.
+
+Two months later Priya fills in `measured_at` and `measured_value` on the outcome's success metrics from the Metabase dashboard. No agent does that; it is the one field that closes the loop from code to the business outcome.
+
+### 9. Escalations (engineer or owner, as needed)
 Escalations open a gate with the reason and the relevant artifacts: a `blocked.md` from an implementer who found two criteria in conflict, a merge judge that saw the same finding survive two rounds, a spec judge that thinks the decomposition itself is wrong, or a session that hit its budget cap. The human can send the run back to a specific stage with comments, raise a budget, or close the work item. Escalations are the factory telling you it is out of its depth, which it should do early and specifically.
 
 ## What the Factory Console shows
 
 **Runs board**: columns = run stages; cards show outcome title, owner, days in stage, cost so far against budget, and a red marker when a gate or question is waiting on a person. Sorted by waiting-on-human first.
 
-**Run detail**: left, the event timeline (derived from `events.jsonl`) with filters by stage and actor; right, the work-item DAG with state colours; top, cost per stage and the budget; every artifact and session is one click away.
+**Run detail**: left, the event timeline (derived from `events.jsonl`) with filters by stage and actor; right, the work-item DAG with state colours (merged items show a dev marker: deploying, verified in dev, or failed); top, cost per stage and the budget; every artifact and session is one click away, as are the preview and dev URLs.
 
 **Approval inbox**: every open gate and blocking question across runs, oldest first, with the summary and the artifact links. One keyboard shortcut to open the design MR. Decisions require the artifact hashes shown, which the UI supplies.
 
@@ -89,9 +96,11 @@ Escalations open a gate with the reason and the relevant artifacts: a `blocked.m
 7. **Make escalation specific and early.** A `blocked.md` with a concrete conflict beats an implementer that guesses.
 8. **Keep design throughput ahead of implementation.** Gates 1 and 2 are cheap and human; implementation is expensive and slow. The board should rarely show implementations waiting on specs ([practitioners.md §7](research/practitioners.md)).
 9. **Every artifact links to its trace.** Trust comes from being able to look, not from being told.
+10. **Show the running thing, not just the diff.** Preview URL at Gate 3 and the dev result after merge, with the exact end-to-end commands and exit codes. Agents declare victory without end-to-end verification unless the harness demands it ([practitioners.md §3](research/practitioners.md)); the human should see what was actually exercised.
 
 ## What this UX deliberately does not do (yet)
 
 - **Auto-approve anything.** No gate is skipped by policy in v1. Tiered review (a bespoke review model sufficing for low-risk paths) is what the Codex team does ([practitioners.md §4](research/practitioners.md)); it belongs after six months of gate-decision telemetry shows where human approval adds nothing.
 - **Let humans chat with agents mid-stage.** Steering happens through gate comments and `ask_human` answers, which are recorded and replayable. Ad-hoc chat would make runs unreproducible and break the evals.
 - **Merge.** Ever.
+- **Deploy, promote, or touch infrastructure.** The platform's pipeline deploys; the factory watches and reports. Promotion beyond dev is the team's release process ([05-platform-and-deployment.md](05-platform-and-deployment.md)).

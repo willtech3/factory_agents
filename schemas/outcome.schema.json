@@ -25,7 +25,9 @@
           "metric": { "type": "string" },
           "baseline": { "type": ["string", "null"] },
           "target": { "type": "string" },
-          "measurement": { "type": "string", "description": "How and where this will be measured." }
+          "measurement": { "type": "string", "description": "How and where this will be measured." },
+          "measured_at": { "type": ["string", "null"], "format": "date-time", "description": "Filled in by a human after the change has been in dev or production long enough to read the metric. Never set by an agent." },
+          "measured_value": { "type": ["string", "null"], "description": "The observed value at measured_at, in the same units as target. Closes the loop from code to outcome." }
         }
       }
     },

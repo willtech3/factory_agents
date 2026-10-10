@@ -1,6 +1,6 @@
 # Pipeline mechanics
 
-This document describes what happens between a human submitting an outcome and a human merging code. The orchestrator in `orchestrator/factory/` implements it; `state.py` holds the legal transitions.
+This document describes what happens between a human submitting an outcome and the merged change running in `dev`. The orchestrator in `orchestrator/factory/` implements it; `state.py` holds the legal transitions. The deployment platform (GitLab CI templates, per-branch preview environments, the `dev` target) is assumed to exist and is described in [05-platform-and-deployment.md](05-platform-and-deployment.md).
 
 ## Vocabulary
 
@@ -9,7 +9,9 @@ This document describes what happens between a human submitting an outcome and a
 | **Outcome** | The human-written business goal with success metrics and constraints. `schemas/outcome.schema.json`. |
 | **Run** | One outcome's journey through the factory. Identified by `run_id`; all state is an append-only event log. |
 | **Work item** | One node of the decomposition DAG: a feature, task, workflow, agent, spike, or migration. |
-| **Spec** | The contract for one work item: acceptance criteria, interfaces, allowed paths, test plan. |
+| **Spec** | The contract for one work item: acceptance criteria (each flagged `user_visible`), interfaces, allowed paths, test plan including `e2e` checks that run against a deployed instance. |
+| **Preview environment** | The per-branch deployment the platform's CI creates for every branch. The end-to-end surface for implementer, reviewer, and the orchestrator's verification. |
+| **Platform contract** | The skill (owned by the platform team; `skills/platform-contract/SKILL.md` is a placeholder) that says what the platform provides, what the app must define (a service manifest at a fixed path), and what agents must never touch. |
 | **Stage session** | One Managed Agents session with one agent, one job, its own context and budget. |
 | **Gate** | A point where a human decision is required before the run continues. Bound to artifact hashes. |
 | **Deterministic check** | A computation the orchestrator performs that no agent can override. |
@@ -34,7 +36,7 @@ For each work item, in dependency-order waves (so a spec can reference the inter
 
 Verdict `pass` goes to Gate 2. `revise` routes issues back to the owning specs only (unchanged specs are not rewritten) for up to 3 rounds. `escalate`, or 3 rounds without a pass, opens an escalation gate with the judge's summary; the human can send the run back to decomposition.
 
-Deterministic checks before the judge spends tokens: schema validity, traceability to the decomposition. Failures are injected into the verdict as blocking issues.
+Deterministic checks before the judge spends tokens: schema validity, traceability to the decomposition, and `e2e_coverage` (every `user_visible` criterion has a `test_plan.e2e` entry). Failures are injected into the verdict as blocking issues. The judge additionally scores S11 (deployable through the platform contract; manifest present and valid) and S12 (end-to-end coverage, with honest `user_visible` flags).
 
 ### Gate 2: Specification readiness
 The design MR is updated with `specs/*.json` and `verdict.json`. The owner sees the judge's `summary_for_human` first, then the goal-coverage matrix, then per-spec issues. Options: approve all, approve a subset (the rest return to the writer), request changes, reject. Approval marks each spec `SPEC_APPROVED` and binds the decision to the artifact hashes.
@@ -42,9 +44,9 @@ The design MR is updated with `specs/*.json` and `verdict.json`. The owner sees 
 ### Stage 3: Implement, review, judge (per spec)
 Specs are scheduled in dependency waves; up to `parallel_implementations` run at once, each on its own branch `factory/<run_id>/<spec_id>` cut from the default branch (or from the dependency's branch when stacked).
 
-1. **Implementer** session, outcome rubric `rubrics/implementation.md`. Clones the repository (GitLab token substituted at egress; see ADR-0003), works in vertical slices with a test checkpoint each, commits per slice with the criteria covered, pushes. Writes `implementation_report.json`. May write `blocked.md` instead, which escalates.
-2. **Authoritative verification** by the orchestrator (in production: a CI job on the branch): checkout `head_sha`, run `test_plan.commands`, compute the diff, run the deterministic checks (scope, protected tests, test weakening, criterion-to-test mapping, command results). Results are stored and later handed to the merge judge verbatim.
-3. **Reviewer**: `reviewer_passes` (default 2) independent `reviewer` sessions, each a fresh context receiving spec, diff, implementation report (as hypotheses), and the branch. Findings are merged and de-duplicated by location, strictest severity wins. Each finding has a claim, evidence with reproduction, the criterion it violates, and a refutation condition.
+1. **Implementer** session, outcome rubric `rubrics/implementation.md`. Clones the repository (GitLab token substituted at egress; see ADR-0003), works in vertical slices with a test checkpoint each, commits per slice with the criteria covered, pushes. The push triggers the platform's pipeline, which deploys the branch to its preview environment; the session's `preview.json` (read by the orchestrator from GitLab's pipeline and environment records) carries the URL, and the implementer must run every `test_plan.e2e` entry against it and record the results. Writes `implementation_report.json`. May write `blocked.md` instead, which escalates.
+2. **Authoritative verification** by the orchestrator (in production: a CI job on the branch): checkout `head_sha`, run `test_plan.commands`, compute the diff, read the preview URL for `head_sha` from the pipeline's environment (self-hosted GitLab CI deploys the factory branch with the platform's WIF identity; the orchestrator never derives the URL from an agent's report), run `test_plan.e2e` against it (`LocalVerifier.run_e2e`), and run the deterministic checks (scope, protected tests, test weakening, criterion-to-test mapping, command results, `e2e_coverage`, `manifest_valid`, `e2e_preview`). An e2e entry that could not run counts as failed. Results are stored and later handed to the merge judge verbatim.
+3. **Reviewer**: `reviewer_passes` (default 2) independent `reviewer` sessions, each a fresh context receiving spec, diff, implementation report (as hypotheses), `preview.json`, and the branch. Each runs the preview e2e entries itself and probes the deployed instance; a `user_visible` criterion it could not exercise is `not_assessed`. Findings are merged and de-duplicated by location, strictest severity wins. Each finding has a claim, evidence with reproduction, the criterion it violates, and a refutation condition.
 4. If any blocking or major finding stands, or a deterministic check failed: **Implementer** again (a new session on the same branch) with `findings.json`. It must answer every finding: `fixed` with commit and test, `refuted` with evidence meeting the refutation condition, or `accepted_risk` for a human to decide. Back to step 2.
 5. Round 2 review is a **new** reviewer session that receives the previous findings and the response, judges each response against the refutation condition (`upheld` / `withdrawn`), then reviews the new hunks. Default `review_max_rounds = 2`; more rounds raise false positives faster than recall ([academic-2026.md §2](research/academic-2026.md), Song).
 6. **Merge judge**: one independent session with spec, diff, findings, responses, the orchestrator's test results and deterministic checks. Re-runs reproductions itself. Decides `ready`, `another_round` (with exactly what to do), or `escalate`. A failing deterministic check forces `another_round` regardless of what the judge writes.
@@ -53,7 +55,12 @@ Specs are scheduled in dependency waves; up to `parallel_implementations` run at
 `integrator` session assembles the MR description from `templates/mr_template.md` (judge summary first, decisions needed, acceptance criteria table with evidence, contested findings, verification, provenance links to every session) and calls the `open_merge_request` custom tool. The orchestrator executes it with its own GitLab token, applies labels, assigns reviewers, and links the design MR.
 
 ### Gate 3: Human code review
-Ordinary GitLab review. The factory never merges. An MR watcher (webhook from GitLab) records `mr.merged` or `mr.closed`; a merge unblocks dependent specs. Human review comments on a factory MR can be routed back as a new implementer round (`MR_OPEN -> IMPLEMENTING`), which is how a human steers an almost-right change without taking it over.
+Ordinary GitLab review. The factory never merges. An MR watcher (webhook from GitLab) records `mr.merged` or `mr.closed`; a merge unblocks dependent specs and starts Stage 5. Human review comments on a factory MR can be routed back as a new implementer round (`MR_OPEN -> IMPLEMENTING`), which is how a human steers an almost-right change without taking it over.
+
+### Stage 5: Observed deploy to dev
+No agent runs. The platform's own pipeline on the default branch deploys to `dev` with its existing templates and WIF identity, as it would for any merge. The orchestrator (`stages/deploy_observe.py`) moves the work item `MERGED -> DEPLOYING_DEV`, finds the pipeline for the merge commit (a GitLab pipeline webhook may report it first; polling via `gitlab.py` is the source of truth), and records `deploy.started`, then `deploy.succeeded` or `deploy.failed` with a log excerpt. On success it reads the dev URL from the `dev` environment record, runs the spec's `test_plan.e2e` entries plus an optional smoke suite against it, and records `e2e.dev_passed` or `e2e.dev_failed`. Success ends the work item at `DEPLOYED_DEV`.
+
+Any failure opens a `DEPLOY_FAILURE` gate carrying the pipeline or e2e log excerpt. Options: `request_changes` routes the item back to `IMPLEMENTING` on a fresh branch with the comments as the first finding (a follow-up MR, not a revert); `approve` says the failure was the platform's and the next pipeline is watched once more; `reject` closes the item. Promotion beyond `dev` is a human act outside the factory. Rationale and evidence: [05-platform-and-deployment.md](05-platform-and-deployment.md), [ADR-0006](adr/0006-observed-deployment-not-agent-driven.md).
 
 ## Run-level state
 
@@ -65,7 +72,7 @@ intake ─► decomposing ─► gate_1 ─► specifying ─► gate_2 ─► i
              └─► escalated            └─► closed                   └─► failed
 ```
 
-Work items have their own state (`pending → spec_drafting → spec_judging → spec_approved → implementing → reviewing → responding → merge_judging → integrating → mr_open → merged`, with `blocked`, `escalated`, `closed` side exits). `state.py` encodes both tables and rejects illegal transitions, so a bug in a stage module cannot put a run into an impossible state.
+Work items have their own state (`pending → spec_drafting → spec_judging → spec_approved → implementing → reviewing → responding → merge_judging → integrating → mr_open → merged → deploying_dev → deployed_dev`, with `blocked`, `escalated`, `closed` side exits; a dependant may start once its upstream is `merged` or later). `state.py` encodes both tables and rejects illegal transitions, so a bug in a stage module cannot put a run into an impossible state.
 
 ## Budgets and limits
 
@@ -78,6 +85,8 @@ Work items have their own state (`pending → spec_drafting → spec_judging →
 | Review rounds | 2 | One fresh review per round. |
 | Reviewer passes | 2 | Independent copies, merged. |
 | Parallel implementations | 3 | Separate branches; serial merge via Gate 3. |
+| Preview wait | 30 min | How long authoritative verification waits for the platform's pipeline to deploy `head_sha` to its preview before `e2e_preview` fails closed. |
+| Dev pipeline timeout | 60 min | Stage 5: how long the orchestrator watches the dev pipeline before opening a `DEPLOY_FAILURE` gate. |
 
 ## Failure handling
 
@@ -86,6 +95,8 @@ Work items have their own state (`pending → spec_drafting → spec_judging →
 - **`blocked.md`:** implementer could not proceed without changing scope or resolving a spec conflict. Escalation gate with the file's content; the human can send the spec back to the writer.
 - **Non-convergence:** same finding across two rounds, or judge `escalate`. Escalation gate with the exchange summarised.
 - **Budget:** `budget_reached` on any session pauses the run; a human raises the cap or closes.
+- **No preview for the branch:** `preview.json` reports `pending` or `failed`; agents run `local` e2e entries meanwhile, and the orchestrator's `e2e_preview` check fails closed until the platform's pipeline has deployed `head_sha`. A persistent platform failure is a `blocked.md` from the implementer, not something it works around.
+- **Dev deploy or dev e2e failure after merge:** `DEPLOY_FAILURE` gate (Stage 5) with the log excerpt; back to `IMPLEMENTING` on a fresh branch, re-observe, or close.
 
 ## Why not one coordinator session for the whole run
 

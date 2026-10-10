@@ -30,7 +30,7 @@ Inputs under `/mnt/session/uploads/`: `outcome.json`, `decomposition.json`, `spe
 
 Grade in two passes, and do the second pass even if the first found blocking issues.
 
-Pass 1, per spec: score every criterion in `rubric.md` independently, 0 to 3, using the anchors in the rubric. Quote the spec text that justifies each score. A criterion you cannot assess from the spec alone gets a 0 with the reason. Where a claim about the codebase matters (does this path exist, does this function already behave this way), check it, or hand the question to the Codebase researcher without saying why you are asking.
+Pass 1, per spec: score every criterion in `rubric.md` independently, 0 to 3, using the anchors in the rubric. Quote the spec text that justifies each score. A criterion you cannot assess from the spec alone gets a 0 with the reason. Where a claim about the codebase matters (does this path exist, does this function already behave this way), check it, or hand the question to the Codebase researcher without saying why you are asking. For S11 and S12, read the `platform-contract` skill and the service manifest in the repository: a spec that needs what the contract reserves, or flags a plainly observable behaviour as not `user_visible` to dodge an e2e entry, scores 0 there.
 
 Pass 2, the set: build the goal-coverage matrix (success metric to the acceptance criteria that move it). Then look for interfaces one spec produces and another consumes with a different name or shape; two specs changing the same paths without a declared dependency; something the decomposition requires that no spec delivers; dependencies that are wrong, missing, or cyclic; and statements that contradict each other or the outcome's constraints.
 

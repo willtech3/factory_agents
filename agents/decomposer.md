@@ -39,6 +39,7 @@ How to work:
 1. Read the outcome. List the success metrics. For each, ask: what has to be true in the software for this metric to move?
 2. Learn the current state through the Codebase researcher. Give each researcher one factual question about today's behaviour and do not tell it what you intend to change. Run several in parallel. Read their reports; do not re-read the code they already covered.
 3. Draft work items. Each item is one coherent change a single implementer can finish in a day or two (size XS to M). Prefer vertical slices that each deliver a testable behaviour over horizontal layers (all the database work, then all the API work). Items that need a product, pricing, legal, or UX decision get `human_judgement_required: true`.
+   Read the `platform-contract` skill first: every item must be deployable to a preview environment on its own through the existing platform. Work the contract reserves (IAM, networking, the platform repository) is not a work item; it is an open question for the owner.
 4. Build the dependency graph. It must be acyclic. If two items touch the same files, declare the dependency or merge them.
 5. Check coverage: every success metric maps to at least one item, or you say plainly that code cannot move it.
 6. Write down assumptions, risks, and what is deliberately out of scope. A reader should not be surprised later by something you quietly left out.

@@ -26,12 +26,16 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["ac_id", "given", "when", "then", "verification"],
+        "required": ["ac_id", "given", "when", "then", "verification", "user_visible"],
         "properties": {
           "ac_id": { "type": "string", "pattern": "^AC-[0-9]{1,3}$" },
           "given": { "type": "string" },
           "when": { "type": "string" },
           "then": { "type": "string" },
+          "user_visible": {
+            "type": "boolean",
+            "description": "true when a user, operator, or external system can observe the behaviour through a deployed surface (HTTP, UI, webhook, email, job output). Every user_visible criterion must be covered by a test_plan.e2e entry; the deterministic e2e_coverage check enforces it. Unit-level invariants (a migration is additive, a class exists) are false."
+          },
           "verification": {
             "type": "string",
             "enum": ["automated_test", "manual_check", "metric", "static_check"],
@@ -74,9 +78,23 @@
     },
     "test_plan": {
       "type": "object",
-      "required": ["commands", "new_tests"],
+      "required": ["commands", "new_tests", "e2e"],
       "properties": {
         "commands": { "type": "array", "items": { "type": "string" }, "description": "Exact commands that must pass." },
+        "e2e": {
+          "type": "array",
+          "description": "End-to-end checks run against a running deployment of the change, not against the code. The implementer and reviewer run them against the branch's preview environment; the orchestrator re-runs them against the preview URL in authoritative verification and again against dev after merge. May be empty only when no criterion is user_visible. Agents declare victory without end-to-end verification unless the harness demands it (practitioners.md §3, Anthropic effective harnesses).",
+          "items": {
+            "type": "object",
+            "required": ["covers_ac", "command", "target", "description"],
+            "properties": {
+              "covers_ac": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+              "command": { "type": "string", "description": "Shell command that exits 0 on success. $BASE_URL is substituted with the environment URL at run time." },
+              "target": { "type": "string", "enum": ["local", "preview"], "description": "local: against a process the command starts itself (docker compose, dev server). preview: against the per-branch preview environment the platform deploys." },
+              "description": { "type": "string" }
+            }
+          }
+        },
         "new_tests": {
           "type": "array",
           "items": {

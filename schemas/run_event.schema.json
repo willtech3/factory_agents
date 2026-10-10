@@ -31,6 +31,11 @@
         "mr.opened",
         "mr.merged",
         "mr.closed",
+        "deploy.started",
+        "deploy.succeeded",
+        "deploy.failed",
+        "e2e.dev_passed",
+        "e2e.dev_failed",
         "budget.reached",
         "run.escalated",
         "run.failed",
@@ -48,6 +53,6 @@
     "stage": { "type": ["string", "null"] },
     "work_item_id": { "type": ["string", "null"] },
     "spec_id": { "type": ["string", "null"] },
-    "payload": { "type": "object", "description": "Kind-specific. For gate.decided: {gate, decision, comments}. For artifact.produced: {artifact_type, path, sha256}. For session.*: {session_id, agent_id, agent_version, list_cost_usd}." }
+    "payload": { "type": "object", "description": "Kind-specific. For gate.decided: {gate, decision, comments}. For artifact.produced: {artifact_type, path, sha256}. For session.*: {session_id, agent_id, agent_version, list_cost_usd}. For deploy.*: {pipeline_id, pipeline_url, sha, environment, environment_url, log_excerpt}. For e2e.dev_*: {environment_url, results: [{command, exit_code, covers_ac}]}." }
   }
 }

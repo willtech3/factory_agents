@@ -1,0 +1,31 @@
+{
+  "service": "ledgerline-app",
+  "runtime": {
+    "kind": "container",
+    "version": "ruby-3.3",
+    "entrypoint": "bin/rails server -p 3000",
+    "port": 3000
+  },
+  "health": {
+    "path": "/up",
+    "expect_status": 200,
+    "timeout_seconds": 5
+  },
+  "env": [
+    {"name": "RAILS_ENV", "secret": false, "required": true, "description": "production in dev and preview; the platform sets it"},
+    {"name": "DATABASE_URL", "secret": true, "required": true, "description": "Per-environment Postgres; preview environments get a fresh database"},
+    {"name": "STRIPE_SECRET_KEY", "secret": true, "required": true, "description": "Test-mode key in preview and dev"},
+    {"name": "STRIPE_WEBHOOK_SECRET", "secret": true, "required": true, "description": "Signing secret for /webhooks/stripe; preview uses a per-environment test secret so e2e checks can sign fixtures"},
+    {"name": "SENTRY_DSN", "secret": true, "required": false, "description": "Error tracker used by AC-8; absent in preview"}
+  ],
+  "migrations": {
+    "command": "bin/rails db:migrate",
+    "additive_only": true
+  },
+  "resources": {
+    "cpu": "1",
+    "memory": "1Gi",
+    "min_instances": 0,
+    "max_instances": 3
+  }
+}

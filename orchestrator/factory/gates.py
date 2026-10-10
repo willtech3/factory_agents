@@ -26,6 +26,7 @@ class GateKind(str, Enum):
     DECOMPOSITION_REVIEW = "gate_1_decomposition"
     SPEC_READINESS = "gate_2_spec_readiness"
     ESCALATION = "escalation"             # judge or loop could not converge
+    DEPLOY_FAILURE = "deploy_failure"     # Stage 5: dev pipeline failed or dev e2e failed; carries the log excerpt
     # Gate 3 (code review) is GitLab's own MR approval; see gitlab.py
 
 
@@ -34,6 +35,8 @@ class Decision(str, Enum):
     REQUEST_CHANGES = "request_changes"   # comments go back to the producing agent as feedback.md
     REJECT = "reject"                     # closes the run (or the work item)
     APPROVE_SUBSET = "approve_subset"     # Gate 2 only: approve some specs, send others back
+    # DEPLOY_FAILURE gates use: REQUEST_CHANGES (back to IMPLEMENTING with the comments as findings),
+    # APPROVE (the failure was the platform's, not the change's: re-observe the next pipeline), REJECT (close the item).
 
 
 @dataclass(frozen=True)

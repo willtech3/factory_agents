@@ -224,16 +224,81 @@ def commands_passed(results: list[dict[str, Any]]) -> CheckResult:
                        "all test plan commands exit 0" if not failed else f"failed: {failed}", {"failed": failed})
 
 
+def manifest_valid(manifest_path: Path, schema_dir: Path) -> CheckResult:
+    """The service manifest at the platform contract's fixed path exists and validates.
+
+    `service_manifest.schema.json` is a placeholder the platform team's schema replaces; the check
+    is the same either way. Deployability is part of done (SWE-Cycle, arXiv:2605.13139: solve rates
+    drop sharply once the cycle includes running the result).
+    """
+    if not manifest_path.exists():
+        return CheckResult("manifest_valid", False, f"service manifest missing at {manifest_path}")
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except json.JSONDecodeError as e:
+        return CheckResult("manifest_valid", False, f"service manifest is not valid JSON: {e}")
+    inner = schema_valid(manifest, schema_dir / "service_manifest.schema.json", schema_dir)
+    return CheckResult("manifest_valid", inner.passed, inner.detail, inner.data)
+
+
+def e2e_coverage(spec: dict[str, Any]) -> CheckResult:
+    """Every `user_visible` acceptance criterion is covered by at least one test_plan.e2e entry.
+
+    Agents mark features done without verifying them end to end unless the harness demands it
+    (Anthropic, "Effective harnesses for long-running agents"). This is the demand.
+    """
+    entries = spec.get("test_plan", {}).get("e2e", [])
+    covered = {ac for e in entries for ac in e.get("covers_ac", [])}
+    known = {ac["ac_id"] for ac in spec["acceptance_criteria"]}
+    missing = sorted(ac["ac_id"] for ac in spec["acceptance_criteria"] if ac.get("user_visible") and ac["ac_id"] not in covered)
+    dangling = sorted(covered - known)
+    problems = []
+    if missing:
+        problems.append(f"user_visible criteria with no e2e entry: {missing}")
+    if dangling:
+        problems.append(f"e2e entries cover unknown criteria: {dangling}")
+    return CheckResult("e2e_coverage", not problems,
+                       "every user_visible criterion has an e2e entry" if not problems else "; ".join(problems),
+                       {"missing": missing, "dangling": dangling})
+
+
+def e2e_passed(results: list[dict[str, Any]], target: str = "preview") -> CheckResult:
+    """Every e2e entry for `target` exited 0 when the orchestrator ran it against the environment URL."""
+    relevant = [r for r in results if r.get("target", target) == target]
+    failed = [r["command"] for r in relevant if r.get("exit_code", 1) != 0]
+    skipped = [r["command"] for r in relevant if r.get("exit_code") is None]
+    detail = (f"all {len(relevant)} e2e entries exit 0 on {target}" if not failed and not skipped
+              else f"failed on {target}: {failed}" + (f"; not run: {skipped}" if skipped else ""))
+    return CheckResult(f"e2e_{target}", not failed and not skipped, detail, {"failed": failed, "skipped": skipped})
+
+
 def run_all_for_merge(
     *, spec: dict[str, Any], changed_files: list[str], deleted_files: list[str],
     existing_test_files: list[str], added_lines_by_file: dict[str, list[str]],
     implementation_report: dict[str, Any], passing_tests: list[str], command_results: list[dict[str, Any]],
     spec_touches_tests: bool = False,
+    manifest_path: Path | None = None, schema_dir: Path | None = None,
+    e2e_results: list[dict[str, Any]] | None = None,
 ) -> list[CheckResult]:
-    return [
+    """The merge judge receives this list verbatim and may not override a failure.
+
+    `manifest_path`/`schema_dir` enable `manifest_valid`; `e2e_results` (from `LocalVerifier.run_e2e`
+    against the preview URL) enables `e2e_preview`. When the spec has preview e2e entries and no
+    results were supplied, `e2e_preview` fails: not running them is not the same as passing them.
+    """
+    out = [
         diff_scope(changed_files + deleted_files, spec["allowed_paths"]),
         protected_tests(changed_files, deleted_files, existing_test_files, spec["allowed_paths"], spec_touches_tests),
         test_weakening(added_lines_by_file),
         ac_test_mapping(spec, implementation_report, passing_tests),
         commands_passed(command_results),
+        e2e_coverage(spec),
     ]
+    if manifest_path is not None and schema_dir is not None:
+        out.append(manifest_valid(manifest_path, schema_dir))
+    preview_entries = [e for e in spec.get("test_plan", {}).get("e2e", []) if e.get("target") == "preview"]
+    if preview_entries:
+        if e2e_results is None:
+            e2e_results = [{"command": e["command"], "target": "preview", "exit_code": None} for e in preview_entries]
+        out.append(e2e_passed(e2e_results, "preview"))
+    return out

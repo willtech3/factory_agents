@@ -34,7 +34,7 @@ def make_open_mr(ctx: RunContext, gitlab: GitLabClient, spec_id: str, work_item_
 
 
 def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any], findings: dict[str, Any],
-                  response: dict[str, Any], test_results: list[dict[str, Any]], run_summary: dict[str, Any],
+                  response: dict[str, Any], test_results: Any, run_summary: dict[str, Any],
                   base_branch: str) -> dict[str, Any]:
     assert ctx.gitlab is not None, "GitLab client required to open merge requests"
     sid, wid = spec["spec_id"], spec["work_item_id"]

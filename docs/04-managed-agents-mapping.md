@@ -15,6 +15,9 @@ How each factory concept lands on a platform primitive, and where the orchestrat
 | Git access from the sandbox | **Vault** `environment_variable` credential (`GITLAB_TOKEN`, header-only, host-scoped) | Substituted at egress; the sandbox sees a placeholder. See ADR-0003 for the verification spike. |
 | Repository context | `bash` clone (GitLab) | There is no `gitlab_repository` resource today; `github_repository` exists. If the code lives on GitHub, use the resource and its git proxy instead. |
 | Repo-specific agent guidance | **Skills** from the repository's `.claude/skills/` | Loaded at session start; build commands, conventions, test layout belong here, not in agent prompts. Audit before mounting repos with external contributors. |
+| Platform contract | **Skill** `platform-contract` in the repository's `.claude/skills/` | Owned by the platform team; `skills/platform-contract/SKILL.md` here is a placeholder with the expected headings. Read by decomposer, spec writer, spec judge, implementer, reviewer. |
+| Preview environment (end-to-end surface) | Nothing on the platform side; the user's GitLab CI deploys every branch | The orchestrator reads the URL from the GitLab environment record and uploads `preview.json` to implementer and reviewer sessions. The preview domain must be in the environment's `allowed_hosts` for the sandbox to reach it. |
+| Observed deploy to dev (Stage 5) | Nothing on the platform side; orchestrator polling plus a GitLab pipeline webhook | `stages/deploy_observe.py`; events `deploy.*`, `e2e.dev_*`; `DEPLOY_FAILURE` gate. No session runs. |
 | Per-run spend cap | **Session budget** (`budget.max_list_cost`) | Hard, platform-enforced, pre-request gate. A paused session reports `budget_reached`; the orchestrator escalates. |
 | Progress and audit | **Events** stream + `events.list` | Stream-first, consolidated with history on reconnect, deduped by event id. `span.outcome_evaluation_end` gives grader results; `span.model_request_end` gives per-request usage. |
 | State-change notifications | **Webhooks** (`session.status_idled`, `session.outcome_evaluation_ended`, ...) | Alternative to holding streams for long-parked sessions. Thin payloads; fetch the resource. Not a durable log: reconcile by listing. |
@@ -38,11 +41,12 @@ Agent toolset at `auto` everywhere. The sandbox is disposable and holds no secre
 
 1. **Cross-stage state.** Sessions are independent; the run's state machine, artifact store, and event log are ours.
 2. **Human gates between sessions.** Outcomes and custom tools pause *within* a session. Parking a run for two days between stages is a session boundary, so gates are orchestrator state.
-3. **Authoritative verification.** Running the spec's test commands in a clean checkout the agent did not touch, and computing deterministic checks. In production this is a GitLab CI job on the branch; locally it is `LocalVerifier`.
+3. **Authoritative verification.** Running the spec's test commands in a clean checkout the agent did not touch, running `test_plan.e2e` against the preview URL read from GitLab, and computing deterministic checks (including `manifest_valid`, `e2e_coverage`, `e2e_preview`). In production this is a GitLab CI job on the branch; locally it is `LocalVerifier`.
 4. **Merging independent reviewer passes.** Two sessions, one findings file.
 5. **Routing judge issues to the specs that own them**, so only failing specs are rewritten.
 6. **GitLab.** Design MR, code MR, comment harvesting into `feedback.md`, MR state webhooks.
 7. **Evals.** Pinning agent versions, replaying frozen inputs, grading.
+8. **Watching the platform's deploy.** Pipeline and environment reads against the self-hosted GitLab (unverified shapes), dev e2e runs, and the `DEPLOY_FAILURE` gate. The factory never deploys ([ADR-0006](adr/0006-observed-deployment-not-agent-driven.md)).
 
 ## Costs to expect (list price, rough)
 

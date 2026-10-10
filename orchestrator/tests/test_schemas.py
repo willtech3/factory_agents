@@ -17,6 +17,7 @@ EXAMPLE_TO_SCHEMA = {
     "findings_round1": "review_findings.schema.json",
     "review_response_round1": "review_response.schema.json",
     "merge_readiness": "merge_readiness.schema.json",
+    "service_manifest": "service_manifest.schema.json",
 }
 
 
@@ -55,3 +56,34 @@ def test_all_schemas_are_valid_json_schema(schemas_dir):
     for p in schemas_dir.glob("*.schema.json"):
         schema = json.loads(p.read_text())
         jsonschema.Draft202012Validator.check_schema(schema)
+
+
+def test_spec_requires_user_visible_and_e2e(schemas_dir, examples):
+    import copy
+
+    spec = copy.deepcopy(examples["spec_smart_retries"])
+    del spec["acceptance_criteria"][0]["user_visible"]
+    r = checks.schema_valid(spec, schemas_dir / "spec.schema.json", schemas_dir)
+    assert not r.passed and "user_visible" in r.detail
+    spec = copy.deepcopy(examples["spec_smart_retries"])
+    del spec["test_plan"]["e2e"]
+    r = checks.schema_valid(spec, schemas_dir / "spec.schema.json", schemas_dir)
+    assert not r.passed and "e2e" in r.detail
+    spec = copy.deepcopy(examples["spec_smart_retries"])
+    spec["test_plan"]["e2e"][0]["target"] = "production"
+    assert not checks.schema_valid(spec, schemas_dir / "spec.schema.json", schemas_dir).passed
+
+
+def test_run_event_accepts_deploy_kinds(schemas_dir):
+    for kind in ("deploy.started", "deploy.succeeded", "deploy.failed", "e2e.dev_passed", "e2e.dev_failed"):
+        ev = {"event_id": "evt_1", "run_id": "run_abcdefgh", "seq": 0, "at": "2026-10-09T10:00:00Z", "kind": kind,
+              "actor": {"type": "platform"}, "payload": {}}
+        assert checks.schema_valid(ev, schemas_dir / "run_event.schema.json", schemas_dir).passed
+
+
+def test_outcome_accepts_measured_metrics(schemas_dir, examples):
+    import copy
+
+    outcome = copy.deepcopy(examples["outcome"])
+    outcome["success_metrics"][0].update({"measured_at": "2026-12-20T09:00:00Z", "measured_value": "3.1%"})
+    assert checks.schema_valid(outcome, schemas_dir / "outcome.schema.json", schemas_dir).passed

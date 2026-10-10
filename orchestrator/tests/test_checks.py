@@ -73,3 +73,58 @@ def test_ac_test_mapping(examples):
 def test_commands_passed():
     assert checks.commands_passed([{"command": "x", "exit_code": 0}]).passed
     assert not checks.commands_passed([{"command": "x", "exit_code": 0}, {"command": "y", "exit_code": 1}]).passed
+
+
+# ---- Stage 5 / platform-contract checks
+
+def test_manifest_valid_accepts_example_and_rejects_missing(root, schemas_dir, tmp_path):
+    assert checks.manifest_valid(root / "examples" / "ledgerline" / "service_manifest.json", schemas_dir).passed
+    missing = checks.manifest_valid(tmp_path / "service_manifest.json", schemas_dir)
+    assert not missing.passed and "missing" in missing.detail
+    bad = tmp_path / "service_manifest.json"
+    bad.write_text('{"service": "x", "runtime": {"kind": "container"}, "env": []}')  # no health
+    r = checks.manifest_valid(bad, schemas_dir)
+    assert not r.passed and "health" in r.detail
+    bad.write_text("{not json")
+    assert not checks.manifest_valid(bad, schemas_dir).passed
+
+
+def test_e2e_coverage(examples):
+    spec = examples["spec_smart_retries"]
+    assert checks.e2e_coverage(spec).passed
+    import copy
+    uncovered = copy.deepcopy(spec)
+    uncovered["acceptance_criteria"][1]["user_visible"] = True  # AC-2 has no e2e entry
+    r = checks.e2e_coverage(uncovered)
+    assert not r.passed and r.data["missing"] == ["AC-2"]
+    dangling = copy.deepcopy(spec)
+    dangling["test_plan"]["e2e"][0]["covers_ac"].append("AC-99")
+    r = checks.e2e_coverage(dangling)
+    assert not r.passed and r.data["dangling"] == ["AC-99"]
+
+
+def test_e2e_passed_treats_not_run_as_failure():
+    assert checks.e2e_passed([{"command": "a", "target": "preview", "exit_code": 0}]).passed
+    r = checks.e2e_passed([{"command": "a", "target": "preview", "exit_code": None}])
+    assert not r.passed and "not run" in r.detail
+    r = checks.e2e_passed([{"command": "a", "target": "preview", "exit_code": 1},
+                           {"command": "b", "target": "local", "exit_code": 1}])  # local ignored for preview
+    assert not r.passed and r.data["failed"] == ["a"]
+
+
+def test_run_all_for_merge_includes_e2e_and_manifest(examples, root, schemas_dir):
+    spec = examples["spec_smart_retries"]
+    report = {"criteria_to_tests": [{"ac_id": ac["ac_id"], "tests": [f"t_{ac['ac_id']}"]} for ac in spec["acceptance_criteria"]]}
+    passing = [f"t_{ac['ac_id']}" for ac in spec["acceptance_criteria"]]
+    common = dict(spec=spec, changed_files=["app/models/payment_attempt.rb"], deleted_files=[], existing_test_files=[],
+                  added_lines_by_file={}, implementation_report=report, passing_tests=passing,
+                  command_results=[{"command": "x", "exit_code": 0}])
+    # No e2e results supplied: the preview check is present and failing (not run != passed).
+    names = {c.check: c for c in checks.run_all_for_merge(**common)}
+    assert names["e2e_coverage"].passed and not names["e2e_preview"].passed and "manifest_valid" not in names
+    # Results supplied and manifest present: everything green.
+    e2e = [{"command": e["command"], "target": "preview", "exit_code": 0} for e in spec["test_plan"]["e2e"] if e["target"] == "preview"]
+    names = {c.check: c for c in checks.run_all_for_merge(
+        **common, e2e_results=e2e, manifest_path=root / "examples" / "ledgerline" / "service_manifest.json", schema_dir=schemas_dir)}
+    assert all(c.passed for c in names.values()), [c.detail for c in names.values() if not c.passed]
+    assert "manifest_valid" in names and "e2e_preview" in names

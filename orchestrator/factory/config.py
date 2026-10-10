@@ -39,6 +39,10 @@ class Config:
     gitlab_url: str
     gitlab_token: str | None
     gitlab_project: str                 # "group/project"
+    service_manifest_path: str          # fixed path in the app repo, named by the platform contract
+    dev_environment_name: str           # GitLab environment the default branch deploys to
+    preview_environment_prefix: str     # GitLab environment name prefix for per-branch previews
+    smoke_commands: tuple[str, ...]     # optional suite run against dev after every deploy ($BASE_URL substituted)
     console_workspace: str
     runs_dir: Path
     schemas_dir: Path
@@ -73,9 +77,13 @@ def load(lock_path: Path | None = None) -> Config:
         agents=agents,
         environment_id=env_id,
         vault_id=os.environ.get("FACTORY_VAULT_ID"),
-        gitlab_url=os.environ.get("GITLAB_URL", "https://gitlab.com"),
+        gitlab_url=os.environ.get("GITLAB_URL", "https://gitlab.com"),   # self-hosted: set GITLAB_URL; nothing here assumes gitlab.com
         gitlab_token=os.environ.get("GITLAB_TOKEN"),
         gitlab_project=os.environ.get("GITLAB_PROJECT", ""),
+        service_manifest_path=os.environ.get("FACTORY_SERVICE_MANIFEST_PATH", "service_manifest.json"),
+        dev_environment_name=os.environ.get("FACTORY_DEV_ENVIRONMENT", "dev"),
+        preview_environment_prefix=os.environ.get("FACTORY_PREVIEW_ENVIRONMENT_PREFIX", "preview/"),
+        smoke_commands=tuple(c for c in os.environ.get("FACTORY_SMOKE_COMMANDS", "").split(";") if c.strip()),
         console_workspace=os.environ.get("ANTHROPIC_WORKSPACE", "default"),
         runs_dir=Path(os.environ.get("FACTORY_RUNS_DIR", REPO_ROOT / "runs")),
         schemas_dir=REPO_ROOT / "schemas",

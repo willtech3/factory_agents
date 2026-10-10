@@ -42,6 +42,8 @@ class WorkItemStage(str, Enum):
     INTEGRATING = "integrating"
     MR_OPEN = "mr_open"                    # Gate 3: human review in GitLab
     MERGED = "merged"
+    DEPLOYING_DEV = "deploying_dev"        # Stage 5: platform pipeline deploying the default branch to dev; observed, not driven
+    DEPLOYED_DEV = "deployed_dev"          # dev deploy succeeded and the spec's e2e checks passed against the dev URL
     CLOSED = "closed"
     ESCALATED = "escalated"
     BLOCKED = "blocked"                    # implementer wrote blocked.md
@@ -75,9 +77,16 @@ WORK_ITEM_TRANSITIONS: dict[WorkItemStage, set[WorkItemStage]] = {
     WorkItemStage.MR_OPEN: {WorkItemStage.MERGED, WorkItemStage.CLOSED, WorkItemStage.IMPLEMENTING},
     WorkItemStage.BLOCKED: {WorkItemStage.IMPLEMENTING, WorkItemStage.SPEC_DRAFTING, WorkItemStage.ESCALATED},
     WorkItemStage.ESCALATED: {WorkItemStage.SPEC_DRAFTING, WorkItemStage.IMPLEMENTING, WorkItemStage.CLOSED},
-    WorkItemStage.MERGED: set(),
+    WorkItemStage.MERGED: {WorkItemStage.DEPLOYING_DEV},
+    # A failed dev deploy or dev e2e opens a DEPLOY_FAILURE gate (-> ESCALATED); the human may route it back to
+    # IMPLEMENTING (a follow-up branch and MR), or close the item. Promotion beyond dev is human and outside the factory.
+    WorkItemStage.DEPLOYING_DEV: {WorkItemStage.DEPLOYED_DEV, WorkItemStage.ESCALATED},
+    WorkItemStage.DEPLOYED_DEV: set(),
     WorkItemStage.CLOSED: set(),
 }
+
+# Stages at which a work item's code is on the default branch, so dependants may start.
+MERGED_STAGES = {WorkItemStage.MERGED, WorkItemStage.DEPLOYING_DEV, WorkItemStage.DEPLOYED_DEV}
 
 
 class IllegalTransition(Exception):
@@ -97,6 +106,8 @@ class Policy:
     })
     parallel_implementations: int = 3    # independent work items implemented at once (separate branches)
     reviewer_passes: int = 2             # independent reviewer copies per round, findings merged
+    preview_wait_seconds: int = 1800     # how long verification waits for the platform to deploy head_sha to its preview
+    dev_pipeline_timeout_seconds: int = 3600  # Stage 5: how long to watch the dev pipeline before a DEPLOY_FAILURE gate
 
 
 @dataclass
@@ -130,6 +141,8 @@ class WorkItemState:
     branch: str | None = None
     mr_iid: int | None = None
     depends_on: list[str] = field(default_factory=list)
+    dev_pipeline_id: int | None = None
+    dev_environment_url: str | None = None
 
 
 @dataclass
@@ -150,7 +163,7 @@ class RunState:
         for wi in self.work_items.values():
             if wi.stage != WorkItemStage.SPEC_APPROVED:
                 continue
-            if all(self.work_items[d].stage == WorkItemStage.MERGED for d in wi.depends_on if d in self.work_items):
+            if all(self.work_items[d].stage in MERGED_STAGES for d in wi.depends_on if d in self.work_items):
                 out.append(wi)
         return out
 
@@ -185,7 +198,7 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
         # (Re)register work items; a re-decomposition replaces pending items but keeps merged ones.
         for item in p["work_items"]:
             existing = state.work_items.get(item["work_item_id"])
-            if existing is None or existing.stage not in {WorkItemStage.MERGED, WorkItemStage.MR_OPEN}:
+            if existing is None or existing.stage not in MERGED_STAGES | {WorkItemStage.MR_OPEN}:
                 state.work_items[item["work_item_id"]] = WorkItemState(
                     work_item_id=item["work_item_id"], depends_on=list(item.get("depends_on", []))
                 )
@@ -212,6 +225,10 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
             wi.branch = p["branch"]
         if "mr_iid" in p:
             wi.mr_iid = p["mr_iid"]
+        if "pipeline_id" in p:
+            wi.dev_pipeline_id = p["pipeline_id"]
+        if "environment_url" in p:
+            wi.dev_environment_url = p["environment_url"]
     elif k == "budget.reached":
         _move_run(state, RunStage.PAUSED_BUDGET)
     elif k == "run.escalated":
@@ -220,7 +237,11 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
         _move_run(state, RunStage.FAILED)
     elif k == "run.completed":
         _move_run(state, RunStage.COMPLETED)
-    # Other kinds (mr.opened, judge.verdict, review.findings, ...) are informational for the timeline.
+    elif k in ("deploy.started", "deploy.succeeded") and ev.work_item_id in state.work_items:
+        wi = state.work_items[ev.work_item_id]
+        wi.dev_pipeline_id = p.get("pipeline_id", wi.dev_pipeline_id)
+        wi.dev_environment_url = p.get("environment_url", wi.dev_environment_url)
+    # Other kinds (mr.opened, judge.verdict, review.findings, deploy.failed, e2e.dev_*) are informational for the timeline.
     return state
 
 

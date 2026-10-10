@@ -70,3 +70,17 @@ Every open question states a default and whether it blocks; no question the code
 - 1: under 300 but padded.
 - 2: under 200, dense.
 - 3: under 150 with no loss.
+
+## S11. Deployable through the platform contract
+The spec conforms to the platform-contract skill (`skills/platform-contract/SKILL.md`): the service manifest at the contract's fixed path is present and valid against `schemas/service_manifest.schema.json` (the orchestrator's `manifest_valid` check), any manifest change the work needs is declared as a `config` interface, and nothing in the spec asks the implementer to touch what the contract reserves (IAM, networking, the platform repository). Agents that cannot see the deployment boundary ship changes that pass tests and cannot run; the full-cycle drop in SWE-Cycle (academic-2026.md §5) and boundary-crossing actions belonging to humans (practitioners.md §4, §1b Factor 7) are the evidence.
+- 0: the manifest is missing or invalid, or the spec requires a change the contract forbids.
+- 1: manifest valid but a needed env var, migration, or health change is not declared.
+- 2: manifest valid and every needed change declared.
+- 3: as 2, and the spec states what the preview environment must contain (seed data, test-mode keys) for `test_plan.e2e` to run.
+
+## S12. End-to-end coverage of user-visible behaviour
+Every acceptance criterion with `user_visible: true` is covered by at least one `test_plan.e2e` entry that runs against a deployed instance (`target: preview`), and every criterion is honestly flagged. Agents declare victory without end-to-end verification unless the harness demands it (practitioners.md §3, Anthropic effective harnesses); the orchestrator's `e2e_coverage` check enforces the mapping, the judge checks the flags.
+- 0: a `user_visible` criterion has no e2e entry, or a criterion that an external system or user plainly observes is flagged `false`.
+- 1: covered, but an entry's command would not fail if the criterion were unmet (asserts only a 200).
+- 2: every user-visible criterion covered by a command that fails when the behaviour is wrong.
+- 3: as 2, with a `local` counterpart so the implementer can iterate before the preview deploys.

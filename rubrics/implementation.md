@@ -48,3 +48,9 @@ No behaviour changed, dependency added, configuration introduced, or abstraction
 The repository's build, type check, and lint (as configured in the repo) pass on `head_sha`.
 - 0: any failure that did not exist on `base_sha`.
 - 2: clean.
+
+## I9. End-to-end checks pass on the preview environment **[deterministic]**
+Every `spec.test_plan.e2e` entry with `target: preview` exits 0 when the orchestrator runs it against the branch's preview URL (read from the GitLab pipeline's environment, never from the implementer's report), with `$BASE_URL` substituted. The implementer must also have run them itself and recorded the output in `implementation_report.json`; the orchestrator's run is the one that counts. Unit tests passing while the deployed change does not work is the failure this exists to catch (practitioners.md §3; academic-2026.md §5, SWE-Cycle).
+- 0: any entry fails, or the preview deploy for `head_sha` did not succeed.
+- 2: all pass on the preview URL.
+- 3: as 2, and the report shows the same entries failing on the base branch's preview (the behaviour is new, not pre-existing).
