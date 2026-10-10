@@ -22,11 +22,14 @@ from dataclasses import dataclass
 
 import json
 import os
+import re
+import shlex
 import socket
 import subprocess
 import sys
 import time
 import urllib.request
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -43,10 +46,12 @@ blocker in blocked.md."""
 IMPLEMENT_DESCRIPTION = """Implement specification {spec_id} from /mnt/session/uploads/spec.json{spec_md_clause}.
 {git}
 {review_clause}
-Write implementation_report.json{response_clause} to /mnt/session/outputs/. The report must map every acceptance criterion
-to the tests that prove it, as `criteria: [{{"ac_id": "AC-1", "tests": ["tests/test_x.py::test_name", ...]}}, ...]`
-(pytest node ids or equivalent test ids); the orchestrator's merge checks read that list and fail any automated criterion
-without a passing test. Run every command in the spec's test_plan before finishing and record the results. {preview_clause}"""
+Write implementation_report.json{response_clause} to /mnt/session/outputs/ and validate it with the validate.py tool
+(schema implementation_report.schema.json). The report must map every acceptance criterion to the tests that prove it, as
+`criteria: [{{"ac_id": "AC-1", "tests": ["tests/test_x.py::test_name", ...]}}, ...]` with pytest node ids exactly as
+`pytest --collect-only -q` prints them; the orchestrator runs the test plan itself, derives the passing set from its own
+pytest run, and fails any automated criterion whose tests it did not collect or did not see pass. Run every command in the
+spec's test_plan before finishing and record the results. {preview_clause}"""
 
 REVIEW_DESCRIPTION = """Review the change for specification {spec_id}. The diff is at /mnt/session/uploads/diff.patch
 (base {base_sha}, head {head_sha}); the repository is cloned at /workspace/repo on branch {branch}.
@@ -194,14 +199,43 @@ class LocalVerifier:
         return {"changed": changed, "deleted": deleted, "added_lines": added_lines, "existing_tests": existing_tests,
                 "patch": _git(repo, "diff", f"{base_sha}..{head_sha}")}
 
+    def _env(self) -> dict[str, str]:
+        return {**os.environ, "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ.get('PATH', '')}"}
+
     def run_commands(self, repo: Path, commands: list[str], timeout: int = 1800) -> list[dict[str, Any]]:
+        """Run the spec's test_plan commands in the checkout. Every pytest invocation inside a command also writes a
+        junit report (appended through PYTEST_ADDOPTS, so `pytest`, `python -m pytest` and compound shell commands all
+        get it); a command that produced one carries `pytest: {passed, failed, skipped}` with the node ids, which is
+        where the orchestrator's passing-test set comes from (post-mortem issue 5: the set used to be copied from the
+        implementer's own report, so any mapping passed, fabricated ids included)."""
         results = []
-        env = {**os.environ, "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ.get('PATH', '')}"}
-        for cmd in commands:
+        junit_dir = self.workdir / "junit"
+        junit_dir.mkdir(parents=True, exist_ok=True)
+        base_env = self._env()
+        for i, cmd in enumerate(commands):
+            junit = junit_dir / f"cmd-{i}.xml"
+            junit.unlink(missing_ok=True)
+            addopts = f"{base_env.get('PYTEST_ADDOPTS', '')} --junitxml={shlex.quote(str(junit))} -o junit_family=xunit1".strip()
+            env = {**base_env, "PYTEST_ADDOPTS": addopts}
             p = subprocess.run(cmd, shell=True, cwd=repo, env=env, capture_output=True, text=True, timeout=timeout)
-            results.append({"command": cmd, "exit_code": p.returncode,
-                            "stdout_tail": p.stdout[-4000:], "stderr_tail": p.stderr[-4000:]})
+            row: dict[str, Any] = {"command": cmd, "exit_code": p.returncode,
+                                   "stdout_tail": p.stdout[-4000:], "stderr_tail": p.stderr[-4000:]}
+            if junit.is_file():
+                row["pytest"] = parse_junit(junit.read_bytes())
+            results.append(row)
         return results
+
+    def collect_test_ids(self, repo: Path, timeout: int = 300) -> list[str] | None:
+        """Every pytest node id the checkout collects (`pytest --collect-only -q`), or None when pytest cannot collect
+        here (not a pytest repository, or a collection error): the mapping is then unverifiable, not verified."""
+        try:
+            p = subprocess.run("python -m pytest --collect-only -q", shell=True, cwd=repo, env=self._env(),
+                               capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return None
+        if p.returncode not in (0, 5):          # 5: no tests collected, which is a (possibly empty) answer
+            return None
+        return [ln.strip() for ln in p.stdout.splitlines() if NODE_ID_RE.match(ln.strip())]
 
     def run_e2e(self, preview_url: str | None, e2e_entries: list[dict[str, Any]], repo: Path | None = None,
                 target: str = "preview", timeout: int = 900) -> list[dict[str, Any]]:
@@ -232,6 +266,57 @@ class LocalVerifier:
             except subprocess.TimeoutExpired:
                 results.append({**row, "exit_code": 124, "stderr_tail": f"timed out after {timeout}s"})
         return results
+
+
+NODE_ID_RE = re.compile(r"^[^\s:]+::\S+$")
+
+
+def parse_junit(xml: bytes) -> dict[str, list[str]]:
+    """Node ids by outcome from a pytest junit report (junit_family=xunit1, which keeps the `file` attribute).
+
+    A node id is `file::Class::name`: `file` is relative to pytest's rootdir (the checkout), the class chain is what
+    `classname` adds after the module's dotted path, `name` keeps the parametrisation suffix."""
+    out: dict[str, list[str]] = {"passed": [], "failed": [], "skipped": []}
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return out
+    for tc in root.iter("testcase"):
+        node_id = _node_id(tc.get("file"), tc.get("classname", ""), tc.get("name", ""))
+        tags = {child.tag for child in tc}
+        if tags & {"failure", "error"}:
+            out["failed"].append(node_id)
+        elif "skipped" in tags:
+            out["skipped"].append(node_id)
+        else:
+            out["passed"].append(node_id)
+    return out
+
+
+def _node_id(file: str | None, classname: str, name: str) -> str:
+    if not file:
+        parts = [p for p in classname.split(".") if p]
+        return f"{'/'.join(parts)}.py::{name}" if parts else name
+    module = Path(file).with_suffix("").as_posix().replace("/", ".")
+    if classname == module or not classname:
+        chain: list[str] = []
+    elif classname.startswith(module + "."):
+        chain = classname[len(module) + 1:].split(".")
+    else:                                   # rootdir or package layout differs: everything after the module's last component
+        parts = classname.split(".")
+        stem = Path(file).stem
+        chain = parts[len(parts) - parts[::-1].index(stem):] if stem in parts else []
+    return "::".join([file, *chain, name])
+
+
+def passed_test_ids(command_results: list[dict[str, Any]]) -> tuple[list[str], list[str]] | None:
+    """(passed, failed) node ids across every command that ran pytest, or None when none did."""
+    runs = [r["pytest"] for r in command_results if r.get("pytest")]
+    if not runs:
+        return None
+    passed = sorted({t for r in runs for t in r.get("passed", [])})
+    failed = sorted({t for r in runs for t in r.get("failed", [])})
+    return [t for t in passed if t not in set(failed)], failed
 
 
 def _branch_for(run_id: str, spec_id: str) -> str:
@@ -388,11 +473,16 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             preview = wait_for_preview(ctx, branch, head_sha)
             e2e_results = verifier.run_e2e(preview["url"] if preview["status"] == "ready" else None,
                                            spec["test_plan"].get("e2e", []), repo=repo)
-        passing_tests = [t for ts in checks.criteria_mapping(report).values() for t in ts]  # refined by a CI parser later
+        # The passing set is the orchestrator's own: node ids pytest reported passed in the test_plan run, checked against
+        # what pytest collects in the checkout. A repository pytest cannot collect leaves the mapping unverified (said so
+        # in the check's detail), never silently verified.
+        collected = verifier.collect_test_ids(repo)
+        pytest_runs = passed_test_ids(cmd_results)
+        passing_tests = (pytest_runs[0] if pytest_runs else []) if collected is not None else None
         det = checks.run_all_for_merge(
             spec=spec, changed_files=diff["changed"], deleted_files=diff["deleted"], existing_test_files=diff["existing_tests"],
             added_lines_by_file=diff["added_lines"], implementation_report=report, passing_tests=passing_tests,
-            command_results=cmd_results, manifest_path=repo / ctx.cfg.service_manifest_path,
+            tests_that_exist=collected, command_results=cmd_results, manifest_path=repo / ctx.cfg.service_manifest_path,
             schema_dir=ctx.cfg.schemas_dir, e2e_results=e2e_results,
         )
         ctx.store.put_artifact(ctx.run_id, "implement", f"{sid}-r{round_no}-deterministic_checks.json",
@@ -549,7 +639,7 @@ def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]]
             "violates": f"orchestrator check {name} (cannot be overridden by any judge)",
             "refutation_condition": f"`{name}` passes on the orchestrator's next verification of the pushed head",
             "status": "open",
-            "suggested_fix": {"ac_test_mapping": "Map every automated acceptance criterion to a test in implementation_report.json `criteria` ([{ac_id, tests: [...]}]) and make sure those tests exist and pass.",
+            "suggested_fix": {"ac_test_mapping": "Map every automated acceptance criterion to a test in implementation_report.json `criteria` ([{ac_id, tests: [...]}]) using pytest node ids exactly as `pytest --collect-only -q` prints them; the orchestrator only counts tests it collected and saw pass in its own run of the test plan.",
                               "test_plan_commands": "Make every test_plan command exit 0 from a clean checkout; if a command depends on a port or host, make it robust or pick a free port."}.get(name, "Fix the cause named in the detail."),
         })
     return out

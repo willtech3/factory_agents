@@ -24,6 +24,7 @@ ARTIFACT_TO_SCHEMA = {
     "decomposition": "decomposition.schema.json",
     "spec": "spec.schema.json",
     "verdict": "judge_verdict.schema.json",
+    "implementation_report": "implementation_report.schema.json",
     "findings": "review_findings.schema.json",
     "review_response": "review_response.schema.json",
     "merge_readiness": "merge_readiness.schema.json",

@@ -40,6 +40,6 @@ Responding to review findings (`findings.json` present): answer every finding, e
 - `accepted_risk`: the finding is correct but you judge it should not block; explain why. A human will decide at the change request.
 Do not argue with the reviewer's tone or scope. If a finding is outside the spec, say `refuted` with the spec section that bounds the work.
 
-Outputs to `/mnt/session/outputs/`: `implementation_report.json` (criteria to tests mapping, commands run with pass/fail, files changed, `test_concerns`, residual uncertainty), and `review_response.json` on a review round (schema `review_response.schema.json`). Push the branch when done.
+Outputs to `/mnt/session/outputs/`: `implementation_report.json` (schema `implementation_report.schema.json`: criteria to tests mapping, commands run with pass/fail, files changed, `test_concerns`, residual uncertainty), and `review_response.json` on a review round (schema `review_response.schema.json`). Validate both with `python -I /mnt/session/uploads/tools/validate.py <file>` before finishing. In `criteria`, name tests by their pytest node id exactly as `pytest --collect-only -q` prints it; the orchestrator runs the test plan itself and only credits a criterion with tests it collected and saw pass. Push the branch when done.
 
 Do not expand scope, add configuration or abstraction the spec did not ask for, or write defensive code for conditions the spec says cannot occur. Fewer lines that meet the criteria beat more lines that anticipate the future.
