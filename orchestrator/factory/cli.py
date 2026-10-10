@@ -36,6 +36,33 @@ from .browser_worker import cli as browser_cli  # noqa: E402
 
 app.add_typer(browser_cli, name="browser")
 
+environment_cli = typer.Typer(no_args_is_help=True, help="Validate application recipes and test them in Anthropic-hosted sandboxes.")
+app.add_typer(environment_cli, name="environment")
+
+
+@environment_cli.command("check")
+def environment_check(profile: Path):
+    """Check a recipe's structure. This does not provision or mark an app ready."""
+    from .test_environments import validate_profile
+    errors = validate_profile(json.loads(profile.read_text()), cfgmod.REPO_ROOT / "schemas")
+    typer.echo(json.dumps({"status": "invalid" if errors else "valid-plan", "errors": errors}, indent=2))
+    if errors:
+        raise typer.Exit(1)
+
+
+@environment_cli.command("verify")
+def environment_verify(repo: Path, output: Path, budget: float = typer.Option(..., "--budget"),
+                       profile: str = "test_environment.json", revision: str = "HEAD",
+                       vault: list[str] = typer.Option([], "--vault")):
+    """Run committed app + database + browser in the cloud. Never on this machine."""
+    from .test_environments import run_hosted
+    cfg = cfgmod.load()
+    result = run_hosted(cfg, repo, output, profile_relative=profile, revision=revision,
+                        budget_usd=budget, vault_ids=tuple(vault))
+    typer.echo(json.dumps(result, indent=2))
+    if result["status"] != "passed":
+        raise typer.Exit(1)
+
 
 def _bind_forge(cfg, outcome: dict, want_forge: bool):
     """The forge for this run, bound to the outcome's repository. FORGE_REPO may be left unset: it is derived from

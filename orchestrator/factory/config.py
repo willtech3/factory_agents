@@ -22,6 +22,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 AGENT_FILES = {
+    "app_onboarding": "./agents/app_onboarding.md",
     "codebase_researcher": "./agents/codebase_researcher.md",
     "decomposer": "./agents/decomposer.md",
     "spec_writer": "./agents/spec_writer.md",
@@ -34,7 +35,7 @@ AGENT_FILES = {
 }
 ENVIRONMENT_FILE = "./environments/factory-cloud.yaml"
 # Agents a run can do without: when not applied, the orchestrator skips their pass and says so.
-OPTIONAL_AGENTS = {"security_reviewer"}
+OPTIONAL_AGENTS = {"security_reviewer", "app_onboarding"}
 
 FORGES = ("github", "gitlab")
 GATE_SURFACES = ("forge", "tracker", "file", "web")   # web = the Factory Console over the file queue

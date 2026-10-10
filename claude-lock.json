@@ -67,6 +67,13 @@
       "id": "env_01XmyirwbUp692ZoNJtHxouq",
       "hash": "5d952a5a3351e9af15593d82d1a1cc54",
       "remote_hash": "9762efa3e8ea89e8376fa1e56cf8aba4"
+    },
+    "./agents/app_onboarding.md": {
+      "kind": "agent",
+      "id": "agent_01Vfcs8bh7apzKYPVAYMDRfh",
+      "version": "1",
+      "hash": "f1a82c6d1e4f56483299bfd597de8836",
+      "remote_hash": "5536fbc8164faf7fdb49197ff47f38c3"
     }
   }
 }

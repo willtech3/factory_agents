@@ -27,7 +27,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, SecretStr
 
 from .. import visual
 from .. import checks
@@ -54,6 +54,28 @@ TIMELINE_KINDS = {"run.created", "repository.created", "stage.entered", "session
                   "deploy.started", "deploy.succeeded", "deploy.failed", "e2e.dev_passed", "e2e.dev_failed", "budget.reached",
                   "budget.raised", "session.truncated", "run.escalated", "run.failed", "run.resumed", "run.completed", "session.finished",
                   "work_item.stage"}
+
+
+class AppBody(BaseModel):
+    kind: str
+    name: str = Field(min_length=1, max_length=160)
+    repository_url: str = Field(max_length=500)
+    description: str = Field(min_length=1, max_length=12000)
+    budget_usd: float = 10
+    revision: str = ""
+
+
+class AppPlanBody(BaseModel):
+    plan_sha256: str
+
+
+class AppAnswersBody(BaseModel):
+    answers: dict[str, str]
+
+
+class AppCredentialBody(BaseModel):
+    name: str
+    value: SecretStr
 
 
 class DecisionBody(BaseModel):
@@ -722,6 +744,9 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
     app = FastAPI(title="Factory Console", docs_url=None, redoc_url=None)
     app.state.console = console
     app.state.demo = console.demo
+    from ..onboarding import AppOnboarding
+    onboarding = AppOnboarding(cfg)
+    app.state.onboarding = onboarding
 
     @app.get("/", include_in_schema=False)
     def index():
@@ -734,6 +759,44 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
     @app.get("/api/repositories")
     def api_repositories(page: int = Query(1, ge=1, le=10000)):
         return list_repositories(console.cfg, page)
+
+    @app.get("/api/apps")
+    def api_apps():
+        return {"apps": onboarding.list()}
+
+    @app.post("/api/apps")
+    def api_create_app(body: AppBody):
+        return onboarding.create(**body.model_dump())
+
+    @app.get("/api/apps/{app_id}")
+    def api_app(app_id: str):
+        return onboarding.get(app_id)
+
+    @app.post("/api/apps/{app_id}/discover")
+    def api_app_discover(app_id: str):
+        return onboarding.start(app_id, "discover")
+
+    @app.post("/api/apps/{app_id}/answers")
+    def api_app_answers(app_id: str, body: AppAnswersBody):
+        return onboarding.answers(app_id, body.answers)
+
+    @app.post("/api/apps/{app_id}/verify")
+    def api_app_verify(app_id: str, body: AppPlanBody):
+        return onboarding.start(app_id, "verify", body.plan_sha256)
+
+    @app.post("/api/apps/{app_id}/publish")
+    def api_app_publish(app_id: str, body: AppPlanBody):
+        return onboarding.start(app_id, "publish", body.plan_sha256)
+
+    @app.post("/api/apps/{app_id}/credentials")
+    def api_app_credential(app_id: str, body: AppCredentialBody):
+        return onboarding.credential(app_id, body.name, body.value.get_secret_value())
+
+    @app.get("/api/apps/{app_id}/evidence/{name}")
+    def api_app_evidence(app_id: str, name: str):
+        p = onboarding.evidence(app_id, name)
+        return FileResponse(p, media_type=visual.media_type(p) or "application/json",
+                            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
     @app.get("/api/runs")
     def api_runs():
@@ -834,6 +897,14 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
 
     @app.middleware("http")
     async def no_store(request, call_next):
+        # App setup can spend money and bind credentials. Refuse cross-origin mutation.
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path.startswith("/api/apps"):
+            from urllib.parse import urlparse
+            origin = request.headers.get("origin")
+            if origin and urlparse(origin).netloc != request.headers.get("host"):
+                return PlainTextResponse("Cross-origin app changes are not allowed", status_code=403)
+            if "application/json" not in request.headers.get("content-type", ""):
+                return PlainTextResponse("App changes require JSON", status_code=415)
         # A local tool that is edited and reloaded; never let a browser hold on to yesterday's script.
         response = await call_next(request)
         if request.url.path.startswith("/static") or request.url.path == "/":

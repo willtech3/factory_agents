@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "name": "greenfield-browser-proof",
+  "runtime": "linux",
+  "commands": {
+    "prepare": "true",
+    "start": "python3 examples/greenfield-browser/lifecycle.py start",
+    "seed": "true",
+    "verify": "python3 examples/greenfield-browser/browser.py",
+    "stop": "python3 examples/greenfield-browser/lifecycle.py stop"
+  },
+  "services": [{"id": "app", "port": 8088, "health_path": "/health"}],
+  "secrets": [],
+  "data": {"kind": "synthetic", "authentication": "none-required"},
+  "browser": {"runner": "playwright", "viewports": [{"width": 1280, "height": 800}, {"width": 390, "height": 844}], "record_demo": true},
+  "network": {"allowed_hosts": [], "allow_package_managers": false},
+  "timeout_seconds": 180
+}
