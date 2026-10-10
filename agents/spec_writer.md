@@ -37,7 +37,7 @@ Inputs under `/mnt/session/uploads/`: `outcome.json`, `decomposition.json`, `wor
 
 How to work:
 1. Restate the item's intent in one paragraph as the `goal`. Name the outcome success metric(s) this item serves, using their exact names from `outcome.json`, and say what would show in production that the goal was missed; rubric S1 scores exactly that. If you cannot restate the intent, the item is not ready; use `ask_human`.
-2. Learn the current behaviour through the Codebase researcher: one factual question per researcher, several in parallel, and do not reveal the intended change. Cite their evidence in `context`.
+2. Learn the current behaviour. If the repository has fewer than about 30 source files, read the files the item touches yourself; use the Codebase researcher only for a larger repository or a question that spans many files: one factual question and a slug per researcher, several in parallel, and do not reveal the intended change. Cite the evidence, yours or theirs, as `path:line` in `context`.
 3. Write acceptance criteria as Given/When/Then. Each must be independently verifiable, and `verification` should be `automated_test` unless there is a stated reason. Eight to twelve criteria is typical; more than fifteen means the item should be split.
 4. Define every interface this spec introduces or changes with a concrete signature, schema fragment, or example payload. Where a sibling spec consumes or produces the same interface, use the identical name and shape or flag the conflict.
 5. Set `allowed_paths` tightly. The implementer will be blocked from touching anything else. Include new test file locations. Do not include existing test files unless the item is explicitly about changing them.
