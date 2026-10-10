@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 MAX_FILE = 30 * 1024 * 1024
+REQUEST_TTL = 900          # seconds an open request stays listed for workers (the default e2e deadline)
 MAX_TOTAL = 64 * 1024 * 1024
 MEDIA = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
          ".mp4": "video/mp4", ".webm": "video/webm", ".gif": "image/gif"}
@@ -170,7 +171,7 @@ def summaries(root: Path, events: list) -> list[dict]:
 def pending(run_path: Path) -> list[dict]:
     jobs = []
     for p in (run_path / "verify" / "visual").glob("*/request.json"):
-        if (p.parent / "closed").exists() or time.time() - p.stat().st_mtime > 900:
+        if (p.parent / "closed").exists() or time.time() - p.stat().st_mtime > REQUEST_TTL:
             continue
         try:
             request = json.loads(p.read_text())
