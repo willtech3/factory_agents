@@ -63,9 +63,9 @@
   const DECISION_LABEL = { approve: "Approve", approve_subset: "Approve selected", request_changes: "Request changes", reject: "Reject" };
   const ROLE_NAME = { po: "Product owner", eng: "Engineer", ops: "Ops", crew: "Claude crew" };
   const ROLE_DOES = { po: "Decides what gets built", eng: "Reviews and merges", ops: "Watches it land", crew: "Does the work between gates" };
-  const CREW_NAME = { codebase_researcher: "Researcher", decomposer: "Decomposer", spec_writer: "Spec writer", spec_judge: "Spec judge", implementer: "Implementer",
+  const CREW_NAME = { app_onboarding: "App onboarding", codebase_researcher: "Researcher", decomposer: "Decomposer", spec_writer: "Spec writer", spec_judge: "Spec judge", implementer: "Implementer",
     reviewer: "Reviewer", security_reviewer: "Security reviewer", merge_judge: "Merge judge", integrator: "Integrator" };
-  const CREW_DOES = { decomposer: "Outcome into work items", spec_writer: "One contract per item", spec_judge: "Scores the contracts", implementer: "Builds it, tests first",
+  const CREW_DOES = { app_onboarding: "Learns how to run and test an app", decomposer: "Outcome into work items", spec_writer: "One contract per item", spec_judge: "Scores the contracts", implementer: "Builds it, tests first",
     reviewer: "Tries to break it", security_reviewer: "Attack paths and secrets", merge_judge: "Ready, or another round", integrator: "Opens the pull request" };
   const TOOLS = {
     clipboard: "M26 54h20v16H26z M30 52h12v4H30z M29 60h14v2H29z M29 65h10v2H29z",
@@ -77,7 +77,7 @@
     stamp: "M30 62h20v8H30z M36 50h8v12h-8z M28 70h24v3H28z",
     book: "M28 52h18v18H28z M30 55h14v1.6H30z M30 59h14v1.6H30z M30 63h10v1.6H30z",
   };
-  const CREW_TOOL = { codebase_researcher: "book", decomposer: "clipboard", spec_writer: "pencil", spec_judge: "lens", implementer: "wrench", reviewer: "lens", security_reviewer: "shield", merge_judge: "gavel", integrator: "stamp" };
+  const CREW_TOOL = { app_onboarding: "book", codebase_researcher: "book", decomposer: "clipboard", spec_writer: "pencil", spec_judge: "lens", implementer: "wrench", reviewer: "lens", security_reviewer: "shield", merge_judge: "gavel", integrator: "stamp" };
 
   function ago(iso) {
     if (!iso) return "";
@@ -1635,7 +1635,7 @@
     if (failed) t.append(el("div", { class: "step terminal", role: "listitem" }, el("span", { class: "lbl" }, "Failed")));
     return t;
   }
-  function appAgentRole(a) { return a.status === "verifying" ? "reviewer" : a.status === "publishing" ? "integrator" : "codebase_researcher"; }
+  function appAgentRole(a) { return a.status === "verifying" ? "reviewer" : a.status === "publishing" ? "integrator" : "app_onboarding"; }
   function appAgentState(a) {
     if (APP_BUSY.has(a.status)) return "working";
     if (a.status === "ready" || a.status === "ready_limited") return "done";

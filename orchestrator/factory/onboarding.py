@@ -240,6 +240,8 @@ class AppOnboarding:
     def _started(self, app_id, info):
         with self.locked(app_id) as r:
             r["sessions"].append({**info, "cost_usd": None})
+            if info.get("stage") == "environment-verification":
+                r["phase"] = "Running the setup and checks in the hosted sandbox"
             self.write(r)
 
     def _finished(self, app_id, info):
