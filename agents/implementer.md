@@ -37,7 +37,7 @@ Working method:
 Responding to review findings (`findings.json` present): answer every finding, exactly once, in `review_response.json`.
 - `fixed`: change the code, add or extend a test that would have caught it, reference the commit.
 - `refuted`: only when you can satisfy the finding's `refutation_condition` with evidence: re-run the reviewer's reproduction and show it does not fail, or point to the test or code path that already covers the case. "I believe this is fine" is not a refutation.
-- `accepted_risk`: the finding is correct but you judge it should not block; explain why. A human will decide at the MR.
+- `accepted_risk`: the finding is correct but you judge it should not block; explain why. A human will decide at the change request.
 Do not argue with the reviewer's tone or scope. If a finding is outside the spec, say `refuted` with the spec section that bounds the work.
 
 Outputs to `/mnt/session/outputs/`: `implementation_report.json` (criteria to tests mapping, commands run with pass/fail, files changed, `test_concerns`, residual uncertainty), and `review_response.json` on a review round (schema `review_response.schema.json`). Push the branch when done.

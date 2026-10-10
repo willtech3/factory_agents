@@ -7,7 +7,7 @@ The factory is a pipeline of non-deterministic stages separated by deterministic
 | L0 Deterministic | everything | schema validity, traceability, scope, protected tests, DAG, command results | every commit (CI) | free |
 | L1 Stage-isolated | upstream artifacts (golden inputs) | one stage's output quality against labels | every agent prompt or model change | low to medium |
 | L2 End-to-end | a synthetic repo and outcome set | outcome achieved, interventions, cost, time | weekly and before model upgrades | high |
-| L3 Online | nothing | gate decisions, edit distance, MR outcomes, reverts | continuous | free (telemetry) |
+| L3 Online | nothing | gate decisions, edit distance, change-request outcomes, reverts | continuous | free (telemetry) |
 
 Stochastic measurements follow the methodology in `docs/06-evaluation.md`: at least 5 runs per item per configuration (11 or more judge votes where a judge is the measurement, per Yagubyan 2606.13685), Bayesian credible intervals rather than point pass@k (Hariri et al. 2510.04265), paired comparisons across agent versions on identical items, and Cohen's kappa against human labels for every LLM grader.
 
@@ -44,8 +44,8 @@ evals/
 - **Spec judge:** precision and recall on `spec-defects` by defect type; kappa against human scores on `spec-from-item`; position-swap consistency; false-pass rate on planted blocking defects (the number that matters most).
 - **Implementer:** hidden-test pass rate per AC and per spec; pass^k over 5 runs (reliability, not luck); scope and protected-test violation rate; slice discipline (commits per spec, lines per commit); erosion metrics over consecutive specs on the same repo (SlopCodeBench-style: duplication, complexity delta).
 - **Reviewer:** paired discrimination (flag rate on faulty minus flag rate on clean parent) by defect category; finding precision as judged by the merge judge and by humans on a sample; refutation-condition quality (share meetable); over-rejection rate on clean items.
-- **Merge judge:** agreement with human merge decisions on a labelled sample (kappa); rate of `ready` verdicts later reverted or heavily amended in GitLab (online).
-- **Pipeline:** `factory-bench` outcome success with credible intervals; human interventions per outcome; list cost per merged MR; wall time per stage; escalation rate and reasons.
+- **Merge judge:** agreement with human merge decisions on a labelled sample (kappa); rate of `ready` verdicts later reverted or heavily amended on the forge (online).
+- **Pipeline:** `factory-bench` outcome success with credible intervals; human interventions per outcome; list cost per merged change request; wall time per stage; escalation rate and reasons.
 
 ## What the evals must never do
 

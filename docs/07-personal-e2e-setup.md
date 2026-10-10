@@ -1,0 +1,119 @@
+# Running the factory end to end with a personal GitHub repo and a personal Linear workspace
+
+This is the first real run. It uses the defaults the orchestrator now has: GitHub as the forge ([ADR-0008](adr/0008-pluggable-forge-github-default.md)) and Linear as the gate surface ([ADR-0007](adr/0007-pluggable-gate-surfaces.md)). Nothing in this repository has been run against the live platform, GitHub, or Linear yet; this guide is also the verification plan. Expect field-name surprises in `sessions.py`, `forge/github.py`, and `surfaces/tracker.py`, and fix them as you go.
+
+What you need: an Anthropic Console account with Managed Agents access, a personal GitHub account, a personal Linear workspace (free tier is fine), Python 3.11+, git, and the `ant` CLI.
+
+## 1. Apply the agents and the environment
+
+```bash
+ant auth login                                   # once per machine
+ant apply --dry-run -v agents environments       # review the plan: 8 agents, 1 environment
+ant apply --yes agents environments              # writes claude-lock.json (already committed for this workspace)
+```
+
+`claude-lock.json` already holds agent and environment IDs created in the Console for this repository. If you apply in a different workspace, commit the new lock file. `environments/factory-cloud.yaml` allows `github.com` and `api.github.com`; sessions can push through the git proxy and nothing else.
+
+## 2. A small target repository
+
+The factory changes a repository other than this one. Fork or create a small app with a test suite that runs in under a minute (a Flask or FastAPI service with pytest is ideal). Two things it needs:
+
+- `service_manifest.json` at the root (copy `examples/ledgerline/service_manifest.json` and edit; the path is configurable with `FACTORY_SERVICE_MANIFEST_PATH`).
+- `.github/workflows/preview.yml` from [`templates/github-actions-preview.yml`](../templates/github-actions-preview.yml). Its deploy step is a placeholder that only echoes; replace it with a real deploy (Fly, Render, Cloud Run, a docker host) when you want the end-to-end checks to hit a running instance. With the placeholder, the workflow still records a Deployment with an `environment_url`, so the orchestrator's plumbing (preview status, dev deploy observation) can be exercised; the e2e commands will fail against the fake URL and that failure is the correct, fail-closed behaviour.
+
+Write an outcome for it. `examples/ledgerline/outcome.json` is the shape; change `target_repositories[0].url` to your repository, `default_branch`, `paths_in_scope`, and the owner handle to your GitHub login. Keep it small: one metric, two or three work items' worth of scope.
+
+## 3. GitHub token
+
+Create a **fine-grained personal access token** (Settings → Developer settings → Fine-grained tokens) scoped to the target repository only, with these repository permissions:
+
+| Permission | Access | Used for |
+|---|---|---|
+| Contents | Read and write | clone through the git proxy, branch and run-record commits, design-branch commits |
+| Pull requests | Read and write | opening the change request, reading reviews and comments |
+| Actions | Read | workflow run status for `preview.json` and Stage 5 |
+| Deployments | Read | `environment_url` for the preview and dev URLs |
+| Metadata | Read | implied |
+
+The same token is the `authorization_token` on the `github_repository` session resource (so the sandbox clones through Anthropic's proxy without seeing it) and the orchestrator's own token for the REST API. No vault is needed for the GitHub forge.
+
+## 4. Linear API key and team id
+
+Linear → Settings → API → Personal API keys → create one. Then find the team id: in Linear, open your team's settings, or run
+
+```bash
+curl -s https://api.linear.app/graphql -H "Authorization: $LINEAR_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"query":"{ teams { nodes { id name key } } }"}'
+```
+
+The team needs the usual workflow states (Backlog, Todo, In Progress, In Review, Done, Canceled). `surfaces/tracker.py` maps work-item stages to those names and falls back to state *types* when names differ. Labels `factory:*` are created on demand.
+
+Optional: `LINEAR_PROJECT_ID` to put every run in one existing project instead of creating one per run.
+
+## 5. Environment variables
+
+```bash
+export ANTHROPIC_API_KEY=...                       # Console key for the workspace the agents live in
+export ANTHROPIC_WORKSPACE=default                 # only for Console deep links
+export FACTORY_FORGE=github                        # default
+export FORGE_REPO=<you>/<repo>                     # GITHUB_REPO also works
+export FORGE_TOKEN=github_pat_...                  # GITHUB_TOKEN also works
+export FACTORY_DEPLOY_WORKFLOW=preview.yml         # scope pipeline lookups to the template's workflow
+export FACTORY_PREVIEW_ENVIRONMENT_PREFIX=preview/ # matches the template
+export FACTORY_DEV_ENVIRONMENT=dev
+export LINEAR_API_KEY=lin_api_...
+export LINEAR_TEAM_ID=...
+export FACTORY_GATE_SURFACE=tracker                # the default once LINEAR_API_KEY is set
+export FACTORY_PAGE_PUBLISHER=local                # pages land in runs/<run_id>/pages/
+```
+
+Then:
+
+```bash
+cd orchestrator && .venv/bin/factory doctor
+```
+
+It prints the agent ids, the environment, `forge github https://github.com <you>/<repo> token=set`, `gate surface tracker`, and `ok`. Anything missing is listed by variable name.
+
+## 6. Run
+
+```bash
+cd orchestrator && .venv/bin/factory run ../path/to/your/outcome.json
+```
+
+The run id is printed first. The process blocks at each gate; keep a second terminal for decisions. What happens, in order:
+
+1. **Decompose.** One session; the Console link is printed. A Linear project `[factory] <title>` and a run issue appear; after the decomposition, one child issue per work item in Backlog.
+2. **Gate 1.** `runs/<run_id>/pages/gate_1.html` is written (open it in a browser). The run issue gets a comment with the summary, links, the sha256 list, and the label `factory:gate-open`. Decide from either side, below.
+3. **Specify and judge.** Work-item issues move to Todo. The spec-judge loop runs without you.
+4. **Gate 2.** `gate_2.html` with the judge summary, the goal-coverage matrix, and a section per spec. Same decision mechanics, plus `approve-subset`.
+5. **Implement, review, judge.** Issues move to In Progress. The implementer's session mounts your repository at `/workspace/repo` and pushes `factory/<run_id>/<spec_id>`; the preview workflow runs; the orchestrator clones the branch itself, runs the spec's test commands, waits for the preview deployment, runs the e2e entries, and runs the deterministic checks.
+6. **Integrate.** The orchestrator commits `.factory/runs/<run_id>/specs/<spec_id>.{json,md}`, `verdict.json`, and `evidence/<spec_id>/merge_readiness.json` on the branch (fixed author and date, so the commit is reproducible), then the integrator session opens the pull request. The issue moves to In Review with the PR link in a comment. Gate 3 is the pull request itself.
+7. **After you merge.** Stage 5 (`deploy_observe.on_change_request_merged`) is driven by a change-request watcher that is not in this repository yet (roadmap); for the first run, call it by hand from a Python shell or skip it. The item stays `merged`.
+
+## 7. Deciding gates and answering questions
+
+**From Linear.** On the issue with `factory:gate-open`: add exactly one label, `factory:approve`, `factory:request-changes`, `factory:reject`, or `factory:approve-subset`. For request-changes, add a comment first; it is handed to the agent verbatim as `feedback.md`. For approve-subset, include a line `approve: spec_a, spec_b`. The orchestrator polls every ten seconds, copies the sha256 list out of its own gate comment into the decision (so you approve exactly what the page showed), clears the labels, and moves on. A question from an agent is a `factory:question` comment; reply in its thread (or in a top-level comment that quotes the question id). Blocking questions pause the session until you do.
+
+**From the CLI.** `factory gates` lists open gates and questions with their artifact hashes; `factory decide <gate_id> approve|request_changes|reject|approve_subset --comment "..." [--spec spec_x]` and `factory answer <question_id> "text"`. The CLI binds the hashes automatically. Both surfaces are polled; the first decision wins.
+
+**From the forge** (`FACTORY_GATE_SURFACE=forge`): the design PR holds the files for inline comments; the decision still comes from the CLI (or the tracker when both are configured).
+
+## 8. What you see in the Anthropic Console
+
+Each stage is a session titled `<run_id> <stage> ...`, with `metadata.run_id` so the sessions list can be filtered. The session view shows the `github_repository` resource, the uploaded `schemas/` and `tools/validate.py`, every tool call, the outcome-grader iterations for writing stages (`span.outcome_evaluation_end`), custom tool calls (`ask_human`, `open_change_request`) with the orchestrator's replies, and the list cost. `ant beta:sessions connect <session_id>` attaches a terminal to a live session. Every artifact's `produced_by.session_id` is the link back.
+
+## 9. Swapping to Jira and self-hosted GitLab at work
+
+Both seams are protocols with one implementation each to add or finish:
+
+- **Forge.** Set `FACTORY_FORGE=gitlab`, `FORGE_URL=https://gitlab.example.internal`, `FORGE_TOKEN`, `FORGE_REPO=group/project`, and `FACTORY_VAULT_ID` (the `GITLAB_TOKEN` vault credential of [ADR-0003](adr/0003-gitlab-integration.md), because there is no native GitLab session resource). `GitLabForge` in `orchestrator/factory/forge/gitlab.py` already implements the `Forge` protocol; its pipeline and environment reads are unverified, which is roadmap spike 2b. Swap `github.com` for your host in `environments/factory-cloud.yaml`.
+- **Tracker.** `orchestrator/factory/surfaces/jira.py` is a stub with every `Tracker` method and the Jira Cloud REST v3 call each one maps to. Implement it, add a `make_tracker_queue` branch keyed on `JIRA_URL`, and `TrackerQueue` does the rest: the gate comment, labels, decision parsing, and work-item mirroring are tracker-neutral. Jira has no threaded comments, so answers to questions are top-level comments that quote the question id (already supported).
+- **Everything else** (gates, hashes, stages, checks, pages, event log) is unchanged. The CLI's file queue remains available alongside either tracker.
+
+## 10. Known gaps before this is routine
+
+- No change-request watcher: `cr.merged` must be fed in by hand for Stage 5 (roadmap).
+- `ClaudeArtifactPublisher` is a stub; pages are local files.
+- Human comments at Gate 2 are broadcast to every spec's writer; per-spec routing is a small follow-up.
+- Reviewer requests on a personal repository are ignored by GitHub (you cannot review your own PR); the forge tolerates the 422. Use a second account or a collaborator for a real Gate 3.

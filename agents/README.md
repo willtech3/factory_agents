@@ -19,7 +19,7 @@ Review the plan, then re-run with `--yes` once you agree with it. `claude-lock.j
 | `implementer` | 3 | Opus 5.5, xhigh | yes | - | Implements one spec in vertical slices with tests |
 | `reviewer` | 3 | Opus 5.5, xhigh | no | implementer (fresh session per round, sees only diff + spec) | Adversarial review with falsifiable findings |
 | `merge_judge` | 3 | Opus 5.5, high | no | both | Audits the reviewer/implementer exchange; decides ready / another round / escalate |
-| `integrator` | 4 | Sonnet 5.5, medium | no (pushes) | - | Opens the GitLab MR with the full evidence bundle |
+| `integrator` | 4 | Sonnet 5.5, medium | no (pushes) | - | Opens the change request (PR or MR) with the full evidence bundle |
 
 ## Conventions every prompt follows
 

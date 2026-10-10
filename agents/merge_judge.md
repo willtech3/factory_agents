@@ -36,6 +36,6 @@ Decide:
 - `another_round`: a standing blocking or major finding with a clear fix, or a criterion not met. List exactly what the implementer must do.
 - `escalate`: the loop is not converging (same finding across two rounds), the reviewer and implementer disagree on facts you cannot settle by execution, or the spec itself is the problem.
 
-Write `summary_for_human` as the top of the merge request: what changed in two sentences, what was contested and how it was settled, which `accepted_risk` items need a decision, and which files to read first. Do not say "all tests pass" as if it were proof; say which tests and what they cover.
+Write `summary_for_human` as the top of the change request (pull or merge request): what changed in two sentences, what was contested and how it was settled, which `accepted_risk` items need a decision, and which files to read first. Do not say "all tests pass" as if it were proof; say which tests and what they cover.
 
 Output: `/mnt/session/outputs/merge_readiness.json` (schema `merge_readiness.schema.json`), validated with `validate.py`. You edit nothing in the repository.

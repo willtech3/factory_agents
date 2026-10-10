@@ -40,7 +40,7 @@ class WorkItemStage(str, Enum):
     RESPONDING = "responding"
     MERGE_JUDGING = "merge_judging"
     INTEGRATING = "integrating"
-    MR_OPEN = "mr_open"                    # Gate 3: human review in GitLab
+    CR_OPEN = "cr_open"                    # Gate 3: human review of the change request (PR or MR) on the forge
     MERGED = "merged"
     DEPLOYING_DEV = "deploying_dev"        # Stage 5: platform pipeline deploying the default branch to dev; observed, not driven
     DEPLOYED_DEV = "deployed_dev"          # dev deploy succeeded and the spec's e2e checks passed against the dev URL
@@ -73,13 +73,13 @@ WORK_ITEM_TRANSITIONS: dict[WorkItemStage, set[WorkItemStage]] = {
     WorkItemStage.REVIEWING: {WorkItemStage.RESPONDING, WorkItemStage.MERGE_JUDGING, WorkItemStage.ESCALATED},
     WorkItemStage.RESPONDING: {WorkItemStage.REVIEWING, WorkItemStage.ESCALATED},
     WorkItemStage.MERGE_JUDGING: {WorkItemStage.INTEGRATING, WorkItemStage.IMPLEMENTING, WorkItemStage.ESCALATED},
-    WorkItemStage.INTEGRATING: {WorkItemStage.MR_OPEN, WorkItemStage.ESCALATED},
-    WorkItemStage.MR_OPEN: {WorkItemStage.MERGED, WorkItemStage.CLOSED, WorkItemStage.IMPLEMENTING},
+    WorkItemStage.INTEGRATING: {WorkItemStage.CR_OPEN, WorkItemStage.ESCALATED},
+    WorkItemStage.CR_OPEN: {WorkItemStage.MERGED, WorkItemStage.CLOSED, WorkItemStage.IMPLEMENTING},
     WorkItemStage.BLOCKED: {WorkItemStage.IMPLEMENTING, WorkItemStage.SPEC_DRAFTING, WorkItemStage.ESCALATED},
     WorkItemStage.ESCALATED: {WorkItemStage.SPEC_DRAFTING, WorkItemStage.IMPLEMENTING, WorkItemStage.CLOSED},
     WorkItemStage.MERGED: {WorkItemStage.DEPLOYING_DEV},
     # A failed dev deploy or dev e2e opens a DEPLOY_FAILURE gate (-> ESCALATED); the human may route it back to
-    # IMPLEMENTING (a follow-up branch and MR), or close the item. Promotion beyond dev is human and outside the factory.
+    # IMPLEMENTING (a follow-up branch and change request), or close the item. Promotion beyond dev is human and outside the factory.
     WorkItemStage.DEPLOYING_DEV: {WorkItemStage.DEPLOYED_DEV, WorkItemStage.ESCALATED},
     WorkItemStage.DEPLOYED_DEV: set(),
     WorkItemStage.CLOSED: set(),
@@ -139,7 +139,7 @@ class WorkItemState:
     spec_round: int = 0
     review_round: int = 0
     branch: str | None = None
-    mr_iid: int | None = None
+    cr_id: int | None = None            # change request number (PR) or iid (MR)
     depends_on: list[str] = field(default_factory=list)
     dev_pipeline_id: int | None = None
     dev_environment_url: str | None = None
@@ -198,7 +198,7 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
         # (Re)register work items; a re-decomposition replaces pending items but keeps merged ones.
         for item in p["work_items"]:
             existing = state.work_items.get(item["work_item_id"])
-            if existing is None or existing.stage not in MERGED_STAGES | {WorkItemStage.MR_OPEN}:
+            if existing is None or existing.stage not in MERGED_STAGES | {WorkItemStage.CR_OPEN}:
                 state.work_items[item["work_item_id"]] = WorkItemState(
                     work_item_id=item["work_item_id"], depends_on=list(item.get("depends_on", []))
                 )
@@ -223,8 +223,8 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
             wi.review_round = p["review_round"]
         if "branch" in p:
             wi.branch = p["branch"]
-        if "mr_iid" in p:
-            wi.mr_iid = p["mr_iid"]
+        if "cr_id" in p:
+            wi.cr_id = p["cr_id"]
         if "pipeline_id" in p:
             wi.dev_pipeline_id = p["pipeline_id"]
         if "environment_url" in p:
@@ -241,7 +241,7 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
         wi = state.work_items[ev.work_item_id]
         wi.dev_pipeline_id = p.get("pipeline_id", wi.dev_pipeline_id)
         wi.dev_environment_url = p.get("environment_url", wi.dev_environment_url)
-    # Other kinds (mr.opened, judge.verdict, review.findings, deploy.failed, e2e.dev_*) are informational for the timeline.
+    # Other kinds (cr.opened, judge.verdict, review.findings, deploy.failed, e2e.dev_*) are informational for the timeline.
     return state
 
 

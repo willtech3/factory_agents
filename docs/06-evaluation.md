@@ -19,7 +19,7 @@ A factory run is six stochastic stages, three human decisions, and a codebase. A
 
 **L2 End-to-end.** `factory-bench`: ten outcomes against three private synthetic repositories with hidden acceptance suites and scripted human interventions so runs are unattended and reproducible. Measures outcome success with credible intervals, partial credit, interventions needed, cost, wall time, and code-quality erosion. Runs weekly and before any model change.
 
-**L3 Online.** Production telemetry: gate decisions and time-to-decide, edit distance between agent artifact and approved artifact, rounds to convergence, MR approval and revert rates, cost per merged MR, escalation reasons. This is the only level that measures the thing that matters (did humans accept the work) and the cheapest, so instrument it from day one.
+**L3 Online.** Production telemetry: gate decisions and time-to-decide, edit distance between agent artifact and approved artifact, rounds to convergence, change-request approval and revert rates, cost per merged MR, escalation reasons. This is the only level that measures the thing that matters (did humans accept the work) and the cheapest, so instrument it from day one.
 
 ## Deterministic versus stochastic measurement
 

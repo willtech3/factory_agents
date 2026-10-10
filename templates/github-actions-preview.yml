@@ -1,0 +1,88 @@
+# Preview deploy for factory branches, recorded through the GitHub Deployments API.
+#
+# Copy to `.github/workflows/preview.yml` in the TARGET repository (the one the factory changes).
+# The orchestrator never deploys; it reads what this workflow records:
+#   - the workflow run for a (branch, head sha) pair  -> preview.json status for implementer and reviewer
+#   - the Deployment + Deployment Status with `environment_url` -> the URL the e2e checks run against
+# The same shape on `main` with environment `dev` is what Stage 5 watches after a merge.
+#
+# Replace the "deploy" step with whatever actually deploys your app (Fly, Render, Vercel, Cloud Run, a
+# docker-compose host...). Everything else can stay. Set FACTORY_DEPLOY_WORKFLOW=preview.yml on the
+# orchestrator so pipeline lookups are scoped to this file.
+
+name: preview
+
+on:
+  push:
+    branches:
+      - "factory/**"
+      - main
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Name the environment
+        id: env
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            echo "name=dev" >> "$GITHUB_OUTPUT"
+            echo "url=https://dev.example.com" >> "$GITHUB_OUTPUT"            # PLACEHOLDER: your dev URL
+          else
+            slug=$(echo "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' | cut -c1-63)
+            echo "name=preview/${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"          # FACTORY_PREVIEW_ENVIRONMENT_PREFIX=preview/
+            echo "url=https://${slug}.preview.example.com" >> "$GITHUB_OUTPUT"  # PLACEHOLDER: your per-branch preview URL scheme
+          fi
+
+      - name: Create deployment
+        id: deployment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.repos.createDeployment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              ref: context.sha, environment: '${{ steps.env.outputs.name }}',
+              auto_merge: false, required_contexts: [], transient_environment: '${{ steps.env.outputs.name }}' !== 'dev',
+              description: 'factory preview',
+            });
+            core.setOutput('id', data.id);
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner, repo: context.repo.repo, deployment_id: data.id, state: 'in_progress',
+            });
+
+      # ---------------------------------------------------------------- PLACEHOLDER deploy step
+      - name: Deploy
+        id: deploy
+        shell: bash
+        run: |
+          echo "Deploying ${GITHUB_SHA} to ${{ steps.env.outputs.name }} at ${{ steps.env.outputs.url }}"
+          # e.g. flyctl deploy --app "$APP" --remote-only
+          # e.g. vercel deploy --token "$VERCEL_TOKEN" --yes   (then echo its URL into $GITHUB_OUTPUT as url=)
+          echo "url=${{ steps.env.outputs.url }}" >> "$GITHUB_OUTPUT"
+      # ------------------------------------------------------------------------------------------
+
+      - name: Record deployment status
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ok = '${{ steps.deploy.outcome }}' === 'success';
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner, repo: context.repo.repo,
+              deployment_id: ${{ steps.deployment.outputs.id }},
+              state: ok ? 'success' : 'failure',
+              environment_url: '${{ steps.deploy.outputs.url || steps.env.outputs.url }}',
+              log_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              auto_inactive: false,
+            });

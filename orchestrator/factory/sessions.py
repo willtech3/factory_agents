@@ -90,7 +90,11 @@ class SessionDriver:
         work_item_id: str | None = None,
         model_override: dict[str, Any] | None = None,
         metadata: dict[str, str] | None = None,
+        repository: dict[str, Any] | None = None,
     ) -> StageResult:
+        """`repository` is a session resource from `Forge.session_repository_resource` (the native
+        `github_repository` mount, cloned through Anthropic's git proxy at /workspace/repo) or None when
+        the forge has no native resource and the agent clones with the vault credential (GitLab, ADR-0003)."""
         agent_ref = self.cfg.agents[agent_key]
         if model_override:
             agent: Any = {"type": "agent_with_overrides", "id": agent_ref.id, "model": model_override}
@@ -103,6 +107,8 @@ class SessionDriver:
 
         all_uploads = {**self.standard_uploads(), **uploads}
         resources = self._upload_tree(all_uploads)
+        if repository:
+            resources.append(repository)
 
         if rubric_md:
             kickoff = [{
@@ -119,7 +125,7 @@ class SessionDriver:
             environment_id=self.cfg.environment_id,
             title=title,
             resources=resources,
-            vault_ids=[self.cfg.vault_id] if self.cfg.vault_id else None,
+            vault_ids=[self.cfg.vault_id] if (self.cfg.vault_id and not repository) else None,
             budget={"type": "limit", "max_list_cost": {"amount": str(int(round(budget_usd * 100))), "currency": "USD"}},
             metadata={"run_id": run_id, "stage": stage, **({"work_item_id": work_item_id} if work_item_id else {}),
                       **(metadata or {})},

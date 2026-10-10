@@ -13,7 +13,7 @@
     "result": {
       "type": "string",
       "enum": ["ready", "another_round", "escalate"],
-      "description": "ready: open the MR. another_round: send back to implementer with the listed findings. escalate: the loop is not converging or a decision needs a human."
+      "description": "ready: open the change request. another_round: send back to implementer with the listed findings. escalate: the loop is not converging or a decision needs a human."
     },
     "unresolved_findings": {
       "type": "array",
@@ -41,7 +41,7 @@
       }
     },
     "residual_risks": { "type": "array", "items": { "type": "string" } },
-    "summary_for_human": { "type": "string", "maxLength": 3000, "description": "Becomes the top of the MR description. What changed, what was contested, what the human should look at first." },
+    "summary_for_human": { "type": "string", "maxLength": 3000, "description": "Becomes the top of the change request description. What changed, what was contested, what the human should look at first." },
     "produced_by": { "$ref": "provenance.schema.json" }
   }
 }

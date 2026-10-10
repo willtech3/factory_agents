@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from factory.config import Config
+from conftest import make_config
 from factory.gates import Decision, GateDecision, InMemoryQueue, LogNotifier
-from factory.gitlab import parse_pipeline_webhook
+from factory.forge import parse_pipeline_webhook
 from factory.stages import RunContext
 from factory.stages.deploy_observe import handle_pipeline_webhook, observe_deploy, wait_for_pipeline
 from factory.state import Policy, WorkItemStage
@@ -55,12 +55,8 @@ class AutoDecide(InMemoryQueue):
 
 
 def _ctx(tmp_path: Path, root: Path, queue) -> RunContext:
-    cfg = Config(agents={}, environment_id="", vault_id=None, gitlab_url="https://gitlab.example.internal", gitlab_token=None,
-                 gitlab_project="ledgerline/app", service_manifest_path="service_manifest.json", dev_environment_name="dev",
-                 preview_environment_prefix="preview/", smoke_commands=(), console_workspace="w", runs_dir=tmp_path,
-                 schemas_dir=root / "schemas", rubrics_dir=root / "rubrics", templates_dir=root / "templates",
-                 pin_agent_versions=True)
-    return RunContext(cfg=cfg, store=RunStore(tmp_path), driver=None, queue=queue, notifier=LogNotifier(), gitlab=None,
+    cfg = make_config(root, tmp_path)
+    return RunContext(cfg=cfg, store=RunStore(tmp_path), driver=None, queue=queue, notifier=LogNotifier(), forge=None,
                       policy=Policy(), run_id=RUN)
 
 
@@ -69,7 +65,7 @@ def _seed_merged(ctx: RunContext, examples, wid="wi-smart-retries"):
     ctx.event("artifact.produced", {"artifact_type": "decomposition", "revision": 1,
                                     "work_items": examples["decomposition"]["work_items"]}, actor="agent")
     for stage in ("spec_drafting", "spec_judging", "spec_approved", "implementing", "reviewing", "merge_judging",
-                  "integrating", "mr_open", "merged"):
+                  "integrating", "cr_open", "merged"):
         ctx.event("work_item.stage", {"stage": stage}, work_item_id=wid)
 
 
@@ -162,6 +158,7 @@ def test_approve_reobserves_once_then_escalates(tmp_path, root, examples):
 
 
 def test_webhook_stub_records_deploy_started_once(tmp_path, root, examples):
+    """GitLab Pipeline Hook shape; the GitHub workflow_run shape is covered in test_forge.py."""
     ctx = _ctx(tmp_path, root, AutoDecide(Decision.REJECT))
     _seed_merged(ctx, examples)
     payload = {"object_kind": "pipeline", "object_attributes": {"id": 9, "status": "running", "ref": "main", "sha": SHA,
@@ -181,7 +178,7 @@ def test_webhook_stub_records_deploy_started_once(tmp_path, root, examples):
 def test_wait_for_preview_polls_until_ready(tmp_path, root, examples):
     from factory.stages.implement import wait_for_preview
 
-    class FakeGitLab:
+    class FakeForge:
         def __init__(self):
             self.n = 0
 
@@ -193,8 +190,8 @@ def test_wait_for_preview_polls_until_ready(tmp_path, root, examples):
             return "https://factory-run-x-spec.preview.example.internal" if self.n >= 3 else None
 
     ctx = _ctx(tmp_path, root, AutoDecide(Decision.REJECT))
-    ctx.gitlab = FakeGitLab()
+    ctx.forge = FakeForge()
     info = wait_for_preview(ctx, "factory/run_x/spec_y", SHA, poll_seconds=0, sleep=lambda s: None)
-    assert info["status"] == "ready" and info["url"].startswith("https://") and ctx.gitlab.n == 3
-    ctx.gitlab = None
+    assert info["status"] == "ready" and info["url"].startswith("https://") and ctx.forge.n == 3
+    ctx.forge = None
     assert wait_for_preview(ctx, "b", SHA, sleep=lambda s: None)["status"] == "unavailable"

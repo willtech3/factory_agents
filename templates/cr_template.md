@@ -1,6 +1,6 @@
 # {{spec_id}}: {{spec_title}}
 
-> Factory run `{{run_id}}` · design MR !{{design_mr_iid}} · outcome: {{outcome_title}}
+> Factory run `{{run_id}}` · outcome: {{outcome_title}} · design record: `.factory/runs/{{run_id}}/` on this branch{{#design_cr_url}} · design change request: {{design_cr_url}}{{/design_cr_url}}{{#tracker_url}} · tracker: {{tracker_url}}{{/tracker_url}}
 
 ## Summary
 
@@ -48,7 +48,7 @@ End-to-end on the preview environment ({{preview_url}}, pipeline {{preview_pipel
 
 Deterministic checks: {{deterministic_checks_summary}}
 
-After merge the orchestrator watches the platform's dev deploy and re-runs the end-to-end checks against dev; the result appears on the run board, not in this MR.
+After merge the orchestrator watches the platform's dev deploy and re-runs the end-to-end checks against dev; the result appears on the run board (and the tracker issue), not in this change request.
 
 ## Where to start reading
 
@@ -64,7 +64,7 @@ After merge the orchestrator watches the platform's dev deploy and re-runs the e
 | {{stage}} | {{agent_name}} v{{agent_version}} | [{{session_id}}]({{console_url}}) | ${{list_cost_usd}} |
 {{/sessions}}
 
-Spec: `.factory/runs/{{run_id}}/specs/{{spec_id}}.md` (design MR). Rubric scores and full findings: `.factory/runs/{{run_id}}/evidence/{{spec_id}}/`.
+Spec: `.factory/runs/{{run_id}}/specs/{{spec_id}}.md` and `.json`; spec judge verdict: `.factory/runs/{{run_id}}/verdict.json`; merge judge verdict: `.factory/runs/{{run_id}}/evidence/{{spec_id}}/merge_readiness.json` (all committed on this branch by the orchestrator).
 
 ---
-*Opened by the factory integrator. A human must review and approve this MR; the factory never merges.*
+*Opened by the factory integrator. A human must review and approve this change request; the factory never merges.*

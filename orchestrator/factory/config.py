@@ -2,6 +2,14 @@
 
 `ant apply` writes `claude-lock.json` at the repo root with one entry per resource file.
 The orchestrator never calls `agents.create()`; it only reads IDs here.
+
+Forge and gate-surface selection (ADR-0007, ADR-0008):
+
+    FACTORY_FORGE=github|gitlab          default github
+    FORGE_URL / FORGE_TOKEN / FORGE_REPO  with GITHUB_* and GITLAB_URL/GITLAB_TOKEN/GITLAB_PROJECT as aliases
+    FACTORY_GATE_SURFACE=forge|tracker|file   default tracker when LINEAR_API_KEY is set, else forge
+    FACTORY_PAGE_PUBLISHER=local|artifact default local
+    LINEAR_API_KEY / LINEAR_TEAM_ID       the tracker surface (Linear); JIRA_* is a stub
 """
 from __future__ import annotations
 
@@ -24,6 +32,11 @@ AGENT_FILES = {
 }
 ENVIRONMENT_FILE = "./environments/factory-cloud.yaml"
 
+FORGES = ("github", "gitlab")
+GATE_SURFACES = ("forge", "tracker", "file")
+PAGE_PUBLISHERS = ("local", "artifact")
+DEFAULT_FORGE_URL = {"github": "https://github.com", "gitlab": "https://gitlab.com"}
+
 
 @dataclass(frozen=True)
 class AgentRef:
@@ -35,13 +48,20 @@ class AgentRef:
 class Config:
     agents: dict[str, AgentRef]
     environment_id: str
-    vault_id: str | None
-    gitlab_url: str
-    gitlab_token: str | None
-    gitlab_project: str                 # "group/project"
+    vault_id: str | None                # GitLab forge only: sandbox git credential (ADR-0003)
+    forge: str                          # github | gitlab
+    forge_url: str                      # https://github.com, or the self-hosted GitLab host
+    forge_token: str | None             # orchestrator-side token; also the github_repository authorization_token
+    forge_repo: str                     # "owner/repo" (GitHub) or "group/project" (GitLab)
+    gate_surface: str                   # forge | tracker | file
+    page_publisher: str                 # local | artifact
+    linear_api_key: str | None
+    linear_team_id: str | None
+    linear_project_id: str | None       # optional: reuse one Linear project for every run
+    deploy_workflow: str | None         # GitHub only: workflow file that deploys (scopes pipeline lookups)
     service_manifest_path: str          # fixed path in the app repo, named by the platform contract
-    dev_environment_name: str           # GitLab environment the default branch deploys to
-    preview_environment_prefix: str     # GitLab environment name prefix for per-branch previews
+    dev_environment_name: str           # environment the default branch deploys to
+    preview_environment_prefix: str     # environment name prefix for per-branch previews
     smoke_commands: tuple[str, ...]     # optional suite run against dev after every deploy ($BASE_URL substituted)
     console_workspace: str
     runs_dir: Path
@@ -52,6 +72,18 @@ class Config:
 
     def console_session_url(self, session_id: str) -> str:
         return f"https://platform.claude.com/workspaces/{self.console_workspace}/sessions/{session_id}"
+
+    @property
+    def repo_url(self) -> str:
+        return f"{self.forge_url.rstrip('/')}/{self.forge_repo}"
+
+
+def _first(*names: str, default: str | None = None) -> str | None:
+    for n in names:
+        v = os.environ.get(n)
+        if v:
+            return v
+    return default
 
 
 def load(lock_path: Path | None = None) -> Config:
@@ -73,13 +105,33 @@ def load(lock_path: Path | None = None) -> Config:
         override = os.environ.get(f"FACTORY_AGENT_{key.upper()}_ID")
         if override:
             agents[key] = AgentRef(id=override, version=None)
+
+    forge = (os.environ.get("FACTORY_FORGE") or "github").lower()
+    if forge == "github":
+        forge_url = _first("FORGE_URL", "GITHUB_URL", default=DEFAULT_FORGE_URL["github"])
+        forge_token = _first("FORGE_TOKEN", "GITHUB_TOKEN")
+        forge_repo = _first("FORGE_REPO", "GITHUB_REPO", "GITHUB_REPOSITORY", default="")
+    else:
+        forge_url = _first("FORGE_URL", "GITLAB_URL", default=DEFAULT_FORGE_URL.get(forge, ""))
+        forge_token = _first("FORGE_TOKEN", "GITLAB_TOKEN")
+        forge_repo = _first("FORGE_REPO", "GITLAB_PROJECT", default="")
+    linear_key = os.environ.get("LINEAR_API_KEY")
+    gate_surface = (os.environ.get("FACTORY_GATE_SURFACE") or ("tracker" if linear_key else "forge")).lower()
+
     return Config(
         agents=agents,
         environment_id=env_id,
         vault_id=os.environ.get("FACTORY_VAULT_ID"),
-        gitlab_url=os.environ.get("GITLAB_URL", "https://gitlab.com"),   # self-hosted: set GITLAB_URL; nothing here assumes gitlab.com
-        gitlab_token=os.environ.get("GITLAB_TOKEN"),
-        gitlab_project=os.environ.get("GITLAB_PROJECT", ""),
+        forge=forge,
+        forge_url=forge_url or "",
+        forge_token=forge_token,
+        forge_repo=forge_repo or "",
+        gate_surface=gate_surface,
+        page_publisher=(os.environ.get("FACTORY_PAGE_PUBLISHER") or "local").lower(),
+        linear_api_key=linear_key,
+        linear_team_id=os.environ.get("LINEAR_TEAM_ID"),
+        linear_project_id=os.environ.get("LINEAR_PROJECT_ID"),
+        deploy_workflow=os.environ.get("FACTORY_DEPLOY_WORKFLOW"),
         service_manifest_path=os.environ.get("FACTORY_SERVICE_MANIFEST_PATH", "service_manifest.json"),
         dev_environment_name=os.environ.get("FACTORY_DEV_ENVIRONMENT", "dev"),
         preview_environment_prefix=os.environ.get("FACTORY_PREVIEW_ENVIRONMENT_PREFIX", "preview/"),
@@ -98,10 +150,21 @@ def missing(cfg: Config) -> list[str]:
     gaps = [f"agent:{k}" for k in AGENT_FILES if k not in cfg.agents]
     if not cfg.environment_id:
         gaps.append("environment_id (run `ant apply agents environments`)")
-    if not cfg.gitlab_token:
-        gaps.append("GITLAB_TOKEN (orchestrator-side, for MR creation)")
-    if not cfg.gitlab_project:
-        gaps.append("GITLAB_PROJECT")
-    if not cfg.vault_id:
-        gaps.append("FACTORY_VAULT_ID (sandbox git access)")
+    if cfg.forge not in FORGES:
+        gaps.append(f"FACTORY_FORGE={cfg.forge!r} (expected github|gitlab)")
+    if not cfg.forge_token:
+        gaps.append("FORGE_TOKEN (orchestrator-side; GITHUB_TOKEN or GITLAB_TOKEN also accepted)")
+    if not cfg.forge_repo:
+        gaps.append("FORGE_REPO (owner/repo or group/project)")
+    if cfg.forge == "gitlab" and not cfg.vault_id:
+        gaps.append("FACTORY_VAULT_ID (sandbox git access for the gitlab forge, ADR-0003)")
+    if cfg.gate_surface not in GATE_SURFACES:
+        gaps.append(f"FACTORY_GATE_SURFACE={cfg.gate_surface!r} (expected forge|tracker|file)")
+    if cfg.gate_surface == "tracker":
+        if not cfg.linear_api_key:
+            gaps.append("LINEAR_API_KEY (tracker gate surface)")
+        if not cfg.linear_team_id:
+            gaps.append("LINEAR_TEAM_ID (tracker gate surface)")
+    if cfg.page_publisher not in PAGE_PUBLISHERS:
+        gaps.append(f"FACTORY_PAGE_PUBLISHER={cfg.page_publisher!r} (expected local|artifact)")
     return gaps

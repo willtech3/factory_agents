@@ -6,10 +6,15 @@ continuation of round 1 (one fresh pass per round; Song, arXiv:2603.16244). The 
 judge receives the orchestrator's deterministic checks and may not override them.
 
 Authoritative verification includes the spec's `test_plan.e2e` entries run against the
-branch's **preview environment**. The platform's own GitLab CI deploys every factory branch
-to a per-branch preview; the orchestrator reads the preview URL from the pipeline's
-environment (`GitLabClient.environment_url_for_branch`) and hands it to the implementer and
-reviewer as `preview.json`. No agent deploys anything (docs/05-platform-and-deployment.md).
+branch's **preview environment**. The platform's own CI (GitHub Actions or GitLab CI) deploys
+every factory branch to a per-branch preview; the orchestrator reads the preview URL from the
+forge's deployment or environment record (`Forge.environment_url_for_branch`) and hands it to
+the implementer and reviewer as `preview.json`. No agent deploys anything
+(docs/05-platform-and-deployment.md).
+
+Repository access in the sandbox is the forge's business: GitHub sessions get the native
+`github_repository` resource (token injected by Anthropic's git proxy), GitLab sessions get the
+vault/bearer-header clone instructions of ADR-0003. Both come from `Forge.sandbox_git_instructions`.
 """
 from __future__ import annotations
 
@@ -25,11 +30,9 @@ from ..state import WorkItemStage
 from . import RunContext
 from .common import persist_outputs, provenance, require_json
 
-GIT_SETUP = """Git access: the repository is NOT pre-mounted. Clone it with
-  git -c http.extraHeader="Authorization: Bearer $GITLAB_TOKEN" clone --branch {base_branch} {repo_url} /workspace/repo
-and configure the same header for push: `git config http.extraHeader "Authorization: Bearer $GITLAB_TOKEN"`.
-$GITLAB_TOKEN is an opaque placeholder; the real token is substituted outside the sandbox. Work on branch {branch}
-(create it from {base_branch} if it does not exist) and push it when done."""
+NO_FORGE_GIT_SETUP = """Git access: no forge is configured for this run. The repository at {repo_url} is not reachable
+from the sandbox; work on branch {branch} from {base_branch} only if it was mounted for you, otherwise record the
+blocker in blocked.md."""
 
 IMPLEMENT_DESCRIPTION = """Implement specification {spec_id} from /mnt/session/uploads/spec.json (spec.md is the readable form).
 {git}
@@ -68,7 +71,7 @@ class LocalVerifier:
     """Orchestrator-side clone used for the authoritative test run and diff analysis.
 
     Runs the spec's test commands in a clean checkout of head_sha. In production this is a
-    CI job (GitLab pipeline) triggered on the branch; the interface is the same.
+    CI job on the branch (GitHub Actions or GitLab CI); the interface is the same.
     """
 
     def __init__(self, repo_url_with_auth: str, workdir: Path):
@@ -114,8 +117,8 @@ class LocalVerifier:
                 target: str = "preview", timeout: int = 900) -> list[dict[str, Any]]:
         """Run the spec's `test_plan.e2e` entries for `target` against a running deployment.
 
-        `$BASE_URL` (and the env var BASE_URL) is the environment URL the orchestrator read from the GitLab
-        pipeline's environment, never a URL an agent reported. Entries are run from the checkout so fixtures
+        `$BASE_URL` (and the env var BASE_URL) is the environment URL the orchestrator read from the forge's
+        deployment record, never a URL an agent reported. Entries are run from the checkout so fixtures
         and e2e specs under the repo are available. If the URL is unknown (no preview deploy yet), every entry
         is recorded with exit_code None, which `checks.e2e_passed` treats as a failure: not run is not passed
         (Anthropic, "Effective harnesses": agents declare victory without end-to-end verification).
@@ -158,27 +161,27 @@ def wait_for_preview(ctx: RunContext, branch: str, head_sha: str, *, poll_second
     clock = clock or _t.monotonic
     deadline = clock() + ctx.policy.preview_wait_seconds
     info = preview_info(ctx, branch, head_sha)
-    while info["status"] in ("pending", "unavailable") and ctx.gitlab is not None and clock() < deadline:
+    while info["status"] in ("pending", "unavailable") and ctx.forge is not None and clock() < deadline:
         sleep(poll_seconds)
         info = preview_info(ctx, branch, head_sha)
     return info
 
 
 def preview_info(ctx: RunContext, branch: str, head_sha: str | None = None) -> dict[str, Any]:
-    """What the platform knows about this branch's preview deploy, read from GitLab, never from an agent.
+    """What the platform knows about this branch's preview deploy, read from the forge, never from an agent.
 
     Shape handed to agents as `preview.json`: {branch, status, url, pipeline}. `status` is one of
     `ready` (pipeline succeeded and an environment URL exists), `pending` (pipeline not finished),
-    `failed`, or `unavailable` (no GitLab client, or no pipeline yet). UNVERIFIED against the live instance.
+    `failed`, or `unavailable` (no forge, or no pipeline yet). UNVERIFIED against a live forge.
     """
     info: dict[str, Any] = {"branch": branch, "status": "unavailable", "url": None, "pipeline": None,
                             "head_sha": head_sha}
-    if ctx.gitlab is None:
+    if ctx.forge is None:
         return info
     try:
-        pipe = ctx.gitlab.latest_pipeline(branch, head_sha)
+        pipe = ctx.forge.latest_pipeline(branch, head_sha)
         info["pipeline"] = pipe
-        url = ctx.gitlab.environment_url_for_branch(branch, ctx.cfg.preview_environment_prefix)
+        url = ctx.forge.environment_url_for_branch(branch, ctx.cfg.preview_environment_prefix)
         info["url"] = url
         if pipe is None:
             info["status"] = "unavailable"
@@ -198,7 +201,11 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     """Drive one spec through implement/review/judge. Returns the final merge_readiness verdict."""
     sid, wid = spec["spec_id"], spec["work_item_id"]
     branch = _branch_for(ctx.run_id, sid)
-    git = GIT_SETUP.format(base_branch=base_branch, repo_url=repo_url, branch=branch)
+    git = (ctx.forge.sandbox_git_instructions(repo_url, base_branch, branch) if ctx.forge is not None
+           else NO_FORGE_GIT_SETUP.format(repo_url=repo_url, base_branch=base_branch, branch=branch))
+
+    def mount(checkout: str) -> dict[str, Any] | None:
+        return ctx.forge.session_repository_resource(repo_url, checkout) if ctx.forge is not None else None
     ctx.event("work_item.stage", {"stage": WorkItemStage.IMPLEMENTING.value, "branch": branch}, work_item_id=wid, spec_id=sid)
 
     findings: dict[str, Any] | None = None
@@ -227,6 +234,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                                                      response_clause=response_clause, preview_clause=preview_clause),
             rubric_md=ctx.rubric("implementation"), max_iterations=ctx.policy.outcome_max_iterations,
             budget_usd=ctx.policy.stage_budget_usd["implement"],
+            repository=mount(base_branch if round_no == 1 else branch),
         )
         if "blocked.md" in res.outputs:
             persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-")
@@ -245,8 +253,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         head_sha = _git(repo, "rev-parse", "HEAD").strip()
         diff = verifier.analyse(repo, base_sha, head_sha)
         cmd_results = verifier.run_commands(repo, spec["test_plan"]["commands"])
-        # End-to-end against the preview the platform deployed for head_sha. The URL comes from GitLab's
-        # environment record, not from the implementer's report; "not run" counts as failed.
+        # End-to-end against the preview the platform deployed for head_sha. The URL comes from the forge's
+        # deployment record, not from the implementer's report; "not run" counts as failed.
         preview = wait_for_preview(ctx, branch, head_sha)
         e2e_results = verifier.run_e2e(preview["url"] if preview["status"] == "ready" else None,
                                        spec["test_plan"].get("e2e", []), repo=repo)
@@ -287,7 +295,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                                                       git=git, round=round_no, second_round=second,
                                                       preview_clause=rev_preview_clause),
                 rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["review"],
-                metadata={"pass": str(i)},
+                metadata={"pass": str(i)}, repository=mount(branch),
             )
             f = require_json(r, "findings.json")
             persist_outputs(ctx, "review", r, prefix=f"{sid}-r{round_no}-p{i}-")
@@ -320,6 +328,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         uploads=mj_uploads, work_item_id=wid,
         description=MERGE_JUDGE_DESCRIPTION.format(spec_id=sid, round=len([1 for _ in range(1)]), git=git),
         rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["merge_judge"],
+        repository=mount(branch),
     )
     verdict = require_json(res, "merge_readiness.json")
     # Deterministic checks are not negotiable: a failing check forces another_round or escalate.

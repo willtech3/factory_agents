@@ -62,7 +62,7 @@ def test_dependency_gating(tmp_path, examples):
             store.append("run_z", "work_item.stage", {"type": "orchestrator"}, {"stage": stage}, work_item_id=wid)
     st = store.state("run_z")
     assert [w.work_item_id for w in st.ready_work_items()] == ["wi-smart-retries"]  # emails depends on retries
-    for stage in ("implementing", "reviewing", "merge_judging", "integrating", "mr_open", "merged"):
+    for stage in ("implementing", "reviewing", "merge_judging", "integrating", "cr_open", "merged"):
         store.append("run_z", "work_item.stage", {"type": "orchestrator"}, {"stage": stage}, work_item_id="wi-smart-retries")
     st = store.state("run_z")
     assert [w.work_item_id for w in st.ready_work_items()] == ["wi-dunning-emails"]
@@ -90,7 +90,7 @@ def test_gate_decision_binds_artifact_hashes():
 
 def _merge_item(store, run_id, wid):
     for stage in ("spec_drafting", "spec_judging", "spec_approved", "implementing", "reviewing", "merge_judging",
-                  "integrating", "mr_open", "merged"):
+                  "integrating", "cr_open", "merged"):
         store.append(run_id, "work_item.stage", {"type": "orchestrator"}, {"stage": stage}, work_item_id=wid)
 
 

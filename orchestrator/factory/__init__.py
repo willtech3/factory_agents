@@ -7,7 +7,8 @@ your control flow). It owns:
 - one Managed Agents session per stage per work item (`sessions.py`, `stages/`);
 - human gates and in-session questions (`gates.py`);
 - deterministic checks that no agent may override (`checks.py`);
-- GitLab integration for design MRs and code MRs (`gitlab.py`).
+- Forge integration (`forge/`: GitHub default, GitLab second) for change requests and pipeline reads.
+- Gate surfaces (`surfaces/`: tracker, artifact pages) for human gates (ADR-0007).
 
 Agents never talk to each other. They read and write artifacts; the orchestrator
 moves artifacts between sessions and decides what happens next.

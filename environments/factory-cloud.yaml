@@ -1,7 +1,11 @@
 # Environment for all factory sessions. One environment, many agents.
-# Networking is deny-by-default: package managers and the GitLab host only.
+# Networking is deny-by-default: package managers and the forge host only.
 # web_search / web_fetch are NOT governed by this (they run on Anthropic's side);
 # they are disabled on every agent's toolset instead.
+#
+# Forge hosts (ADR-0008): GitHub is the default. The `github_repository` session resource clones
+# through Anthropic's git proxy, but `git push` from the sandbox and any `gh`/API call still need
+# the hosts below. For the gitlab forge, comment the GitHub lines out and uncomment your host.
 name: factory-cloud
 config:
   type: cloud
@@ -10,6 +14,8 @@ config:
     allow_package_managers: true
     allow_mcp_servers: false
     allowed_hosts:
-      - gitlab.com                      # PLACEHOLDER: replace with your self-hosted GitLab host (also set GITLAB_URL)
+      - github.com
+      - api.github.com
+      # - gitlab.example.internal       # gitlab forge: your self-hosted GitLab host (also set FORGE_URL / GITLAB_URL)
       # - "*.preview.example.internal"  # PLACEHOLDER: per-branch preview domain, so sessions can run test_plan.e2e
       # - dev.example.internal          # optional: dev host, if agents should be able to read it

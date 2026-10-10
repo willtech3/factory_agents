@@ -53,7 +53,8 @@ def make_ask_human(ctx: RunContext, role: str, poll_seconds: float = 5.0, timeou
                      default_if_unanswered=tool_input.get("default_if_unanswered", ""),
                      blocking=bool(tool_input.get("blocking", False)),
                      options=tuple(tool_input.get("options") or ()),
-                     session_id=sctx.session_id, custom_tool_use_id=sctx.custom_tool_use_id)
+                     session_id=sctx.session_id, custom_tool_use_id=sctx.custom_tool_use_id,
+                     work_item_id=sctx.work_item_id)
         ctx.queue.ask(q)
         ctx.notifier.question_asked(q)
         ctx.event("question.asked", {"question_id": q.question_id, "question": q.question, "blocking": q.blocking,
@@ -76,9 +77,10 @@ def make_ask_human(ctx: RunContext, role: str, poll_seconds: float = 5.0, timeou
 
 def open_gate_and_wait(ctx: RunContext, kind: GateKind, artifacts: dict[str, str], summary: str,
                        assignees: list[str], options: tuple[Decision, ...], poll_seconds: float = 10.0,
-                       urls: dict[str, str] | None = None) -> GateDecision:
+                       urls: dict[str, str] | None = None, work_item_id: str | None = None) -> GateDecision:
     refs = tuple(ArtifactRef(name=n, sha256=s, url=(urls or {}).get(n)) for n, s in sorted(artifacts.items()))
-    gate = Gate(run_id=ctx.run_id, kind=kind, artifacts=refs, assignees=tuple(assignees), summary=summary, options=options)
+    gate = Gate(run_id=ctx.run_id, kind=kind, artifacts=refs, assignees=tuple(assignees), summary=summary, options=options,
+                work_item_id=work_item_id)
     ctx.queue.open(gate)
     ctx.notifier.gate_opened(gate)
     ctx.event("gate.opened", {"gate_id": gate.gate_id, "kind": kind.value, "artifacts": [r.__dict__ for r in refs],

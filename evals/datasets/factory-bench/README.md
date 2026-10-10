@@ -18,7 +18,7 @@ Repositories are synthetic (written for this purpose with realistic warts) so th
 - **Outcome achieved:** hidden suite pass rate at the end of the run (all MRs merged by the harness after `ready`). Reported as a Bayesian credible interval across runs (Hariri et al. 2510.04265), and pass^5 for reliability (Khanal et al. 2603.29231).
 - **Partial credit:** share of hidden acceptance tests passing, since 0/1 hides progress on hard items (Li et al. 2607.08964).
 - **Human interventions:** count of blocking questions, request-changes decisions, and escalations from the intervention script that were triggered.
-- **Cost and time:** list cost per outcome and per merged MR; wall time per stage.
+- **Cost and time:** list cost per outcome and per merged change request; wall time per stage.
 - **Quality erosion:** complexity and duplication delta of the repo after the run versus before (SlopCodeBench-style), because passing tests does not mean maintainable code.
 - **Stage attribution:** for each failed outcome, which stage's artifact first diverged from the reference (decomposition, spec, implementation, review), so the number points at something fixable.
 

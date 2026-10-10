@@ -81,6 +81,15 @@ def test_run_event_accepts_deploy_kinds(schemas_dir):
         assert checks.schema_valid(ev, schemas_dir / "run_event.schema.json", schemas_dir).passed
 
 
+def test_run_event_uses_change_request_kinds(schemas_dir):
+    """Event kinds are forge-neutral: cr.* (a change request is a GitHub PR or a GitLab MR), never mr.*."""
+    for kind, ok in (("cr.opened", True), ("cr.merged", True), ("cr.closed", True),
+                     ("mr.opened", False), ("mr.merged", False), ("pr.opened", False)):
+        ev = {"event_id": "evt_1", "run_id": "run_abcdefgh", "seq": 0, "at": "2026-10-09T10:00:00Z", "kind": kind,
+              "actor": {"type": "platform"}, "payload": {}}
+        assert checks.schema_valid(ev, schemas_dir / "run_event.schema.json", schemas_dir).passed is ok, kind
+
+
 def test_outcome_accepts_measured_metrics(schemas_dir, examples):
     import copy
 

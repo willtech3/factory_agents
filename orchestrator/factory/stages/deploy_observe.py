@@ -1,11 +1,12 @@
 """Stage 5: observed deploy to dev. The factory watches; it does not deploy.
 
-After Gate 3 (`mr.merged`), the platform's own GitLab CI deploys the default branch to `dev`
-through its existing templates and WIF identity. The orchestrator:
+After Gate 3 (`cr.merged`), the platform's own CI (GitHub Actions by default; GitLab CI for the
+gitlab forge) deploys the default branch to `dev` through its existing templates. The orchestrator:
 
 1. finds the pipeline for the merge commit (webhook first, polling as the source of truth),
 2. records `deploy.started` / `deploy.succeeded` / `deploy.failed`,
-3. on success reads the dev URL from the pipeline's environment and runs the spec's
+3. on success reads the dev URL from the forge's deployment record (GitHub Deployments API
+   `environment_url`; GitLab environment `external_url`) and runs the spec's
    `test_plan.e2e` entries (target `preview`, which means "a deployed instance") plus an
    optional smoke suite against it, recording `e2e.dev_passed` / `e2e.dev_failed`,
 4. on any failure opens a `DEPLOY_FAILURE` gate carrying the pipeline log excerpt. The human
@@ -16,7 +17,7 @@ Why observe rather than drive: boundary-crossing actions belong to humans or to 
 own automation, not to a factory agent (12-Factor Agents Factor 7; OpenAI auto-review, both in
 docs/research/practitioners.md). Why observe at all: agents and pipelines alike declare victory
 at merge; SWE-Cycle's full-cycle drop and Anthropic's "declare victory too early" are the
-evidence that a merged MR is not a working change (docs/05-platform-and-deployment.md).
+evidence that a merged change request is not a working change (docs/05-platform-and-deployment.md).
 Promotion beyond dev is human and outside this module.
 """
 from __future__ import annotations
@@ -26,15 +27,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
+from ..forge import PIPELINE_TERMINAL, parse_pipeline_webhook
 from ..gates import Decision, GateKind
-from ..gitlab import PIPELINE_TERMINAL, parse_pipeline_webhook
 from ..state import WorkItemStage
 from . import RunContext
 from .common import open_gate_and_wait
 
 
 class PipelineSource(Protocol):
-    """The read-only slice of `GitLabClient` this stage needs; tests supply a fake."""
+    """The read-only slice of `Forge` this stage needs; tests supply a fake."""
     def latest_pipeline(self, ref: str, sha: str | None = None) -> dict[str, Any] | None: ...
     def pipeline(self, pipeline_id: int) -> dict[str, Any]: ...
     def failed_job_log_excerpt(self, pipeline_id: int, max_chars: int = 6000) -> str: ...
@@ -85,8 +86,8 @@ def wait_for_pipeline(source: PipelineSource, ref: str, sha: str, *, poll_second
 
 def handle_pipeline_webhook(ctx: RunContext, payload: dict[str, Any], sha_to_item: dict[str, tuple[str, str]],
                             default_branch: str) -> dict[str, Any] | None:
-    """Webhook handler stub. The Factory Console's HTTP endpoint calls this with the raw GitLab Pipeline Hook
-    body. It records `deploy.started` the first time a non-terminal pipeline is seen for a merged work item's
+    """Webhook handler stub. The Factory Console's HTTP endpoint calls this with the raw forge CI webhook body
+    (GitLab Pipeline Hook or GitHub `workflow_run` event). It records `deploy.started` the first time a non-terminal pipeline is seen for a merged work item's
     sha; terminal outcomes are recorded by `observe_deploy`, which reconciles by polling. Returns the
     normalised pipeline, or None when the payload is not a pipeline hook or not for a tracked sha."""
     pipe = parse_pipeline_webhook(payload)
@@ -124,7 +125,7 @@ def observe_deploy(ctx: RunContext, spec: dict[str, Any], merge_sha: str, defaul
         ctx.event("work_item.stage", {"stage": WorkItemStage.ESCALATED.value, "reason": f"deploy:{obs.status}"},
                   work_item_id=wid, spec_id=sid, stage="deploy")
         if decision.decision == Decision.REQUEST_CHANGES:
-            # The comments become the next implementer round's findings; a new branch and MR follow.
+            # The comments become the next implementer round's findings; a new branch and change request follow.
             ctx.store.put_artifact(ctx.run_id, "deploy", f"{sid}-deploy_feedback.md",
                                    _feedback_md(obs, decision.comments).encode())
             ctx.event("work_item.stage", {"stage": WorkItemStage.IMPLEMENTING.value, "from": "deploy_failure"},
@@ -184,31 +185,35 @@ def _deploy_failure_gate(ctx: RunContext, spec: dict[str, Any], obs: DeployObser
                f"your comments; approve means the failure was the platform's and the next pipeline should be watched; "
                f"reject closes the item. Log excerpt:\n{obs.log_excerpt[-1500:]}")
     return open_gate_and_wait(ctx, GateKind.DEPLOY_FAILURE, {f"{sid}-deploy_report.json": sha}, summary, assignees,
-                              options=(Decision.REQUEST_CHANGES, Decision.APPROVE, Decision.REJECT))
+                              options=(Decision.REQUEST_CHANGES, Decision.APPROVE, Decision.REJECT),
+                              work_item_id=spec["work_item_id"])
 
 
 def _feedback_md(obs: DeployObservation, comments: str) -> str:
     return "\n".join(["# Deploy-to-dev failure", "", f"Status: `{obs.status}`",
                       f"Environment URL: {obs.environment_url or 'n/a'}", "", "## Human comments", "", comments.strip(),
                       "", "## Pipeline / e2e log excerpt", "", "```", obs.log_excerpt[-4000:], "```", "",
-                      "Fix on a new branch from the default branch; the orchestrator opens a follow-up MR."])
+                      "Fix on a new branch from the default branch; the orchestrator opens a follow-up change request."])
 
 
-def on_mr_merged(ctx: RunContext, spec: dict[str, Any], merge_sha: str, default_branch: str, verifier: Any,
-                 assignees: list[str]) -> WorkItemStage:
-    """Entry point the MR watcher calls when GitLab reports `mr.merged` for a factory MR.
+def on_change_request_merged(ctx: RunContext, spec: dict[str, Any], merge_sha: str, default_branch: str,
+                             verifier: Any, assignees: list[str]) -> WorkItemStage:
+    """Entry point the change-request watcher calls when the forge reports `cr.merged` for a factory CR.
 
-    Binds the real GitLab client as the pipeline source and `LocalVerifier.run_e2e` (checked out at the
-    merge commit) as the e2e runner, then observes. Requires a GitLab client; without one Stage 5 is skipped
+    Binds the configured forge as the pipeline source and `LocalVerifier.run_e2e` (checked out at the
+    merge commit) as the e2e runner, then observes. Requires a forge; without one Stage 5 is skipped
     and the item stays `MERGED`, which the Console shows as "not verified in dev".
     """
-    if ctx.gitlab is None:
+    if ctx.forge is None:
         return WorkItemStage.MERGED
     repo = verifier.checkout(default_branch)
 
     def run_e2e(url: str, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return verifier.run_e2e(url, entries, repo=repo)
 
-    return observe_deploy(ctx, spec, merge_sha, default_branch, ctx.gitlab, run_e2e,
+    return observe_deploy(ctx, spec, merge_sha, default_branch, ctx.forge, run_e2e,
                           smoke_commands=ctx.cfg.smoke_commands, assignees=assignees,
                           timeout_seconds=ctx.policy.dev_pipeline_timeout_seconds)
+
+
+on_mr_merged = on_change_request_merged   # pre-ADR-0008 name

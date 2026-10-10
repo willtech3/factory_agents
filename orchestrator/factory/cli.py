@@ -1,6 +1,6 @@
 """`factory` command line.
 
-    factory doctor                      # reconcile config: agents, environment, vault, GitLab
+    factory doctor                      # reconcile config: agents, environment, forge, gate surface
     factory run outcome.json            # start a run (blocks at gates; use a second terminal to decide)
     factory gates                       # list open gates and questions for all runs
     factory decide <gate_id> approve|request_changes|reject [--comment ...] [--spec spec_x ...]
@@ -8,7 +8,9 @@
     factory status <run_id>             # derived state + timeline
     factory replay <run_id>             # re-derive state from the event log (sanity check)
 
-Local mode uses a file-backed queue under the runs directory so two processes can talk.
+Local mode uses a file-backed queue under the runs directory so two processes can talk. With
+`FACTORY_GATE_SURFACE=tracker` the same gate is also opened on the tracker (Linear) and a decision
+from either side wins (`CompositeQueue`).
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ from pathlib import Path
 import typer
 
 from . import config as cfgmod
-from .gates import Answer, Decision, GateDecision, InMemoryQueue, LogNotifier
+from .gates import Answer, CompositeNotifier, CompositeQueue, Decision, GateDecision, InMemoryQueue, LogNotifier
 from .store import RunStore
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -81,6 +83,12 @@ def doctor():
     for k, ref in cfg.agents.items():
         typer.echo(f"agent {k:20s} {ref.id} v{ref.version}")
     typer.echo(f"environment {cfg.environment_id or '(missing)'}")
+    typer.echo(f"forge        {cfg.forge} {cfg.forge_url} {cfg.forge_repo or '(FORGE_REPO missing)'} "
+               f"token={'set' if cfg.forge_token else 'MISSING'}")
+    typer.echo(f"gate surface {cfg.gate_surface}" + (f" (Linear team {cfg.linear_team_id})" if cfg.gate_surface == "tracker" else ""))
+    typer.echo(f"pages        {cfg.page_publisher} -> {cfg.runs_dir}/<run_id>/pages/")
+    if cfg.forge == "gitlab":
+        typer.echo(f"vault        {cfg.vault_id or '(FACTORY_VAULT_ID missing)'}")
     if gaps:
         typer.echo("missing: " + ", ".join(gaps))
         raise typer.Exit(1)
@@ -88,13 +96,15 @@ def doctor():
 
 
 @app.command()
-def run(outcome_path: Path, gitlab: bool = typer.Option(True, help="Open design/code MRs in GitLab")):
-    """Start a run from an outcome.json. Blocks at human gates; decide from another terminal."""
-    from .gitlab import GitLabClient
+def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the forge (change requests, pipelines)")):
+    """Start a run from an outcome.json. Blocks at human gates; decide from another terminal or from the tracker."""
+    from .forge import make_forge
     from .runner import new_run_id, run as run_pipeline
     from .sessions import SessionDriver
     from .stages import RunContext
     from .state import Policy
+    from .surfaces.artifact_pages import make_publisher
+    from .surfaces.tracker import make_tracker_queue
 
     cfg = cfgmod.load()
     gaps = cfgmod.missing(cfg)
@@ -103,12 +113,17 @@ def run(outcome_path: Path, gitlab: bool = typer.Option(True, help="Open design/
         raise typer.Exit(1)
     outcome = json.loads(outcome_path.read_text())
     run_id = new_run_id()
+    queue, notifier = _queue(cfg), LogNotifier()
+    tracker = make_tracker_queue(cfg)
+    if tracker is not None:
+        queue, notifier = CompositeQueue(queue, tracker), CompositeNotifier(notifier, tracker)
     ctx = RunContext(
-        cfg=cfg, store=RunStore(cfg.runs_dir), driver=SessionDriver(cfg), queue=_queue(cfg), notifier=LogNotifier(),
-        gitlab=GitLabClient(cfg.gitlab_url, cfg.gitlab_token, cfg.gitlab_project) if gitlab and cfg.gitlab_token else None,
+        cfg=cfg, store=RunStore(cfg.runs_dir), driver=SessionDriver(cfg), queue=queue, notifier=notifier,
+        forge=make_forge(cfg) if forge else None,
         policy=Policy(run_budget_usd=outcome.get("constraints", {}).get("budget_usd") or 150.0), run_id=run_id,
+        tracker=tracker, pages=make_publisher(cfg),
     )
-    typer.echo(f"run {run_id} started")
+    typer.echo(f"run {run_id} started (forge={cfg.forge}, gate surface={cfg.gate_surface})")
     final = run_pipeline(ctx, outcome)
     typer.echo(f"run {run_id} finished in state {final.value}")
 
@@ -168,7 +183,7 @@ def status(run_id: str):
     st = store.state(run_id)
     typer.echo(f"{run_id}: {st.stage.value}  cost=${st.list_cost_usd:.2f}  decomposition r{st.decomposition_revision}")
     for wi in st.work_items.values():
-        typer.echo(f"  {wi.work_item_id:16s} {wi.stage.value:16s} spec={wi.spec_id} review_round={wi.review_round} mr={wi.mr_iid}")
+        typer.echo(f"  {wi.work_item_id:16s} {wi.stage.value:16s} spec={wi.spec_id} review_round={wi.review_round} cr={wi.cr_id}")
     for ev in store.events(run_id)[-15:]:
         typer.echo(f"  {ev.at[11:19]} {ev.kind:20s} {ev.stage or '':12s} {json.dumps(ev.payload)[:100]}")
 

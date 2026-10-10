@@ -1,6 +1,6 @@
 # ADR-0003: GitLab integration without a native repository resource
 
-**Status:** accepted, with a verification spike · **Date:** 2026-10-09
+**Status:** accepted for the `gitlab` forge only, with a verification spike · **Date:** 2026-10-09 · See [ADR-0008](0008-pluggable-forge-github-default.md): GitHub is the default forge and uses the native `github_repository` resource instead of this path.
 
 ## Context
 The target forge is GitLab. Managed Agents has a `github_repository` session resource with an Anthropic-side git proxy that injects the token; there is no GitLab equivalent. We need the sandbox to clone and push, and we need to open merge requests, without the GitLab token ever being readable inside the sandbox.
@@ -21,4 +21,4 @@ Confirm that the target GitLab accepts a personal or project access token as `Au
 
 ## Consequences
 - GitLab is treated as a first-class review surface (design MR for Gates 1 and 2; code MR for Gate 3) and a webhook source for MR state.
-- If the repository moves to GitHub, replace the clone step with the `github_repository` resource and the MR tool with the GitHub MCP server; nothing else changes.
+- For GitHub, the clone step is the `github_repository` resource and change requests are still opened host-side by `open_change_request` (ADR-0008); nothing else changes.

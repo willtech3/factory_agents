@@ -167,7 +167,7 @@ def _topological_waves(items: dict[str, dict]) -> list[list[str]]:
 
 
 def gate_2(ctx: RunContext, outcome, specs: dict[str, dict], verdict: dict[str, Any], shas: dict[str, str],
-           design_mr_urls: dict[str, str] | None = None):
+           artifact_urls: dict[str, str] | None = None):
     ctx.event("stage.entered", {"stage": RunStage.GATE_2_SPEC_READINESS.value}, stage="gate_2")
     kind = GateKind.SPEC_READINESS if verdict["overall"]["result"] == "pass" else GateKind.ESCALATION
     summary = verdict["overall"]["summary_for_human"]
@@ -177,5 +177,5 @@ def gate_2(ctx: RunContext, outcome, specs: dict[str, dict], verdict: dict[str, 
     return open_gate_and_wait(
         ctx, kind, shas, summary, assignees=[outcome["owner"]["handle"]],
         options=(Decision.APPROVE, Decision.APPROVE_SUBSET, Decision.REQUEST_CHANGES, Decision.REJECT),
-        urls=design_mr_urls,
+        urls=artifact_urls,
     )

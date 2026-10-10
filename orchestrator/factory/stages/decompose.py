@@ -64,7 +64,7 @@ def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | N
 
 
 def gate_1(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[str, Any], shas: dict[str, str],
-           design_mr_urls: dict[str, str] | None = None):
+           artifact_urls: dict[str, str] | None = None):
     ctx.event("stage.entered", {"stage": RunStage.GATE_1_DECOMPOSITION.value}, stage="gate_1")
     summary = decomposition["summary"]
     open_q = [q for q in decomposition.get("open_questions", []) if q.get("blocking")]
@@ -72,5 +72,5 @@ def gate_1(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[str, An
         summary += "\n\nBlocking questions the owner must answer:\n" + "\n".join(f"- {q['question']}" for q in open_q)
     return open_gate_and_wait(
         ctx, GateKind.DECOMPOSITION_REVIEW, shas, summary, assignees=[outcome["owner"]["handle"]],
-        options=(Decision.APPROVE, Decision.REQUEST_CHANGES, Decision.REJECT), urls=design_mr_urls,
+        options=(Decision.APPROVE, Decision.REQUEST_CHANGES, Decision.REJECT), urls=artifact_urls,
     )

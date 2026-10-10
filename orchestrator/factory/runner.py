@@ -2,6 +2,14 @@
 
 This is the deterministic reducer at the heart of the factory. Everything a human sees in
 the Factory Console is derived from the events this file appends.
+
+Gate presentation depends on `cfg.gate_surface` (ADR-0007):
+- every surface gets an artifact page per gate (`surfaces/artifact_pages.py`) when `ctx.pages` is set;
+- `forge`: the design artifacts are also committed to a design branch and opened as a draft change
+  request (PR or MR), so the owner can comment inline; the decision still comes through `ctx.queue`;
+- `tracker`: no design CR; `ctx.tracker` (a `TrackerQueue`, also part of `ctx.queue`) opens the gate
+  on the run's tracker issue and harvests the decision and comments from there;
+- `file`: pages plus the CLI's file queue only.
 """
 from __future__ import annotations
 
@@ -10,73 +18,100 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .gates import Decision
-from .gitlab import render_feedback_md
+from .gates import Decision, GateDecision
 from .stages import RunContext
 from .stages.decompose import gate_1, run_decompose
 from .stages.implement import LocalVerifier, run_implement_one
 from .stages.integrate import run_integrate
 from .stages.specify import gate_2, run_specify
 from .state import RunStage, WorkItemStage
+from .surfaces.artifact_pages import render_gate1_page, render_gate2_page
 
 
 def new_run_id() -> str:
     return f"run_{uuid.uuid4().hex[:10]}"
 
 
-def _design_mr(ctx: RunContext, outcome: dict[str, Any], files: dict[str, bytes], title: str) -> tuple[int | None, dict[str, str]]:
-    """Commit design artifacts under .factory/runs/<run_id>/ on a branch and open (or update) a draft MR.
+def _design_change_request(ctx: RunContext, outcome: dict[str, Any], files: dict[str, bytes], title: str
+                           ) -> tuple[int | None, dict[str, str]]:
+    """Commit design artifacts under .factory/runs/<run_id>/ on a branch and open (or update) a draft CR.
 
-    Returns (mr_iid, {artifact_name: url}) so gate notifications can deep-link to the files.
+    Only for the `forge` gate surface. Returns (cr_id, {artifact_name: url}) so gate notifications can
+    deep-link to the files.
     """
-    if ctx.gitlab is None:
+    if ctx.forge is None or ctx.cfg.gate_surface != "forge":
         return None, {}
     repo = outcome["target_repositories"][0]
     branch = f"factory/{ctx.run_id}/design"
-    ctx.gitlab.create_branch(branch, repo["default_branch"])
+    ctx.forge.create_branch(branch, repo["default_branch"])
     paths = {f".factory/runs/{ctx.run_id}/{name}": content for name, content in files.items()}
-    ctx.gitlab.commit_files(branch, f"factory({ctx.run_id}): {title}", paths)
-    state = ctx.store.state(ctx.run_id)
-    existing = next((g for g in state.open_gates.values() if g.get("design_mr_iid")), None)
+    ctx.forge.commit_files(branch, f"factory({ctx.run_id}): {title}", paths)
+    existing = next((ev.payload for ev in ctx.store.events(ctx.run_id) if ev.kind == "cr.opened" and ev.payload.get("design")), None)
     if existing:
-        iid = existing["design_mr_iid"]
+        cr_id = existing["id"]
     else:
-        mr = ctx.gitlab.create_mr(source_branch=branch, target_branch=repo["default_branch"],
-                                  title=f"[factory design] {outcome['title']}", description=outcome["statement"],
-                                  labels=["factory", "design", f"run:{ctx.run_id}"],
-                                  reviewer_usernames=[outcome["owner"]["handle"]], draft=True)
-        iid = mr.iid
-    base = ctx.cfg.gitlab_url.rstrip("/") + "/" + ctx.cfg.gitlab_project
-    urls = {name: f"{base}/-/blob/{branch}/.factory/runs/{ctx.run_id}/{name}" for name in files}
-    return iid, urls
+        cr = ctx.forge.create_change_request(source_branch=branch, target_branch=repo["default_branch"],
+                                             title=f"[factory design] {outcome['title']}", description=outcome["statement"],
+                                             labels=["factory", "design", f"run:{ctx.run_id}"],
+                                             reviewers=[outcome["owner"]["handle"]], draft=True)
+        cr_id = cr.id
+        ctx.event("cr.opened", {"id": cr.id, "url": cr.url, "branch": branch, "design": True, "forge": ctx.forge.kind})
+    urls = {name: ctx.forge.file_url(branch, f".factory/runs/{ctx.run_id}/{name}") for name in files}
+    return cr_id, urls
 
 
-def _feedback_from_design_mr(ctx: RunContext, iid: int | None, decision_comments: str) -> str:
-    parts = [decision_comments] if decision_comments.strip() else []
-    if ctx.gitlab is not None and iid is not None:
-        parts.append(render_feedback_md(ctx.gitlab.mr_notes(iid), ctx.gitlab.mr_discussions(iid)))
+def _present(ctx: RunContext, outcome: dict[str, Any], files: dict[str, bytes], title: str, page_name: str,
+             page_html: str, anchors: dict[str, str]) -> tuple[int | None, dict[str, str]]:
+    """Publish the gate's reading surfaces. Returns (design_cr_id, artifact_name -> url)."""
+    urls: dict[str, str] = {}
+    if ctx.pages is not None:
+        page_url = ctx.pages.publish(ctx.run_id, page_name, page_html)
+        ctx.event("artifact.produced", {"artifact_type": "gate_page", "path": f"pages/{page_name}.html", "url": page_url},
+                  stage=page_name)
+        urls = {name: f"{page_url}#{anchors.get(name, 'summary')}" for name in files}
+    cr_id, cr_urls = _design_change_request(ctx, outcome, files, title)
+    urls.update(cr_urls)     # inline-commentable files win over the page when both exist
+    return cr_id, urls
+
+
+def _feedback(ctx: RunContext, design_cr_id: int | None, d: GateDecision) -> str:
+    parts = [d.comments] if d.comments.strip() else []
+    if ctx.forge is not None and design_cr_id is not None:
+        parts.append(ctx.forge.render_feedback_md(ctx.forge.change_request_comments(design_cr_id),
+                                                  ctx.forge.change_request_discussions(design_cr_id)))
+    if ctx.tracker is not None:
+        fb = ctx.tracker.render_feedback_md(d.gate_id)
+        if fb and "(no comments)" not in fb:
+            parts.append(fb)
     return "\n\n".join(parts) or "# Human feedback\n(no comments provided)"
 
 
 def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
-    ctx.event("run.created", {"outcome_id": outcome["outcome_id"], "title": outcome["title"]}, stage="intake")
+    ctx.event("run.created", {"outcome_id": outcome["outcome_id"], "title": outcome["title"],
+                              "forge": ctx.cfg.forge, "gate_surface": ctx.cfg.gate_surface}, stage="intake")
     ctx.store.put_artifact(ctx.run_id, "intake", "outcome.json", json.dumps(outcome, indent=2).encode())
     repo = outcome["target_repositories"][0]
+    if ctx.tracker is not None:
+        ctx.tracker.register_run(ctx.run_id, outcome)
 
     # ---------------- Stage 1 + Gate 1 (loop until approved or rejected)
     feedback, prior = None, None
     while True:
         decomposition, shas = run_decompose(ctx, outcome, feedback, prior)
-        design_iid, urls = _design_mr(ctx, outcome, {
-            "decomposition.md": ctx.store.get_artifact(ctx.run_id, "decompose", f"r{decomposition['revision']}-decomposition.md"),
-            "decomposition.json": json.dumps(decomposition, indent=2).encode()}, "decomposition")
+        if ctx.tracker is not None:
+            ctx.tracker.register_work_items(ctx.run_id, decomposition)
+        dec_md = ctx.store.get_artifact(ctx.run_id, "decompose", f"r{decomposition['revision']}-decomposition.md")
+        files = {"decomposition.md": dec_md, "decomposition.json": json.dumps(decomposition, indent=2).encode()}
+        page = render_gate1_page(ctx.run_id, outcome, decomposition, dec_md.decode(errors="replace"), shas)
+        design_cr_id, urls = _present(ctx, outcome, files, "decomposition", "gate_1", page,
+                                      {"decomposition.md": "full", "decomposition.json": "work-items"})
         d = gate_1(ctx, outcome, decomposition, shas, urls)
         if d.decision == Decision.APPROVE:
             break
         if d.decision == Decision.REJECT:
             ctx.event("stage.entered", {"stage": RunStage.CLOSED.value}, stage="gate_1", actor="human")
             return RunStage.CLOSED
-        feedback, prior = _feedback_from_design_mr(ctx, design_iid, d.comments), decomposition
+        feedback, prior = _feedback(ctx, design_cr_id, d), decomposition
 
     # ---------------- Stage 2 + Gate 2
     human_comments: dict[str, str] | None = None
@@ -86,9 +121,16 @@ def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
                                                             json.dumps(s, indent=2).encode()) for sid, s in specs.items()}
         spec_shas["verdict.json"] = ctx.store.put_artifact(ctx.run_id, "judge", "final-verdict.json",
                                                            json.dumps(verdict, indent=2).encode())
-        design_iid, urls = _design_mr(ctx, outcome, {
-            **{f"specs/{sid}.json": json.dumps(s, indent=2).encode() for sid, s in specs.items()},
-            "verdict.json": json.dumps(verdict, indent=2).encode()}, "specifications")
+        spec_md = {sid: _spec_markdown(ctx, s) for sid, s in specs.items()}
+        files = {**{f"specs/{sid}.json": json.dumps(s, indent=2).encode() for sid, s in specs.items()},
+                 **{f"specs/{sid}.md": spec_md[sid].encode() for sid in specs},
+                 "verdict.json": json.dumps(verdict, indent=2).encode()}
+        page = render_gate2_page(ctx.run_id, outcome, specs, verdict, spec_shas, spec_md)
+        anchors = {f"specs/{sid}.json": f"spec-{sid}" for sid in specs}
+        anchors.update({f"specs/{sid}.md": f"spec-{sid}" for sid in specs})
+        design_cr_id, urls = _present(ctx, outcome, files, "specifications", "gate_2", page, anchors)
+        urls = {**urls, **{f"{sid}.json": urls.get(f"specs/{sid}.json", "") for sid in specs},
+                "verdict.json": urls.get("verdict.json", "")}
         d = gate_2(ctx, outcome, specs, verdict, spec_shas, urls)
         if d.decision == Decision.REJECT:
             ctx.event("stage.entered", {"stage": RunStage.CLOSED.value}, stage="gate_2", actor="human")
@@ -101,12 +143,13 @@ def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
             specs = {sid: s for sid, s in specs.items() if sid in approved}
             break
         # request_changes: comments keyed by spec id when the human used "spec_x: ..." lines, else to all.
-        fb = _feedback_from_design_mr(ctx, design_iid, d.comments)
+        fb = _feedback(ctx, design_cr_id, d)
         human_comments = {s["work_item_id"]: fb for s in specs.values()}
+    spec_verdict = verdict
 
     # ---------------- Stage 3 + 4 per spec, in dependency waves
     ctx.event("stage.entered", {"stage": RunStage.IMPLEMENTING.value}, stage="implement")
-    auth_url = repo["url"].replace("https://", f"https://oauth2:{ctx.cfg.gitlab_token}@") if ctx.cfg.gitlab_token else repo["url"]
+    auth_url = ctx.forge.authenticated_url(repo["url"]) if ctx.forge is not None else repo["url"]
     verifier = LocalVerifier(auth_url, ctx.cfg.runs_dir / ctx.run_id / "verify")
     merged_or_open: set[str] = set()
     remaining = dict(specs)
@@ -132,12 +175,24 @@ def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
             test_results = json.loads(ctx.store.get_artifact(ctx.run_id, "implement", _latest(ctx, "implement", f"{sid}-", "-test_results.json")))
             summary = {"run_id": ctx.run_id, "outcome_title": outcome["title"], "reviewers": [outcome["owner"]["handle"]],
                        "sessions": _sessions_for(ctx, sid), "list_cost_usd": ctx.store.state(ctx.run_id).list_cost_usd}
-            run_integrate(ctx, spec, verdict, findings, response, test_results, summary, repo["default_branch"])
-            merged_or_open.add(sid)   # Gate 3 (human review + merge) is tracked by the MR watcher, not this loop
+            run_integrate(ctx, spec, verdict, findings, response, test_results, summary, repo["default_branch"],
+                          verifier=verifier, spec_md=spec_md.get(sid, ""), spec_verdict=spec_verdict)
+            merged_or_open.add(sid)   # Gate 3 (human review + merge) is tracked by the CR watcher, not this loop
             remaining.pop(sid)
 
-    ctx.event("run.completed", {"specs_with_mrs": sorted(merged_or_open)})
+    ctx.event("run.completed", {"specs_with_change_requests": sorted(merged_or_open)})
     return RunStage.COMPLETED
+
+
+def _spec_markdown(ctx: RunContext, spec: dict[str, Any]) -> str:
+    """The writer's spec.md for the spec's latest round, or '' when the session did not produce one."""
+    if spec.get("_markdown"):
+        return str(spec["_markdown"])
+    try:
+        name = _latest(ctx, "specify", f"{spec['work_item_id']}-", "-spec.md")
+        return ctx.store.get_artifact(ctx.run_id, "specify", name).decode(errors="replace")
+    except FileNotFoundError:
+        return ""
 
 
 def _latest(ctx: RunContext, stage: str, prefix: str, suffix: str) -> str:

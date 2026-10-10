@@ -1,34 +1,39 @@
-"""GitLab integration (orchestrator side).
+"""GitLab forge (orchestrator side). The second `Forge` implementation; GitHub is the default.
 
 Two uses:
-1. The **design MR**: decomposition and specs are committed under `.factory/runs/<run_id>/`
-   on a branch and opened as a draft MR, so Gate 1 and Gate 2 happen in GitLab's own review
-   UI with inline comments. Approval = MR approval; comments are fed back to agents verbatim.
-2. The **code MR** per spec, created by the `open_merge_request` custom tool handler.
+1. The **design MR** (when `FACTORY_GATE_SURFACE=forge`): decomposition and specs are committed
+   under `.factory/runs/<run_id>/` on a branch and opened as a draft MR, so Gate 1 and Gate 2
+   happen in GitLab's own review UI with inline comments.
+2. The **code MR** per spec, created by the `open_change_request` custom tool handler.
 
-The sandbox never holds this token. Only the REST calls the factory needs are implemented.
+The sandbox never holds this token. Sessions clone and push through the vault bearer-header path
+of ADR-0003 (`sandbox_git_instructions`). Only the REST calls the factory needs are implemented.
 """
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
+from . import ChangeRequest, PIPELINE_TERMINAL, ref_slug, render_feedback_md
 
-@dataclass
-class MergeRequest:
-    iid: int
-    web_url: str
-    source_branch: str
-    target_branch: str
+GIT_SETUP = """Git access: the repository is NOT pre-mounted. Clone it with
+  git -c http.extraHeader="Authorization: Bearer $GITLAB_TOKEN" clone --branch {base_branch} {repo_url} /workspace/repo
+and configure the same header for push: `git config http.extraHeader "Authorization: Bearer $GITLAB_TOKEN"`.
+$GITLAB_TOKEN is an opaque placeholder; the real token is substituted outside the sandbox. Work on branch {branch}
+(create it from {base_branch} if it does not exist) and push it when done."""
 
 
-class GitLabClient:
+class GitLabForge:
+    kind = "gitlab"
+
     def __init__(self, base_url: str, token: str, project: str, timeout: float = 30.0):
-        self.base = base_url.rstrip("/") + "/api/v4"
+        self.token = token
+        self.url = base_url.rstrip("/")
+        self.base = self.url + "/api/v4"
+        self.repo = project
         self.project = quote(project, safe="")
         self.http = httpx.Client(headers={"PRIVATE-TOKEN": token}, timeout=timeout)
 
@@ -63,10 +68,13 @@ class GitLabClient:
                 found.add(p)
         return found
 
+    def file_url(self, branch: str, path: str) -> str:
+        return f"{self.url}/{self.repo}/-/blob/{branch}/{path}"
+
     # ---- merge requests
-    def create_mr(self, *, source_branch: str, target_branch: str, title: str, description: str,
-                  labels: list[str], reviewer_usernames: list[str], draft: bool = False) -> MergeRequest:
-        reviewer_ids = [self._user_id(u) for u in reviewer_usernames]
+    def create_change_request(self, *, source_branch: str, target_branch: str, title: str, description: str,
+                              labels: list[str], reviewers: list[str], draft: bool = False) -> ChangeRequest:
+        reviewer_ids = [self._user_id(u) for u in reviewers]
         payload: dict[str, Any] = {
             "source_branch": source_branch, "target_branch": target_branch,
             "title": ("Draft: " if draft else "") + title, "description": description,
@@ -77,31 +85,32 @@ class GitLabClient:
         r = self.http.post(self._p("/merge_requests"), json=payload)
         r.raise_for_status()
         d = r.json()
-        return MergeRequest(iid=d["iid"], web_url=d["web_url"], source_branch=source_branch, target_branch=target_branch)
+        return ChangeRequest(id=d["iid"], url=d["web_url"], source_branch=source_branch, target_branch=target_branch)
 
-    def mr_state(self, iid: int) -> dict[str, Any]:
-        r = self.http.get(self._p(f"/merge_requests/{iid}"))
+    def change_request_state(self, cr_id: int) -> dict[str, Any]:
+        r = self.http.get(self._p(f"/merge_requests/{cr_id}"))
         r.raise_for_status()
         d = r.json()
         return {"state": d["state"], "merged_at": d.get("merged_at"), "sha": d.get("sha"),
-                "labels": d.get("labels", []), "detailed_merge_status": d.get("detailed_merge_status")}
+                "merge_commit_sha": d.get("merge_commit_sha"), "labels": d.get("labels", []),
+                "detailed_merge_status": d.get("detailed_merge_status")}
 
-    def mr_approved(self, iid: int) -> bool:
-        r = self.http.get(self._p(f"/merge_requests/{iid}/approvals"))
+    def change_request_approved(self, cr_id: int) -> bool:
+        r = self.http.get(self._p(f"/merge_requests/{cr_id}/approvals"))
         r.raise_for_status()
         d = r.json()
-        return bool(d.get("approved")) or (d.get("approvals_left", 1) == 0 and d.get("approved_by"))
+        return bool(d.get("approved")) or bool(d.get("approvals_left", 1) == 0 and d.get("approved_by"))
 
-    def mr_notes(self, iid: int) -> list[dict[str, Any]]:
+    def change_request_comments(self, cr_id: int) -> list[dict[str, Any]]:
         """Human comments on the MR, oldest first, excluding system notes. Fed back to agents verbatim."""
-        r = self.http.get(self._p(f"/merge_requests/{iid}/notes"), params={"sort": "asc", "per_page": 100})
+        r = self.http.get(self._p(f"/merge_requests/{cr_id}/notes"), params={"sort": "asc", "per_page": 100})
         r.raise_for_status()
         return [{"author": n["author"]["username"], "body": n["body"], "created_at": n["created_at"],
                  "position": n.get("position")} for n in r.json() if not n.get("system")]
 
-    def mr_discussions(self, iid: int) -> list[dict[str, Any]]:
+    def change_request_discussions(self, cr_id: int) -> list[dict[str, Any]]:
         """Inline discussions with file/line positions, for feedback that points at a spec line."""
-        r = self.http.get(self._p(f"/merge_requests/{iid}/discussions"), params={"per_page": 100})
+        r = self.http.get(self._p(f"/merge_requests/{cr_id}/discussions"), params={"per_page": 100})
         r.raise_for_status()
         out = []
         for d in r.json():
@@ -113,12 +122,12 @@ class GitLabClient:
                             "path": pos.get("new_path"), "line": pos.get("new_line")})
         return out
 
-    def add_labels(self, iid: int, labels: list[str]) -> None:
-        r = self.http.put(self._p(f"/merge_requests/{iid}"), json={"add_labels": ",".join(labels)})
+    def add_labels(self, cr_id: int, labels: list[str]) -> None:
+        r = self.http.put(self._p(f"/merge_requests/{cr_id}"), json={"add_labels": ",".join(labels)})
         r.raise_for_status()
 
-    def post_note(self, iid: int, body: str) -> None:
-        r = self.http.post(self._p(f"/merge_requests/{iid}/notes"), json={"body": body})
+    def post_comment(self, cr_id: int, body: str) -> None:
+        r = self.http.post(self._p(f"/merge_requests/{cr_id}/notes"), json={"body": body})
         r.raise_for_status()
 
     # ---- pipelines and environments (Stage 5 observation; read-only)
@@ -182,7 +191,7 @@ class GitLabClient:
         """The per-branch preview URL. The platform's CI names review environments `<prefix><branch>`
         (GitLab's `review/$CI_COMMIT_REF_SLUG` convention); the prefix is configurable because the real
         template may differ. Returns None when no environment exists yet (deploy not run)."""
-        slug = _ref_slug(branch)
+        slug = ref_slug(branch)
         for candidate in (f"{preview_prefix}{branch}", f"{preview_prefix}{slug}"):
             env = self.environment(candidate)
             if env and env.get("external_url"):
@@ -206,11 +215,28 @@ class GitLabClient:
                 return _deployment_summary(d)
         return None
 
+    # ---- sessions
+    def session_repository_resource(self, repo_url: str, branch: str) -> dict[str, Any] | None:
+        """No native GitLab resource exists; the sandbox clones with the vault credential (ADR-0003)."""
+        return None
+
+    def sandbox_git_instructions(self, repo_url: str, base_branch: str, branch: str) -> str:
+        return GIT_SETUP.format(repo_url=repo_url, base_branch=base_branch, branch=branch)
+
+    def authenticated_url(self, repo_url: str) -> str:
+        return repo_url.replace("https://", f"https://oauth2:{self.token}@", 1)
+
+    def render_feedback_md(self, comments: list[dict[str, Any]], discussions: list[dict[str, Any]]) -> str:
+        return render_feedback_md(comments, discussions, title="Human feedback from the design MR")
+
     def _user_id(self, username: str) -> int | None:
         r = self.http.get(f"{self.base}/users", params={"username": username})
         if r.status_code != 200 or not r.json():
             return None
         return r.json()[0]["id"]
+
+
+GitLabClient = GitLabForge   # pre-ADR-0008 name
 
 
 def _pipeline_summary(d: dict[str, Any]) -> dict[str, Any]:
@@ -223,16 +249,6 @@ def _deployment_summary(d: dict[str, Any] | None) -> dict[str, Any] | None:
         return None
     return {"id": d.get("id"), "status": d.get("status"), "sha": d.get("sha"), "ref": d.get("ref"),
             "created_at": d.get("created_at"), "deployable_id": (d.get("deployable") or {}).get("id")}
-
-
-def _ref_slug(ref: str) -> str:
-    """Approximates GitLab's CI_COMMIT_REF_SLUG: lowercase, [a-z0-9-], max 63 chars, no leading/trailing dash."""
-    import re
-    slug = re.sub(r"[^a-z0-9]+", "-", ref.lower()).strip("-")
-    return slug[:63].rstrip("-")
-
-
-PIPELINE_TERMINAL = {"success", "failed", "canceled", "skipped"}
 
 
 def parse_pipeline_webhook(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -252,15 +268,4 @@ def parse_pipeline_webhook(payload: dict[str, Any]) -> dict[str, Any] | None:
                                     if b.get("environment")})}
 
 
-def render_feedback_md(notes: list[dict[str, Any]], discussions: list[dict[str, Any]]) -> str:
-    """Turn GitLab review comments into the feedback.md an agent reads on a re-run."""
-    lines = ["# Human feedback from the design MR", ""]
-    for d in discussions:
-        where = f" (`{d['path']}:{d['line']}`)" if d.get("path") else ""
-        lines.append(f"- **@{d['author']}**{where}: {d['body'].strip()}")
-    for n in notes:
-        if n.get("position"):
-            continue  # already covered as a discussion
-        lines.append(f"- **@{n['author']}**: {n['body'].strip()}")
-    lines += ["", "Address every item explicitly in your summary: either apply it, or explain why not."]
-    return "\n".join(lines)
+__all__ = ["GIT_SETUP", "GitLabClient", "GitLabForge", "PIPELINE_TERMINAL", "parse_pipeline_webhook"]

@@ -1,6 +1,6 @@
 ---
 name: platform-contract
-description: The contract between an application repository and the deployment platform (GCP project, GitLab CI templates, per-branch preview environments, dev target). Loaded by the decomposer, spec writer, spec judge, implementer, and reviewer so that every work item is deployable through the existing platform without any agent authoring infrastructure.
+description: The contract between an application repository and the deployment platform (GCP project, CI templates on GitLab CI or GitHub Actions, per-branch preview environments, dev target). Loaded by the decomposer, spec writer, spec judge, implementer, and reviewer so that every work item is deployable through the existing platform without any agent authoring infrastructure.
 ---
 
 <!-- PLACEHOLDER. The platform team already maintains the real version of this skill.

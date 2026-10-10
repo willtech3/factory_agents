@@ -13,7 +13,7 @@ The roster, what each agent reads and writes, and why the boundaries sit where t
 | **Implementer** | spec, dependency specs, repo on its branch, `preview.json`, findings, platform-contract skill | code, tests, commits, `implementation_report.json` (with `e2e_results`), `review_response.json`, `blocked.md` | touch paths outside `allowed_paths`; edit existing tests; expand scope; touch IAM, networking, CI templates, or the platform repo; deploy anything | - |
 | **Adversarial reviewer** | spec, diff, implementation report (as hypotheses), `preview.json`, repo read-only, previous findings and response | `findings.json` (with preview e2e runs in `checks_performed`), probe scripts under outputs | edit source; ask the implementer anything; mark a `user_visible` criterion `met` without exercising the preview | the implementer's session and reasoning |
 | **Merge judge** | spec, diff, findings, responses, orchestrator test results, deterministic checks | `merge_readiness.json` | override a deterministic check; edit code | both author sessions |
-| **Integrator** | spec, verdict, findings, responses, tests, run summary, MR template | `mr.json` via `open_merge_request` | change code or history; editorialise | - |
+| **Integrator** | spec, verdict, findings, responses, tests, run summary, CR template | `cr.json` via `open_change_request` | change code or history; editorialise | - |
 
 ## Model and effort choices
 
@@ -50,7 +50,7 @@ Effort is set in the agent file's `model` object and can be overridden per sessi
 
 **Nobody deploys and nobody touches the platform.** The platform contract (a skill the platform team owns) names what agents must never touch: IAM, networking, CI templates, the platform repository, promotion beyond dev. Boundary-crossing actions are routed to humans or to the platform's own automation, not taken by the working agent ([practitioners.md §1b Factor 7, §4](research/practitioners.md)); the reviewer treats any such touch as `blocking`. Deployment after merge is the platform's pipeline, observed by the orchestrator ([05-platform-and-deployment.md](05-platform-and-deployment.md)).
 
-**Integrator makes no decisions.** The legibility step (writing the MR so a human can review it in five minutes) is separated from the correctness step, following the prover-verifier decoupling result (Kim and Lee) and the observation that the generator and the explainer want different things.
+**Integrator makes no decisions.** The legibility step (writing the change request so a human can review it in five minutes) is separated from the correctness step, following the prover-verifier decoupling result (Kim and Lee) and the observation that the generator and the explainer want different things.
 
 ## In-stage fan-out (multiagent rosters)
 

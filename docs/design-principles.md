@@ -18,7 +18,7 @@ Each principle names where it is enforced in this repository and the evidence it
 | 12 | Existing tests are protected; test weakening is a deterministic failure. | `protected_tests`, `test_weakening` checks; rubric I4 | P §3 (Anthropic), §6 (Beck on test cheating) |
 | 13 | Approvals bind to what was shown. | `gates.py` artifact hashes; `StaleDecision` | P §13 (Loopjacking) |
 | 14 | Interrupt humans rarely and specifically; escalate early when out of depth. | Blocking-only questions; escalation gates with reasons; `blocked.md` | A §6 (Turan; Lin and Zhang); P §10 (Hashimoto) |
-| 15 | Give human reviewers focused summaries with locations; never present passing tests as proof. | `mr_template.md`; `merge_judge.md` summary rules | A §6 (Gao et al.; Dhanorkar et al.); A §1 (Counsel: trust location over rationale) |
+| 15 | Give human reviewers focused summaries with locations; never present passing tests as proof. | `cr_template.md`; `merge_judge.md` summary rules | A §6 (Gao et al.; Dhanorkar et al.); A §1 (Counsel: trust location over rationale) |
 | 16 | Judges score per criterion with anchors, normalised inputs, repeated votes, and kappa against humans. | `rubrics/`; `evals/graders/stochastic.py`; `specify.py` uploads JSON only | A §1 (Norman et al.; Yagubyan; Soumik; RuVerBench) |
 | 17 | Instruction budgets: short prompts that point at skills; every rule traces to a failure. | `agents/README.md` conventions | P §1c, §1d (HumanLayer), §10 (Hashimoto), §11 (Osmani) |
 | 18 | Passing tests are necessary, not sufficient: track erosion and scope creep. | Rubric I6; `factory-bench` erosion metric | P §1f (SlopCodeBench); A §5 (Orlanski et al.); P §8 (Ronacher) |

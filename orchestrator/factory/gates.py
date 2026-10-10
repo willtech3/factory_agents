@@ -10,8 +10,11 @@ Two kinds of human interaction:
    session idles with `requires_action`; the orchestrator surfaces the question, waits,
    and returns the answer as a `user.custom_tool_result`.
 
-Surfaces (Slack, GitLab design-MR comments, the Factory Console) implement `Notifier`
-and `ApprovalQueue`. The in-memory implementations here are for tests and local use.
+Surfaces implement `Notifier` and `ApprovalQueue`: the file queue behind the CLI, the tracker
+(`surfaces/tracker.py`: Linear today, Jira stub), the forge's design change request, and later
+Slack or the Factory Console. `CompositeQueue` lets several surfaces answer the same gate, so a
+decision can come from the CLI or from Linear. The in-memory implementations here are for tests
+and local use. See docs/adr/0007-pluggable-gate-surfaces.md.
 """
 from __future__ import annotations
 
@@ -27,7 +30,7 @@ class GateKind(str, Enum):
     SPEC_READINESS = "gate_2_spec_readiness"
     ESCALATION = "escalation"             # judge or loop could not converge
     DEPLOY_FAILURE = "deploy_failure"     # Stage 5: dev pipeline failed or dev e2e failed; carries the log excerpt
-    # Gate 3 (code review) is GitLab's own MR approval; see gitlab.py
+    # Gate 3 (code review) is the forge's own change-request approval; see forge/
 
 
 class Decision(str, Enum):
@@ -43,7 +46,7 @@ class Decision(str, Enum):
 class ArtifactRef:
     name: str
     sha256: str
-    url: str | None = None                # where the human can read it (design MR file, console)
+    url: str | None = None                # where the human can read it (gate page anchor, design CR file, tracker)
 
 
 @dataclass
@@ -57,6 +60,7 @@ class Gate:
     gate_id: str = field(default_factory=lambda: f"gate_{uuid.uuid4().hex[:10]}")
     opened_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     sla_hours: int = 24
+    work_item_id: str | None = None        # set for per-item gates (DEPLOY_FAILURE); trackers post on that issue
 
 
 @dataclass
@@ -101,6 +105,7 @@ class Question:
     custom_tool_use_id: str | None = None
     question_id: str = field(default_factory=lambda: f"q_{uuid.uuid4().hex[:10]}")
     asked_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    work_item_id: str | None = None
 
 
 @dataclass
@@ -114,7 +119,7 @@ class Answer:
 class Notifier(Protocol):
     def gate_opened(self, gate: Gate) -> None: ...
     def question_asked(self, q: Question) -> None: ...
-    def mr_opened(self, run_id: str, spec_id: str, url: str) -> None: ...
+    def change_request_opened(self, run_id: str, spec_id: str, url: str) -> None: ...
     def escalated(self, run_id: str, reason: str) -> None: ...
 
 
@@ -164,8 +169,62 @@ class LogNotifier:
     def question_asked(self, q: Question) -> None:
         print(f"[question] {q.asked_by} asks: {q.question}")
 
-    def mr_opened(self, run_id: str, spec_id: str, url: str) -> None:
-        print(f"[mr] {spec_id}: {url}")
+    def change_request_opened(self, run_id: str, spec_id: str, url: str) -> None:
+        print(f"[cr] {spec_id}: {url}")
 
     def escalated(self, run_id: str, reason: str) -> None:
         print(f"[escalated] {run_id}: {reason}")
+
+
+class CompositeQueue:
+    """Fan a gate out to several surfaces; the first surface with a decision wins.
+
+    Used when a human may decide from the CLI (`factory decide`) or from the tracker (a label plus a
+    comment on the Linear issue). Every surface sees `open`/`ask`; `decision`/`answer` poll in order.
+    """
+
+    def __init__(self, *queues: ApprovalQueue):
+        self.queues = list(queues)
+
+    def open(self, gate: Gate) -> None:
+        for q in self.queues:
+            q.open(gate)
+
+    def decision(self, gate_id: str) -> GateDecision | None:
+        for q in self.queues:
+            d = q.decision(gate_id)
+            if d is not None:
+                return d
+        return None
+
+    def ask(self, q: Question) -> None:
+        for queue in self.queues:
+            queue.ask(q)
+
+    def answer(self, question_id: str) -> Answer | None:
+        for q in self.queues:
+            a = q.answer(question_id)
+            if a is not None:
+                return a
+        return None
+
+
+class CompositeNotifier:
+    def __init__(self, *notifiers: Notifier):
+        self.notifiers = list(notifiers)
+
+    def gate_opened(self, gate: Gate) -> None:
+        for n in self.notifiers:
+            n.gate_opened(gate)
+
+    def question_asked(self, q: Question) -> None:
+        for n in self.notifiers:
+            n.question_asked(q)
+
+    def change_request_opened(self, run_id: str, spec_id: str, url: str) -> None:
+        for n in self.notifiers:
+            n.change_request_opened(run_id, spec_id, url)
+
+    def escalated(self, run_id: str, reason: str) -> None:
+        for n in self.notifiers:
+            n.escalated(run_id, reason)
