@@ -1046,8 +1046,12 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
 def _require_recorded_preview_mode(ctx: RunContext) -> None:
     """A run started in managed mode never continues with controller-side execution: a resume without the managed
     configuration would otherwise build a local environment and run the repository on this host."""
-    recorded = next((((ev.payload or {}).get("policy") or {}).get("preview_mode") for ev in ctx.store.events(ctx.run_id)
-                     if ev.kind == "run.created"), None)
+    recorded = None
+    for ev in ctx.store.events(ctx.run_id):
+        if ev.kind == "run.created":
+            recorded = (ev.payload.get("policy") or {}).get("preview_mode", recorded)
+        elif ev.kind == "run.resumed" and ev.payload.get("preview_mode"):
+            recorded = ev.payload["preview_mode"]
     if recorded == "managed" and ctx.cfg.preview_mode != "managed":
         raise RuntimeError("this run verifies candidates in a hosted sandbox (preview mode managed); continue it with "
                            "FACTORY_PREVIEW=managed and the same app binding, never with local or platform execution")

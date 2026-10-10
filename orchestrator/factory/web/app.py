@@ -256,8 +256,15 @@ class Console:
         watch = {"pending": pending, "watchable": bool(pending) and not self.demo.is_demo(run_id),
                  "heartbeat": watcher_heartbeat(self.cfg.runs_dir, run_id)}
         created = next((ev.payload for ev in events if ev.kind == "run.created"), {})
-        policy = created.get("policy") or {"run_budget_usd": ((outcome or {}).get("constraints") or {}).get("budget_usd"),
-                                           "preview_mode": self.cfg.preview_mode, "recorded": False}
+        policy = dict(created.get("policy") or {"run_budget_usd": ((outcome or {}).get("constraints") or {}).get("budget_usd"),
+                                                "preview_mode": self.cfg.preview_mode, "recorded": False})
+        # A controller upgrade can move an existing run to hosted execution at an idle gate.
+        # Show the effective settings, keeping the immutable creation event as history.
+        for ev in events:
+            if ev.kind == "run.resumed" and ev.payload.get("preview_mode"):
+                for key in ("preview_mode", "app_id", "test_profile_sha256"):
+                    if key in ev.payload:
+                        policy[key] = ev.payload[key]
         return {"run_id": run_id, "title": self._title(run_id, events), "outcome": outcome, "stage": st.stage.value,
                 "cost": round(st.list_cost_usd, 2), "demo": self.demo.is_demo(run_id), "design_only": design_only, "work_items": items,
                 "resumable": resumable, "budget": budget, "resuming": self.resuming(run_id), "watch": watch, "crew": crew_roster(events), "policy": policy,

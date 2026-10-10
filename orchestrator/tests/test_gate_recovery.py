@@ -322,6 +322,16 @@ def test_a_failed_run_still_cannot_jump_to_other_stages(tmp_path, root):
         ctx.store.state(RUN)
 
 
+def test_implementation_guard_remembers_a_hosted_upgrade(tmp_path, root):
+    from factory.stages.implement import _require_recorded_preview_mode
+    gate, _ = park(tmp_path, root)
+    ctx = context(tmp_path, root, preview_mode="local")
+    ctx.event("run.resumed", {"stage": "gate_2_spec_readiness", "gate_id": gate.gate_id,
+                              "preview_mode": "managed"})
+    with pytest.raises(RuntimeError, match="hosted sandbox"):
+        _require_recorded_preview_mode(ctx)
+
+
 # ---------------------------------------------------------------------------------------------- the command line
 
 @pytest.fixture
