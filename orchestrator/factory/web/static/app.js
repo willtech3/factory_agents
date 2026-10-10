@@ -357,6 +357,8 @@
       case "question.answered": return ["human", { main: "Question answered", detail: p.answer }];
       case "judge.verdict": return [who, { main: `Spec judge round ${p.round}: ${p.result}`, detail: p.blocking ? `${p.blocking} blocking` : "" }];
       case "review.findings": return [who, { main: `Review round ${p.round}: ${p.count} findings`, detail: item }];
+      case "review.response": { const n = {}; for (const d of (p.dispositions || [])) n[d] = (n[d] || 0) + 1;
+        return [who, { main: `Implementer answered review round ${p.round}`, detail: Object.entries(n).map(([d, c]) => `${c} ${d.replace("_", " ")}`).join(", ") }]; }
       case "merge.verdict": return [who, { main: `Merge judge: ${p.result}`, detail: item }];
       case "cr.opened": return [who, { main: p.design ? "Design pull request opened" : `Pull request opened for ${item}`, detail: p.url }];
       case "cr.merged": return ["human", { main: `Merged ${item}` }];
