@@ -1,0 +1,105 @@
+{
+  "verdict_id": "ver_ledger0002",
+  "decomposition_id": "dec_ledger0001",
+  "round": 2,
+  "overall": {
+    "result": "pass",
+    "blocking_issue_count": 0,
+    "summary_for_human": "Four specs, all passing after one revision round. Round 1 had two blocking issues: spec_at-risk-admin consumed a `PaymentAttempt.open_failures` scope that spec_smart-retries did not define (now defined and referenced by name), and spec_suspension-timing listened for a 'billing.final_failure' event while spec_smart-retries published 'billing.retries_exhausted' (now unified). What to read first: the RetriesExhausted event contract in spec_smart-retries, because three specs hang off it. One judgement call for you: spec_dunning-emails includes the email copy as AC-6 through AC-8 so you are approving customer-facing wording here, not later. The 'Support visibility' metric is covered by the admin view but is not measurable by code; you will need the support lead's sign-off as stated in the outcome."
+  },
+  "per_spec": [
+    {
+      "spec_id": "spec_smart-retries",
+      "criteria": [
+        {"criterion": "S1 Goal traces", "score": 3, "evidence": "goal names both metrics and the production signal ('payment_attempts stays empty while Stripe reports failures')"},
+        {"criterion": "S2 Criteria verifiable", "score": 3, "evidence": "AC-1..AC-8 all Given/When/Then; AC-3 and AC-5 are negative cases; AC-6 is static_check with a stated reason"},
+        {"criterion": "S3 Criteria complete", "score": 2, "evidence": "covers success, failure, duplicate, unknown customer, exhaustion, exceptions; does not cover invoice.payment_action_required (3DS), which the writer lists as a non-goal implicitly via Stripe handling it"},
+        {"criterion": "S4 Interfaces precise", "score": 3, "evidence": "full column list with types, unique index, event payload keys"},
+        {"criterion": "S5 Scope bounded", "score": 3, "evidence": "allowed_paths names files; forbidden_changes protects signature verification and existing tables"},
+        {"criterion": "S6 Grounded", "score": 3, "evidence": "stripe_webhook_handler.rb:8-61 and :58 verified by researcher; failure_notifier.rb:5 exists"},
+        {"criterion": "S7 Test plan executable", "score": 2, "evidence": "rspec and rubocop commands exist in the repo; AC-6 (static_check) correctly has no test; AC-7 mapped"},
+        {"criterion": "S8 Dependencies", "score": 3, "evidence": "no upstream deps; downstream consumers listed on each interface and match sibling specs by name after revision"},
+        {"criterion": "S9 Open questions defaulted", "score": 3, "evidence": "one question, defaulted with a schema.rb reference"},
+        {"criterion": "S10 Length", "score": 2, "evidence": "spec.md is 168 lines"}
+      ],
+      "issues": [
+        {"issue_id": "SR-1", "severity": "minor", "location": "spec_smart-retries/acceptance_criteria", "description": "invoice.payment_action_required (3D Secure challenge) is neither handled nor explicitly excluded; Stripe sends it before payment_failed in some flows.", "suggested_resolution": "Add it to non_goals with a note that Stripe's hosted page handles it, or add a criterion that it is ignored with a log line.", "related_spec_ids": []}
+      ]
+    },
+    {
+      "spec_id": "spec_dunning-emails",
+      "criteria": [
+        {"criterion": "S1 Goal traces", "score": 2, "evidence": "goal names recovery rate"},
+        {"criterion": "S2 Criteria verifiable", "score": 2, "evidence": "AC-6..AC-8 pin the email copy verbatim, which is verifiable but brittle; acceptable because the owner must approve copy"},
+        {"criterion": "S3 Criteria complete", "score": 2, "evidence": "stop-on-paid covered (AC-4); unsubscribe not applicable (transactional)"},
+        {"criterion": "S4 Interfaces precise", "score": 2, "evidence": "consumes billing.retries_exhausted by exact name"},
+        {"criterion": "S5 Scope bounded", "score": 2, "evidence": "mailer, views, job"},
+        {"criterion": "S6 Grounded", "score": 2, "evidence": "billing_mailer.rb:3-29 cited"},
+        {"criterion": "S7 Test plan executable", "score": 2, "evidence": "mailer specs mapped"},
+        {"criterion": "S8 Dependencies", "score": 3, "evidence": "depends on spec_smart-retries; stub strategy if it ships late is stated"},
+        {"criterion": "S9 Open questions defaulted", "score": 2, "evidence": "recipient question defaulted"},
+        {"criterion": "S10 Length", "score": 2, "evidence": "184 lines"}
+      ],
+      "issues": []
+    },
+    {
+      "spec_id": "spec_at-risk-admin",
+      "criteria": [
+        {"criterion": "S1 Goal traces", "score": 2, "evidence": "names Support visibility and churn"},
+        {"criterion": "S2 Criteria verifiable", "score": 2, "evidence": "request specs for listing, filtering, manual retry"},
+        {"criterion": "S3 Criteria complete", "score": 2, "evidence": "authorization criterion present (admins only)"},
+        {"criterion": "S4 Interfaces precise", "score": 2, "evidence": "consumes PaymentAttempt.open_failures and the payment_attempts columns by name"},
+        {"criterion": "S5 Scope bounded", "score": 2, "evidence": "controller, views, routes"},
+        {"criterion": "S6 Grounded", "score": 2, "evidence": "admin base controller cited"},
+        {"criterion": "S7 Test plan executable", "score": 2, "evidence": "request specs mapped"},
+        {"criterion": "S8 Dependencies", "score": 3, "evidence": "fixed in round 2: references the scope defined upstream"},
+        {"criterion": "S9 Open questions defaulted", "score": 3, "evidence": "none open"},
+        {"criterion": "S10 Length", "score": 3, "evidence": "121 lines"}
+      ],
+      "issues": []
+    },
+    {
+      "spec_id": "spec_suspension-timing",
+      "criteria": [
+        {"criterion": "S1 Goal traces", "score": 2, "evidence": "names churn"},
+        {"criterion": "S2 Criteria verifiable", "score": 3, "evidence": "includes the grace-cap boundary (day 21) as a criterion"},
+        {"criterion": "S3 Criteria complete", "score": 2, "evidence": "covers exhausted event, cap, and recovery-cancels-suspension"},
+        {"criterion": "S4 Interfaces precise", "score": 3, "evidence": "config key billing.max_grace_days typed with default"},
+        {"criterion": "S5 Scope bounded", "score": 2, "evidence": "job and config"},
+        {"criterion": "S6 Grounded", "score": 2, "evidence": "suspend_overdue_accounts_job.rb:9-27 cited"},
+        {"criterion": "S7 Test plan executable", "score": 2, "evidence": "job specs mapped"},
+        {"criterion": "S8 Dependencies", "score": 3, "evidence": "fixed in round 2: listens to billing.retries_exhausted"},
+        {"criterion": "S9 Open questions defaulted", "score": 2, "evidence": "grace period default 21 days, owner to confirm"},
+        {"criterion": "S10 Length", "score": 3, "evidence": "98 lines"}
+      ],
+      "issues": []
+    }
+  ],
+  "coherence": {
+    "interface_mismatches": [],
+    "overlaps": [],
+    "gaps": [
+      {"issue_id": "SET-1", "severity": "minor", "location": "set", "description": "No spec records which dunning email was last sent per account, yet the admin view (AC-3 of spec_at-risk-admin) shows 'last email sent'. The admin spec reads it from mailer delivery logs, which is fragile.", "suggested_resolution": "Either add a last_dunning_email_at column to the payment_attempts spec's interface, or have the admin spec drop that column from the view. Not blocking: the admin spec's fallback (delivery log) works.", "related_spec_ids": ["spec_dunning-emails", "spec_at-risk-admin"]}
+    ],
+    "ordering_problems": [],
+    "contradictions": []
+  },
+  "goal_coverage": [
+    {"metric": "Involuntary churn rate", "covering_acs": ["spec_smart-retries/AC-1", "spec_smart-retries/AC-4", "spec_suspension-timing/AC-1", "spec_suspension-timing/AC-2", "spec_at-risk-admin/AC-1"], "assessment": "covered", "note": "Mechanism is plausible; the metric itself is only observable in production."},
+    {"metric": "Failed-payment recovery rate", "covering_acs": ["spec_smart-retries/AC-1", "spec_smart-retries/AC-2", "spec_dunning-emails/AC-1", "spec_dunning-emails/AC-2"], "assessment": "covered"},
+    {"metric": "Support visibility", "covering_acs": ["spec_at-risk-admin/AC-1", "spec_at-risk-admin/AC-2", "spec_at-risk-admin/AC-4"], "assessment": "not_measurable_by_code", "note": "Delivered by the admin view; measured by support sign-off per the outcome."}
+  ],
+  "produced_by": {
+    "agent_name": "Spec judge",
+    "agent_id": "agent_03example",
+    "agent_version": 4,
+    "session_id": "sesn_01examplejudge2",
+    "thread_id": null,
+    "model": "claude-opus-5-5",
+    "effort": "xhigh",
+    "outcome_iterations": null,
+    "list_cost_usd": 4.7,
+    "produced_at": "2026-10-09T16:20:03Z",
+    "inputs": []
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "spec_id": "spec_smart-retries",
+  "work_item_id": "wi-smart-retries",
+  "decomposition_id": "dec_ledger0001",
+  "outcome_id": "out_ledger0001",
+  "revision": 2,
+  "title": "Enable Stripe Smart Retries and record attempts",
+  "goal": "After merge, every failed card charge is retried by Stripe on its Smart Retries schedule, and each attempt (initial and retries) is recorded in a payment_attempts table with its outcome, so recovery rate can be measured and shown to support. Serves the Failed-payment recovery rate and Involuntary churn metrics. Missed in production if payment_attempts stays empty while Stripe reports failures.",
+  "non_goals": [
+    "Customer-facing emails (spec_dunning-emails)",
+    "Changing when accounts are suspended (spec_suspension-timing)",
+    "Backfilling historical failures into payment_attempts"
+  ],
+  "context": "Stripe webhooks arrive at app/controllers/webhooks/stripe_controller.rb:14-40, which verifies the signature and dispatches by event type to Billing::StripeWebhookHandler (app/services/billing/stripe_webhook_handler.rb:8-61). Only invoice.paid and customer.subscription.deleted are handled today (lines 20-31); invoice.payment_failed falls through to the no-op default at line 58. Smart Retries is a Stripe account setting, not an API call; the Stripe Billing dashboard toggle is out of code scope and is listed as an external step. Existing failure path: Billing::FailureNotifier (app/services/billing/failure_notifier.rb:5) sends one email and sets accounts.payment_failed_at.",
+  "acceptance_criteria": [
+    {"ac_id": "AC-1", "given": "a Stripe invoice.payment_failed webhook for a known customer", "when": "it is received", "then": "a payment_attempts row is created with stripe_event_id, stripe_invoice_id, attempt_number (from invoice.attempt_count), outcome 'failed', failure_code, and occurred_at", "verification": "automated_test"},
+    {"ac_id": "AC-2", "given": "a Stripe invoice.paid webhook for an invoice that has prior failed attempts", "when": "it is received", "then": "a payment_attempts row with outcome 'succeeded' is created and accounts.payment_failed_at is cleared", "verification": "automated_test"},
+    {"ac_id": "AC-3", "given": "the same Stripe event delivered twice (same stripe_event_id)", "when": "both are processed", "then": "exactly one payment_attempts row exists and the second delivery returns 200", "verification": "automated_test"},
+    {"ac_id": "AC-4", "given": "an invoice.payment_failed webhook whose invoice has next_payment_attempt null (Stripe gave up)", "when": "it is received", "then": "the row is created with final_attempt true and a BillingEvents::RetriesExhausted event is published", "verification": "automated_test"},
+    {"ac_id": "AC-5", "given": "a webhook for a customer id not in our database", "when": "it is received", "then": "no row is created, the event is logged at warn with the customer id, and the response is 200", "verification": "automated_test"},
+    {"ac_id": "AC-6", "given": "the migration", "when": "it runs on a copy of production data", "then": "it is additive only: creates payment_attempts and its indexes, touches no existing table", "verification": "static_check", "verification_note": "Reviewed by reading the migration; enforced by allowed_paths and the must_not constraint."},
+    {"ac_id": "AC-7", "given": "the existing one-off failure email", "when": "invoice.payment_failed is handled", "then": "Billing::FailureNotifier is still invoked exactly once per failed attempt (behaviour unchanged until spec_dunning-emails replaces it)", "verification": "automated_test"},
+    {"ac_id": "AC-8", "given": "any webhook handled by this change", "when": "processing raises", "then": "the exception is reported to the error tracker and the response is 500 so Stripe retries delivery", "verification": "automated_test"}
+  ],
+  "interfaces": [
+    {"name": "payment_attempts", "kind": "db_schema", "change": "new", "definition": "payment_attempts(id bigint pk, account_id bigint fk accounts not null, stripe_invoice_id string not null, stripe_event_id string not null unique, attempt_number int not null, outcome enum('failed','succeeded') not null, failure_code string null, final_attempt boolean not null default false, occurred_at timestamptz not null, created_at). Indexes: unique(stripe_event_id); (account_id, occurred_at desc).", "consumed_by_specs": ["spec_at-risk-admin", "spec_suspension-timing"]},
+    {"name": "BillingEvents::RetriesExhausted", "kind": "event", "change": "new", "definition": "ActiveSupport::Notifications event 'billing.retries_exhausted' with payload {account_id:, stripe_invoice_id:, last_attempt_at:}. Published once per invoice when Stripe reports no further retry.", "consumed_by_specs": ["spec_suspension-timing", "spec_dunning-emails"]},
+    {"name": "PaymentAttempt model", "kind": "function", "change": "new", "definition": "class PaymentAttempt < ApplicationRecord; scope :open_failures -> accounts whose latest attempt is failed and not final; def self.record_from_stripe_event!(event) -> PaymentAttempt (idempotent on stripe_event_id)", "consumed_by_specs": ["spec_at-risk-admin"]}
+  ],
+  "allowed_paths": [
+    "app/services/billing/stripe_webhook_handler.rb",
+    "app/models/payment_attempt.rb",
+    "app/models/account.rb",
+    "app/events/billing_events/**",
+    "db/migrate/*_create_payment_attempts.rb",
+    "db/schema.rb",
+    "spec/services/billing/stripe_webhook_handler_spec.rb",
+    "spec/models/payment_attempt_spec.rb",
+    "spec/factories/payment_attempts.rb"
+  ],
+  "forbidden_changes": [
+    "Any change to app/controllers/webhooks/stripe_controller.rb signature verification",
+    "Any ALTER on the payments or accounts tables",
+    "Editing existing specs under spec/ other than adding new examples to stripe_webhook_handler_spec.rb"
+  ],
+  "non_functional": {
+    "performance": "Webhook handling stays under 200ms p95; the new insert is one row with two indexes.",
+    "security": "No card data is read from the event; only ids, codes, and timestamps are stored.",
+    "observability": "Log line per attempt at info: account_id, attempt_number, outcome, failure_code.",
+    "backwards_compatibility": "Existing invoice.paid behaviour unchanged except the new row and clearing payment_failed_at."
+  },
+  "test_plan": {
+    "commands": ["bundle exec rspec spec/services/billing/stripe_webhook_handler_spec.rb spec/models/payment_attempt_spec.rb", "bundle exec rubocop app/services/billing app/models/payment_attempt.rb"],
+    "new_tests": [
+      {"covers_ac": ["AC-1", "AC-7"], "description": "payment_failed creates a failed attempt and still notifies", "suggested_location": "spec/services/billing/stripe_webhook_handler_spec.rb"},
+      {"covers_ac": ["AC-2"], "description": "invoice.paid after failures records success and clears payment_failed_at", "suggested_location": "spec/services/billing/stripe_webhook_handler_spec.rb"},
+      {"covers_ac": ["AC-3"], "description": "duplicate event id is idempotent", "suggested_location": "spec/models/payment_attempt_spec.rb"},
+      {"covers_ac": ["AC-4"], "description": "null next_payment_attempt marks final and publishes RetriesExhausted", "suggested_location": "spec/services/billing/stripe_webhook_handler_spec.rb"},
+      {"covers_ac": ["AC-5"], "description": "unknown customer logs and returns without a row", "suggested_location": "spec/services/billing/stripe_webhook_handler_spec.rb"},
+      {"covers_ac": ["AC-8"], "description": "handler exceptions are reported and surface as 500", "suggested_location": "spec/services/billing/stripe_webhook_handler_spec.rb"}
+    ]
+  },
+  "dependencies": {"specs": [], "external": ["Stripe dashboard: enable Smart Retries (owner action, before launch)"]},
+  "rollout": {"feature_flag": null, "migration_steps": ["Run migration (additive)", "Deploy", "Enable Smart Retries in Stripe dashboard"], "rollback": "Disable Smart Retries toggle; code path is inert without payment_failed events; table can remain."},
+  "open_questions": [
+    {"question": "Keep attempts for deleted accounts (FK on delete)?", "blocking": false, "default_if_unanswered": "ON DELETE CASCADE, matching the payments table convention at db/schema.rb:212"}
+  ],
+  "estimated_size": "M",
+  "produced_by": {
+    "agent_name": "Spec writer",
+    "agent_id": "agent_02example",
+    "agent_version": 5,
+    "session_id": "sesn_01examplespec1",
+    "thread_id": null,
+    "model": "claude-sonnet-5-5",
+    "effort": "high",
+    "outcome_iterations": 2,
+    "list_cost_usd": 3.1,
+    "produced_at": "2026-10-09T15:41:50Z",
+    "inputs": [{"artifact": "decomposition.json", "sha256": "0a9b8c7d6e5f40312233445566778899aabbccddeeff00112233445566778899"}]
+  }
+}

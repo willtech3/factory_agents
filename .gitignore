@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Orchestrator runtime state
+runs/
+evals/results/
+
+# Secrets never belong here; ant apply's lock file does and must be committed.
+.env
+*.pem

@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.example/schemas/outcome.schema.json",
+  "title": "BusinessOutcome",
+  "description": "The entry artifact of a factory run. Written by a human (product/business owner), lightly structured by the intake step. Everything downstream must trace back to this.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome_id", "title", "statement", "success_metrics", "constraints", "owner", "created_at"],
+  "properties": {
+    "outcome_id": { "type": "string", "pattern": "^out_[a-z0-9]{8,}$" },
+    "title": { "type": "string", "minLength": 5, "maxLength": 120 },
+    "statement": {
+      "type": "string",
+      "description": "One to three paragraphs in the owner's words. What changes for whom, and why it matters to the business.",
+      "minLength": 50
+    },
+    "success_metrics": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["metric", "target"],
+        "properties": {
+          "metric": { "type": "string" },
+          "baseline": { "type": ["string", "null"] },
+          "target": { "type": "string" },
+          "measurement": { "type": "string", "description": "How and where this will be measured." }
+        }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "deadline": { "type": ["string", "null"], "format": "date" },
+        "budget_usd": { "type": ["number", "null"], "description": "Hard cap on agent spend for the whole run (list cost)." },
+        "must_not": { "type": "array", "items": { "type": "string" }, "description": "Explicit non-goals and forbidden changes (e.g. 'no schema migrations')." },
+        "compliance": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "context_links": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "ref"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["repo", "doc", "ticket", "design", "dashboard", "other"] },
+          "ref": { "type": "string" },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "target_repositories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["url", "default_branch"],
+        "properties": {
+          "url": { "type": "string", "format": "uri" },
+          "default_branch": { "type": "string" },
+          "paths_in_scope": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "owner": {
+      "type": "object",
+      "required": ["name", "handle"],
+      "properties": {
+        "name": { "type": "string" },
+        "handle": { "type": "string", "description": "GitLab handle; used for gate assignment." },
+        "role": { "type": "string" }
+      }
+    },
+    "clarifications": {
+      "type": "array",
+      "description": "Q&A captured during intake and decomposition via the ask_human tool. Appended, never edited.",
+      "items": {
+        "type": "object",
+        "required": ["question", "answer", "asked_by", "answered_at"],
+        "properties": {
+          "question": { "type": "string" },
+          "answer": { "type": "string" },
+          "asked_by": { "type": "string", "enum": ["decomposer", "spec_writer", "spec_judge", "implementer", "reviewer", "human"] },
+          "answered_at": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

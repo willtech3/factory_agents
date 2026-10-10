@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.example/schemas/decomposition.schema.json",
+  "title": "Decomposition",
+  "description": "Output of the Decomposer agent: a DAG of work items that together achieve the outcome. Reviewed by a human at Gate 1 before any specification is written.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decomposition_id", "outcome_id", "revision", "summary", "work_items", "coverage", "open_questions", "assumptions", "produced_by"],
+  "properties": {
+    "decomposition_id": { "type": "string", "pattern": "^dec_[a-z0-9]{8,}$" },
+    "outcome_id": { "type": "string" },
+    "revision": { "type": "integer", "minimum": 1, "description": "Incremented each time the decomposer re-runs after human feedback." },
+    "summary": {
+      "type": "string",
+      "description": "Plain-language narrative of the approach, written for the business owner. Should be readable in under two minutes.",
+      "maxLength": 4000
+    },
+    "work_items": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 25,
+      "items": { "$ref": "#/$defs/WorkItem" }
+    },
+    "coverage": {
+      "type": "array",
+      "description": "Maps every success metric from the outcome to the work items that move it. A metric with no work items is a gap the human must see.",
+      "items": {
+        "type": "object",
+        "required": ["metric", "work_item_ids", "rationale"],
+        "properties": {
+          "metric": { "type": "string" },
+          "work_item_ids": { "type": "array", "items": { "type": "string" } },
+          "rationale": { "type": "string" }
+        }
+      }
+    },
+    "explicitly_out_of_scope": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Things a reasonable reader might expect but that are deliberately not included, with the reason."
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["question", "blocking", "default_if_unanswered"],
+        "properties": {
+          "question": { "type": "string" },
+          "blocking": { "type": "boolean" },
+          "default_if_unanswered": { "type": "string" }
+        }
+      }
+    },
+    "assumptions": { "type": "array", "items": { "type": "string" } },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["risk", "likelihood", "impact", "mitigation"],
+        "properties": {
+          "risk": { "type": "string" },
+          "likelihood": { "type": "string", "enum": ["low", "medium", "high"] },
+          "impact": { "type": "string", "enum": ["low", "medium", "high"] },
+          "mitigation": { "type": "string" }
+        }
+      }
+    },
+    "produced_by": { "$ref": "provenance.schema.json" }
+  },
+  "$defs": {
+    "WorkItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["work_item_id", "kind", "title", "intent", "depends_on", "size", "contributes_to_metrics", "touches"],
+      "properties": {
+        "work_item_id": { "type": "string", "pattern": "^wi[-_][a-z0-9-]{3,}$" },
+        "kind": {
+          "type": "string",
+          "enum": ["feature", "task", "workflow", "agent", "spike", "migration"],
+          "description": "feature = user-visible capability; task = internal engineering change; workflow = multi-step business process to automate; agent = an LLM agent to be built; spike = time-boxed investigation that produces a decision, not code; migration = data/schema/infra move."
+        },
+        "title": { "type": "string", "maxLength": 100 },
+        "intent": { "type": "string", "description": "What this item achieves for the outcome, in one paragraph. Not how." },
+        "depends_on": { "type": "array", "items": { "type": "string" }, "description": "work_item_ids that must be merged first. Must form a DAG." },
+        "size": { "type": "string", "enum": ["XS", "S", "M", "L"], "description": "L items should be split further; the rubric penalises them." },
+        "contributes_to_metrics": { "type": "array", "items": { "type": "string" } },
+        "touches": {
+          "type": "object",
+          "required": ["repositories"],
+          "properties": {
+            "repositories": { "type": "array", "items": { "type": "string" } },
+            "likely_paths": { "type": "array", "items": { "type": "string" } },
+            "external_systems": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "human_judgement_required": {
+          "type": "boolean",
+          "description": "True when the item involves a product, legal, pricing, or UX decision the owner must make. Such items get a mandatory clarification before specification."
+        },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}

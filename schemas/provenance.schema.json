@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.example/schemas/provenance.schema.json",
+  "title": "Provenance",
+  "description": "Attached to every artifact so a reviewer can jump from any claim back to the exact agent version and session that produced it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["agent_name", "agent_id", "agent_version", "session_id", "model", "produced_at"],
+  "properties": {
+    "agent_name": { "type": "string" },
+    "agent_id": { "type": "string", "description": "Managed Agents agent id (agent_...)" },
+    "agent_version": { "type": "integer", "minimum": 1 },
+    "session_id": { "type": "string", "description": "Managed Agents session id (sesn_...). Deep-links to the Console trace." },
+    "thread_id": { "type": ["string", "null"], "description": "Set when produced by a subagent thread inside a multiagent session." },
+    "model": { "type": "string" },
+    "effort": { "type": ["string", "null"], "enum": ["low", "medium", "high", "xhigh", "max", null] },
+    "outcome_iterations": { "type": ["integer", "null"], "description": "How many grader iterations the platform outcome loop ran before 'satisfied'." },
+    "list_cost_usd": { "type": ["number", "null"] },
+    "produced_at": { "type": "string", "format": "date-time" },
+    "inputs": {
+      "type": "array",
+      "description": "Content hashes of the upstream artifacts this one was produced from, for reproducibility and cache keys in evals.",
+      "items": {
+        "type": "object",
+        "required": ["artifact", "sha256"],
+        "properties": {
+          "artifact": { "type": "string" },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        }
+      }
+    }
+  }
+}

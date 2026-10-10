@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.example/schemas/review_response.schema.json",
+  "title": "ImplementerReviewResponse",
+  "description": "The Implementer's reply to a set of review findings. Every finding gets exactly one response. Refutations must point at evidence, not opinion; the reviewer then upholds or withdraws.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["response_id", "review_id", "spec_id", "round", "responses", "new_head_sha", "tests_after", "produced_by"],
+  "properties": {
+    "response_id": { "type": "string", "pattern": "^rsp_[a-z0-9]{8,}$" },
+    "review_id": { "type": "string" },
+    "spec_id": { "type": "string" },
+    "round": { "type": "integer", "minimum": 1 },
+    "responses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "disposition", "explanation"],
+        "properties": {
+          "finding_id": { "type": "string" },
+          "disposition": {
+            "type": "string",
+            "enum": ["fixed", "refuted", "accepted_risk"],
+            "description": "fixed: code changed, commit referenced. refuted: the finding is wrong, evidence attached that satisfies the refutation_condition. accepted_risk: the finding is right but should not block; requires human sign-off at the MR."
+          },
+          "explanation": { "type": "string" },
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "commits": { "type": "array", "items": { "type": "string" } },
+              "tests_added": { "type": "array", "items": { "type": "string" } },
+              "reproduction_attempted": { "type": "string", "description": "For refutations: the reviewer's reproduction, re-run, with output." },
+              "locations": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "new_head_sha": { "type": "string" },
+    "tests_after": {
+      "type": "object",
+      "required": ["commands", "all_passed"],
+      "properties": {
+        "commands": { "type": "array", "items": { "type": "string" } },
+        "all_passed": { "type": "boolean" },
+        "summary": { "type": "string" }
+      }
+    },
+    "produced_by": { "$ref": "provenance.schema.json" }
+  }
+}

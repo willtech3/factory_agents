@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.example/schemas/run_event.schema.json",
+  "title": "RunEvent",
+  "description": "Append-only event log for a factory run. The orchestrator's state is derived from this log; the Factory Console renders it as the run timeline; evals replay it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "run_id", "seq", "at", "kind", "actor"],
+  "properties": {
+    "event_id": { "type": "string" },
+    "run_id": { "type": "string", "pattern": "^run_[a-z0-9]{8,}$" },
+    "seq": { "type": "integer", "minimum": 0 },
+    "at": { "type": "string", "format": "date-time" },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "run.created",
+        "stage.entered",
+        "stage.exited",
+        "session.started",
+        "session.finished",
+        "artifact.produced",
+        "gate.opened",
+        "gate.decided",
+        "question.asked",
+        "question.answered",
+        "judge.verdict",
+        "review.findings",
+        "review.response",
+        "merge.verdict",
+        "mr.opened",
+        "mr.merged",
+        "mr.closed",
+        "budget.reached",
+        "run.escalated",
+        "run.failed",
+        "run.completed"
+      ]
+    },
+    "actor": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "type": "string", "enum": ["human", "agent", "orchestrator", "platform"] },
+        "id": { "type": "string" }
+      }
+    },
+    "stage": { "type": ["string", "null"] },
+    "work_item_id": { "type": ["string", "null"] },
+    "spec_id": { "type": ["string", "null"] },
+    "payload": { "type": "object", "description": "Kind-specific. For gate.decided: {gate, decision, comments}. For artifact.produced: {artifact_type, path, sha256}. For session.*: {session_id, agent_id, agent_version, list_cost_usd}." }
+  }
+}

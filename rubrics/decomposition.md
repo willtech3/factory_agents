@@ -1,0 +1,58 @@
+# Decomposition rubric
+
+Scored per criterion, 0 to 3. Any 0 fails. Target for Gate 1: all criteria at 2 or above.
+
+## D1. Coverage of success metrics
+Every success metric in `outcome.json` appears in `coverage` with at least one work item, or is explicitly marked as not movable by code with a reason.
+- 0: a metric is missing from `coverage`.
+- 1: all metrics present but at least one has an empty or hand-wavy rationale.
+- 2: all metrics covered with a rationale that names the mechanism.
+- 3: as 2, and the summary says which items matter most for each metric.
+
+## D2. Item granularity
+Work items are one coherent change each, sized XS to M, and deliver a testable behaviour (vertical slice), not a layer.
+- 0: any item is a horizontal layer ("all database changes") or has no observable behaviour.
+- 1: one or more L items without a stated reason they cannot be split.
+- 2: all items XS to M, each with an intent a tester could check.
+- 3: as 2, and items are ordered so early items produce visible value.
+
+## D3. Dependency graph
+`depends_on` forms a DAG; items touching the same paths are either dependent or merged.
+- 0: a cycle, or two items with overlapping `likely_paths` and no dependency.
+- 1: DAG, but dependencies are over-declared (a chain where a fan-out was possible) or under-explained.
+- 2: DAG with minimal dependencies that match the shared-path analysis.
+- 3: as 2, and the summary states the critical path.
+
+## D4. Grounding in the codebase
+Claims about current behaviour cite researcher evidence (`path:line`), and `likely_paths` exist in the repository.
+- 0: a `likely_paths` entry does not exist, or a stated current behaviour is contradicted by the code.
+- 1: grounded, but thin: items reference directories, not files.
+- 2: each item cites at least one real path and one piece of evidence.
+- 3: as 2, and the decomposition notes an inconsistency or surprise found in the code.
+
+## D5. Explicit non-scope and assumptions
+`explicitly_out_of_scope` and `assumptions` are non-empty and name things a reasonable owner might otherwise expect.
+- 0: both empty.
+- 1: present but generic ("performance is out of scope").
+- 2: specific exclusions with reasons; assumptions a human can confirm or deny.
+- 3: as 2, and each `human_judgement_required` item carries the decision the owner must make.
+
+## D6. Questions are worth the owner's time
+Open questions are ones whose answer changes the shape of the work; each has a default. No question the code could have answered.
+- 0: a blocking question that the repository or outcome already answers.
+- 1: questions have no `default_if_unanswered`.
+- 2: every question has a default and a stated consequence.
+- 3: as 2, and non-blocking questions are batched and few (five or fewer).
+
+## D7. Readability of the summary
+`decomposition.md` can be read by the outcome owner in under two minutes and matches `decomposition.json`.
+- 0: summary and JSON disagree on item count, titles, or dependencies.
+- 1: consistent but over 150 lines or jargon-heavy.
+- 2: consistent, under 150 lines, plain language.
+- 3: as 2, with a one-paragraph "what you are approving" at the top.
+
+## D8. Constraint compliance
+Nothing in the decomposition violates `constraints.must_not` or `compliance`.
+- 0: a violation.
+- 2: compliant and the summary says how each `must_not` was respected.
+- 3: as 2, with a risk entry for each constraint that is hard to keep.

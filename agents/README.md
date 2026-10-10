@@ -1,0 +1,35 @@
+# Agent definitions
+
+One file per agent in the format `ant apply` consumes: YAML frontmatter is the Managed Agents create body, the Markdown body is the system prompt. Sync with:
+
+```bash
+ant apply --dry-run -v agents environments
+```
+
+Review the plan, then re-run with `--yes` once you agree with it. `claude-lock.json` is written at the repo root and must be committed; the orchestrator reads agent and environment IDs from it (see `orchestrator/factory/config.py`).
+
+## Roster
+
+| Agent | Stage | Model | Writes code? | Independent context from | Why it exists |
+|---|---|---|---|---|---|
+| `codebase_researcher` | all | Sonnet 5.5, medium | no | the goal (it is told what to document, not why) | Goal-blind factual research; keeps reading out of the lead agents' context |
+| `decomposer` | 1 | Opus 5.5, high | no | - | Turns an outcome into a DAG of work items for Gate 1 |
+| `spec_writer` | 2 | Sonnet 5.5, high | no | - | Writes one spec per work item |
+| `spec_judge` | 2 | Opus 5.5, xhigh | no | spec_writer (different model tier, never sees the writer's reasoning) | Grades specs per rubric and judges whether the set achieves the outcome |
+| `implementer` | 3 | Opus 5.5, xhigh | yes | - | Implements one spec in vertical slices with tests |
+| `reviewer` | 3 | Opus 5.5, xhigh | no | implementer (fresh session per round, sees only diff + spec) | Adversarial review with falsifiable findings |
+| `merge_judge` | 3 | Opus 5.5, high | no | both | Audits the reviewer/implementer exchange; decides ready / another round / escalate |
+| `integrator` | 4 | Sonnet 5.5, medium | no (pushes) | - | Opens the GitLab MR with the full evidence bundle |
+
+## Conventions every prompt follows
+
+- **Instruction budget.** Prompts stay under about 80 lines. Anything longer belongs in a skill under `.claude/skills/` in the target repo or in `rubrics/`. Each rule should trace to a failure we observed or a cited source in `docs/research/`.
+- **Artifacts, not chat.** Agents coordinate through files under `/mnt/session/outputs/`, validated against `schemas/`. No agent reads another agent's transcript.
+- **Judges never author.** Spec judge and merge judge report; they do not rewrite specs or code. This keeps the role separation that makes their verdicts worth anything.
+- **Tests are a contract.** Implementers may add tests and may not modify or delete existing tests unless the spec's `allowed_paths` explicitly includes them. The orchestrator enforces this deterministically.
+- **Say so when stuck.** Every agent has an explicit way to stop and report rather than improvise: `ask_human` for the planning agents, an `open_questions` block for writers, `escalate` results for judges.
+- **Web off by default.** Only `codebase_researcher` may be given web access, per session, when a spec involves an external API.
+
+## Self-preference caveat
+
+All agents run on Claude. Research on judge self-preference bias (see `docs/research/academic-2026.md`, Yang et al. 2604.22891) says capability does not protect against it. Mitigations used here: different model tier for writer and judge where possible, decomposed per-criterion rubrics, judges never see the author's self-assessment, and execution-grounded evidence requirements. For high-stakes repositories, `reviewer` can be pinned to a different model (for example Claude Fable 5.1) via a per-session `agent_with_overrides`; see `docs/04-managed-agents-mapping.md`.

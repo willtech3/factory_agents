@@ -1,0 +1,53 @@
+{
+  "outcome_id": "out_ledger0001",
+  "title": "Cut involuntary churn from failed card payments",
+  "statement": "Ledgerline customers on monthly plans churn when their card payment fails and nobody notices. Today a failed charge sends one email and then the account is suspended after 7 days. We want to recover most of these customers automatically: retry intelligently, tell the customer clearly what happened and how to fix it, and give our support team visibility into who is at risk before the suspension hits. This is the single largest controllable source of revenue loss this year.",
+  "success_metrics": [
+    {
+      "metric": "Involuntary churn rate",
+      "baseline": "4.1% of monthly-plan accounts per month",
+      "target": "Below 2.9% within two months of launch",
+      "measurement": "Monthly cohort report in Metabase, dashboard 'Billing health'"
+    },
+    {
+      "metric": "Failed-payment recovery rate",
+      "baseline": "38% of failed charges recovered within 7 days",
+      "target": "At least 60%",
+      "measurement": "payments.recovered_at within 7 days of first failure"
+    },
+    {
+      "metric": "Support visibility",
+      "baseline": null,
+      "target": "Support can list at-risk accounts and see retry history without engineering help",
+      "measurement": "Qualitative: support lead sign-off"
+    }
+  ],
+  "constraints": {
+    "deadline": "2026-12-15",
+    "budget_usd": 180,
+    "must_not": [
+      "No change to the pricing or plan catalogue",
+      "No new third-party payment provider; stay on Stripe",
+      "No destructive schema migrations on the payments table"
+    ],
+    "compliance": ["PCI: never store raw card data; use Stripe tokens only"]
+  },
+  "context_links": [
+    {"kind": "repo", "ref": "https://gitlab.com/ledgerline/app", "note": "Rails monolith; billing lives under app/services/billing"},
+    {"kind": "dashboard", "ref": "https://metabase.ledgerline.internal/dashboard/12", "note": "Billing health"},
+    {"kind": "doc", "ref": "https://wiki.ledgerline.internal/billing/dunning-today", "note": "Current dunning behaviour, written by support"}
+  ],
+  "target_repositories": [
+    {"url": "https://gitlab.com/ledgerline/app", "default_branch": "main", "paths_in_scope": ["app/services/billing/**", "app/jobs/billing/**", "app/mailers/**", "app/controllers/admin/**", "db/migrate/**", "spec/**"]}
+  ],
+  "owner": {"name": "Priya Natarajan", "handle": "priya.n", "role": "Head of Product, Billing"},
+  "clarifications": [
+    {
+      "question": "Should retries follow Stripe Smart Retries or our own schedule?",
+      "answer": "Use Stripe Smart Retries as the engine; we own the customer messaging and the admin view.",
+      "asked_by": "decomposer",
+      "answered_at": "2026-10-09T14:12:00Z"
+    }
+  ],
+  "created_at": "2026-10-09T13:40:00Z"
+}

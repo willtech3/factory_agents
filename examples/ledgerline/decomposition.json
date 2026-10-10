@@ -1,0 +1,106 @@
+{
+  "decomposition_id": "dec_ledger0001",
+  "outcome_id": "out_ledger0001",
+  "revision": 2,
+  "summary": "What you are approving: four changes that together turn a one-email-then-suspend flow into a recovery flow. (1) Enable Stripe Smart Retries and record every retry attempt locally so we can report on it. (2) Replace the single failure email with a short sequence that tells the customer what failed and gives a one-click card update link, sent on the retry schedule. (3) Add an admin page listing at-risk accounts with retry history, so support can intervene before day 7. (4) Delay suspension until Stripe reports the final retry failed, instead of a fixed 7 days. Revision 2 addresses the Gate 1 comment that suspension timing was missing: it is now its own item (wi-suspension-timing) because it changes a customer-visible rule and needs a product decision on the maximum grace period. Out of scope: changing plans or prices, bank-transfer customers, and any new payment provider.",
+  "work_items": [
+    {
+      "work_item_id": "wi-smart-retries",
+      "kind": "task",
+      "title": "Enable Stripe Smart Retries and record attempts",
+      "intent": "Stripe retries failed charges on its own schedule; we subscribe to the invoice.payment_failed and invoice.paid webhooks and store each attempt in a new payment_attempts table so recovery can be measured and shown to support.",
+      "depends_on": [],
+      "size": "M",
+      "contributes_to_metrics": ["Failed-payment recovery rate", "Involuntary churn rate"],
+      "touches": {
+        "repositories": ["https://gitlab.com/ledgerline/app"],
+        "likely_paths": ["app/services/billing/stripe_webhook_handler.rb", "app/models/payment_attempt.rb", "db/migrate/"],
+        "external_systems": ["Stripe Billing settings (Smart Retries toggle)"]
+      },
+      "human_judgement_required": false
+    },
+    {
+      "work_item_id": "wi-dunning-emails",
+      "kind": "feature",
+      "title": "Dunning email sequence with card-update link",
+      "intent": "Customers get a clear, plain-language email at first failure and after each failed retry, each with a signed one-click link to update their card. Replaces the single existing failure email.",
+      "depends_on": ["wi-smart-retries"],
+      "size": "M",
+      "contributes_to_metrics": ["Failed-payment recovery rate"],
+      "touches": {
+        "repositories": ["https://gitlab.com/ledgerline/app"],
+        "likely_paths": ["app/mailers/billing_mailer.rb", "app/views/billing_mailer/", "app/jobs/billing/dunning_job.rb"],
+        "external_systems": ["Stripe Customer Portal (card update)"]
+      },
+      "human_judgement_required": true,
+      "notes": "Copy for the emails needs product sign-off; the spec should include the copy as an acceptance criterion so it is reviewed at Gate 2."
+    },
+    {
+      "work_item_id": "wi-at-risk-admin",
+      "kind": "feature",
+      "title": "At-risk accounts admin view",
+      "intent": "Support sees every account with an open failed payment, days since first failure, retry attempts so far, and the last email sent, and can trigger a manual retry or extend grace.",
+      "depends_on": ["wi-smart-retries"],
+      "size": "M",
+      "contributes_to_metrics": ["Support visibility", "Involuntary churn rate"],
+      "touches": {
+        "repositories": ["https://gitlab.com/ledgerline/app"],
+        "likely_paths": ["app/controllers/admin/at_risk_accounts_controller.rb", "app/views/admin/at_risk_accounts/"],
+        "external_systems": []
+      },
+      "human_judgement_required": false
+    },
+    {
+      "work_item_id": "wi-suspension-timing",
+      "kind": "task",
+      "title": "Suspend on final retry failure, not day 7",
+      "intent": "Account suspension moves from a fixed 7-day timer to the moment Stripe reports the last retry failed, with a configurable maximum grace period as a safety cap.",
+      "depends_on": ["wi-smart-retries"],
+      "size": "S",
+      "contributes_to_metrics": ["Involuntary churn rate"],
+      "touches": {
+        "repositories": ["https://gitlab.com/ledgerline/app"],
+        "likely_paths": ["app/jobs/billing/suspend_overdue_accounts_job.rb", "config/billing.yml"],
+        "external_systems": []
+      },
+      "human_judgement_required": true,
+      "notes": "Owner must set the maximum grace period. Default proposed: 21 days."
+    }
+  ],
+  "coverage": [
+    {"metric": "Involuntary churn rate", "work_item_ids": ["wi-smart-retries", "wi-at-risk-admin", "wi-suspension-timing"], "rationale": "Retries recover charges; support intervenes on the rest; suspension no longer fires while recovery is still possible."},
+    {"metric": "Failed-payment recovery rate", "work_item_ids": ["wi-smart-retries", "wi-dunning-emails"], "rationale": "Smart Retries raise the mechanical recovery rate; the email sequence with a card-update link addresses the cases a retry cannot fix (expired or replaced card)."},
+    {"metric": "Support visibility", "work_item_ids": ["wi-at-risk-admin"], "rationale": "Direct: the admin view is the deliverable."}
+  ],
+  "explicitly_out_of_scope": [
+    "Bank transfer and invoice-paid customers (different failure mode; separate outcome)",
+    "Changing plan prices or offering discounts to at-risk customers (owner said no; pricing is frozen)",
+    "In-app banners about failed payments (valuable, but the app shell is owned by another team; proposed as a follow-up outcome)"
+  ],
+  "open_questions": [
+    {"question": "What is the maximum grace period before suspension regardless of Stripe's retry schedule?", "blocking": false, "default_if_unanswered": "21 days"},
+    {"question": "Should the dunning emails go to the billing contact only, or to all admins on the account?", "blocking": false, "default_if_unanswered": "Billing contact, with admins CC'd on the final notice"}
+  ],
+  "assumptions": [
+    "Stripe Smart Retries is available on our Stripe account tier (it is on Billing Starter and above).",
+    "The existing webhook endpoint already verifies Stripe signatures (confirmed at app/controllers/webhooks/stripe_controller.rb:14-22).",
+    "Metabase can read the new payment_attempts table through the existing replica."
+  ],
+  "risks": [
+    {"risk": "Webhook replay or out-of-order delivery double-counts attempts", "likelihood": "medium", "impact": "medium", "mitigation": "payment_attempts keyed by Stripe event id with a unique index; spec for wi-smart-retries must include an idempotency criterion."},
+    {"risk": "Email sequence annoys customers whose payment recovers on the first retry", "likelihood": "medium", "impact": "low", "mitigation": "Each email is sent only after a failed retry, and the sequence stops on invoice.paid."}
+  ],
+  "produced_by": {
+    "agent_name": "Decomposer",
+    "agent_id": "agent_01example",
+    "agent_version": 3,
+    "session_id": "sesn_01exampledecomp",
+    "thread_id": null,
+    "model": "claude-opus-5-5",
+    "effort": "high",
+    "outcome_iterations": 2,
+    "list_cost_usd": 6.4,
+    "produced_at": "2026-10-09T15:02:11Z",
+    "inputs": [{"artifact": "outcome.json", "sha256": "3f1c6b1f8a3d9c0e3c6b1d1f6e5c2a4b7d8e9f0a1b2c3d4e5f60718293a4b5c6"}]
+  }
+}

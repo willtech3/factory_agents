@@ -1,0 +1,38 @@
+{
+  "verdict_id": "mrv_smartretries1",
+  "spec_id": "spec_smart-retries",
+  "round": 2,
+  "result": "ready",
+  "unresolved_findings": [
+    {
+      "finding_id": "F-4",
+      "reviewer_status": "withdrawn",
+      "judge_assessment": "Refutation accepted. Both cited schema.rb lines show unbounded Stripe id strings; the spec's interface says 'string'. Convention beats the nit. Reviewer withdrew with a reason."
+    }
+  ],
+  "deterministic_checks": [
+    {"check": "diff_scope", "passed": true, "detail": "all changed files inside allowed_paths"},
+    {"check": "protected_tests", "passed": true, "detail": "no existing tests modified"},
+    {"check": "test_weakening", "passed": true, "detail": "no skip/xfail markers added"},
+    {"check": "ac_test_mapping", "passed": true, "detail": "all automated criteria map to passing tests"},
+    {"check": "test_plan_commands", "passed": true, "detail": "all test plan commands exit 0"}
+  ],
+  "residual_risks": [
+    "Smart Retries must be enabled in the Stripe dashboard before launch; the code is inert without it (rollout step 3 in the spec).",
+    "invoice.payment_action_required is ignored by design (spec minor issue SR-1 accepted at Gate 2); if 3DS challenges rise, failures will look like plain declines in payment_attempts."
+  ],
+  "summary_for_human": "Adds a payment_attempts table and handles Stripe invoice.payment_failed / invoice.paid webhooks to record every attempt, publishing billing.retries_exhausted when Stripe gives up. Review round 1 found a real concurrency bug (F-1: duplicate webhook deliveries raced and returned 500) and a correctness bug (F-2: voided invoices were treated as final failures); both were fixed with new tests and I re-ran the reviewer's 20-thread probe myself: 20/20 clean. One nit (F-4) was refuted on project convention and withdrawn. All 8 acceptance criteria are met with located tests; the orchestrator's own run of the test plan passed (34 examples). Nothing needs a decision from you. Read first: app/models/payment_attempt.rb (the idempotent insert) and the two new handler branches at stripe_webhook_handler.rb:36-49. Then the migration, which is additive only.",
+  "produced_by": {
+    "agent_name": "Merge judge",
+    "agent_id": "agent_06example",
+    "agent_version": 2,
+    "session_id": "sesn_01examplemjudge",
+    "thread_id": null,
+    "model": "claude-opus-5-5",
+    "effort": "high",
+    "outcome_iterations": null,
+    "list_cost_usd": 2.8,
+    "produced_at": "2026-10-09T18:40:30Z",
+    "inputs": []
+  }
+}

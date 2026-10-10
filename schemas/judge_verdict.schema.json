@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.example/schemas/judge_verdict.schema.json",
+  "title": "SpecJudgeVerdict",
+  "description": "Output of the Spec Judge over a full set of specs for one decomposition. Two parts: per-spec grading against the spec rubric, and set-level coherence (do the specs fit together and cover the outcome). The judge never edits specs; it only reports.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict_id", "decomposition_id", "round", "overall", "per_spec", "coherence", "goal_coverage", "produced_by"],
+  "properties": {
+    "verdict_id": { "type": "string", "pattern": "^ver_[a-z0-9]{8,}$" },
+    "decomposition_id": { "type": "string" },
+    "round": { "type": "integer", "minimum": 1, "description": "Which spec-judge round this is. The orchestrator escalates to a human after max_rounds." },
+    "overall": {
+      "type": "object",
+      "required": ["result", "blocking_issue_count", "summary_for_human"],
+      "properties": {
+        "result": { "type": "string", "enum": ["pass", "revise", "escalate"] },
+        "blocking_issue_count": { "type": "integer", "minimum": 0 },
+        "summary_for_human": { "type": "string", "maxLength": 2000, "description": "What a reviewer at Gate 2 should know in 60 seconds. Written even on pass." }
+      }
+    },
+    "per_spec": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["spec_id", "criteria", "issues"],
+        "properties": {
+          "spec_id": { "type": "string" },
+          "criteria": {
+            "type": "array",
+            "description": "One entry per rubric criterion in rubrics/spec.md. Scores are independent; the rubric names the criteria.",
+            "items": {
+              "type": "object",
+              "required": ["criterion", "score", "evidence"],
+              "properties": {
+                "criterion": { "type": "string" },
+                "score": { "type": "integer", "minimum": 0, "maximum": 3, "description": "0 = fails, 1 = partially, 2 = meets, 3 = exemplary. Rubric defines the anchors." },
+                "evidence": { "type": "string", "description": "Quote or reference to the spec text that justifies the score." }
+              }
+            }
+          },
+          "issues": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/Issue" }
+          }
+        }
+      }
+    },
+    "coherence": {
+      "type": "object",
+      "required": ["interface_mismatches", "overlaps", "gaps", "ordering_problems", "contradictions"],
+      "properties": {
+        "interface_mismatches": { "type": "array", "items": { "$ref": "#/$defs/Issue" }, "description": "Spec A produces an interface that Spec B consumes with a different shape or name." },
+        "overlaps": { "type": "array", "items": { "$ref": "#/$defs/Issue" }, "description": "Two specs change the same behaviour or paths without a declared dependency." },
+        "gaps": { "type": "array", "items": { "$ref": "#/$defs/Issue" }, "description": "Something the outcome or decomposition requires that no spec delivers." },
+        "ordering_problems": { "type": "array", "items": { "$ref": "#/$defs/Issue" }, "description": "Declared dependencies that are wrong, missing, or cyclic." },
+        "contradictions": { "type": "array", "items": { "$ref": "#/$defs/Issue" } }
+      }
+    },
+    "goal_coverage": {
+      "type": "array",
+      "description": "For each success metric in the outcome: which acceptance criteria, across all specs, actually move it. This is the judge's answer to 'does this set achieve the goal'.",
+      "items": {
+        "type": "object",
+        "required": ["metric", "covering_acs", "assessment"],
+        "properties": {
+          "metric": { "type": "string" },
+          "covering_acs": { "type": "array", "items": { "type": "string", "description": "spec_id/AC-n" } },
+          "assessment": { "type": "string", "enum": ["covered", "partially_covered", "not_covered", "not_measurable_by_code"] },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "produced_by": { "$ref": "provenance.schema.json" }
+  },
+  "$defs": {
+    "Issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issue_id", "severity", "location", "description", "suggested_resolution"],
+      "properties": {
+        "issue_id": { "type": "string" },
+        "severity": { "type": "string", "enum": ["blocking", "major", "minor", "nit"] },
+        "location": { "type": "string", "description": "spec_id and section or AC id, or 'set' for cross-spec issues." },
+        "description": { "type": "string" },
+        "suggested_resolution": { "type": "string", "description": "Advice to the spec writer. Not a rewrite; the judge does not author specs." },
+        "related_spec_ids": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

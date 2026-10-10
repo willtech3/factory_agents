@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.example/schemas/merge_readiness.schema.json",
+  "title": "MergeReadinessVerdict",
+  "description": "Output of the Merge Judge: an independent decision, after the reviewer/implementer exchange has settled, on whether the change is ready for a human to review in GitLab. Consumes the spec, findings, responses, test results, and the deterministic checks. Never edits code.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict_id", "spec_id", "round", "result", "unresolved_findings", "deterministic_checks", "residual_risks", "summary_for_human", "produced_by"],
+  "properties": {
+    "verdict_id": { "type": "string", "pattern": "^mrv_[a-z0-9]{8,}$" },
+    "spec_id": { "type": "string" },
+    "round": { "type": "integer", "minimum": 1 },
+    "result": {
+      "type": "string",
+      "enum": ["ready", "another_round", "escalate"],
+      "description": "ready: open the MR. another_round: send back to implementer with the listed findings. escalate: the loop is not converging or a decision needs a human."
+    },
+    "unresolved_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["finding_id", "reviewer_status", "judge_assessment"],
+        "properties": {
+          "finding_id": { "type": "string" },
+          "reviewer_status": { "type": "string" },
+          "judge_assessment": { "type": "string", "description": "The judge's own view of who is right, with reasoning. Judges the exchange, not just the code." }
+        }
+      }
+    },
+    "deterministic_checks": {
+      "type": "array",
+      "description": "Results the orchestrator computed and handed to the judge. The judge may not override a failing deterministic check.",
+      "items": {
+        "type": "object",
+        "required": ["check", "passed"],
+        "properties": {
+          "check": { "type": "string" },
+          "passed": { "type": "boolean" },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "residual_risks": { "type": "array", "items": { "type": "string" } },
+    "summary_for_human": { "type": "string", "maxLength": 3000, "description": "Becomes the top of the MR description. What changed, what was contested, what the human should look at first." },
+    "produced_by": { "$ref": "provenance.schema.json" }
+  }
+}

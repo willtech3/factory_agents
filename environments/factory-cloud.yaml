@@ -1,0 +1,13 @@
+# Environment for all factory sessions. One environment, many agents.
+# Networking is deny-by-default: package managers and the GitLab host only.
+# web_search / web_fetch are NOT governed by this (they run on Anthropic's side);
+# they are disabled on every agent's toolset instead.
+name: factory-cloud
+config:
+  type: cloud
+  networking:
+    type: limited
+    allow_package_managers: true
+    allow_mcp_servers: false
+    allowed_hosts:
+      - gitlab.com          # replace with your self-managed GitLab host if applicable

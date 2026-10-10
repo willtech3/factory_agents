@@ -1,0 +1,94 @@
+{
+  "review_id": "rev_smartretries01",
+  "spec_id": "spec_smart-retries",
+  "round": 1,
+  "diff_ref": {"base_sha": "9c1e4f2a7b3d5e6f8a9b0c1d2e3f4a5b6c7d8e9f", "head_sha": "4b7d2c9e1f0a3b5c7d9e1f2a4b6c8d0e2f4a6b8c", "branch": "factory/run_7f3a9c2e1b/spec_smart-retries"},
+  "checks_performed": [
+    {"check": "Test plan", "method": "bundle exec rspec spec/services/billing/stripe_webhook_handler_spec.rb spec/models/payment_attempt_spec.rb", "result": "31 examples, 0 failures"},
+    {"check": "Lint", "method": "bundle exec rubocop app/services/billing app/models/payment_attempt.rb", "result": "no offenses"},
+    {"check": "Idempotency under concurrency", "method": "probes/concurrent_webhook.rb: 20 threads posting the same event id against a test DB", "result": "FAILED: 2 of 20 runs produced 2 rows before the unique index raised; the second insert raised ActiveRecord::RecordNotUnique which propagated as 500"},
+    {"check": "Scope", "method": "git diff --name-only base..head vs allowed_paths", "result": "all 9 files inside allowed_paths; no existing spec files modified"},
+    {"check": "Exception path", "method": "stubbed PaymentAttempt.record_from_stripe_event! to raise; observed response", "result": "500 returned, error tracker called once (AC-8 met)"},
+    {"check": "Unknown customer", "method": "posted payment_failed with customer cus_unknown", "result": "200, warn log present, no row (AC-5 met)"},
+    {"check": "Migration additivity", "method": "read db/migrate/20261009_create_payment_attempts.rb", "result": "create_table + 2 add_index only (AC-6 met)"}
+  ],
+  "findings": [
+    {
+      "finding_id": "F-1",
+      "severity": "blocking",
+      "category": "concurrency",
+      "claim": "Duplicate deliveries of the same Stripe event arriving concurrently are not idempotent: the find-then-create in record_from_stripe_event! races, the unique index fires, and the second request returns 500, which makes Stripe retry a third time.",
+      "evidence": {
+        "locations": ["app/models/payment_attempt.rb:31-38"],
+        "reproduction": "ruby /mnt/session/outputs/probes/concurrent_webhook.rb (20 parallel POSTs, same evt_ id)",
+        "observed": "2/20 runs: ActiveRecord::RecordNotUnique raised from line 36; response 500",
+        "expected": "AC-3: exactly one row and 200 on every delivery"
+      },
+      "violates": ["AC-3", "AC-8"],
+      "refutation_condition": "Show the probe passing 20/20 with the same input, or show that the controller layer already serialises per-event processing (I found no lock or job queue at app/controllers/webhooks/stripe_controller.rb:14-40).",
+      "status": "open",
+      "suggested_fix": "Use insert with ON CONFLICT DO NOTHING (Rails insert_all with unique_by: :stripe_event_id) or rescue RecordNotUnique and return the existing row."
+    },
+    {
+      "finding_id": "F-2",
+      "severity": "major",
+      "category": "spec_deviation",
+      "claim": "final_attempt is set from invoice.next_payment_attempt.nil?, but Stripe also sends next_payment_attempt null when the invoice is paid or voided; on a payment_failed event for a voided invoice this marks a false final attempt and publishes RetriesExhausted.",
+      "evidence": {
+        "locations": ["app/services/billing/stripe_webhook_handler.rb:44-47"],
+        "reproduction": "payment_failed fixture with status 'void' and next_payment_attempt null -> RetriesExhausted published",
+        "observed": "event published",
+        "expected": "AC-4 intends 'Stripe gave up', which is status 'open' with next_payment_attempt null"
+      },
+      "violates": ["AC-4"],
+      "refutation_condition": "Show that Stripe never emits invoice.payment_failed for a voided invoice (cite Stripe docs or a webhook log), or that status is already checked somewhere upstream.",
+      "status": "open",
+      "suggested_fix": "Set final_attempt only when invoice.status == 'open' && next_payment_attempt.nil?."
+    },
+    {
+      "finding_id": "F-3",
+      "severity": "minor",
+      "category": "test_quality",
+      "claim": "The AC-7 test asserts FailureNotifier was called but not that it was called exactly once; a double call would pass.",
+      "evidence": {"locations": ["spec/services/billing/stripe_webhook_handler_spec.rb:88-94"], "observed": "expect(...).to have_received(:notify)", "expected": "have_received(:notify).once"},
+      "violates": ["AC-7"],
+      "refutation_condition": "Point to another assertion in the suite that bounds the call count.",
+      "status": "open",
+      "suggested_fix": "Add .once"
+    },
+    {
+      "finding_id": "F-4",
+      "severity": "nit",
+      "category": "maintainability",
+      "claim": "failure_code is stored as the raw Stripe decline code string with no length limit; a limit of 64 matches Stripe's documented codes.",
+      "evidence": {"locations": ["db/migrate/20261009_create_payment_attempts.rb:9"]},
+      "violates": [],
+      "refutation_condition": "Project convention stores Stripe strings unbounded elsewhere.",
+      "status": "open"
+    }
+  ],
+  "spec_conformance": [
+    {"ac_id": "AC-1", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:21 'creates a failed attempt' passes"},
+    {"ac_id": "AC-2", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:47 passes; payment_failed_at cleared asserted"},
+    {"ac_id": "AC-3", "status": "not_met", "evidence": "sequential duplicate test passes (payment_attempt_spec.rb:30) but the concurrent probe fails; see F-1"},
+    {"ac_id": "AC-4", "status": "not_met", "evidence": "see F-2: false positive on voided invoices"},
+    {"ac_id": "AC-5", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:71 passes; probe confirmed"},
+    {"ac_id": "AC-6", "status": "met", "evidence": "migration read; additive"},
+    {"ac_id": "AC-7", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:88 passes (see F-3 for a weakness in the assertion)"},
+    {"ac_id": "AC-8", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:104 passes; probe confirmed"}
+  ],
+  "scope_check": {"files_outside_allowed_paths": [], "unrelated_changes": []},
+  "produced_by": {
+    "agent_name": "Adversarial reviewer",
+    "agent_id": "agent_05example",
+    "agent_version": 2,
+    "session_id": "sesn_01examplereview1",
+    "thread_id": null,
+    "model": "claude-opus-5-5",
+    "effort": "xhigh",
+    "outcome_iterations": null,
+    "list_cost_usd": 5.9,
+    "produced_at": "2026-10-09T17:30:44Z",
+    "inputs": []
+  }
+}
