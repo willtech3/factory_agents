@@ -159,7 +159,12 @@ def hosted_planning_clause(ctx: RunContext) -> str:
             "readiness check; each changed behavior needs its own evidence. Recipe/network/credential-scope changes "
             "require re-onboarding and must not be smuggled into the implementation. Production authentication, "
             "paid inference or unsupported external services must be described as coverage gaps. Post-merge live "
-            "deployment checks require a separate hosted adapter and currently remain blocked in managed mode.")
+            "deployment checks require a separate hosted adapter and currently remain blocked in managed mode. "
+            "Automated criteria require machine-readable test evidence from pytest or a direct, literal `bun test ...` "
+            "test_plan.commands entry. For Bun, avoid package scripts, shell wrappers/operators, environment prefixes "
+            "and reporter flags: the controller adds its own JUnit reporter. Bun test IDs are "
+            "path/to/file.test.ts::outer describe > inner describe > test name. An exit code alone or an unsupported "
+            "framework cannot verify an automated criterion; state that limitation instead of assuming support.")
 
 
 def platform_skill(ctx: RunContext) -> tuple[dict[str, bytes], str]:
