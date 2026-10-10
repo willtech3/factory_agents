@@ -7,7 +7,8 @@ Forge and gate-surface selection (ADR-0007, ADR-0008):
 
     FACTORY_FORGE=github|gitlab          default github
     FORGE_URL / FORGE_TOKEN / FORGE_REPO  with GITHUB_* and GITLAB_URL/GITLAB_TOKEN/GITLAB_PROJECT as aliases
-    FACTORY_GATE_SURFACE=forge|tracker|file   default tracker when LINEAR_API_KEY is set, else forge
+    FACTORY_GATE_SURFACE=forge|tracker|file|web   default tracker when LINEAR_API_KEY is set, else forge;
+                                          web (or file) = decide in the Factory Console / CLI only
     FACTORY_PAGE_PUBLISHER=local|artifact default local
     LINEAR_API_KEY / LINEAR_TEAM_ID       the tracker surface (Linear); JIRA_* is a stub
 """
@@ -33,7 +34,7 @@ AGENT_FILES = {
 ENVIRONMENT_FILE = "./environments/factory-cloud.yaml"
 
 FORGES = ("github", "gitlab")
-GATE_SURFACES = ("forge", "tracker", "file")
+GATE_SURFACES = ("forge", "tracker", "file", "web")   # web = the Factory Console over the file queue
 PAGE_PUBLISHERS = ("local", "artifact")
 DEFAULT_FORGE_URL = {"github": "https://github.com", "gitlab": "https://gitlab.com"}
 
@@ -159,7 +160,7 @@ def missing(cfg: Config) -> list[str]:
     if cfg.forge == "gitlab" and not cfg.vault_id:
         gaps.append("FACTORY_VAULT_ID (sandbox git access for the gitlab forge, ADR-0003)")
     if cfg.gate_surface not in GATE_SURFACES:
-        gaps.append(f"FACTORY_GATE_SURFACE={cfg.gate_surface!r} (expected forge|tracker|file)")
+        gaps.append(f"FACTORY_GATE_SURFACE={cfg.gate_surface!r} (expected forge|tracker|file|web)")
     if cfg.gate_surface == "tracker":
         if not cfg.linear_api_key:
             gaps.append("LINEAR_API_KEY (tracker gate surface)")

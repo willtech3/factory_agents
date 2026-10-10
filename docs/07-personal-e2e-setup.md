@@ -63,7 +63,7 @@ export FACTORY_PREVIEW_ENVIRONMENT_PREFIX=preview/ # matches the template
 export FACTORY_DEV_ENVIRONMENT=dev
 export LINEAR_API_KEY=lin_api_...
 export LINEAR_TEAM_ID=...
-export FACTORY_GATE_SURFACE=tracker                # the default once LINEAR_API_KEY is set
+export FACTORY_GATE_SURFACE=tracker                # the default once LINEAR_API_KEY is set; `web` to decide only in the Console or CLI
 export FACTORY_PAGE_PUBLISHER=local                # pages land in runs/<run_id>/pages/
 ```
 
@@ -94,6 +94,8 @@ The run id is printed first. The process blocks at each gate; keep a second term
 ## 7. Deciding gates and answering questions
 
 **From Linear.** On the issue with `factory:gate-open`: add exactly one label, `factory:approve`, `factory:request-changes`, `factory:reject`, or `factory:approve-subset`. For request-changes, add a comment first; it is handed to the agent verbatim as `feedback.md`. For approve-subset, include a line `approve: spec_a, spec_b`. The orchestrator polls every ten seconds, copies the sha256 list out of its own gate comment into the decision (so you approve exactly what the page showed), clears the labels, and moves on. A question from an agent is a `factory:question` comment; reply in its thread (or in a top-level comment that quotes the question id). Blocking questions pause the session until you do.
+
+**From the Console.** `factory web` (in a third terminal, or before the run) serves http://127.0.0.1:8765/. The run appears on the board; the gate opens as a document with a sign-off rail; notes you leave under a work item or spec travel with Request changes. See [08-factory-console.md](08-factory-console.md). It writes to the same queue as the CLI.
 
 **From the CLI.** `factory gates` lists open gates and questions with their artifact hashes; `factory decide <gate_id> approve|request_changes|reject|approve_subset --comment "..." [--spec spec_x]` and `factory answer <question_id> "text"`. The CLI binds the hashes automatically. Both surfaces are polled; the first decision wins.
 

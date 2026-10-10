@@ -8,14 +8,14 @@ Each surface does one job. Reading is separated from deciding so that the thing 
 
 | Surface | Role | Who uses it | What for | Status |
 |---|---|---|---|---|
-| **CLI / Cowork** (`factory gates`, `factory decide`, `factory answer`) | personal workbench | operator, owner | Open gates and questions with their hashes; decide; answer | built |
+| **Factory Console** (`factory web`; [08-factory-console.md](08-factory-console.md)) | workbench for the first stages | owner, engineers | Write an outcome; the runs board; the inbox of gates and questions; Gate 1 and Gate 2 read as a document with a sign-off rail that binds the hashes; per-item notes that become feedback; approve-subset by checkbox | built (v0, local) |
+| **CLI / Cowork** (`factory gates`, `factory decide`, `factory answer`) | the same, from a terminal | operator, owner | Open gates and questions with their hashes; decide; answer | built |
 | **Artifact pages** (`runs/<run_id>/pages/gate_*.html`) | reading | owner, engineers | One self-contained page per gate: judge summary first, goal-coverage matrix, per-spec sections, open questions, the hash list. Local files; publishing as a claude.ai artifact is a stub | built (local) |
 | **Tracker** (Linear by default; Jira stub) | board and record | all | A project per run, an issue per work item whose state mirrors the pipeline, gates as comments with a label, decisions by label plus comment, questions as threaded comments | built, unverified live |
 | **Slack / email** | notifications | owner, engineers | Deep links to the page and the issue; blocking questions; optional approve button for low-risk gates | later (Milestone B) |
 | **Forge change request** (GitHub PR by default, GitLab MR) | from Gate 3 | engineers | Ordinary code review and merge, with the approved spec and verdicts committed next to the code under `.factory/runs/<run_id>/`. Optionally also Gates 1 and 2 as a draft design CR with inline comments (`FACTORY_GATE_SURFACE=forge`) | built, unverified live |
 | **Anthropic Console session viewer** | trace | operator, curious engineers | Full trace of any session: tool calls, grader iterations, cost per thread. Every artifact's `produced_by.session_id` deep-links here | platform |
 | **`ant beta:sessions connect`** | live attach | operator | Attach a terminal to a live session to watch, nudge, or answer a paused tool call | platform |
-| **Factory Console** (internal web app) | board, inbox | all | Runs board, run timeline, approval inbox, cost. Everything it needs is in `events.jsonl`; the tracker covers the board and inbox until it exists | deferred |
 
 The design choice that matters most: **decisions happen where the team already works, and code review stays real.** With the tracker surface the owner sees a Linear issue with a short summary, a link to the page, and three labels to choose from; with the forge surface the decomposition and specs are files on a draft change request and inline comments on line 42 of a markdown file are the feedback. Either way Gate 3 is an ordinary pull request or merge request that an engineer reads. Boeckeler's complaint that spec-driven tools make you review "all these markdown files" with no good review experience is answered by rendering a page for reading and by using the review tool the team already has for code ([practitioners.md §5](research/practitioners.md)).
 
@@ -79,15 +79,15 @@ Two months later Priya fills in `measured_at` and `measured_value` on the outcom
 ### 9. Escalations (engineer or owner, as needed)
 Escalations open a gate with the reason and the relevant artifacts: a `blocked.md` from an implementer who found two criteria in conflict, a merge judge that saw the same finding survive two rounds, a spec judge that thinks the decomposition itself is wrong, or a session that hit its budget cap. The human can send the run back to a specific stage with comments, raise a budget, or close the work item. Escalations are the factory telling you it is out of its depth, which it should do early and specifically.
 
-## What the Factory Console shows (deferred; the tracker covers the board and inbox until then)
+## What the Factory Console shows
 
 **Runs board**: columns = run stages; cards show outcome title, owner, days in stage, cost so far against budget, and a red marker when a gate or question is waiting on a person. Sorted by waiting-on-human first.
 
 **Run detail**: left, the event timeline (derived from `events.jsonl`) with filters by stage and actor; right, the work-item DAG with state colours (merged items show a dev marker: deploying, verified in dev, or failed); top, cost per stage and the budget; every artifact and session is one click away, as are the preview and dev URLs.
 
-**Approval inbox**: every open gate and blocking question across runs, oldest first, with the summary and the artifact links. One keyboard shortcut to open the page. Decisions require the artifact hashes shown, which the UI supplies.
+**Approval inbox**: every open gate and blocking question across runs, oldest first, with the summary and the artifact links. Decisions require the artifact hashes shown, which the UI supplies from the gate record it read.
 
-**Agent versions**: which agent version is live, the last three eval results per agent (from `evals/results/`), and a pin/unpin control that sets `FACTORY_AGENT_<ROLE>_ID` for canary runs.
+**Agent versions** (not yet built): which agent version is live, the last three eval results per agent (from `evals/results/`), and a pin/unpin control that sets `FACTORY_AGENT_<ROLE>_ID` for canary runs.
 
 ## UX principles, each traced to evidence
 

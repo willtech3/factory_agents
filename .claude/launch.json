@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "factory-console",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "factory.cli", "web", "--port", "8766", "--demo"],
+      "port": 8766,
+      "cwd": "orchestrator",
+      "env": {"FACTORY_GATE_SURFACE": "web"}
+    }
+  ]
+}

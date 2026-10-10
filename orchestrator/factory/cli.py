@@ -7,6 +7,7 @@
     factory answer <question_id> "text"
     factory status <run_id>             # derived state + timeline
     factory replay <run_id>             # re-derive state from the event log (sanity check)
+    factory web [--port 8765] [--demo]  # the Factory Console: outcomes, runs board, inbox, gate review
 
 Local mode uses a file-backed queue under the runs directory so two processes can talk. With
 `FACTORY_GATE_SURFACE=tracker` the same gate is also opened on the tracker (Linear) and a decision
@@ -20,55 +21,13 @@ from pathlib import Path
 import typer
 
 from . import config as cfgmod
-from .gates import Answer, CompositeNotifier, CompositeQueue, Decision, GateDecision, InMemoryQueue, LogNotifier
+from .gates import CompositeNotifier, CompositeQueue, LogNotifier
 from .store import RunStore
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
 
-class FileQueue(InMemoryQueue):
-    """InMemoryQueue persisted as JSON files so `factory decide` in another process is seen by `factory run`."""
-
-    def __init__(self, root: Path):
-        super().__init__()
-        self.root = root
-        self.root.mkdir(parents=True, exist_ok=True)
-
-    def _load(self, name: str) -> dict:
-        p = self.root / name
-        return json.loads(p.read_text()) if p.exists() else {}
-
-    def _save(self, name: str, data: dict) -> None:
-        (self.root / name).write_text(json.dumps(data, indent=2, default=lambda o: getattr(o, "value", o.__dict__)))
-
-    def open(self, gate):
-        super().open(gate)
-        d = self._load("gates.json")
-        d[gate.gate_id] = {"kind": gate.kind.value, "run_id": gate.run_id, "summary": gate.summary,
-                           "artifacts": [a.__dict__ for a in gate.artifacts], "options": [o.value for o in gate.options],
-                           "assignees": list(gate.assignees), "opened_at": gate.opened_at}
-        self._save("gates.json", d)
-
-    def decision(self, gate_id):
-        d = self._load("decisions.json").get(gate_id)
-        if d is None:
-            return None
-        dec = GateDecision(gate_id=gate_id, decision=Decision(d["decision"]), decided_by=d["decided_by"],
-                           comments=d.get("comments", ""), approved_subset=tuple(d.get("approved_subset", [])),
-                           artifact_shas=tuple(d.get("artifact_shas", [])))
-        self.decisions[gate_id] = dec
-        return super().decision(gate_id)
-
-    def ask(self, q):
-        super().ask(q)
-        d = self._load("questions.json")
-        d[q.question_id] = {"run_id": q.run_id, "asked_by": q.asked_by, "question": q.question, "why": q.why_it_matters,
-                            "default": q.default_if_unanswered, "blocking": q.blocking, "options": list(q.options)}
-        self._save("questions.json", d)
-
-    def answer(self, question_id):
-        a = self._load("answers.json").get(question_id)
-        return Answer(question_id=question_id, answer=a["answer"], answered_by=a["answered_by"]) if a else None
+from .surfaces.filequeue import FileQueue  # noqa: E402  (the `file`/`web` gate surface)
 
 
 def _queue(cfg) -> FileQueue:
@@ -159,10 +118,7 @@ def decide(gate_id: str, decision: str, comment: str = "", spec: list[str] = typ
     if g is None:
         typer.echo("unknown gate")
         raise typer.Exit(1)
-    d = q._load("decisions.json")
-    d[gate_id] = {"decision": decision, "decided_by": by, "comments": comment, "approved_subset": spec,
-                  "artifact_shas": [a["sha256"] for a in g["artifacts"]]}
-    q._save("decisions.json", d)
+    q.record_decision(gate_id, decision, by, comment, spec)
     typer.echo(f"recorded {decision} on {gate_id}")
 
 
@@ -170,9 +126,11 @@ def decide(gate_id: str, decision: str, comment: str = "", spec: list[str] = typ
 def answer(question_id: str, text: str, by: str = "cli-user"):
     cfg = cfgmod.load()
     q = _queue(cfg)
-    d = q._load("answers.json")
-    d[question_id] = {"answer": text, "answered_by": by}
-    q._save("answers.json", d)
+    try:
+        q.record_answer(question_id, text, by)
+    except KeyError:
+        typer.echo("unknown question")
+        raise typer.Exit(1)
     typer.echo("recorded")
 
 
@@ -194,6 +152,26 @@ def replay(run_id: str):
     st = RunStore(cfg.runs_dir).state(run_id)
     typer.echo(json.dumps({"stage": st.stage.value, "work_items": {k: v.stage.value for k, v in st.work_items.items()},
                            "cost": st.list_cost_usd, "events": st.last_seq + 1}, indent=2))
+
+
+@app.command()
+def web(host: str = "127.0.0.1", port: int = 8765,
+        demo: bool = typer.Option(False, help="Seed a simulated run from examples/ledgerline so the console can be tried without the platform")):
+    """Serve the Factory Console (needs `pip install -e '.[web]'`)."""
+    try:
+        import uvicorn
+    except ImportError:  # pragma: no cover
+        typer.echo("uvicorn is not installed: pip install -e '.[web]'")
+        raise typer.Exit(1)
+    from .web.app import create_app
+
+    cfg = cfgmod.load()
+    application = create_app(cfg)
+    if demo:
+        run_id = application.state.demo.seed_example()
+        typer.echo(f"demo run {run_id} seeded")
+    typer.echo(f"Factory Console at http://{host}:{port}/  (runs under {cfg.runs_dir})")
+    uvicorn.run(application, host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":

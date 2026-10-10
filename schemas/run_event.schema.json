@@ -20,6 +20,7 @@
         "session.started",
         "session.finished",
         "artifact.produced",
+        "work_item.stage",
         "gate.opened",
         "gate.decided",
         "question.asked",

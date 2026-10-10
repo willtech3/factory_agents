@@ -193,7 +193,9 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
         state.outcome_id = p["outcome_id"]
     elif k == "stage.entered":
         _move_run(state, RunStage(p["stage"]))
-    elif k == "artifact.produced" and p.get("artifact_type") == "decomposition":
+    elif k == "artifact.produced" and p.get("artifact_type") == "decomposition" and "work_items" in p:
+        # The registration event carries the work items; per-file artifact.produced events (same artifact_type,
+        # emitted by persist_outputs for decomposition.json / decomposition.md) are informational only.
         state.decomposition_revision = p["revision"]
         # (Re)register work items; a re-decomposition replaces pending items but keeps merged ones.
         for item in p["work_items"]:

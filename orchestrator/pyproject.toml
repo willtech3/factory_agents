@@ -12,7 +12,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-cov", "ruff"]
+dev = ["pytest>=8", "pytest-cov", "ruff", "fastapi>=0.115", "uvicorn>=0.30"]
+web = ["fastapi>=0.115", "uvicorn>=0.30"]
 
 [project.scripts]
 factory = "factory.cli:app"
@@ -24,6 +25,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["factory*"]
+
+[tool.setuptools.package-data]
+factory = ["web/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

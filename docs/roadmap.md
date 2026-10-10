@@ -42,7 +42,7 @@ Goal: confirm the read-only calls Stage 5 and the preview lookup depend on, agai
 
 ## Milestone B: first production outcome (week 5 to 6)
 - A low-risk internal outcome, owner and engineer briefed, L3 telemetry on.
-- Factory Console v0: a static page rendered from `events.jsonl` plus the approval inbox is enough.
+- Factory Console v0 exists (`factory web`: outcomes, board, inbox, Gate 1 and 2 review; [08-factory-console.md](08-factory-console.md)). Add what a production run needs: authentication, Gate 3 and Stage 5 views, agent versions.
 - Slack notifications for gates and questions (deep links to the page and the tracker issue).
 - A change-request watcher (forge webhook or polling) that records `cr.merged` / `cr.closed` and calls Stage 5.
 - `ClaudeArtifactPublisher`: publish gate pages as claude.ai artifacts once there is a way to do it from the orchestrator.
@@ -63,7 +63,7 @@ Goal: confirm the read-only calls Stage 5 and the preview lookup depend on, agai
 
 - `sessions.py`, `forge/github.py`, `forge/gitlab.py`, `surfaces/tracker.py`, and the stage modules are written against documented APIs and have not been executed live. Treat field names as hypotheses until spike 1.
 - `run_eval.py::produce` is a stub.
-- The Factory Console is described, not built. Everything it needs is in `events.jsonl` and the queue files.
+- The Factory Console is v0: local, unauthenticated, Gates 1 and 2 only. Session progress is the event log, not a live stream.
 - `LocalVerifier` runs test commands and e2e entries on the orchestrator host; production must move this to CI.
 - Both forges' pipeline, job, environment, and deployment reads and the webhook parsers are unverified (spikes 2a and 2b). `preview_info` fails closed when they misbehave, which blocks merges until fixed.
 - Stage 5 is driven by `deploy_observe.on_change_request_merged`, which the change-request watcher must call; the watcher and the webhook HTTP endpoint belong to the Factory Console and are not in this repository.
