@@ -229,16 +229,25 @@
   function applyTheme(t) { document.documentElement.dataset.theme = t === "dark" ? "dark" : ""; try { localStorage.setItem("factory-theme", t); } catch (e) { /* private window */ } }
   try { applyTheme(localStorage.getItem("factory-theme") || "light"); } catch (e) { applyTheme("light"); }
 
+  // what the board says is waiting on a person; the sidebar badge and the board header count the same cards
+  const onBoard = b => b.runs.filter(r => !r.terminal || r.cards.length);
+  const waitingOf = runs => {
+    const cards = runs.flatMap(r => r.cards);
+    return { decisions: cards.filter(c => c.kind === "gate" || c.kind === "question").length, reviews: cards.filter(c => c.kind === "pr").length };
+  };
+  const gapsMatching = (gaps, keys) => gaps.filter(g => keys.some(k => g.includes(k)));
+  const forgeGapsOf = c => gapsMatching(c.gaps, ["FORGE", "FACTORY_FORGE", "FACTORY_VAULT_ID"]);
   async function loadChrome() {
     try {
-      const [c, inbox] = await Promise.all([api("/api/config"), api("/api/inbox")]);
+      const [c, board] = await Promise.all([api("/api/config"), api("/api/board")]);
       state.config = c;
-      const n = inbox.gates.filter(g => !g.recorded).length + inbox.questions.length;
+      const w = waitingOf(onBoard(board)), n = w.decisions + w.reviews;
       $inboxCount.textContent = n; $inboxCount.classList.toggle("zero", n === 0);
       const dark = document.documentElement.dataset.theme === "dark";
+      const forgeOk = !forgeGapsOf(c).length;
       $foot.replaceChildren(
         el("b", null, "Crew"), el("span", { class: c.can_run_design ? "" : "warn" }, c.can_run_design ? "ready" : "not configured"),
-        el("br"), el("b", null, "Code host"), el("span", { class: c.can_run_live ? "" : "warn" }, c.can_run_live ? `${c.forge}${c.forge_repo ? ": " + c.forge_repo : ""}` : "not configured"),
+        el("br"), el("b", null, "Code host"), el("span", { class: forgeOk ? "" : "warn" }, forgeOk ? `${c.forge}${c.forge_repo ? ": " + c.forge_repo : ""}` : "not configured"),
         el("br"), el("button", { class: "theme", type: "button", onclick: () => { applyTheme(dark ? "light" : "dark"); loadChrome(); } }, dark ? "Light mode" : "Dark mode"));
     } catch (e) { $foot.textContent = "Console offline"; }
   }
@@ -287,11 +296,14 @@
   async function viewInbox() {
     setNav("inbox");
     const b = await api("/api/board");
-    const live = b.runs.filter(r => !r.terminal);
-    const waiting = live.flatMap(r => r.cards.filter(c => c.kind === "gate" || c.kind === "question" || c.kind === "pr"));
+    // a finished run stays on the board while a person still owes it something (a pull request to review, a deploy to watch)
+    const live = onBoard(b);
+    const active = live.filter(r => !r.terminal).length, handedOff = live.length - active;
+    const w = waitingOf(live);
+    const waitingLabel = [w.decisions ? plural(w.decisions, "decision") : null, w.reviews ? plural(w.reviews, "pull request") : null].filter(Boolean).join(", ");
     const frag = document.createDocumentFragment();
     frag.append(pageHead("The board", "Columns are the pipeline. Rows are who owns the work. A card only sits in its owner's row, so whose turn it is is the row, not a label.",
-      [waiting.length ? el("span", { class: "tag gate" }, `${plural(waiting.length, "decision")} waiting`) : el("span", { class: "tag ok" }, "Nothing waiting on a person"),
+      [waitingLabel ? el("span", { class: "tag gate" }, `${waitingLabel} waiting`) : el("span", { class: "tag ok" }, "Nothing waiting on a person"),
        el("a", { class: "btn primary", href: "#/start" }, "Start a run")]));
     if (!live.length) {
       frag.append(card(null, el("div", { class: "empty" }, crewFigure("implementer", "asleep", "l"), el("h3", null, "The floor is quiet"),
@@ -313,7 +325,7 @@
           g.append(cell);
         }
       }
-      frag.append(card(null, el("div", { class: "board" }, g, el("div", { class: "legend" }, el("span", null, `${plural(live.length, "run")} in progress. Finished runs are under Runs.`))), null));
+      frag.append(card(null, el("div", { class: "board" }, g, el("div", { class: "legend" }, el("span", null, [active ? `${plural(active, "run")} in progress.` : null, handedOff ? `${plural(handedOff, "finished run")} with pull requests to review.` : null, "Finished runs are under Runs."].filter(Boolean).join(" ")))), null));
     }
     frag.append(card("How a run moves", el("div", null, roleLegend(), el("p", { class: "explain", style: "margin-top:12px" }, "The crew do the stages between the gates. The two gates are the product owner's: nothing is built until the plan and then the contracts are approved. The engineer reviews and merges the pull request. Ops watches the deploy.")), null, "soft"));
     $main.replaceChildren(frag);
@@ -592,7 +604,7 @@
     const stageText = { cr_open: "pull request open, waiting for a human to review and merge", merged: "merged; the dev deploy will be observed",
       deploying_dev: "merged; watching the dev pipeline and the end-to-end checks" };
     if (w.pending.length) {
-      const list = el("ul", { class: "list" });
+      const list = el("ul", { class: "list stacked" });
       for (const wid of w.pending) {
         const x = names[wid] || { work_item_id: wid };
         list.append(el("li", { style: "padding:10px 0" }, el("span", { class: "tag" }, ITEM_STAGE[x.stage] || words(x.stage || "")),
@@ -1274,10 +1286,9 @@
     state.config = c;
     const frag = document.createDocumentFragment();
     frag.append(pageHead("Settings", "What this Console can do depends on what the orchestrator has been given. Set these as environment variables where you run `factory web`."));
-    const want = (gaps, keys) => gaps.filter(g => keys.some(k => g.includes(k)));
-    const platformGaps = want(c.design_gaps, ["agent:", "environment_id", "ANTHROPIC_API_KEY"]);
-    const forgeGaps = want(c.gaps, ["FORGE", "FACTORY_FORGE", "FACTORY_VAULT_ID"]);
-    const surfaceGaps = want(c.gaps, ["LINEAR", "FACTORY_GATE_SURFACE", "FACTORY_PAGE_PUBLISHER"]);
+    const platformGaps = gapsMatching(c.design_gaps, ["agent:", "environment_id", "ANTHROPIC_API_KEY"]);
+    const forgeGaps = forgeGapsOf(c);
+    const surfaceGaps = gapsMatching(c.gaps, ["LINEAR", "FACTORY_GATE_SURFACE", "FACTORY_PAGE_PUBLISHER"]);
     const r = (title, ok, desc, gaps, how, label) => el("div", { class: "r" }, el("h3", null, title), el("div", { class: `status ${ok ? "ok" : "warn"}` }, ok ? "Ready" : (label || "Not configured")),
       el("p", { class: "explain", style: "margin-top:6px" }, desc), gaps.length ? el("ul", null, gaps.map(x => el("li", null, x))) : null, how ? el("p", { class: "explain" }, how) : null);
     const agentsCard = r("The crew and the platform", !platformGaps.length, "The agents and the sandbox environment in your Console workspace, plus the API key the orchestrator uses to start sessions.", platformGaps, "Run `ant apply agents environments` once and put ANTHROPIC_API_KEY (and ANTHROPIC_WORKSPACE_ID if the key is not workspace-scoped) in .env at the repository root.", "Checking...");
@@ -1321,6 +1332,7 @@
     const hash = location.hash || "#/inbox";
     const [path, query] = hash.slice(1).split("?");
     const params = new URLSearchParams(query || "");
+    loadChrome();
     try {
       if (path === "/" || path === "" || path === "/inbox" || path === "/board") await viewInbox();
       else if (path === "/runs") await viewRuns();
