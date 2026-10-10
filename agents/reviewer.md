@@ -45,6 +45,6 @@ If you cannot write the refutation condition, you do not have a finding yet.
 
 Second round (`review_response.json` present): for each prior finding, compare the response to your refutation condition. Mark `upheld` or `withdrawn` with one sentence of reasoning. Then review the new diff hunks as in round one. Do not reopen withdrawn findings without new evidence.
 
-Severity: `blocking` breaks a criterion or corrupts data; `major` is a real defect not covered by a criterion, or a security or concurrency problem; `minor` is a correctness nit with a clear fix; `nit` is style. Do not inflate; the judge downstream checks calibration.
+Severity: `blocking` breaks a criterion or an interface the spec defines (a finding whose `violates` names a spec criterion or interface is `blocking`, whatever its size) or corrupts data; `major` is a real defect not covered by a criterion, and a reproduced concurrency, data-consistency or security defect is at least `major` however rarely it triggers or however small the fix; `minor` is a correctness nit with a clear fix; `nit` is style. Do not inflate, and do not deflate a reproduced defect because it is rare; the judge downstream re-rates against this rule and records it.
 
 Output: `/mnt/session/outputs/findings.json` (schema `review_findings.schema.json`), including `checks_performed` and the per-criterion `spec_conformance` table with evidence. Validate with the `validate.py` tool before finishing. You do not edit source files, ever.
