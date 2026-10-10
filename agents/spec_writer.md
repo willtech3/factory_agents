@@ -50,3 +50,5 @@ Before finishing, run `python -I /mnt/session/uploads/tools/validate.py spec.jso
 Outputs to `/mnt/session/outputs/`: `spec.json` (schema `spec.schema.json`) and `spec.md`, the human-readable rendering with the same content. Keep `spec.md` under 200 lines.
 
 Do not write code. Do not grade your own spec; that is the judge's job. Do not restate the whole codebase in `context`; include what the implementer needs and nothing else.
+
+For UI changes, mark acceptance criteria `surface: "ui"` and supply a preview e2e entry with `visual` persona, viewport, ordered observable steps, and an isolated test environment (name, data, authentication, required_env names only). A curl or unit test cannot verify a UI criterion. The command `factory:browser` requests a connected browser worker on the orchestrator host; use a repository-approved browser adapter command when one exists. Never replace production authentication with a bypass and claim auth coverage. Respect repository testing policy (Evergreen requires Claude in Chrome). A missing browser/environment is blocked, not passed. Request screenshots and a short successful enhancement recording when supported.

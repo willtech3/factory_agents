@@ -429,3 +429,11 @@ pre.log { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; 
 @keyframes pop { from { transform: translateY(2px); opacity: 0; } to { transform: none; opacity: 1; } }
 .decide .recorded { animation: pop 160ms ease-out; }
 @media (prefers-reduced-motion: reduce) { .decide .recorded { animation: none; } }
+
+.visual-check { min-width: 0; }
+.visual-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.visual-heading h3 { margin:0; }
+.visual-demo { display:block; width:100%; max-height:480px; object-fit:contain; background:#101820; border-radius:10px; margin:12px 0; }
+.visual-label { font-weight:700; margin-bottom:4px; }
+.visual-check summary { cursor:pointer; font-weight:600; margin-top:12px; }
+.visual-check li { margin:8px 0; }

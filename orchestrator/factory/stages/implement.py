@@ -42,6 +42,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from .. import visual
 from .. import checks, security
 from ..budget import reserve_budget
 from ..checks import CheckResult
@@ -171,7 +172,7 @@ authoritative preview evidence; the reviewer's spec_conformance is an input, not
 LOCAL_CRITERIA_CLAUSE = CRITERIA_CLAUSE + """ This run used preview mode "local": the orchestrator started the service from the
 manifest entrypoint on its own host and ran the "preview" entries there (test_results.json `preview.orchestrator_instance`
 and the e2e rows); reviewers could not reach that instance and ran the entries against one they started themselves. A
-user_visible criterion whose e2e rows exit 0 is met on that evidence, not not_assessed."""
+service criterion whose e2e rows exit 0 is met on that evidence. UI criteria additionally require passing visual evidence. Inspect the uploaded visual_evidence.json and screenshots; if you cannot view an image, explicitly report that limitation and do not claim visual review."""
 
 
 def _git(repo_dir: Path, *args: str) -> str:
@@ -442,13 +443,34 @@ class LocalVerifier:
             row = {"command": e["command"], "target": target, "covers_ac": list(e.get("covers_ac", [])),
                    "base_url": preview_url}
             if target == "preview" and not preview_url:
-                results.append({**row, "exit_code": None, "stderr_tail": "no preview URL available for this branch"})
+                results.append({**row, "exit_code": None, "stderr_tail": "no preview URL available for this branch",
+                                **({"visual": {**e["visual"], "description": e.get("description"), "status": "blocked",
+                                               "summary": "No preview URL available for this branch", "media": []}} if e.get("visual") else {})})
                 continue
             # The shell expands $BASE_URL, ${BASE_URL} and ${BASE_URL:?...} from the environment. Substituting the
             # text ourselves broke the guarded form (`${http://127.0.0.1:5xxxx:?...}`) and failed a passing check.
             env = {**verification_env(self.env_bin), "BASE_URL": preview_url or ""}
             cmd = e["command"]
-            results.append({**row, **self._run_in_group(cmd, repo or self.workdir, env, timeout)})
+            if e.get("visual"):
+                if not preview_url or repo is None:
+                    results.append({**row, "exit_code": None, "visual": {"status": "blocked", "summary": "A browser check needs a running app and an exact checkout"}})
+                    continue
+                head = _git(repo, "rev-parse", "HEAD").strip()
+                directory, request = visual.new_request(self.workdir, repo, head, preview_url, e)
+                missing = [k for k in e["visual"]["environment"].get("required_env", []) if not env.get(k)]
+                if missing:
+                    outcome = {"exit_code": None, "stderr_tail": "Missing test environment variables: " + ", ".join(missing)}
+                else:
+                    env.update(FACTORY_VISUAL_REQUEST=str(directory / "request.json"), FACTORY_EVIDENCE_DIR=str(directory))
+                    outcome = (visual.wait_for_browser(directory, timeout) if cmd == "factory:browser" else
+                               self._run_in_group(cmd, repo, env, timeout))
+                evidence = visual.collect(directory, request, outcome.get("exit_code"))
+                if missing:
+                    evidence["summary"] = outcome["stderr_tail"]
+                (directory / "closed").touch()
+                results.append({**row, **outcome, "visual": evidence})
+            else:
+                results.append({**row, **self._run_in_group(cmd, repo or self.workdir, env, timeout)})
         return results
 
 
@@ -745,6 +767,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         # ---- authoritative verification (orchestrator side)
         repo = verifier.checkout(branch)
         head_sha = _git(repo, "rev-parse", "HEAD").strip()
+        ctx.event("verification.started", {"head_sha": head_sha, "round": round_no}, spec_id=sid, work_item_id=wid)
         diff = verifier.analyse(repo, base_sha, head_sha)
         manifest_path = repo / ctx.cfg.service_manifest_path
         manifest = _manifest_or_none(manifest_path)
@@ -761,6 +784,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         # The passing set is the orchestrator's own: node ids pytest reported passed in the test_plan run, checked against
         # what pytest collects in the checkout. A repository pytest cannot collect leaves the mapping unverified (said so
         # in the check's detail), never silently verified.
+        visual_uploads = visual.persist(ctx, sid, round_no, head_sha, e2e_results)
         collected = verifier.collect_test_ids(repo)
         pytest_runs = passed_test_ids(cmd_results)
         passing_tests = (pytest_runs[0] if pytest_runs else []) if collected is not None else None
@@ -806,7 +830,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             else:
                 reserve_budget(ctx, "security_review", 1)
         rev_uploads = {"spec.json": uploads["spec.json"], **({"spec.md": uploads["spec.md"]} if "spec.md" in uploads else {}), **skill_uploads,
-                       "diff.patch": diff["patch"].encode(),
+                       "diff.patch": diff["patch"].encode(), **visual_uploads,
                        "implementation_report.json": json.dumps(report, indent=2).encode(),
                        "preview.json": json.dumps(preview, indent=2).encode(),
                        "deterministic_checks.json": json.dumps([d.to_dict() for d in det], indent=2).encode()}
@@ -892,7 +916,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         return prior_verdict      # judged this very head before the orchestrator died or paused
     enter_item_stage(ctx, wid, sid, WorkItemStage.MERGE_JUDGING)
     mj_uploads = {
-        "spec.json": json.dumps(public(spec), indent=2).encode(), "diff.patch": diff["patch"].encode(),
+        "spec.json": json.dumps(public(spec), indent=2).encode(), "diff.patch": diff["patch"].encode(), **visual_uploads,
         **({"spec.md": spec_md.encode()} if spec_md else {}),
         "findings.json": json.dumps(findings or {"findings": []}, indent=2).encode(),
         "review_response.json": json.dumps(response or {"responses": []}, indent=2).encode(),

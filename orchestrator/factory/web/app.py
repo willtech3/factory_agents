@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .. import visual
 from .. import checks
 from .. import config as cfgmod
 from ..budget import last_pause
@@ -233,6 +234,8 @@ class Console:
                 "cost": round(st.list_cost_usd, 2), "demo": self.demo.is_demo(run_id), "design_only": design_only, "work_items": items,
                 "resumable": resumable, "budget": budget, "resuming": self.resuming(run_id), "watch": watch, "crew": crew_roster(events), "policy": policy,
                 "gates": gates, "questions": questions, "events": timeline, "artifacts": self._artifacts(run_id),
+                "browser_checks_pending": visual.pending(self.cfg.runs_dir / run_id),
+                "visual_evidence": visual.summaries(self.cfg.runs_dir / run_id / "artifacts", events),
                 "created_at": events[0].at, "updated_at": events[-1].at}
 
     def _budget(self, st, events, open_gates: list[dict[str, Any]]) -> dict[str, Any]:
@@ -802,12 +805,18 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
     def api_demo_tick():
         return {"ticked": console.demo.tick_all()}
 
-    @app.get("/api/artifacts/{run_id}/{stage}/{name}", response_class=PlainTextResponse)
+    @app.get("/api/artifacts/{run_id}/{stage}/{name}")
     def api_artifact(run_id: str, stage: str, name: str):
-        p = cfg.runs_dir / run_id / "artifacts" / stage / name
-        if not p.is_file() or ".." in (run_id, stage, name):
+        root = cfg.runs_dir.resolve()
+        p = root / run_id / "artifacts" / stage / name
+        if (not p.is_file() or p.is_symlink() or not p.resolve().is_relative_to(root)
+                or any(x in (".", "..") for x in (run_id, stage, name))):
             raise HTTPException(404, "no such artifact")
-        return p.read_text(errors="replace")
+        mime = visual.media_type(p)
+        if mime:
+            # FileResponse supports range requests: video seeking works without loading the whole file.
+            return FileResponse(p, media_type=mime, headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
+        return PlainTextResponse(p.read_text(errors="replace"), headers={"X-Content-Type-Options": "nosniff"})
 
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
     # Local tool with no auth: refuse requests whose Host is not local, which closes the DNS-rebinding door.
