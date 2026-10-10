@@ -454,7 +454,8 @@
       up.append(el("span", null, el("b", { class: "ops" }, "Ops"), r.watch && r.watch.pending && r.watch.pending.length ? ": the dev deploy is being watched" : ": nothing in this setup"));
       turn.append(up);
     }
-    if (r.resumable) turn.append(resumeBox(r, runId));
+    if (r.resumable && r.resuming) turn.append(el("div", { class: "notice info", style: "margin:0" }, el("b", null, "Resuming. "), "The orchestrator is re-checking the branch; this page follows it."));
+    else if (r.resumable) turn.append(resumeBox(r, runId));
     if (r.watch && (r.watch.pending.length || r.watch.heartbeat)) turn.append(watchBox(r, runId));
     const turnCard = card(null, turn, null, waiting ? "call" : "");
 
@@ -522,7 +523,7 @@
   function runKey(r) {
     const hb = r.watch && r.watch.heartbeat;
     return JSON.stringify([r.updated_at, r.stage, r.gates.map(g => [g.gate_id, !!g.recorded]), r.questions.map(q => q.question_id),
-      hb ? [hb.alive, hb.last_poll_at] : null, (r.crew || []).map(c => c.state)]);
+      hb ? [hb.alive, hb.last_poll_at] : null, (r.crew || []).map(c => c.state), r.resuming || null]);
   }
   function storyEntries(r) {
     const out = [];

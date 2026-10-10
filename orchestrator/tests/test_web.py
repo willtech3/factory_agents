@@ -435,3 +435,25 @@ def test_crew_roster_board_and_settings_passthrough(client, monkeypatch):
         r = c2.post("/api/runs", json={"outcome_id": oid, "mode": "design", "settings": {"budget_usd": 45, "reviewer_passes": 1}}).json()
     assert r["settings"] == {"FACTORY_RUN_BUDGET_USD": "45", "FACTORY_REVIEWER_PASSES": "1"}
     assert calls[-1][1]["env"]["FACTORY_RUN_BUDGET_USD"] == "45" and calls[-1][1]["env"]["FACTORY_REVIEWER_PASSES"] == "1"
+
+
+def test_resume_refuses_a_second_orchestrator_on_the_same_run(client):
+    """The Console remembers the resume it spawned; while that process is alive a second Resume is a 409 and the run
+    detail says it is resuming."""
+    import json, os
+    from factory.store import RunStore
+    store = RunStore(client.cfg.runs_dir)
+    rid = "run_resume0000ab"
+    actor = {"type": "system", "id": "test"}
+    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "t"})
+    store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
+    for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness", "implementing"):
+        store.append(rid, "stage.entered", actor, {"stage": stage})
+    store.append(rid, "run.failed", actor, {"reason": "boom"})
+    (client.cfg.runs_dir / rid / "resume.pid").write_text(str(os.getpid()))        # a live pid: this test process
+    d = client.get(f"/api/runs/{rid}").json()
+    assert d["resumable"] is True and d["resuming"] == os.getpid()
+    r = client.post(f"/api/runs/{rid}/resume")
+    assert r.status_code == 409 and "already being resumed" in r.json()["detail"]
+    (client.cfg.runs_dir / rid / "resume.pid").write_text("999999999")               # a dead pid: not resuming
+    assert client.get(f"/api/runs/{rid}").json()["resuming"] is None

@@ -219,7 +219,7 @@ class Console:
                                            "preview_mode": self.cfg.preview_mode, "recorded": False}
         return {"run_id": run_id, "title": self._title(run_id, events), "outcome": outcome, "stage": st.stage.value,
                 "cost": round(st.list_cost_usd, 2), "demo": self.demo.is_demo(run_id), "design_only": design_only, "work_items": items,
-                "resumable": resumable, "watch": watch, "crew": crew_roster(events), "policy": policy,
+                "resumable": resumable, "resuming": self.resuming(run_id), "watch": watch, "crew": crew_roster(events), "policy": policy,
                 "gates": gates, "questions": questions, "events": timeline, "artifacts": self._artifacts(run_id),
                 "created_at": events[0].at, "updated_at": events[-1].at}
 
@@ -499,6 +499,9 @@ class Console:
         detail = self.run_detail(run_id)
         if not detail["resumable"]:
             raise HTTPException(409, f"run {run_id} is {detail['stage']}; only a failed run that reached implementation can be resumed")
+        live = self.resuming(run_id)
+        if live:
+            raise HTTPException(409, f"run {run_id} is already being resumed (pid {live})")
         gaps = cfgmod.missing(self.cfg)
         if gaps:
             raise HTTPException(409, f"the orchestrator is not configured for a live run: {', '.join(gaps)}")
@@ -508,7 +511,27 @@ class Console:
         with log.open("w") as fh:
             proc = subprocess.Popen(args, cwd=str(Path(__file__).resolve().parents[2]), stdout=fh, stderr=subprocess.STDOUT,
                                     env={**os.environ, "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}, start_new_session=True)
+        (self.cfg.runs_dir / run_id / "resume.pid").write_text(str(proc.pid))
         return {"ok": True, "mode": "resume", "run_id": run_id, "pid": proc.pid, "log": log.name}
+
+    def resuming(self, run_id: str) -> int | None:
+        """The pid of a `factory resume` this Console started for the run and that is still alive, else None.
+        A second click on Resume must never start a second orchestrator on the same run."""
+        p = self.cfg.runs_dir / run_id / "resume.pid"
+        try:
+            pid = int(p.read_text().strip())
+        except (OSError, ValueError):
+            return None
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return None
+        try:                                            # a zombie the Console has not reaped yet is not alive
+            if os.waitpid(pid, os.WNOHANG) != (0, 0):
+                return None
+        except ChildProcessError:
+            pass
+        return pid
 
     def watch_run(self, run_id: str) -> dict[str, Any]:
         """Start `factory watch <run_id>` in the background: Gate 3 (the merge on the forge) and Stage 5 (the dev deploy
