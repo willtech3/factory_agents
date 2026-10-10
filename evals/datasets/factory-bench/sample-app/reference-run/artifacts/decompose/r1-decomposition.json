@@ -1,0 +1,149 @@
+{
+  "decomposition_id": "dec_4e93d2a0d0r1",
+  "outcome_id": "out_4e93d2a0d0",
+  "revision": 1,
+  "summary": "This outcome is one small, coherent change to a 100-line FastAPI service, so it is one work item that becomes one pull request. A todo gets an optional due date when it is created. Every todo the API returns gets a computed `overdue` flag. A new `GET /todos/overdue` endpoint returns the open todos whose due date has passed. Existing clients that send only a title get exactly the fields they get today, with the same values. The two new keys appear alongside them: `due_date` set to null and `overdue` set to false.\n\nI considered splitting the work in two (the due-date field and flag first, then the overdue endpoint) and decided against it. Both parts depend on one rule for what 'overdue' means, and a reviewer has to approve that rule once, together with the tests that pin it down. Separately each part would be tiny (XS), and the split would only add a merge dependency. The tests and the README note go inside the same item, not into separate items.\n\nThe item is flagged for owner judgement for one reason: what counts as 'past due' is a product decision. The choices are whether the due date is a calendar date or a date-and-time, which timezone is used, and whether a task becomes overdue on its due date or only after it. Proposed defaults are listed under open questions. Nothing here needs a database, a new dependency, a new environment variable or a change to the service manifest. The existing preview workflow deploys it as it is.",
+  "work_items": [
+    {
+      "work_item_id": "wi-due-dates-overdue",
+      "kind": "feature",
+      "title": "Optional due date on todos, overdue flag on every todo, and GET /todos/overdue",
+      "intent": "Let people see when a task is late without breaking any current client. The intent has five parts. (1) A client may send an optional due date when it creates a todo. A request with only a title behaves exactly as today. (2) Every todo the API returns carries its due date (null when unset) and a boolean `overdue` flag. The flag is true only when the todo is not done and its due date has passed. A todo with no due date is never overdue. This applies to GET /todos, the new overdue list, the POST /todos response and the POST /todos/{id}/complete response. (3) GET /todos/overdue returns exactly the overdue todos, in the same order as GET /todos (ascending id). It returns an empty list when nothing is overdue. (4) A malformed due date is rejected with 422, in the same way an empty title is rejected today. (5) The existing three tests in tests/test_todos.py pass without edits. New API tests in tests/ prove each rule above, including the boundary of the due date itself and the case of a completed todo whose due date is in the past. The README and the endpoint list in the app/main.py docstring mention the new field and endpoint.",
+      "depends_on": [],
+      "size": "S",
+      "contributes_to_metrics": [
+        "Overdue visibility",
+        "Backwards compatibility"
+      ],
+      "touches": {
+        "repositories": [
+          "https://github.com/willtech3/factory-sample-app"
+        ],
+        "likely_paths": [
+          "app/storage.py",
+          "app/main.py",
+          "tests/test_todos.py",
+          "README.md"
+        ],
+        "external_systems": []
+      },
+      "human_judgement_required": true,
+      "notes": "Shared names (proposed, the spec can confirm): request field `due_date` (optional, default null); response keys `due_date` (ISO-8601 string or null) and `overdue` (bool); route `GET /todos/overdue`. Facts from research: a todo today is a stdlib dataclass serialised by `asdict` in `Todo.to_dict()` (app/storage.py:10-17), with keys id, title, done, created_at. Routes return plain dicts and have no response_model (app/main.py:25-46). `TodoIn` has only `title` and no extra='forbid' (app/main.py:16-17). There is no GET /todos/{todo_id} route, so a literal GET /todos/overdue cannot be shadowed. If someone adds such a route later, it must be registered after /todos/overdue. The only clock is `datetime.now(timezone.utc)` called directly in a default_factory (app/storage.py:15), and there is no injectable clock. Pitfalls to avoid: (a) `overdue` must be computed when the response is built. If it is stored at creation it goes stale. (b) Tests that depend on 'now' must be deterministic. Use due dates far in the past or future, or a clock the tests can control. Tests must not sleep. (c) No test compares a whole todo dict today, so adding keys is safe. The existing assertions on id == 1, done, created_at and `== []` must keep holding. (d) No new dependency: parse dates with stdlib datetime or pydantic's built-in date/datetime types. Platform: no change to service_manifest.json (no new env vars, migrations stay `true`), and .github/workflows/preview.yml deploys the branch unchanged."
+    }
+  ],
+  "coverage": [
+    {
+      "metric": "Overdue visibility",
+      "work_item_ids": [
+        "wi-due-dates-overdue"
+      ],
+      "rationale": "This item adds the due date, the computed overdue flag on every todo in every listing, and GET /todos/overdue, which returns exactly the open, past-due todos. Its new API tests in tests/ are the stated measurement."
+    },
+    {
+      "metric": "Backwards compatibility",
+      "work_item_ids": [
+        "wi-due-dates-overdue"
+      ],
+      "rationale": "The due date is optional and existing fields keep their names, types and values. The existing three tests must pass unedited, and new tests assert that a todo without a due date is never overdue and that a title-only request still works."
+    }
+  ],
+  "explicitly_out_of_scope": [
+    "Changing or clearing a due date after creation. The API has no update (PATCH/PUT) endpoint today, and adding one is a new capability the outcome does not ask for. If owners want it, it is a follow-up item.",
+    "Un-completing a todo. No such operation exists today, and the outcome does not need one.",
+    "Reminders, notifications, or any push mechanism telling people a task is late. The outcome asks for visibility in API responses only.",
+    "Filtering or sorting GET /todos by due date, and pagination. The outcome asks only for the overdue view and the flag.",
+    "Per-user timezones. There are no users or accounts in the service, so 'past due' is judged against one server-side reference time (see open questions).",
+    "Persistence. Storage stays in memory, as the outcome's constraints require, so due dates are lost on restart just like todos are today.",
+    "A CI workflow that runs the tests. None exists today, and preview.yml only deploys. Adding one would touch .github/, which is outside the outcome's paths in scope.",
+    "Response models or OpenAPI schema clean-up beyond what the new field needs. Today's routes return plain dicts, and this item does not refactor them."
+  ],
+  "open_questions": [
+    {
+      "question": "Is a due date a calendar date (e.g. 2026-11-30) or a date-and-time (e.g. 2026-11-30T17:00:00Z)?",
+      "blocking": false,
+      "default_if_unanswered": "A calendar date in ISO-8601 form (YYYY-MM-DD). It matches 'due date' in the outcome and avoids timezone input from clients. Datetimes are rejected with 422."
+    },
+    {
+      "question": "When does a todo become overdue: on its due date, or only once the due date has fully passed? And against which timezone?",
+      "blocking": false,
+      "default_if_unanswered": "Overdue when the due date is strictly before today's date in UTC. A todo due today is not overdue until the UTC day ends. UTC matches how created_at is already recorded."
+    },
+    {
+      "question": "Should a completed todo whose due date has passed be flagged overdue?",
+      "blocking": false,
+      "default_if_unanswered": "No. `overdue` is false for any done todo, so the flag agrees with GET /todos/overdue, which the outcome defines as open todos only."
+    },
+    {
+      "question": "May a client create a todo with a due date already in the past?",
+      "blocking": false,
+      "default_if_unanswered": "Yes. It is accepted and immediately shows as overdue. This lets people log tasks that are already late, and it keeps tests simple."
+    },
+    {
+      "question": "Are the new response keys acceptable as `due_date` (null when unset) and `overdue`, and should a todo without a due date include `due_date: null` rather than omit the key?",
+      "blocking": false,
+      "default_if_unanswered": "Yes to both. Every todo always has both keys, so clients see one stable shape. Existing keys are untouched."
+    },
+    {
+      "question": "Does the platform need anything beyond the existing service_manifest.json and preview.yml to deploy this change? (The platform-contract skill was not available in this session to confirm.)",
+      "blocking": false,
+      "default_if_unanswered": "No. The change adds no env vars, ports, migrations or infrastructure, so the current manifest (sample-todo, /health, migrations `true`) and preview workflow are used unchanged."
+    }
+  ],
+  "assumptions": [
+    "Adding new keys (`due_date`, `overdue`) to todo responses is not a 'change to the shape of existing fields'. Existing fields keep their names, types and values. Research confirmed no existing test compares a whole todo dict or its exact key set.",
+    "Clients that send unknown fields are unaffected. TodoIn does not forbid extra keys today, and this item does not change that.",
+    "'Any listing' covers GET /todos and GET /todos/overdue. For consistency, the single todo returned by POST /todos and POST /todos/{id}/complete carries the same keys.",
+    "The overdue list uses the same ordering as GET /todos (ascending id) and returns 200 with [] when nothing is overdue.",
+    "The work stays inside the outcome's paths in scope: app/**, tests/** and README.md. service_manifest.json and .github/ are not touched.",
+    "The platform-contract skill could not be found in this session. Deployability was judged from the repo's service_manifest.json and .github/workflows/preview.yml. The workflow deploys any push to factory/** branches without needing app changes.",
+    "The test suite could not be run during research because the sandbox has no dependencies installed. The pass/fail state of the existing tests is inferred from reading them, not observed."
+  ],
+  "risks": [
+    {
+      "risk": "Tests that depend on the current date become flaky, for example a due date of 'today' or 'yesterday' computed in the test run around midnight UTC.",
+      "likelihood": "medium",
+      "impact": "medium",
+      "mitigation": "The spec requires deterministic tests: fixed far-past and far-future dates, or a clock the tests can control. No sleeps. The boundary case is tested with a controlled clock."
+    },
+    {
+      "risk": "The overdue flag is computed once at creation and stored, so it goes stale as time passes.",
+      "likelihood": "low",
+      "impact": "high",
+      "mitigation": "The intent and notes state that the flag is derived when the response is built. A test sets the clock forward and checks that the flag flips."
+    },
+    {
+      "risk": "A future GET /todos/{todo_id} route registered before /todos/overdue would shadow it and return 422.",
+      "likelihood": "low",
+      "impact": "medium",
+      "mitigation": "Not a risk for this change, because no such route exists. A test that calls GET /todos/overdue guards against a regression."
+    },
+    {
+      "risk": "The owner wants date-and-time due dates or local-time semantics instead of the proposed UTC calendar date. The rule then has to be revisited after specification.",
+      "likelihood": "medium",
+      "impact": "low",
+      "mitigation": "The item is flagged human_judgement_required, so the owner confirms the rule before the spec is written. The change is small either way."
+    }
+  ],
+  "produced_by": {
+    "agent_name": "decomposer",
+    "agent_id": "agent_decomposer",
+    "agent_version": 1,
+    "session_id": "sesn_unknown",
+    "thread_id": null,
+    "model": "claude",
+    "effort": null,
+    "outcome_iterations": null,
+    "list_cost_usd": null,
+    "produced_at": "2026-10-10T09:30:53Z",
+    "inputs": [
+      {
+        "artifact": "outcome.json",
+        "sha256": "7008a18a3bbb0deec7d9ca237488118e10bce6b1b61a6e88b833205388a1f8fa"
+      },
+      {
+        "artifact": "outcome.md",
+        "sha256": "3f3a07f9d3376d5a74f5be2d4016f15726f5099c70d966b00d6bfb69f5308987"
+      }
+    ]
+  }
+}

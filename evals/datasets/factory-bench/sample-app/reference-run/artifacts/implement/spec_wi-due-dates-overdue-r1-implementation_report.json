@@ -1,0 +1,717 @@
+{
+  "spec_id": "spec_wi-due-dates-overdue",
+  "spec_revision": 2,
+  "branch": "factory/run_57fde1adc2/spec_wi-due-dates-overdue",
+  "base_commit": "6dec6943e8333d0a747f0dd34578e3e823e51319",
+  "head_commit": "1ad4332091c2dac9d49aefd4c7d2350982f1576d",
+  "pushed": true,
+  "rebased_on_base": true,
+  "history_note": "Revision round: the branch history was rebuilt as three vertical slices so every commit passes the full test plan, and force-pushed with --force-with-lease pinned to the previously reviewed head 23b56646386c8f4b8d748dbbbaad48658a550407. The final app/ and README.md content is byte-identical to 23b5664. The tests differ: the trivial test_overdue_is_not_a_stored_field was folded into the AC-10 test, pytest params got explicit ids, and the e2e runner was reorganised.",
+  "slices": [
+    {
+      "commit": "d33b2441ab06690efec91704066767ef8632098d",
+      "subject": "AC-7, AC-10, AC-13: overdue flag derived per response, GET /todos/overdue, docs and e2e runner (local-all, rollover-local)",
+      "criteria": [
+        "AC-7",
+        "AC-10",
+        "AC-11",
+        "AC-12",
+        "AC-13"
+      ],
+      "diff_vs_parent": "5 files changed, 368 insertions(+), 7 deletions(-)",
+      "test_plan_at_commit": {
+        "passed": 11,
+        "total": 11,
+        "how": "all 11 test_plan.commands in a fresh `git worktree` at this commit"
+      },
+      "red_before_change": {
+        "how": "this commit's new pytest tests (and e2e) run against app/ from the parent commit",
+        "new_pytest_tests": 2,
+        "failed": [
+          "tests/test_overdue.py::test_overdue_flips_when_the_date_advances_without_a_write",
+          "tests/test_overdue.py::test_overdue_list_is_empty_list_when_nothing_is_overdue"
+        ],
+        "passed_count": 0,
+        "e2e_fail_lines": [
+          "FAIL empty-overdue --strict: empty-overdue --strict: GET /todos/overdue returned 405, want 200",
+          "FAIL empty-overdue: empty-overdue: POST /todos {'title': 'e2e-empty-past', 'due_date': '2000-01-01'}: keys of {'id': 1, 'title': 'e2e-empty-past', 'done': False",
+          "FAIL rollover-local: AttributeError: module 'app.storage' has no attribute 'today_utc'"
+        ]
+      },
+      "green_at_commit": {
+        "pytest_passed": 2,
+        "pytest_total": 2,
+        "local-all_exit": 0,
+        "rollover-local_exit": 0
+      },
+      "size_note": "Walking skeleton. Before any commit can pass the test plan, it needs GET /todos/overdue documented (docstring/README check), tests/e2e_overdue.py present with `local-all` (which runs `empty-overdue --strict`) and `rollover-local` (clock-driven flip on both endpoints). So the first green checkpoint has to contain the endpoint, the rule, the docs and the e2e runner. 250 of its 368 added lines are that runner (HTTP client, server lifecycle, reporting, rollover); app + README + pytest are about 118. Later slices are 150 and 217 changed lines."
+    },
+    {
+      "commit": "23128cdd6f3597c5a063e942116aa2a622f8a070",
+      "subject": "AC-1, AC-2, AC-3, AC-9: POST /todos due_date contract; reject anything but null or a real YYYY-MM-DD date",
+      "criteria": [
+        "AC-1",
+        "AC-2",
+        "AC-3",
+        "AC-9"
+      ],
+      "diff_vs_parent": "4 files changed, 144 insertions(+), 6 deletions(-)",
+      "test_plan_at_commit": {
+        "passed": 11,
+        "total": 11,
+        "how": "all 11 test_plan.commands in a fresh `git worktree` at this commit"
+      },
+      "red_before_change": {
+        "how": "this commit's new pytest tests (and e2e) run against app/ from the parent commit",
+        "new_pytest_tests": 24,
+        "failed": [
+          "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[datetime-midnight]",
+          "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[int-zero]"
+        ],
+        "passed_count": 22,
+        "e2e_fail_lines": [
+          "FAIL malformed: malformed: due_date '2026-11-30T00:00:00' returned 201, want 422"
+        ]
+      },
+      "green_at_commit": {
+        "pytest_passed": 24,
+        "pytest_total": 24,
+        "local-all_exit": 0,
+        "rollover-local_exit": 0
+      },
+      "red_note": "Slice 1's plain `date | None` field accepted '2026-11-30T00:00:00' and 0; the AC-1..AC-3 tests and the other 15 AC-9 values were already satisfied by slice 1 (they are pinned here, with their e2e checks, as part of the POST contract)."
+    },
+    {
+      "commit": "1ad4332091c2dac9d49aefd4c7d2350982f1576d",
+      "subject": "AC-4, AC-5, AC-6, AC-8: list endpoints judge every todo against one clock reading; boundary, listing, overdue-list and complete checks",
+      "criteria": [
+        "AC-4",
+        "AC-5",
+        "AC-6",
+        "AC-8"
+      ],
+      "diff_vs_parent": "4 files changed, 214 insertions(+), 3 deletions(-)",
+      "test_plan_at_commit": {
+        "passed": 11,
+        "total": 11,
+        "how": "all 11 test_plan.commands in a fresh `git worktree` at this commit"
+      },
+      "red_before_change": {
+        "how": "this commit's new pytest tests (and e2e) run against app/ from the parent commit",
+        "new_pytest_tests": 8,
+        "failed": [
+          "tests/test_overdue.py::test_list_endpoints_read_the_clock_once_per_request[list]",
+          "tests/test_overdue.py::test_list_endpoints_read_the_clock_once_per_request[overdue]"
+        ],
+        "passed_count": 6,
+        "e2e_fail_lines": []
+      },
+      "green_at_commit": {
+        "pytest_passed": 8,
+        "pytest_total": 8,
+        "local-all_exit": 0,
+        "rollover-local_exit": 0
+      },
+      "red_note": "The two clock-read tests were red (slice 2 read today_utc once per todo); the AC-4/5/6/8 tests and e2e checks verify rule and endpoint behaviour delivered in slice 1, so they were green against the parent."
+    }
+  ],
+  "files_changed": [
+    {
+      "added": "17",
+      "deleted": "0",
+      "path": "README.md"
+    },
+    {
+      "added": "22",
+      "deleted": "4",
+      "path": "app/main.py"
+    },
+    {
+      "added": "21",
+      "deleted": "5",
+      "path": "app/storage.py"
+    },
+    {
+      "added": "426",
+      "deleted": "0",
+      "path": "tests/e2e_overdue.py"
+    },
+    {
+      "added": "233",
+      "deleted": "0",
+      "path": "tests/test_overdue.py"
+    }
+  ],
+  "files_outside_allowed_paths": [],
+  "acceptance_criteria": {
+    "AC-1": {
+      "status": "met",
+      "pytest_node_ids": [
+        "tests/test_overdue.py::test_title_only_and_unknown_field_keep_existing_behaviour",
+        "tests/test_todos.py::test_create_list_complete_delete"
+      ],
+      "e2e_checks": [
+        "compat"
+      ]
+    },
+    "AC-2": {
+      "status": "met",
+      "pytest_node_ids": [
+        "tests/test_overdue.py::test_future_and_null_due_dates_are_echoed_and_not_overdue"
+      ],
+      "e2e_checks": [
+        "create-future"
+      ]
+    },
+    "AC-3": {
+      "status": "met",
+      "pytest_node_ids": [
+        "tests/test_overdue.py::test_past_due_date_is_accepted_and_overdue"
+      ],
+      "e2e_checks": [
+        "create-past"
+      ]
+    },
+    "AC-4": {
+      "status": "met",
+      "pytest_node_ids": [
+        "tests/test_overdue.py::test_overdue_is_strictly_before_today[day]",
+        "tests/test_overdue.py::test_overdue_is_strictly_before_today[month-edge]",
+        "tests/test_overdue.py::test_overdue_is_strictly_before_today[year-edge]"
+      ],
+      "e2e_checks": [
+        "boundary"
+      ]
+    },
+    "AC-5": {
+      "status": "met",
+      "pytest_node_ids": [
+        "tests/test_overdue.py::test_listing_obeys_rule_for_every_element",
+        "tests/test_overdue.py::test_list_endpoints_read_the_clock_once_per_request[list]"
+      ],
+      "e2e_checks": [
+        "listing"
+      ]
+    },
+    "AC-6": {
+      "status": "met",
+      "pytest_node_ids": [
+        "tests/test_overdue.py::test_overdue_list_is_exactly_open_past_due_todos_in_id_order",
+        "tests/test_overdue.py::test_list_endpoints_read_the_clock_once_per_request[overdue]"
+      ],
+      "e2e_checks": [
+        "overdue-list"
+      ]
+    },
+    "AC-7": {
+      "status": "met",
+      "pytest_node_ids": [
+        "tests/test_overdue.py::test_overdue_list_is_empty_list_when_nothing_is_overdue"
+      ],
+      "e2e_checks": [
+        "empty-overdue --strict (local-all)",
+        "empty-overdue"
+      ]
+    },
+    "AC-8": {
+      "status": "met",
+      "pytest_node_ids": [
+        "tests/test_overdue.py::test_completing_clears_overdue_and_removes_from_list"
+      ],
+      "e2e_checks": [
+        "complete"
+      ]
+    },
+    "AC-9": {
+      "status": "met",
+      "pytest_node_ids": [
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[month-13]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[feb-30]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[year-0]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[not-a-date]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[empty-string]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[basic-format]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[datetime-utc]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[datetime-midnight]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[trailing-space]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[trailing-newline]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[int-yyyymmdd]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[int-zero]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[int-timestamp]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[float]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[bool]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[list]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[non-leap-feb-29]",
+        "tests/test_overdue.py::test_real_calendar_dates_are_accepted[2028-02-29]",
+        "tests/test_overdue.py::test_real_calendar_dates_are_accepted[2026-11-30]",
+        "tests/test_overdue.py::test_real_calendar_dates_are_accepted[0001-01-01]",
+        "tests/test_overdue.py::test_real_calendar_dates_are_accepted[9999-12-31]"
+      ],
+      "e2e_checks": [
+        "malformed"
+      ]
+    },
+    "AC-10": {
+      "status": "met",
+      "pytest_node_ids": [
+        "tests/test_overdue.py::test_overdue_flips_when_the_date_advances_without_a_write"
+      ],
+      "e2e_checks": [
+        "rollover-local",
+        "listing (preview: per-request invariant only)"
+      ]
+    },
+    "AC-11": {
+      "status": "met",
+      "pytest_node_ids": [
+        "tests/test_todos.py::test_health",
+        "tests/test_todos.py::test_create_list_complete_delete",
+        "tests/test_todos.py::test_validation_and_missing",
+        "(plus every tests/test_overdue.py node id above, via `python -m pytest -q`)"
+      ],
+      "e2e_checks": []
+    },
+    "AC-12": {
+      "status": "met",
+      "pytest_node_ids": [],
+      "e2e_checks": []
+    },
+    "AC-13": {
+      "status": "met",
+      "pytest_node_ids": [],
+      "e2e_checks": []
+    }
+  },
+  "node_id_verification": "Every node id listed under acceptance_criteria was collected by pytest and run explicitly by id: 37 passed, 1 warning in 1.09s",
+  "test_plan_commands": {
+    "run_from": "fresh git worktree at head_commit 1ad4332, cwd = worktree root",
+    "all_passed": true,
+    "results": [
+      {
+        "command": "python -m pytest -q",
+        "exit_code": 0,
+        "result": "pass",
+        "output_tail": ".....................................                                    [100%]\n=============================== warnings summary ===============================\n37 passed, 1 warning in 1.15s"
+      },
+      {
+        "command": "python -m pytest -q tests/test_todos.py tests/test_overdue.py",
+        "exit_code": 0,
+        "result": "pass",
+        "output_tail": ".....................................                                    [100%]\n=============================== warnings summary ===============================\n37 passed, 1 warning in 1.06s"
+      },
+      {
+        "command": "test -f tests/test_overdue.py && test -f tests/e2e_overdue.py",
+        "exit_code": 0,
+        "result": "pass",
+        "output_tail": ""
+      },
+      {
+        "command": "git diff --exit-code main -- tests/test_todos.py pyproject.toml service_manifest.json .github",
+        "exit_code": 0,
+        "result": "pass",
+        "output_tail": ""
+      },
+      {
+        "command": "test -z \"$( (git diff --name-only main; git ls-files -o --exclude-standard) | grep -vxE 'app/storage\\.py|app/main\\.py|README\\.md|tests/test_overdue\\.py|tests/e2e_overdue\\.py' )\"",
+        "exit_code": 0,
+        "result": "pass",
+        "output_tail": ""
+      },
+      {
+        "command": "python -c \"import ast,glob,sys; ok=set(sys.stdlib_module_names)|{'app','fastapi','pydantic','uvicorn','pytest','httpx','starlette'}; fs=glob.glob('app/**/*.py',recursive=True)+glob.glob('tests/**/*.py',recursive=True); bad=[(f,m) for f in fs for n in ast.walk(ast.parse(open(f).read())) for m in ([a.name.split('.')[0] for a in n.names] if isinstance(n,ast.Import) else [n.module.split('.')[0]] if isinstance(n,ast.ImportFrom) and n.level==0 else []) if m not in ok]; print('disallowed imports:',bad); sys.exit(bool(bad))\"",
+        "exit_code": 0,
+        "result": "pass",
+        "output_tail": "disallowed imports: []"
+      },
+      {
+        "command": "python -c \"import ast; d=ast.get_docstring(ast.parse(open('app/main.py').read())); r=open('README.md').read(); assert 'GET /todos/overdue' in d and 'due_date' in d, 'docstring'; assert all(s in r for s in ['GET /todos/overdue','due_date','overdue','YYYY-MM-DD','strictly before','UTC']), 'README'\"",
+        "exit_code": 0,
+        "result": "pass",
+        "output_tail": ""
+      },
+      {
+        "command": "! grep -nE \"sleep|datetime\\.now|date\\.today\" tests/test_overdue.py",
+        "exit_code": 0,
+        "result": "pass",
+        "output_tail": ""
+      },
+      {
+        "command": "! grep -nE \"extra *=|model_config|ConfigDict\" app/main.py",
+        "exit_code": 0,
+        "result": "pass",
+        "output_tail": ""
+      },
+      {
+        "command": "python tests/e2e_overdue.py local-all",
+        "exit_code": 0,
+        "result": "pass",
+        "output_tail": "PASS empty-overdue\nPASS complete\nPASS malformed\n10 passed, 0 failed"
+      },
+      {
+        "command": "PYTHONPATH=. python tests/e2e_overdue.py rollover-local",
+        "exit_code": 0,
+        "result": "pass",
+        "output_tail": "PASS rollover-local\n1 passed, 0 failed"
+      }
+    ]
+  },
+  "e2e_results": [
+    {
+      "command": "python tests/e2e_overdue.py local-all",
+      "target": "local",
+      "covers_ac": [
+        "AC-1",
+        "AC-2",
+        "AC-3",
+        "AC-4",
+        "AC-5",
+        "AC-6",
+        "AC-7",
+        "AC-8",
+        "AC-9"
+      ],
+      "status": "run",
+      "exit_code": 0,
+      "result": "pass",
+      "output_tail": "starting /usr/local/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 60979 --log-level warning\nPASS empty-overdue --strict\nPASS compat\nPASS create-future\nPASS create-past\nPASS boundary\nPASS listing\nPASS overdue-list\nPASS empty-overdue\nPASS complete\nPASS malformed\n10 passed, 0 failed"
+    },
+    {
+      "command": "PYTHONPATH=. python tests/e2e_overdue.py rollover-local",
+      "target": "local",
+      "covers_ac": [
+        "AC-10"
+      ],
+      "status": "run",
+      "exit_code": 0,
+      "result": "pass",
+      "output_tail": "PASS rollover-local\n1 passed, 0 failed"
+    },
+    {
+      "command": "python tests/e2e_overdue.py compat \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-1"
+      ],
+      "status": "not_run",
+      "reason": "preview.json status is 'unavailable' (url null); the orchestrator runs preview entries itself against an instance it starts from the manifest entrypoint.",
+      "supplementary_local_evidence": {
+        "note": "Not the authoritative run. The same command at head_commit with BASE_URL=http://127.0.0.1:8000, against `uvicorn app.main:app --host 0.0.0.0 --port 8000` (the manifest entrypoint, started from the repo root; /health returned 200). The nine commands ran in sequence on one instance, so every check after the first ran on an instance already holding todos.",
+        "exit_code": 0,
+        "output_tail": "PASS compat\n1 passed, 0 failed"
+      }
+    },
+    {
+      "command": "python tests/e2e_overdue.py create-future \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-2"
+      ],
+      "status": "not_run",
+      "reason": "preview.json status is 'unavailable' (url null); the orchestrator runs preview entries itself against an instance it starts from the manifest entrypoint.",
+      "supplementary_local_evidence": {
+        "note": "Not the authoritative run. The same command at head_commit with BASE_URL=http://127.0.0.1:8000, against `uvicorn app.main:app --host 0.0.0.0 --port 8000` (the manifest entrypoint, started from the repo root; /health returned 200). The nine commands ran in sequence on one instance, so every check after the first ran on an instance already holding todos.",
+        "exit_code": 0,
+        "output_tail": "PASS create-future\n1 passed, 0 failed"
+      }
+    },
+    {
+      "command": "python tests/e2e_overdue.py create-past \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-3"
+      ],
+      "status": "not_run",
+      "reason": "preview.json status is 'unavailable' (url null); the orchestrator runs preview entries itself against an instance it starts from the manifest entrypoint.",
+      "supplementary_local_evidence": {
+        "note": "Not the authoritative run. The same command at head_commit with BASE_URL=http://127.0.0.1:8000, against `uvicorn app.main:app --host 0.0.0.0 --port 8000` (the manifest entrypoint, started from the repo root; /health returned 200). The nine commands ran in sequence on one instance, so every check after the first ran on an instance already holding todos.",
+        "exit_code": 0,
+        "output_tail": "PASS create-past\n1 passed, 0 failed"
+      }
+    },
+    {
+      "command": "python tests/e2e_overdue.py boundary \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-4"
+      ],
+      "status": "not_run",
+      "reason": "preview.json status is 'unavailable' (url null); the orchestrator runs preview entries itself against an instance it starts from the manifest entrypoint.",
+      "supplementary_local_evidence": {
+        "note": "Not the authoritative run. The same command at head_commit with BASE_URL=http://127.0.0.1:8000, against `uvicorn app.main:app --host 0.0.0.0 --port 8000` (the manifest entrypoint, started from the repo root; /health returned 200). The nine commands ran in sequence on one instance, so every check after the first ran on an instance already holding todos.",
+        "exit_code": 0,
+        "output_tail": "PASS boundary\n1 passed, 0 failed"
+      }
+    },
+    {
+      "command": "python tests/e2e_overdue.py listing \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-5",
+        "AC-10"
+      ],
+      "status": "not_run",
+      "reason": "preview.json status is 'unavailable' (url null); the orchestrator runs preview entries itself against an instance it starts from the manifest entrypoint.",
+      "supplementary_local_evidence": {
+        "note": "Not the authoritative run. The same command at head_commit with BASE_URL=http://127.0.0.1:8000, against `uvicorn app.main:app --host 0.0.0.0 --port 8000` (the manifest entrypoint, started from the repo root; /health returned 200). The nine commands ran in sequence on one instance, so every check after the first ran on an instance already holding todos.",
+        "exit_code": 0,
+        "output_tail": "PASS listing\n1 passed, 0 failed"
+      }
+    },
+    {
+      "command": "python tests/e2e_overdue.py overdue-list \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-6"
+      ],
+      "status": "not_run",
+      "reason": "preview.json status is 'unavailable' (url null); the orchestrator runs preview entries itself against an instance it starts from the manifest entrypoint.",
+      "supplementary_local_evidence": {
+        "note": "Not the authoritative run. The same command at head_commit with BASE_URL=http://127.0.0.1:8000, against `uvicorn app.main:app --host 0.0.0.0 --port 8000` (the manifest entrypoint, started from the repo root; /health returned 200). The nine commands ran in sequence on one instance, so every check after the first ran on an instance already holding todos.",
+        "exit_code": 0,
+        "output_tail": "PASS overdue-list\n1 passed, 0 failed"
+      }
+    },
+    {
+      "command": "python tests/e2e_overdue.py empty-overdue \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-7"
+      ],
+      "status": "not_run",
+      "reason": "preview.json status is 'unavailable' (url null); the orchestrator runs preview entries itself against an instance it starts from the manifest entrypoint.",
+      "supplementary_local_evidence": {
+        "note": "Not the authoritative run. The same command at head_commit with BASE_URL=http://127.0.0.1:8000, against `uvicorn app.main:app --host 0.0.0.0 --port 8000` (the manifest entrypoint, started from the repo root; /health returned 200). The nine commands ran in sequence on one instance, so every check after the first ran on an instance already holding todos.",
+        "exit_code": 0,
+        "output_tail": "PASS empty-overdue\n1 passed, 0 failed"
+      }
+    },
+    {
+      "command": "python tests/e2e_overdue.py complete \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-8"
+      ],
+      "status": "not_run",
+      "reason": "preview.json status is 'unavailable' (url null); the orchestrator runs preview entries itself against an instance it starts from the manifest entrypoint.",
+      "supplementary_local_evidence": {
+        "note": "Not the authoritative run. The same command at head_commit with BASE_URL=http://127.0.0.1:8000, against `uvicorn app.main:app --host 0.0.0.0 --port 8000` (the manifest entrypoint, started from the repo root; /health returned 200). The nine commands ran in sequence on one instance, so every check after the first ran on an instance already holding todos.",
+        "exit_code": 0,
+        "output_tail": "PASS complete\n1 passed, 0 failed"
+      }
+    },
+    {
+      "command": "python tests/e2e_overdue.py malformed \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-9"
+      ],
+      "status": "not_run",
+      "reason": "preview.json status is 'unavailable' (url null); the orchestrator runs preview entries itself against an instance it starts from the manifest entrypoint.",
+      "supplementary_local_evidence": {
+        "note": "Not the authoritative run. The same command at head_commit with BASE_URL=http://127.0.0.1:8000, against `uvicorn app.main:app --host 0.0.0.0 --port 8000` (the manifest entrypoint, started from the repo root; /health returned 200). The nine commands ran in sequence on one instance, so every check after the first ran on an instance already holding todos.",
+        "exit_code": 0,
+        "output_tail": "PASS malformed\n1 passed, 0 failed"
+      }
+    }
+  ],
+  "red_green_evidence": {
+    "base_sha": {
+      "what": "tests/test_overdue.py and tests/e2e_overdue.py from head_sha run against app/ from base_sha",
+      "pytest_total": 34,
+      "pytest_failed_or_error": 34,
+      "pytest_passed_on_base": [],
+      "e2e": {
+        "local-all_exit": 1,
+        "rollover-local_exit": 1,
+        "lines": [
+          "FAIL empty-overdue --strict: empty-overdue --strict: GET /todos/overdue returned 405, want 200",
+          "FAIL compat: compat: POST /todos {'title': 'Write the outcome'}: keys of {'id': 1, 'title': 'Write the outcome', 'done': False, 'created_at': '2026-10-10T12:07:",
+          "FAIL create-future: create-future: POST /todos {'title': 'e2e-create-future', 'due_date': '2999-12-31'}: keys of {'id': 2, 'title': 'e2e-create-future', 'done':",
+          "FAIL create-past: create-past: POST /todos {'title': 'e2e-create-past', 'due_date': '2000-01-01'}: keys of {'id': 3, 'title': 'e2e-create-past', 'done': False, ",
+          "FAIL boundary: boundary: POST /todos {'title': 'e2e-boundary-2026-10-09', 'due_date': '2026-10-09'}: keys of {'id': 4, 'title': 'e2e-boundary-2026-10-09', 'done",
+          "FAIL listing: listing: POST /todos {'title': 'e2e-listing-open-2000-01-01', 'due_date': '2000-01-01'}: keys of {'id': 5, 'title': 'e2e-listing-open-2000-01-01',",
+          "FAIL overdue-list: overdue-list: POST /todos {'title': 'e2e-overdue-a', 'due_date': '2000-01-01'}: keys of {'id': 6, 'title': 'e2e-overdue-a', 'done': False, 'c",
+          "FAIL empty-overdue: empty-overdue: POST /todos {'title': 'e2e-empty-past', 'due_date': '2000-01-01'}: keys of {'id': 7, 'title': 'e2e-empty-past', 'done': False",
+          "FAIL complete: complete: POST /todos {'title': 'e2e-complete', 'due_date': '2000-01-01'}: keys of {'id': 8, 'title': 'e2e-complete', 'done': False, 'created_at'",
+          "FAIL malformed: malformed: due_date '2026-13-01' returned 201, want 422",
+          "FAIL rollover-local: AttributeError: module 'app.storage' has no attribute 'today_utc'"
+        ]
+      }
+    },
+    "head_sha": {
+      "what": "same tests at head_sha",
+      "pytest_total": 34,
+      "pytest_passed": 34,
+      "e2e": {
+        "local-all_exit": 0,
+        "rollover-local_exit": 0,
+        "lines": [
+          "PASS empty-overdue --strict",
+          "PASS compat",
+          "PASS create-future",
+          "PASS create-past",
+          "PASS boundary",
+          "PASS listing",
+          "PASS overdue-list",
+          "PASS empty-overdue",
+          "PASS complete",
+          "PASS malformed",
+          "PASS rollover-local"
+        ]
+      }
+    },
+    "per_slice": "see slices[].red_before_change / green_at_commit"
+  },
+  "mutation_check": {
+    "purpose": "Evidence that the tests fail when the behaviour is wrong. Each mutant is a copy of head_commit's app/ and tests/ under /tmp/mut with one fault injected; the repository was untouched. Script: /tmp/mut/mutants.py.",
+    "all_caught": true,
+    "results": [
+      {
+        "mutant": "due today counted overdue (<= instead of <)",
+        "pytest": "7 failed, 27 passed",
+        "e2e_local_all_failed_checks": [
+          "boundary",
+          "listing",
+          "overdue-list"
+        ],
+        "rollover_local": "fail",
+        "caught": true
+      },
+      {
+        "mutant": "overdue ignores done",
+        "pytest": "4 failed, 30 passed",
+        "e2e_local_all_failed_checks": [
+          "empty-overdue --strict",
+          "listing",
+          "overdue-list",
+          "empty-overdue",
+          "complete"
+        ],
+        "rollover_local": "pass",
+        "caught": true
+      },
+      {
+        "mutant": "plain `due_date: date | None` field, no pattern or validator",
+        "pytest": "2 failed, 32 passed",
+        "e2e_local_all_failed_checks": [
+          "malformed"
+        ],
+        "rollover_local": "pass",
+        "caught": true
+      },
+      {
+        "mutant": "pattern kept, validator does not check the calendar date",
+        "pytest": "4 failed, 30 passed",
+        "e2e_local_all_failed_checks": [
+          "malformed"
+        ],
+        "rollover_local": "pass",
+        "caught": true
+      },
+      {
+        "mutant": "GET /todos/overdue returns every todo",
+        "pytest": "4 failed, 30 passed",
+        "e2e_local_all_failed_checks": [
+          "empty-overdue --strict",
+          "overdue-list",
+          "empty-overdue",
+          "complete"
+        ],
+        "rollover_local": "fail",
+        "caught": true
+      },
+      {
+        "mutant": "today_utc frozen to a constant date",
+        "pytest": "34 passed",
+        "e2e_local_all_failed_checks": [
+          "boundary",
+          "listing",
+          "overdue-list"
+        ],
+        "rollover_local": "pass",
+        "caught": true
+      },
+      {
+        "mutant": "overdue list in descending id order",
+        "pytest": "1 failed, 33 passed",
+        "e2e_local_all_failed_checks": [
+          "overdue-list",
+          "empty-overdue",
+          "complete"
+        ],
+        "rollover_local": "pass",
+        "caught": true
+      },
+      {
+        "mutant": "overdue key first in the response",
+        "pytest": "6 failed, 28 passed",
+        "e2e_local_all_failed_checks": [
+          "empty-overdue --strict",
+          "compat",
+          "create-future",
+          "create-past",
+          "boundary",
+          "listing",
+          "overdue-list",
+          "empty-overdue",
+          "complete",
+          "malformed"
+        ],
+        "rollover_local": "fail",
+        "caught": true
+      },
+      {
+        "mutant": "TodoIn forbids unknown fields",
+        "pytest": "1 failed, 33 passed",
+        "e2e_local_all_failed_checks": [
+          "compat"
+        ],
+        "rollover_local": "pass",
+        "caught": true
+      },
+      {
+        "mutant": "GET /todos/overdue returns null when empty",
+        "pytest": "3 failed, 31 passed",
+        "e2e_local_all_failed_checks": [
+          "empty-overdue --strict"
+        ],
+        "rollover_local": "fail",
+        "caught": true
+      },
+      {
+        "mutant": "list endpoints read the clock once per todo",
+        "pytest": "2 failed, 32 passed",
+        "e2e_local_all_failed_checks": [],
+        "rollover_local": "pass",
+        "caught": true
+      }
+    ],
+    "note": "The frozen-clock mutant passes pytest by design, because pytest patches today_utc; the live boundary/listing/overdue-list checks catch it. The clock-read-per-todo mutant is caught only by the pytest clock-read tests, since its results are equal unless midnight falls inside one request."
+  },
+  "test_concerns": [
+    {
+      "test": "tests/test_todos.py (3 existing tests)",
+      "concern": "None. They are unedited and pass at every commit."
+    },
+    {
+      "test": "tests/test_overdue.py::test_overdue_is_not_a_stored_field (removed in this revision)",
+      "concern": "The grader found that this test, from the previous revision, passed on base_sha and so proved nothing. It was removed, and its intent (overdue is never stored) became an assertion in test_overdue_flips_when_the_date_advances_without_a_write: `\"overdue\" not in vars(store.get(id))` after the flip. Measured now: all 34 tests in tests/test_overdue.py fail against app/ from base_sha (red_green_evidence.base_sha)."
+    }
+  ],
+  "notes_on_existing_tests": "The single pytest warning is a pre-existing StarletteDeprecationWarning from fastapi.testclient under starlette 1.7 in this sandbox. It is unrelated to this change.",
+  "environment": {
+    "python": "Python 3.11.16",
+    "packages": "fastapi 0.143.0, pydantic 2.14.0, starlette 1.7.0, uvicorn 0.54.0, httpx 0.28.1, pytest 9.1.1",
+    "install": "pip install of pyproject's runtime and dev dependencies into the system interpreter; the repo was not pip-installed, so no egg-info was created in the tree"
+  },
+  "residual_uncertainty": [
+    "spec.md was uploaded empty (0 bytes), so spec.json was the sole contract. No criteria conflicted, so no blocked.md was written.",
+    "Slice 1 is 368 added lines, above the 100-200 guideline. The reason is in slices[0].size_note: no smaller commit can pass the full test plan.",
+    "Slices 2 and 3 each contain tests that were already green against their parent, because their behaviour arrived in slice 1. Their red evidence is against base_sha (all 34 fail) and the mutation runs. Each slice still has at least two tests that were red against its parent.",
+    "Preview entries were not run against a deployed preview (preview.json status 'unavailable'). They were run locally against the manifest entrypoint as supplementary evidence only; the orchestrator's run is authoritative.",
+    "The live boundary/listing/overdue-list checks take 'today' from the client's UTC clock, so they assume the client and the service share a clock (true when the orchestrator runs them on the same host). They retry if the UTC date changes mid-check.",
+    "On a shared instance, compat cannot assert id == 1, because ids depend on prior todos. It asserts the new id is above every id listed before the POST; pytest asserts id == 1 on an empty store.",
+    "Concurrency: list_dicts builds the response dicts while holding the store lock, which complete() also takes, so within one list response done and overdue come from one snapshot. No deterministic test covers this race. The POST routes call to_dict() outside the lock, as the spec prescribes.",
+    "The platform-contract skill was not available in this sandbox. Per the spec context no env var, port, migration or manifest change was needed, and service_manifest.json is unchanged."
+  ]
+}

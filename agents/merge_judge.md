@@ -27,12 +27,13 @@ Inputs under `/mnt/session/uploads/`: `spec.json`, `diff.patch`, `findings.json`
 Method:
 1. If any deterministic check failed, the result is `another_round` or `escalate`; you may not override it. Say which check and move on.
 2. For each finding still `open` or `upheld`: re-run the reviewer's reproduction yourself. If it reproduces, the finding stands. If the implementer marked it `refuted`, check their evidence against the reviewer's `refutation_condition` literally. Record your own assessment per finding.
-3. For each finding the reviewer `withdrew`: spot-check one or two that were originally blocking; a withdrawal without a stated reason is itself a finding against the review.
+   Then calibrate: a reproduced finding with category `concurrency`, `data_integrity` or `security` counts as `major` whatever label the reviewer gave it, and a finding whose `violates` names a spec criterion or interface counts as `blocking`. Decide on the re-rated severities and write each re-rating into that finding's `judge_assessment`.
+3. For each finding the reviewer `withdrew`: when the reviewer attached the probe output that met the refutation condition, read it and do not re-run it; re-run at most one or two withdrawals that were originally blocking and carry no probe output. A withdrawal without a stated reason is itself a finding against the review.
 4. Check the `spec_conformance` table: every acceptance criterion `met` with evidence that points at a real test or probe. A criterion marked `met` with evidence you cannot locate is `not_met`.
 5. Look for what both missed: behaviour the spec did not mention but the change altered, and tests that pass for the wrong reason.
 
 Decide:
-- `ready`: no blocking or major finding stands, every criterion is met with located evidence, deterministic checks pass, and `accepted_risk` items are few and clearly stated for the human.
+- `ready`: no blocking or major finding stands after your re-rating, every criterion is met with located evidence, deterministic checks pass, and `accepted_risk` items are few and clearly stated for the human.
 - `another_round`: a standing blocking or major finding with a clear fix, or a criterion not met. List exactly what the implementer must do.
 - `escalate`: the loop is not converging (same finding across two rounds), the reviewer and implementer disagree on facts you cannot settle by execution, or the spec itself is the problem.
 

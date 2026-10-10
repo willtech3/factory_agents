@@ -1,0 +1,3 @@
+n=1000: head lock-held ~5.4 ms (whole list_dicts); base-pattern lock-held 0.1 ms
+n=10000: head lock-held ~31.4 ms (whole list_dicts); base-pattern lock-held 0.8 ms
+n=50000: head lock-held ~244.1 ms (whole list_dicts); base-pattern lock-held 5.4 ms

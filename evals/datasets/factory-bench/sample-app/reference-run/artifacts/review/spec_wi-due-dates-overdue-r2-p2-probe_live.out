@@ -1,0 +1,10 @@
+[1] concurrency 8.0s: {'writes': 639, 'reads': 979, 'post_done_true': 0}, problems=0
+[2] at rest: GET /todos/overdue == flagged subset of GET /todos: True (88 of 633)
+[3a] 30 extra malformed values: non-422=[] leaked=[] count before/after=633/633
+[3b] spoofed server fields: 201 done=False overdue=True id_is_server=True created_at_is_server=True
+[3c] duplicate due_date keys (last invalid) -> 422; (last valid) -> 201 2000-01-01
+[3d] replayed complete: 200/200 identical=True overdue=False done=True
+[3e] unknown id complete -> 404; non-int -> 422; GET /todos/overdue?x=1 -> 200; POST /todos/overdue -> 405; GET /todos/1 -> 405
+[3f] empty title + bad date -> 422, error locs [['body', 'title'], ['body', 'due_date']]
+[3g] non-JSON body -> 422
+OK: no violations

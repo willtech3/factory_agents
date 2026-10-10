@@ -16,16 +16,16 @@
     "./agents/decomposer.md": {
       "kind": "agent",
       "id": "agent_01PsowtEChbuMJTdyvzzpyQn",
-      "version": "2",
-      "hash": "868eb99a298b96ffc842ef70b4bc9afb",
-      "remote_hash": "d5e9a23da80d4ea67869d26028325941"
+      "version": "4",
+      "hash": "51b1101306bfd7dccce8fc349dd9aaf8",
+      "remote_hash": "50b7ce1d967369063efafc9b61cd4abe"
     },
     "./agents/implementer.md": {
       "kind": "agent",
       "id": "agent_01VRpRLcYCbSvLCNdVU8rKMS",
-      "version": "2",
-      "hash": "b8c0448cf25f17b382d98610463b4715",
-      "remote_hash": "26a9d4925b545b6149b392b42b377acc"
+      "version": "3",
+      "hash": "f0aca09543561924cbf220c09c0714f9",
+      "remote_hash": "9c7f638866e9d58bf061c8fa282662ff"
     },
     "./agents/integrator.md": {
       "kind": "agent",
@@ -37,30 +37,30 @@
     "./agents/merge_judge.md": {
       "kind": "agent",
       "id": "agent_01TW45FCcv8XSLJZkJ2tXVQU",
-      "version": "2",
-      "hash": "8f8ca6742b2c32e7e591fd6638a980ec",
-      "remote_hash": "fb03a53593df9270fb328fe6af300ba4"
+      "version": "3",
+      "hash": "ed5aaa399bc4399a24874832ccf998b4",
+      "remote_hash": "3fe46c975b9ee477ba2561c0fb103752"
     },
     "./agents/reviewer.md": {
       "kind": "agent",
       "id": "agent_01HxQzdADN7Aomrt8hRsyTu8",
-      "version": "2",
-      "hash": "e1a970d5acc98a03bc43d130e6e72acf",
-      "remote_hash": "e0a8b89d584d82d9fe104423194f96a9"
+      "version": "3",
+      "hash": "e48976913b7c8db2bcf70c88ea23fbf1",
+      "remote_hash": "40b8200e85be884670fa4f719c1d7721"
     },
     "./agents/spec_judge.md": {
       "kind": "agent",
       "id": "agent_01XKiVyfY2CfSjzGB4JeJnSs",
-      "version": "2",
-      "hash": "6ec3e722ef546a9d7e488d8b818ea476",
-      "remote_hash": "9f8d0b01fe08f349158c879a361054e3"
+      "version": "3",
+      "hash": "670be9599bf64a8452bbc139e6994689",
+      "remote_hash": "c4d6ac4fa86d94fec0e415cbb435c973"
     },
     "./agents/spec_writer.md": {
       "kind": "agent",
       "id": "agent_01AxE2BD34oT5H1dfkwaRDTC",
-      "version": "2",
-      "hash": "5747b08799e221c91adec153759fda4c",
-      "remote_hash": "de56c91c45e4d806fd9f3c3b7c27310f"
+      "version": "3",
+      "hash": "cb896be4ed324af75ded4b0d41a4ed41",
+      "remote_hash": "0125aed2ba615c45143ab8ba2033edf0"
     },
     "./environments/factory-cloud.yaml": {
       "kind": "environment",

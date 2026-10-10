@@ -17,6 +17,8 @@ This document describes what happens between a human submitting an outcome and t
 | **Change request (CR)** | A GitHub pull request or a GitLab merge request; the forge is pluggable ([ADR-0008](adr/0008-pluggable-forge-github-default.md)). |
 | **Deterministic check** | A computation the orchestrator performs that no agent can override. |
 
+**Security pass.** Beside the general adversarial passes, one Security reviewer session (Fable 5.1) reviews the same diff for trust boundaries, attacker-controlled input, authorisation, secrets and dependencies, with the orchestrator's deterministic pre-checks (`security_prechecks.json`: secret scan over the added lines, dependency audit and SAST when the host has the tools) as inputs. Its findings merge with the others, tagged `pass: security`; a committed credential is a merge check (`secret_scan`) nobody can override; a reproduced security, concurrency or data-integrity finding stands whatever severity it was given. `FACTORY_SECURITY_REVIEW=0` turns the pass off.
+
 ## Stage by stage
 
 ### Stage 0: Intake

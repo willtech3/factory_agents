@@ -1,0 +1,15 @@
+/tmp/rv2_venv312/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+5fd5533: non-422=[] stored_after_malformed=0 accepted(2028-02-29,null)=[201, 201]
+/tmp/rv2_venv312/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+7a5bfd4: non-422=[] stored_after_malformed=0 accepted(2028-02-29,null)=[201, 201]
+/tmp/rv2_venv312/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+e563e95: non-422=[] stored_after_malformed=0 accepted(2028-02-29,null)=[201, 201]
+/tmp/rv2_venv312/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+93ced45: non-422=[] stored_after_malformed=0 accepted(2028-02-29,null)=[201, 201]
+/tmp/rv2_venv312/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+d33b244: non-422=[('2026-11-30T00:00:00', 201, {'id': 1, 'title': 'x', 'done': False, 'created_at': '2026-10-10T13:04:02.923506+00:00', 'due_date': '2026-11-30', 'overdue': False}), (0, 201, {'id': 2, 'title': 'x', 'done': False, 'created_at': '2026-10-10T13:04:02.935892+00:00', 'due_date': '1970-01-01', 'overdue': True})] stored_after_malformed=2 accepted(2028-02-29,null)=[201, 201]

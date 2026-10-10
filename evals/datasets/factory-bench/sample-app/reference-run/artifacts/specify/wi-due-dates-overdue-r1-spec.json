@@ -1,0 +1,433 @@
+{
+  "spec_id": "spec_wi-due-dates-overdue",
+  "work_item_id": "wi-due-dates-overdue",
+  "decomposition_id": "dec_4e93d2a0d0r1",
+  "outcome_id": "out_4e93d2a0d0",
+  "revision": 1,
+  "title": "Optional due date on todos, overdue flag, and GET /todos/overdue",
+  "goal": "After this merges, a client can send an optional calendar due_date (YYYY-MM-DD) when creating a todo; every todo the API returns carries due_date (null when unset) and a boolean overdue computed at response time; and GET /todos/overdue returns exactly the overdue todos in ascending id order. A todo is overdue if and only if it is open and its due_date is strictly before the current UTC calendar date. This moves the outcome's two metrics: 'Overdue visibility' (GET /todos/overdue returns exactly the open past-due todos and every listed todo carries the flag, measured by the new API tests) and 'Backwards compatibility' (title-only clients and the three existing tests are unchanged, and a todo without a due date is never overdue). The goal is missed if, on the running service, any todo's overdue flag disagrees with the rule, GET /todos/overdue differs from the flagged todos, a title-only POST changes any existing field, or a malformed due_date is stored instead of returning 422; the preview e2e checks and the pytest suite are written to catch each of these.",
+  "non_goals": [
+    "Changing or clearing a due date after creation (no PATCH/PUT), or un-completing a todo.",
+    "Reminders or notifications; filtering, sorting or paginating GET /todos by due date.",
+    "Datetime due dates, per-user timezones, or any timezone other than UTC.",
+    "Persistence or a database; storage stays an in-memory dict.",
+    "Response models or OpenAPI clean-up; routes keep returning plain dicts.",
+    "Any CI workflow, service_manifest.json, pyproject.toml, or .github/ change.",
+    "Adding a GET /todos/{todo_id} route."
+  ],
+  "context": "Read from /workspace/repo at the base commit (main, 6dec694); the codebase is about 100 lines.\n- app/storage.py:10-18: Todo is a stdlib dataclass (id, title, done=False, created_at default_factory datetime.now(timezone.utc).isoformat()); to_dict() is asdict(self). This is the only use of the clock and it is not injectable.\n- app/storage.py:21-53: TodoStore keeps a dict under a threading.Lock; list() sorts by id (27-29); create(title) (31-36); complete(id) sets done=True and returns the Todo or None; clear() resets items and the id counter.\n- app/main.py:3: docstring lists the endpoints. app/main.py:16-17: TodoIn has only title (Field min_length=1, max_length=200); no extra='forbid', so unknown fields are ignored. app/main.py:25-46: routes return plain dicts (no response_model): GET /todos, POST /todos (201), POST /todos/{todo_id}/complete (404 if missing), DELETE /todos/{todo_id}. main.py has `from __future__ import annotations`, so any type used in TodoIn (e.g. date) must be imported at module level.\n- There is no GET /todos/{todo_id} route, so GET /todos/overdue cannot be shadowed today.\n- tests/test_todos.py has three tests (health; create/list/complete/delete asserting id == 1, done, created_at truthy, titles, [] after delete; 422 on empty title and 404s). Fixtures: autouse store.clear() and a TestClient. No test compares a whole todo dict, so appending keys is safe. The fixtures live in that file, so tests/test_overdue.py must define its own.\n- pyproject.toml: runtime deps fastapi, uvicorn, pydantic; dev deps pytest, httpx; pytest testpaths = tests. service_manifest.json: entrypoint `uvicorn app.main:app --host 0.0.0.0 --port 8000`, health /health, migrations `true`; no change needed.\n- Verified in a scratch venv (fastapi 0.143, pydantic 2.14): a plain `date | None` body field returns 422 for \"2026-13-01\", \"abc\", \"\", ints and bool, but ACCEPTS \"2026-11-30T00:00:00\"; strict=True rejects even \"2026-11-30\". Hence the explicit YYYY-MM-DD requirement in AC-9.\n- Platform (inferred from service_manifest.json and .github/workflows/preview.yml, because the platform-contract skill was unavailable): the preview environment must be an instance of this service started from the manifest (Python 3.12, deps from pyproject.toml, `uvicorn app.main:app`, port 8000, /health returns 200), with no environment variables, no seeded data and no migration step (migrations command is `true`). Nothing in this item changes that, so no `config` interface is declared and no manifest edit is requested. The e2e checks need nothing from the environment except $BASE_URL; the orchestrator starts the instance and exports it.",
+  "acceptance_criteria": [
+    {
+      "ac_id": "AC-1",
+      "given": "An empty store and a client that sends only a title (the request shape every existing client uses).",
+      "when": "It sends POST /todos with {\"title\": \"Write the outcome\"}.",
+      "then": "The response is 201 and its JSON contains the four existing keys exactly as today (id is an int starting at 1, title echoes the input, done is false, created_at is a non-empty ISO-8601 string) plus \"due_date\": null and \"overdue\": false. The key order is id, title, done, created_at, due_date, overdue.",
+      "verification": "automated_test",
+      "user_visible": true
+    },
+    {
+      "ac_id": "AC-2",
+      "given": "A client that sends a due date in the future.",
+      "when": "It sends POST /todos with {\"title\": \"t\", \"due_date\": \"2999-12-31\"}, and again with {\"title\": \"t\", \"due_date\": null}.",
+      "then": "Both responses are 201. The first has \"due_date\": \"2999-12-31\" (a YYYY-MM-DD string) and \"overdue\": false. The second has \"due_date\": null and \"overdue\": false.",
+      "verification": "automated_test",
+      "user_visible": true
+    },
+    {
+      "ac_id": "AC-3",
+      "given": "A client that sends a due date in the past.",
+      "when": "It sends POST /todos with {\"title\": \"late\", \"due_date\": \"2000-01-01\"}.",
+      "then": "The response is 201 (past due dates are accepted), \"due_date\" is \"2000-01-01\" and \"overdue\" is true. The todo is stored and GET /todos returns it with \"overdue\": true.",
+      "verification": "automated_test",
+      "user_visible": true
+    },
+    {
+      "ac_id": "AC-4",
+      "given": "The current UTC calendar date is D (in tests, fixed by patching app.storage.today_utc; against a live instance, read from the system clock).",
+      "when": "Three todos are created, with due_date D-1 day, D, and D+1 day, and GET /todos is called.",
+      "then": "The todo due D-1 has \"overdue\": true. The todo due D has \"overdue\": false (strictly before today is the rule, so a todo due today is not overdue). The todo due D+1 has \"overdue\": false.",
+      "verification": "automated_test",
+      "user_visible": true,
+      "verification_note": "Pytest proves it with a fixed clock. The preview and local e2e check reads the UTC date before and after and retries when the date changed in between, so it cannot flake at midnight UTC."
+    },
+    {
+      "ac_id": "AC-5",
+      "given": "Open and completed todos exist, with and without due dates, in the store.",
+      "when": "GET /todos is called.",
+      "then": "The response is 200 and a list ordered by ascending id. Every element has the keys id, title, done, created_at, due_date, overdue. due_date is a YYYY-MM-DD string or null, overdue is a bool. Each element's overdue equals (done is false AND due_date is not null AND due_date < current UTC date). A todo with due_date null is never overdue.",
+      "verification": "automated_test",
+      "user_visible": true
+    },
+    {
+      "ac_id": "AC-6",
+      "given": "The store holds: an open todo due in the past (id a), a todo due in the past that was then completed (id b), an open todo due in the future (id c), an open todo with no due date (id d), an open todo due today (UTC), and a second open past-due todo (id f > a).",
+      "when": "GET /todos/overdue is called.",
+      "then": "The response is 200 (not 404 or 422: the route is not shadowed by any /todos/{todo_id} route) and a list containing exactly the todos a and f, in ascending id order, each with \"overdue\": true and \"done\": false, each with the full todo shape of AC-5. Todos b, c, d and the one due today are absent.",
+      "verification": "automated_test",
+      "user_visible": true
+    },
+    {
+      "ac_id": "AC-7",
+      "given": "No todo in the store is both open and past due (the store is empty, or every past-due todo has been completed).",
+      "when": "GET /todos/overdue is called.",
+      "then": "The response is 200 with the body [] (an empty JSON list, not null and not an error).",
+      "verification": "automated_test",
+      "user_visible": true
+    },
+    {
+      "ac_id": "AC-8",
+      "given": "An open todo with due_date 2000-01-01 that is currently listed by GET /todos/overdue.",
+      "when": "POST /todos/{id}/complete is called for it, then GET /todos/overdue and GET /todos are called.",
+      "then": "The complete response is 200 with \"done\": true, \"due_date\": \"2000-01-01\" and \"overdue\": false (a completed todo is never overdue). The todo is no longer in GET /todos/overdue, and GET /todos still lists it with \"overdue\": false. Completing an unknown id still returns 404 (unchanged).",
+      "verification": "automated_test",
+      "user_visible": true
+    },
+    {
+      "ac_id": "AC-9",
+      "given": "A running service with N todos.",
+      "when": "POST /todos is called with a title and a malformed due_date, one request per value: \"2026-13-01\", \"2026-02-30\", \"not-a-date\", \"\", \"20261130\", \"2026-11-30T17:00:00Z\", \"2026-11-30T00:00:00\", \"2026-11-30 \", 20261130, 1700000000, true, [\"2026-11-30\"].",
+      "then": "Every response is 422 (the same status an empty title gets today) and no todo is created: GET /todos still returns N todos. Only a string of exactly the form YYYY-MM-DD that is a real calendar date, or null, is accepted. Datetimes are rejected even when the time part is midnight.",
+      "verification": "automated_test",
+      "user_visible": true,
+      "verification_note": "Pitfall: a plain pydantic `date` field accepts \"2026-11-30T00:00:00\" in lax mode, and date.fromisoformat accepts \"20261130\". The implementation must enforce the YYYY-MM-DD form explicitly. Strict-mode `date` is not a fix because it rejects valid strings when FastAPI validates the parsed JSON body."
+    },
+    {
+      "ac_id": "AC-10",
+      "given": "A todo is open with due_date D, and the UTC date is controlled by patching app.storage.today_utc (the module-level clock defined by this item).",
+      "when": "With the clock at D, the todo is read through GET /todos and GET /todos/overdue. The clock is then advanced to D+1 with no write to the todo in between, and both endpoints are read again.",
+      "then": "At clock D the todo has \"overdue\": false and is absent from GET /todos/overdue. At clock D+1 the same todo has \"overdue\": true in GET /todos and is present in GET /todos/overdue. The flag is therefore derived when the response is built and is never stored on the todo.",
+      "verification": "automated_test",
+      "user_visible": true,
+      "verification_note": "No single-run check against a live instance can observe a UTC date rollover, so AC-10 has no preview entry. The clock-patched pytest test and the `rollover-local` e2e entry, which drives the clock in-process, are the authoritative evidence."
+    },
+    {
+      "ac_id": "AC-11",
+      "given": "The repository at the base commit, with the existing tests/test_todos.py unmodified.",
+      "when": "The full test suite is run.",
+      "then": "All three existing tests in tests/test_todos.py pass without any edit to that file (git diff against main shows no change to it), and the new tests in tests/test_overdue.py pass.",
+      "verification": "automated_test",
+      "user_visible": false
+    },
+    {
+      "ac_id": "AC-12",
+      "given": "The finished change.",
+      "when": "The static checks in test_plan.commands are run.",
+      "then": "No file outside allowed_paths changed. pyproject.toml, service_manifest.json and .github/ are byte-identical to main. Every module imported under app/ and tests/ is from the standard library, fastapi, pydantic, uvicorn, pytest, httpx or the app package. The storage is still the in-memory dict (no database module is imported).",
+      "verification": "static_check",
+      "user_visible": false
+    },
+    {
+      "ac_id": "AC-13",
+      "given": "The finished change.",
+      "when": "README.md and the app/main.py module docstring are read.",
+      "then": "The module docstring's endpoint list includes GET /todos/overdue and mentions due_date. README.md has a short section stating: the optional due_date (YYYY-MM-DD, UTC), the overdue flag and the exact rule (open and due_date strictly before today's UTC date), and GET /todos/overdue.",
+      "verification": "static_check",
+      "user_visible": false
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "Todo response object",
+      "kind": "http_api",
+      "change": "modified",
+      "definition": "Every todo returned by any endpoint is this JSON object. Existing keys keep name, type and value; two keys are appended.\n{\"id\": 1, \"title\": \"Write the outcome\", \"done\": false, \"created_at\": \"2026-10-10T08:10:54.068302+00:00\", \"due_date\": \"2026-11-30\", \"overdue\": false}\nid:int, title:str, done:bool, created_at:str (ISO-8601, unchanged), due_date: str|null (\"YYYY-MM-DD\", null when unset), overdue: bool (true iff done is false AND due_date is not null AND date.fromisoformat(due_date) < today_utc()). Both new keys are always present."
+    },
+    {
+      "name": "POST /todos",
+      "kind": "http_api",
+      "change": "modified",
+      "definition": "Request body: {\"title\": str (1..200 chars, unchanged), \"due_date\": str|null (optional, default null)}. due_date must match ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ and be a real calendar date, otherwise 422. Unknown extra fields are still ignored as today. Response: 201 with the Todo response object. Example: {\"title\":\"Pay rent\",\"due_date\":\"2026-11-30\"} -> 201 {\"id\": 1, \"title\": \"Pay rent\", \"done\": false, \"created_at\": \"2026-10-10T08:10:54.068302+00:00\", \"due_date\": \"2026-11-30\", \"overdue\": false}"
+    },
+    {
+      "name": "GET /todos",
+      "kind": "http_api",
+      "change": "modified",
+      "definition": "No parameters. 200 with list[Todo response object] ordered by ascending id; [] when empty. Only change: each element carries due_date and overdue."
+    },
+    {
+      "name": "GET /todos/overdue",
+      "kind": "http_api",
+      "change": "new",
+      "definition": "No parameters. 200 with list[Todo response object] holding exactly the todos where overdue is true, ordered by ascending id; [] when none. Evaluated against one today_utc() reading per request. It is a GET route on a literal path; no GET /todos/{todo_id} route exists, and if one is ever added it must be registered after this route."
+    },
+    {
+      "name": "POST /todos/{todo_id}/complete",
+      "kind": "http_api",
+      "change": "modified",
+      "definition": "Unchanged request and 404 behaviour. The 200 response is the Todo response object, so it carries due_date and overdue (overdue is false because done is true)."
+    },
+    {
+      "name": "app.storage.today_utc",
+      "kind": "function",
+      "change": "new",
+      "definition": "def today_utc() -> datetime.date: return datetime.now(timezone.utc).date()\nThe only clock the overdue rule reads. Module-level in app/storage.py and always called through the module global (never bound by `from .storage import today_utc` elsewhere), so tests can use monkeypatch.setattr(\"app.storage.today_utc\", lambda: date(2026, 11, 30)). Todo.created_at keeps its own existing default_factory and is not affected."
+    },
+    {
+      "name": "app.storage.Todo / TodoStore",
+      "kind": "function",
+      "change": "modified",
+      "definition": "Todo gains a field `due_date: str | None = None` placed after created_at (stored as the validated YYYY-MM-DD string). `Todo.is_overdue(self, today: date | None = None) -> bool` (today defaults to today_utc()). `Todo.to_dict(self, today: date | None = None) -> dict[str, Any]` returns asdict(self) plus key \"overdue\": self.is_overdue(today); key order id, title, done, created_at, due_date, overdue. `TodoStore.create(self, title: str, due_date: date | None = None) -> Todo` (stores due_date.isoformat() or None). New `TodoStore.list_dicts(self, overdue_only: bool = False) -> list[dict[str, Any]]` reads today_utc() once and returns [t.to_dict(today) for t in sorted-by-id todos], filtered to overdue ones when overdue_only. Existing list(), get(), complete(), delete(), clear() are unchanged. The routes GET /todos and GET /todos/overdue use list_dicts."
+    },
+    {
+      "name": "tests/e2e_overdue.py",
+      "kind": "cli",
+      "change": "new",
+      "definition": "Usage: python tests/e2e_overdue.py <check> [base_url]. base_url defaults to $BASE_URL. Standard library only (urllib). Checks: compat (AC-1), create-future (AC-2), create-past (AC-3), boundary (AC-4), listing (AC-5), overdue-list (AC-6), empty-overdue (AC-7; with an internal --strict flag, used by local-all on a fresh server, it asserts the body is exactly []), complete (AC-8), malformed (AC-9), all (runs those nine in order against base_url), local-all (starts `python -m uvicorn app.main:app` on a free 127.0.0.1 port, polls /health until 200, runs all, always terminates the server), rollover-local (AC-10; imports app.main in-process, patches app.storage.today_utc, drives it through fastapi.testclient.TestClient). Exit 0 when the check passes, 1 with a message naming the failed assertion otherwise. No check mutates a todo it did not create. Each check creates its own todos and asserts only on those ids (plus whole-list invariants), so it passes on an instance that already holds other todos. It is not collected by pytest because the file name has no test_ prefix."
+    }
+  ],
+  "allowed_paths": [
+    "app/storage.py",
+    "app/main.py",
+    "README.md",
+    "tests/test_overdue.py",
+    "tests/e2e_overdue.py"
+  ],
+  "forbidden_changes": [
+    "Do not edit tests/test_todos.py, pyproject.toml, service_manifest.json or anything under .github/.",
+    "Do not rename, retype or reorder the existing todo fields id, title, done, created_at.",
+    "Do not store the overdue flag on the Todo; derive it when the response is built.",
+    "Do not add a database, a dependency, an environment variable or a third-party date library.",
+    "Do not use time.sleep, datetime.now() or date.today() in tests/test_overdue.py; control 'today' only through app.storage.today_utc or fixed far-past/far-future dates."
+  ],
+  "non_functional": {
+    "performance": "list_dicts is a sort plus a filter over the in-memory dict, as GET /todos is today; no new complexity concern.",
+    "security": "due_date is validated at the request boundary (pattern plus real-date check) and never evaluated or interpolated. No new endpoints beyond the read-only GET /todos/overdue and no auth change.",
+    "observability": "None required; no new logging.",
+    "backwards_compatibility": "Additive only: existing keys keep names, types, values and order; two keys are appended; a title-only POST behaves as before; unknown request fields are still ignored."
+  },
+  "test_plan": {
+    "commands": [
+      "python -m pytest -q",
+      "python -m pytest -q tests/test_todos.py",
+      "git diff --exit-code main -- tests/test_todos.py pyproject.toml service_manifest.json .github",
+      "python -c \"import ast,pathlib,sys; ok=set(sys.stdlib_module_names)|{'app','fastapi','pydantic','uvicorn','pytest','httpx'}; mods=lambda n: [a.name.split('.')[0] for a in n.names] if isinstance(n,ast.Import) else ([n.module.split('.')[0]] if isinstance(n,ast.ImportFrom) and n.level==0 and n.module else []); bad=[(str(p),m) for p in sorted([*pathlib.Path('app').rglob('*.py'),*pathlib.Path('tests').rglob('*.py')]) for n in ast.walk(ast.parse(p.read_text())) for m in mods(n) if m not in ok]; print('disallowed imports:',bad); sys.exit(1 if bad else 0)\"",
+      "python -c \"import ast; d=ast.get_docstring(ast.parse(open('app/main.py').read())); r=open('README.md').read(); assert 'GET /todos/overdue' in d and 'due_date' in d; assert 'GET /todos/overdue' in r and 'due_date' in r and 'overdue' in r\"",
+      "! grep -nE \"sleep|datetime\\.now|date\\.today\" tests/test_overdue.py",
+      "python tests/e2e_overdue.py local-all",
+      "python tests/e2e_overdue.py rollover-local"
+    ],
+    "e2e": [
+      {
+        "covers_ac": [
+          "AC-1"
+        ],
+        "command": "python tests/e2e_overdue.py compat \"$BASE_URL\"",
+        "target": "preview",
+        "description": "POST {title} only; assert 201, the four old keys with old types and done false, due_date null, overdue false, key order."
+      },
+      {
+        "covers_ac": [
+          "AC-2"
+        ],
+        "command": "python tests/e2e_overdue.py create-future \"$BASE_URL\"",
+        "target": "preview",
+        "description": "POST due_date 2999-12-31 and due_date null; assert echoed values and overdue false."
+      },
+      {
+        "covers_ac": [
+          "AC-3"
+        ],
+        "command": "python tests/e2e_overdue.py create-past \"$BASE_URL\"",
+        "target": "preview",
+        "description": "POST due_date 2000-01-01; assert 201, overdue true, and the same in GET /todos."
+      },
+      {
+        "covers_ac": [
+          "AC-4"
+        ],
+        "command": "python tests/e2e_overdue.py boundary \"$BASE_URL\"",
+        "target": "preview",
+        "description": "Create todos due yesterday, today and tomorrow (UTC, computed from the system clock; retried if the UTC date changed during the check); assert true/false/false."
+      },
+      {
+        "covers_ac": [
+          "AC-5"
+        ],
+        "command": "python tests/e2e_overdue.py listing \"$BASE_URL\"",
+        "target": "preview",
+        "description": "Create a mix of todos; assert GET /todos ordering by id, key set, and overdue equals the rule for every element in the list."
+      },
+      {
+        "covers_ac": [
+          "AC-6"
+        ],
+        "command": "python tests/e2e_overdue.py overdue-list \"$BASE_URL\"",
+        "target": "preview",
+        "description": "Create past-open x2, past-completed, future, no-date; assert GET /todos/overdue returns 200 and, among the created ids, exactly the two past-open ones in ascending order; every element in the list has overdue true and done false."
+      },
+      {
+        "covers_ac": [
+          "AC-7"
+        ],
+        "command": "python tests/e2e_overdue.py empty-overdue \"$BASE_URL\"",
+        "target": "preview",
+        "description": "Create only non-overdue todos (future, no date, past-then-completed) and assert none appears in GET /todos/overdue; assert the response is 200 and equals the overdue-flagged subset of GET /todos, and is [] whenever that subset is empty. Read-only with respect to todos it did not create. The strict exact-[] assertion runs in local-all, where the check runs first on a fresh server."
+      },
+      {
+        "covers_ac": [
+          "AC-8"
+        ],
+        "command": "python tests/e2e_overdue.py complete \"$BASE_URL\"",
+        "target": "preview",
+        "description": "Create a past-due todo, complete it; assert the response, its absence from the overdue list, and overdue false in GET /todos; unknown id still 404."
+      },
+      {
+        "covers_ac": [
+          "AC-9"
+        ],
+        "command": "python tests/e2e_overdue.py malformed \"$BASE_URL\"",
+        "target": "preview",
+        "description": "POST each malformed due_date value listed in AC-9; assert 422 each time and that the GET /todos length is unchanged."
+      },
+      {
+        "covers_ac": [
+          "AC-1",
+          "AC-2",
+          "AC-3",
+          "AC-4",
+          "AC-5",
+          "AC-6",
+          "AC-7",
+          "AC-8",
+          "AC-9"
+        ],
+        "command": "python tests/e2e_overdue.py local-all",
+        "target": "local",
+        "description": "Start the service locally on a free port and run all nine live checks against it; the local counterpart of the preview entries above."
+      },
+      {
+        "covers_ac": [
+          "AC-10"
+        ],
+        "command": "python tests/e2e_overdue.py rollover-local",
+        "target": "local",
+        "description": "In-process: patch app.storage.today_utc to D, create a todo due D, assert overdue false and absent from the overdue list; patch to D+1 with no write in between, assert overdue true and present in both GET /todos and GET /todos/overdue. Local only: a live instance cannot observe a date rollover."
+      }
+    ],
+    "new_tests": [
+      {
+        "covers_ac": [
+          "AC-1",
+          "AC-11"
+        ],
+        "description": "Title-only POST returns old keys unchanged plus due_date null / overdue false; key order.",
+        "suggested_location": "tests/test_overdue.py"
+      },
+      {
+        "covers_ac": [
+          "AC-2",
+          "AC-3"
+        ],
+        "description": "Create with future date, null date, past date; echoed due_date and overdue values (fixed far-past 2000-01-01 and far-future 2999-12-31, or the patched clock).",
+        "suggested_location": "tests/test_overdue.py"
+      },
+      {
+        "covers_ac": [
+          "AC-4"
+        ],
+        "description": "With app.storage.today_utc patched to a fixed date D: due D-1 overdue, due D not overdue, due D+1 not overdue; also at D=2026-03-01 / D-1=2026-02-28 and the year boundary (D=2027-01-01, due 2026-12-31).",
+        "suggested_location": "tests/test_overdue.py"
+      },
+      {
+        "covers_ac": [
+          "AC-5"
+        ],
+        "description": "GET /todos on a mixed store: ascending id, full key set, overdue equals the rule per element; no-due-date todo never overdue.",
+        "suggested_location": "tests/test_overdue.py"
+      },
+      {
+        "covers_ac": [
+          "AC-6",
+          "AC-7"
+        ],
+        "description": "The six-todo store of AC-6 gives exactly [a, f] in order; a store with only non-overdue todos and an empty store give [] with status 200.",
+        "suggested_location": "tests/test_overdue.py"
+      },
+      {
+        "covers_ac": [
+          "AC-8"
+        ],
+        "description": "Complete a past-due todo: response overdue false, due_date kept, removed from overdue list, still in GET /todos; unknown id 404.",
+        "suggested_location": "tests/test_overdue.py"
+      },
+      {
+        "covers_ac": [
+          "AC-9"
+        ],
+        "description": "Parametrized over every malformed value in AC-9: 422 and GET /todos length unchanged. Also a valid leap day 2028-02-29 is accepted and 2027-02-29 is rejected.",
+        "suggested_location": "tests/test_overdue.py"
+      },
+      {
+        "covers_ac": [
+          "AC-10"
+        ],
+        "description": "Clock advanced from D to D+1 with no write in between flips overdue in both GET /todos and GET /todos/overdue (monkeypatch app.storage.today_utc).",
+        "suggested_location": "tests/test_overdue.py"
+      },
+      {
+        "covers_ac": [
+          "AC-1",
+          "AC-2",
+          "AC-3",
+          "AC-4",
+          "AC-5",
+          "AC-6",
+          "AC-7",
+          "AC-8",
+          "AC-9",
+          "AC-10"
+        ],
+        "description": "The e2e script tests/e2e_overdue.py described in the interfaces, one check per criterion.",
+        "suggested_location": "tests/e2e_overdue.py"
+      }
+    ]
+  },
+  "dependencies": {
+    "specs": [],
+    "external": []
+  },
+  "rollout": {
+    "feature_flag": null,
+    "migration_steps": [],
+    "rollback": "Revert the pull request. There is no data migration: storage is in memory and a restart already discards todos. Clients that ignore the two new keys are unaffected either way."
+  },
+  "open_questions": [
+    {
+      "question": "Is a UTC-midnight cutoff acceptable for users who are not in UTC (a todo due 'today' local time may show overdue a few hours early or late)?",
+      "blocking": false,
+      "default_if_unanswered": "Yes. The service has no users or timezones; UTC matches created_at. Revisit only if per-user timezones are added."
+    },
+    {
+      "question": "Will the orchestrator-started preview instance be fresh for each e2e run?",
+      "blocking": false,
+      "default_if_unanswered": "Assume yes per the owner's decision, but no preview check depends on it: they pass on an instance that already holds todos."
+    }
+  ],
+  "estimated_size": "S",
+  "produced_by": {
+    "agent_name": "spec-writer",
+    "agent_id": "agent_spec_writer",
+    "agent_version": 1,
+    "session_id": "sesn_unknown",
+    "thread_id": null,
+    "model": "claude",
+    "effort": null,
+    "outcome_iterations": null,
+    "list_cost_usd": null,
+    "produced_at": "2026-10-10T11:30:00Z",
+    "inputs": [
+      {
+        "artifact": "outcome.json",
+        "sha256": "7008a18a3bbb0deec7d9ca237488118e10bce6b1b61a6e88b833205388a1f8fa"
+      },
+      {
+        "artifact": "decomposition.json",
+        "sha256": "4931077f13a950e63bddb9a95cc524456504a31caa00c85ffc34ad7af8d917d0"
+      },
+      {
+        "artifact": "work_item.json",
+        "sha256": "5b62363705e853fcb6352194ba6c00e9577d1a2aa4e68cfe8965749421106b59"
+      }
+    ]
+  }
+}

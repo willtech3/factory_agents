@@ -230,7 +230,8 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
         ctx.event("stage.entered", {"stage": RunStage.IMPLEMENTING.value}, stage="implement")
     auth_url = ctx.forge.authenticated_url(repo["url"]) if ctx.forge is not None else repo["url"]
     verifier = LocalVerifier(auth_url, ctx.cfg.runs_dir / ctx.run_id / "verify")
-    merged_or_open: set[str] = {sid for sid in specs if _cr_already_open(ctx, sid)}   # finished before a resume
+    cr_by_spec: dict[str, int] = _open_change_requests(ctx)                       # finished before a resume
+    merged_or_open: set[str] = set(cr_by_spec)
     remaining = {sid: s for sid, s in specs.items() if sid not in merged_or_open}
     while remaining:
         ready = [s for s in remaining.values()
@@ -241,7 +242,17 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
         for spec in ready[: ctx.policy.parallel_implementations]:
             sid = spec["spec_id"]
             deps = {dsid: specs[dsid] for dsid in spec["dependencies"]["specs"] if dsid in specs}
-            verdict = run_implement_one(ctx, spec, repo["url"], repo["default_branch"], verifier, deps,
+            base_branch, blocker = base_branch_for(ctx, spec, cr_by_spec, repo["default_branch"])
+            if blocker:
+                ctx.event("run.escalated", {"reason": f"{sid}: {blocker}"}, spec_id=sid)
+                ctx.notifier.escalated(ctx.run_id, f"{sid}: {blocker}")
+                remaining.pop(sid)
+                continue
+            if base_branch != repo["default_branch"]:
+                ctx.event("artifact.produced", {"artifact_type": "stacked_base", "base_branch": base_branch,
+                                                "note": "the dependency's change request is open but not merged; this item is built on its branch"},
+                          work_item_id=spec["work_item_id"], spec_id=sid, stage="implement")
+            verdict = run_implement_one(ctx, spec, repo["url"], base_branch, verifier, deps,
                                         resume_from=(resume or {}).get(sid))
             if verdict["result"] != "ready":
                 ctx.event("run.escalated", {"reason": f"{sid}: merge judge said {verdict['result']}",
@@ -255,8 +266,9 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
             test_results = json.loads(ctx.store.get_artifact(ctx.run_id, "implement", _latest(ctx, "implement", f"{sid}-", "-test_results.json")))
             summary = {"run_id": ctx.run_id, "outcome_title": outcome["title"], "reviewers": [outcome["owner"]["handle"]],
                        "sessions": _sessions_for(ctx, sid), "list_cost_usd": ctx.store.state(ctx.run_id).list_cost_usd}
-            run_integrate(ctx, spec, verdict, findings, response, test_results, summary, repo["default_branch"],
-                          verifier=verifier, spec_md=spec_md.get(sid, ""), spec_verdict=spec_verdict)
+            cr = run_integrate(ctx, spec, verdict, findings, response, test_results, summary, base_branch,
+                               verifier=verifier, spec_md=spec_md.get(sid, ""), spec_verdict=spec_verdict)
+            cr_by_spec[sid] = int(cr.get("id", cr.get("iid")))
             merged_or_open.add(sid)   # Gate 3 (human review + merge) is tracked by the CR watcher, not this loop
             remaining.pop(sid)
 
@@ -265,8 +277,45 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
 
 
 def _cr_already_open(ctx: RunContext, spec_id: str) -> bool:
-    return any(ev.kind == "cr.opened" and ev.spec_id == spec_id and not ev.payload.get("design")
-               for ev in ctx.store.events(ctx.run_id))
+    return spec_id in _open_change_requests(ctx)
+
+
+def _open_change_requests(ctx: RunContext) -> dict[str, int]:
+    """spec_id -> change request id for every (non-design) change request this run has opened."""
+    out: dict[str, int] = {}
+    for ev in ctx.store.events(ctx.run_id):
+        if ev.kind == "cr.opened" and ev.spec_id and not ev.payload.get("design"):
+            out[ev.spec_id] = int(ev.payload["id"])
+    return out
+
+
+def base_branch_for(ctx: RunContext, spec: dict[str, Any], cr_by_spec: dict[str, int], default_branch: str) -> tuple[str, str | None]:
+    """The branch a spec is implemented from, given where its dependencies stand on the forge.
+
+    No dependencies, or every dependency's change request already merged: the default branch. One dependency
+    whose change request is open but not merged: that dependency's branch, so the item is built on the code it
+    needs and its change request targets that branch (a stacked change request; the forge retargets it to the
+    default branch when the dependency merges). A dependency closed without merging, or two unmerged
+    dependencies (nothing to stack on cleanly): a blocker the run escalates with. Dependencies outside this run's
+    specs are assumed already on the default branch."""
+    from .stages.implement import _branch_for
+
+    unmerged: list[str] = []
+    for dep in spec["dependencies"]["specs"]:
+        cr_id = cr_by_spec.get(dep)
+        if cr_id is None:
+            continue                                    # not opened by this run: on the default branch already
+        state = ctx.forge.change_request_state(cr_id)["state"] if ctx.forge is not None else "opened"
+        if state == "merged":
+            continue
+        if state == "closed":
+            return default_branch, f"dependency {dep}'s change request #{cr_id} was closed without merging"
+        unmerged.append(dep)
+    if not unmerged:
+        return default_branch, None
+    if len(unmerged) > 1:
+        return default_branch, f"depends on {len(unmerged)} unmerged change requests ({', '.join(unmerged)}); merge them first and resume"
+    return _branch_for(ctx.run_id, unmerged[0]), None
 
 
 def resume_points(ctx: RunContext, specs: dict[str, dict]) -> dict[str, ResumePoint]:

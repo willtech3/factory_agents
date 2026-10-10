@@ -1,0 +1,8 @@
+## /tmp/wt_r1 1ad4332
+n=1000: list_dicts 5.1 ms
+n=10000: list_dicts 23.7 ms
+n=50000: list_dicts 132.2 ms
+## /tmp/rv2 93ced45
+n=1000: list_dicts 4.0 ms
+n=10000: list_dicts 38.2 ms
+n=50000: list_dicts 253.1 ms

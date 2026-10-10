@@ -1,0 +1,8 @@
+=== date_today under TZ=<-14>14 (local 2026-10-09, UTC 2026-10-10)
+FAIL boundary: boundary: due 2026-10-09 with UTC today 2026-10-10: POST overdue False, want True
+FAIL listing: listing: {'id': 1, 'title': 'e2e-boundary-2026-10-09', 'done': False, 'created_at': '2026-10-10T13:09:22.413431+00:00', 'due_date': '2026-10-09', 'overdue': False} has overdue False but the rule gives True for UTC today 2026-10-10
+FAIL overdue-list: overdue-list: own todos in GET /todos/overdue are ['e2e-overdue-a'], want ['e2e-overdue-a', 'e2e-overdue-f'] (UTC today 2026-10-10)
+=== head under TZ=<-14>14 (local 2026-10-09, UTC 2026-10-10)
+PASS boundary
+PASS listing
+PASS overdue-list

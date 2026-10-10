@@ -1,0 +1,6 @@
+1ad4332 list_dicts at 1000: 2.6 ms (best of 5)
+1ad4332 list_dicts at 10000: 28.1 ms (best of 5)
+1ad4332 list_dicts at 50000: 152.3 ms (best of 5)
+93ced45 list_dicts at 1000: 4.1 ms (best of 5)
+93ced45 list_dicts at 10000: 45.7 ms (best of 5)
+93ced45 list_dicts at 50000: 222.0 ms (best of 5)

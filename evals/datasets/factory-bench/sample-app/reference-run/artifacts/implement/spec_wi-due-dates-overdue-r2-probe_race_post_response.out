@@ -1,0 +1,9 @@
+# F-1 in-process race probe, python 3.12.3, 2026-10-10T12:34:08Z
+1ad4332 (round-1 head), 20000 rounds: 18 torn responses in 20000 rounds; example: {'id': 1115, 'title': 'race', 'done': False, 'created_at': '2026-10-10T12:34:09.098463+00:00', 'due_date': '2000-01-01', 'overdue': False}
+  exit 1
+1ad4332 (round-1 head), 100000 rounds: 34 torn responses in 100000 rounds; example: {'id': 4639, 'title': 'race', 'done': False, 'created_at': '2026-10-10T12:34:11.066391+00:00', 'due_date': '2000-01-01', 'overdue': False}
+  exit 1
+93ced45 (new head), 20000 rounds: 0 torn responses in 20000 rounds
+  exit 0
+93ced45 (new head), 100000 rounds: 0 torn responses in 100000 rounds
+  exit 0
