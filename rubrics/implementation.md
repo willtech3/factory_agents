@@ -23,11 +23,10 @@ No existing test file is modified or deleted unless its path is in `allowed_path
 - 0: any violation.
 - 2: clean.
 
-## I5. Vertical slices with checkpoints
-Commits are ordered slices of roughly 100 to 200 changed lines, each naming the criteria it covers and each leaving the test plan green.
-- 0: a single squashed commit for a multi-criterion spec, or a commit that leaves tests red.
-- 1: slices present but not labelled with criteria.
-- 2: labelled, green at each checkpoint.
+## I5. Vertical slices with checkpoints (advisory)
+Commits are ordered slices of roughly 100 to 200 changed lines, each naming the criteria it covers. Green at a checkpoint means the repository's protected tests (those that existed on `base_sha`) pass at that commit; the full `test_plan` is required only at `head_sha`, where I2 checks it. This item ranks implementations and never fails one: a score below 2 is reported, not revised, and pushed history is never rewritten to raise it (a force-push that answers this item is a defect, not a fix).
+- 1: a single squashed commit for a multi-criterion spec, slices not labelled with criteria, or a checkpoint that leaves the protected tests red.
+- 2: labelled slices, protected tests green at each checkpoint, full test plan green at `head_sha`.
 - 3: as 2, with structural (refactor) commits separated from behavioural ones.
 
 ## I6. No scope creep

@@ -45,8 +45,8 @@ Every introduced or changed interface has a signature, schema fragment, or examp
 - 3: as 2, and notes an existing test the implementer must keep green.
 
 ## S7. Test plan is executable
-`test_plan.commands` are commands that exist in the repository and run; `new_tests` cover every criterion with `automated_test`.
-- 0: a command does not exist, or a criterion has no planned test.
+`test_plan.commands` are test, build or lint runs the repository supports, runnable at any commit of the implementer's branch; a shell assertion that a file exists or that a docstring or README contains text (`test -f`, `grep`) is not a command but a `static_check` criterion. `new_tests` cover every criterion with `automated_test`.
+- 0: a command does not exist or is a file-existence or text assertion, or a criterion has no planned test.
 - 1: commands exist; mapping incomplete.
 - 2: every automated criterion maps to a planned test.
 - 3: as 2, and names the fixture or harness the tests should reuse.
