@@ -229,13 +229,19 @@
   function applyTheme(t) { document.documentElement.dataset.theme = t === "dark" ? "dark" : ""; try { localStorage.setItem("factory-theme", t); } catch (e) { /* private window */ } }
   try { applyTheme(localStorage.getItem("factory-theme") || "light"); } catch (e) { applyTheme("light"); }
 
+  // what the board says is waiting on a person; the sidebar badge and the board header count the same cards
+  const onBoard = b => b.runs.filter(r => !r.terminal || r.cards.length);
+  const waitingOf = runs => {
+    const cards = runs.flatMap(r => r.cards);
+    return { decisions: cards.filter(c => c.kind === "gate" || c.kind === "question").length, reviews: cards.filter(c => c.kind === "pr").length };
+  };
   const gapsMatching = (gaps, keys) => gaps.filter(g => keys.some(k => g.includes(k)));
   const forgeGapsOf = c => gapsMatching(c.gaps, ["FORGE", "FACTORY_FORGE", "FACTORY_VAULT_ID"]);
   async function loadChrome() {
     try {
-      const [c, inbox] = await Promise.all([api("/api/config"), api("/api/inbox")]);
+      const [c, board] = await Promise.all([api("/api/config"), api("/api/board")]);
       state.config = c;
-      const n = inbox.gates.filter(g => !g.recorded).length + inbox.questions.length;
+      const w = waitingOf(onBoard(board)), n = w.decisions + w.reviews;
       $inboxCount.textContent = n; $inboxCount.classList.toggle("zero", n === 0);
       const dark = document.documentElement.dataset.theme === "dark";
       const forgeOk = !forgeGapsOf(c).length;
@@ -291,12 +297,13 @@
     setNav("inbox");
     const b = await api("/api/board");
     // a finished run stays on the board while a person still owes it something (a pull request to review, a deploy to watch)
-    const live = b.runs.filter(r => !r.terminal || r.cards.length);
+    const live = onBoard(b);
     const active = live.filter(r => !r.terminal).length, handedOff = live.length - active;
-    const waiting = live.flatMap(r => r.cards.filter(c => c.kind === "gate" || c.kind === "question" || c.kind === "pr"));
+    const w = waitingOf(live);
+    const waitingLabel = [w.decisions ? plural(w.decisions, "decision") : null, w.reviews ? plural(w.reviews, "pull request") : null].filter(Boolean).join(", ");
     const frag = document.createDocumentFragment();
     frag.append(pageHead("The board", "Columns are the pipeline. Rows are who owns the work. A card only sits in its owner's row, so whose turn it is is the row, not a label.",
-      [waiting.length ? el("span", { class: "tag gate" }, `${plural(waiting.length, "decision")} waiting`) : el("span", { class: "tag ok" }, "Nothing waiting on a person"),
+      [waitingLabel ? el("span", { class: "tag gate" }, `${waitingLabel} waiting`) : el("span", { class: "tag ok" }, "Nothing waiting on a person"),
        el("a", { class: "btn primary", href: "#/start" }, "Start a run")]));
     if (!live.length) {
       frag.append(card(null, el("div", { class: "empty" }, crewFigure("implementer", "asleep", "l"), el("h3", null, "The floor is quiet"),
