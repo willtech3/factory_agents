@@ -13,6 +13,10 @@ from factory.forge.github import BOT_MARKER, GitHubForge
 from factory.forge.gitlab import GitLabForge
 
 
+class Seq(list):
+    """Route value: one (status, payload) per call in order; the last one repeats. A plain list is a JSON array."""
+
+
 class Recorder:
     """Scripted GitHub API: records every request; answers from a route table (method path -> json/status)."""
 
@@ -27,6 +31,9 @@ class Recorder:
         resp = self.routes.get(key)
         if resp is None:
             return httpx.Response(404, json={"message": f"no route {key}"})
+        if isinstance(resp, Seq):                        # one response per call, the last one repeats
+            idx = self.calls.count((request.method, request.url.path, dict(request.url.params), body)) - 1
+            resp = resp[min(idx, len(resp) - 1)]
         status, payload = (resp if isinstance(resp, tuple) else (200, resp))
         if callable(payload):
             payload = payload(body, dict(request.url.params))
@@ -273,8 +280,48 @@ def test_github_creates_missing_repository_and_seeds_workflow(root):
     assert create_call == {"name": "newapp", "private": True, "auto_init": True, "description": "Created by the software factory"}
     tree = next(b for m, p, _, b in rec.calls if p.endswith("/git/trees"))
     assert tree["tree"][0]["path"] == ".github/workflows/preview.yml"
-    # existing repository: nothing happens
+    # existing repository: nothing happens (the workflow is only checked when a template is given)
     rec2 = Recorder({"GET /repos/will/newapp": {"id": 1}})
     f2 = GitHubForge("https://github.com", "ghp_test", "will/newapp", transport=httpx.MockTransport(rec2))
     assert ensure_repository(f2, {"url": "https://github.com/will/newapp", "create": True}) is None
     assert ensure_repository(f2, {"url": "https://github.com/will/newapp"}) is None and len(rec2.calls) == 1
+
+
+def test_github_seed_retries_while_the_new_repository_is_not_ready_and_reseeds_an_unseeded_one(root):
+    """Live greenfield run: POST /git/trees answered 404 seconds after the repository was created. The seed is
+    retried with backoff; and a repository left without the workflow by that crash gets it on the next run."""
+    from factory.forge import ensure_repository
+    tmpl = root / "templates" / "github-actions-preview.yml"
+    routes = {
+        "GET /repos/will/newapp": (404, {"message": "Not Found"}),
+        "GET /user": {"login": "will"},
+        "POST /user/repos": (201, {"html_url": "https://github.com/will/newapp", "default_branch": "main", "private": True, "id": 9}),
+        "GET /repos/will/newapp/git/ref/heads/main": {"object": {"sha": "init"}},
+        "GET /repos/will/newapp/git/commits/init": {"tree": {"sha": "t0"}},
+        "POST /repos/will/newapp/git/blobs": (201, {"sha": "b1"}),
+        "POST /repos/will/newapp/git/trees": Seq([(404, {"message": "Not Found"}), (404, {"message": "Not Found"}), (201, {"sha": "t1"})]),
+        "POST /repos/will/newapp/git/commits": (201, {"sha": "c1"}),
+        "PATCH /repos/will/newapp/git/refs/heads/main": {"object": {"sha": "c1"}},
+    }
+    rec = Recorder(routes)
+    f = GitHubForge("https://github.com", "ghp_test", "will/newapp", transport=httpx.MockTransport(rec))
+    slept = []
+    created = ensure_repository(f, {"url": "https://github.com/will/newapp", "create": True}, tmpl, sleep=slept.append)
+    assert created["default_branch"] == "main" and slept == [2.0, 4.0]
+    assert sum(1 for m, p, _, _ in rec.calls if p.endswith("/git/trees")) == 3
+    assert sum(1 for m, p, _, _ in rec.calls if p.endswith("/git/refs/heads/main") and m == "PATCH") == 1
+    # a repository that exists but has no workflow (the earlier run died after creating it): seeded, not created
+    routes2 = {**routes, "GET /repos/will/newapp": {"id": 9, "default_branch": "main"},
+               "GET /repos/will/newapp/contents/.github/workflows/preview.yml": (404, {"message": "Not Found"}),
+               "POST /repos/will/newapp/git/trees": (201, {"sha": "t1"})}
+    rec2 = Recorder(routes2)
+    f2 = GitHubForge("https://github.com", "ghp_test", "will/newapp", transport=httpx.MockTransport(rec2))
+    assert ensure_repository(f2, {"url": "https://github.com/will/newapp", "create": True}, tmpl, sleep=lambda s: None) is None
+    assert not any(p == "/user/repos" for _, p, _, _ in rec2.calls)
+    assert sum(1 for m, p, _, _ in rec2.calls if p.endswith("/git/refs/heads/main") and m == "PATCH") == 1
+    # and one that already has it: untouched
+    routes3 = {**routes2, "GET /repos/will/newapp/contents/.github/workflows/preview.yml": {"sha": "x"}}
+    rec3 = Recorder(routes3)
+    f3 = GitHubForge("https://github.com", "ghp_test", "will/newapp", transport=httpx.MockTransport(rec3))
+    assert ensure_repository(f3, {"url": "https://github.com/will/newapp", "create": True}, tmpl, sleep=lambda s: None) is None
+    assert not any(p.endswith("/git/trees") for _, p, _, _ in rec3.calls)

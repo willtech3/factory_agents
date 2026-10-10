@@ -48,6 +48,7 @@ class Forge(Protocol):
     # ---- branches and commits (design CR, run record)
     def create_branch(self, branch: str, ref: str) -> None: ...
     def commit_files(self, branch: str, message: str, files: dict[str, bytes]) -> str: ...
+    def file_exists(self, branch: str, path: str) -> bool: ...
     def file_url(self, branch: str, path: str) -> str: ...
 
     # ---- change requests (Gate 3, and the design CR when the gate surface is the forge)
@@ -133,22 +134,42 @@ def repo_from_url(url: str) -> str:
     return path[:-4] if path.endswith(".git") else path
 
 
-def ensure_repository(forge: Forge, repo: dict[str, Any], workflow_template: Path | None = None) -> dict[str, Any] | None:
-    """Create the outcome's repository when it asks for one (`create: true`) and it does not exist yet.
+def ensure_repository(forge: Forge, repo: dict[str, Any], workflow_template: Path | None = None, *,
+                      sleep=None, attempts: int = 6) -> dict[str, Any] | None:
+    """Create the outcome's repository when it asks for one (`create: true`) and it does not exist yet, and make
+    sure it carries the preview workflow.
 
     A new repository is private unless the outcome says `visibility: public`, initialised so the default branch
     exists, and seeded with the preview workflow template (the platform's job elsewhere; on a personal GitHub
-    the template is the platform). Returns what was created, or None when the repository already existed."""
-    if not repo.get("create") or forge.repository_exists():
+    the template is the platform). GitHub's git database answers 404 to writes for a few seconds after a
+    repository is created, so the seed commit is retried with backoff. A repository that already exists is left
+    alone except for that one file: when `create: true` and the workflow is missing (an earlier attempt died
+    between creation and seeding), it is added. Returns what was created, or None when it already existed."""
+    import time
+    sleep = sleep or time.sleep
+    if not repo.get("create"):
         return None
-    created = forge.create_repository(private=repo.get("visibility", "private") != "public",
-                                      description=repo.get("description", "Created by the software factory"))
-    files: dict[str, bytes] = {}
+    created = None
+    if not forge.repository_exists():
+        created = forge.create_repository(private=repo.get("visibility", "private") != "public",
+                                          description=repo.get("description", "Created by the software factory"))
+    branch = (created or {}).get("default_branch") or repo.get("default_branch", "main")
+    path = ".github/workflows/preview.yml"
     if workflow_template and workflow_template.is_file() and forge.kind == "github":
-        files[".github/workflows/preview.yml"] = workflow_template.read_bytes()
-    if files:
-        forge.commit_files(created.get("default_branch") or repo.get("default_branch", "main"),
-                           "factory: preview workflow for factory branches", files)
+        files = {path: workflow_template.read_bytes()}
+        delay = 2.0
+        for attempt in range(attempts):
+            try:
+                if created is None and forge.file_exists(branch, path):
+                    break                               # existing repository, already seeded
+                forge.commit_files(branch, "factory: preview workflow for factory branches", files)
+                break
+            except Exception as e:  # noqa: BLE001  (httpx status errors; the forge is not ready yet)
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                if attempt == attempts - 1 or status not in (404, 409, 422, 500, 502, 503):
+                    raise
+                sleep(delay)
+                delay = min(delay * 2, 20.0)
     return created
 
 
