@@ -59,9 +59,15 @@ class Driver:
         return [c["agent_key"] for c in self.calls]
 
 
+# The per-stage caps these tests reason with. Pinned so the arithmetic below documents the mechanism whatever the
+# calibrated defaults in `Policy.stage_budget_usd` are at the time.
+CAPS = {"decompose": 15.0, "specify": 10.0, "judge": 8.0, "implement": 40.0, "review": 15.0, "security_review": 10.0,
+        "merge_judge": 8.0, "integrate": 2.0}
+
+
 def _ctx(tmp_path, root, driver, queue, budget, run_id="run_budget00001", design_only=True):
     return RunContext(cfg=make_config(root, tmp_path), store=RunStore(tmp_path), driver=driver, queue=queue, notifier=LogNotifier(),
-                      forge=None, policy=Policy(run_budget_usd=budget, design_only=design_only), run_id=run_id)
+                      forge=None, policy=Policy(run_budget_usd=budget, design_only=design_only, stage_budget_usd=dict(CAPS)), run_id=run_id)
 
 
 def _kinds(ctx):
@@ -137,6 +143,21 @@ def test_reserve_budget_counts_a_review_round_with_its_security_pass_as_one_batc
         reserve_budget(ctx2, "security_review", 1)
     assert (info.value.stage, info.value.sessions, info.value.cap_usd) == ("security_review", 1, 10.0)
     assert _payload(ctx2, "budget.reached")["next"]["label"] == "security reviewer"
+
+
+def test_reserve_budget_takes_an_explicit_cap_for_a_session_re_run_with_a_raised_cap(tmp_path, root):
+    """A session that hit its own cap is re-run with the cap raised (stages/common.run_session); the re-run is checked
+    against the run budget with that raised cap, not the policy's."""
+    ctx = _ctx(tmp_path, root, None, InMemoryQueue(), budget=20.0)
+    ctx.event("run.created", {"outcome_id": "o", "title": "t", "budget_usd": 20.0})
+    ctx.event("stage.entered", {"stage": "decomposing"})
+    reserve_budget(ctx, "judge", 1, cap_usd=12.0)                          # 0 + 12 fits (the policy cap, 8, is not what runs)
+    ctx.event("session.finished", {"session_id": "s1", "list_cost_usd": 10.0}, actor="platform")
+    with pytest.raises(BudgetPaused) as info:                               # 10 + 12 does not
+        reserve_budget(ctx, "judge", 1, cap_usd=12.0)
+    e = info.value
+    assert (e.stage, e.sessions, e.cap_usd, e.spent_usd, e.budget_usd) == ("judge", 1, 12.0, 10.0, 20.0)
+    assert _payload(ctx, "budget.reached")["next"] == {"stage": "judge", "label": "spec judge", "sessions": 1, "cap_usd": 12.0}
 
 
 def test_run_pauses_before_a_session_it_cannot_afford_and_resumes_when_the_budget_is_raised(tmp_path, root, examples, schemas_dir):

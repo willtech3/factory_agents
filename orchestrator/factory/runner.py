@@ -24,7 +24,7 @@ from .budget import BudgetPaused, last_pause
 from .gates import Decision, GateDecision, GateKind, parse_budget
 from .stages import RunContext
 from .stages.decompose import gate_1, run_decompose
-from .stages.common import artifact_json_or_none
+from .stages.common import artifact_json_or_none, public
 from .stages.implement import LocalVerifier, ResumePoint, run_implement_one
 from .stages.integrate import run_integrate
 from .stages.specify import gate_2, run_specify
@@ -160,22 +160,32 @@ def _from_decompose(ctx: RunContext, outcome: dict[str, Any], feedback: str | No
 
 
 def _from_specify(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[str, Any],
-                  human_comments: dict[str, str] | None, prior_specs: dict[str, dict] | None) -> RunStage:
+                  human_comments: dict[str, str] | None, prior_specs: dict[str, dict] | None,
+                  previous_verdict: dict[str, Any] | None = None, round_offset: int = 0) -> RunStage:
     """Stage 2 and Gate 2 (loop until approved or rejected), then implementation unless the run is design-only.
     `human_comments` are the owner's notes per work item (Gate 1 approval notes, or routed Gate 2 feedback with
-    `prior_specs` as the drafts they were about)."""
+    `prior_specs` as the drafts they were about). `previous_verdict` is the verdict the owner sent back, if any, and
+    `round_offset` the last round already in the store: rounds keep counting across send-backs and resumes, so no
+    artefact name is reused."""
     # ---------------- Stage 2 + Gate 2
     while True:
-        specs, verdict = run_specify(ctx, outcome, decomposition, human_comments, prior_specs)
+        specs, verdict = run_specify(ctx, outcome, decomposition, human_comments, prior_specs,
+                                     previous_verdict=previous_verdict, round_offset=round_offset)
+        # `final-*` point at the current candidate for the gate (replaced on every cycle); the per-round artefacts the
+        # owner decided on keep their names and are never overwritten.
         spec_shas = {f"{sid}.json": ctx.store.put_artifact(ctx.run_id, "specify", f"final-{sid}.json",
-                                                            json.dumps(s, indent=2).encode()) for sid, s in specs.items()}
-        spec_shas["verdict.json"] = ctx.store.put_artifact(ctx.run_id, "judge", "final-verdict.json",
-                                                           json.dumps(verdict, indent=2).encode())
+                                                            json.dumps(public(s), indent=2).encode(), replace=True)
+                     for sid, s in specs.items()}
         spec_md = {sid: _spec_markdown(ctx, s) for sid, s in specs.items()}
-        files = {**{f"specs/{sid}.json": json.dumps(s, indent=2).encode() for sid, s in specs.items()},
-                 **{f"specs/{sid}.md": spec_md[sid].encode() for sid in specs},
+        for sid, md in spec_md.items():
+            if md:
+                ctx.store.put_artifact(ctx.run_id, "specify", f"final-{sid}.md", md.encode(), replace=True)
+        spec_shas["verdict.json"] = ctx.store.put_artifact(ctx.run_id, "judge", "final-verdict.json",
+                                                           json.dumps(verdict, indent=2).encode(), replace=True)
+        files = {**{f"specs/{sid}.json": json.dumps(public(s), indent=2).encode() for sid, s in specs.items()},
+                 **{f"specs/{sid}.md": spec_md[sid].encode() for sid in specs if spec_md[sid]},
                  "verdict.json": json.dumps(verdict, indent=2).encode()}
-        page = render_gate2_page(ctx.run_id, outcome, specs, verdict, spec_shas, spec_md)
+        page = render_gate2_page(ctx.run_id, outcome, {sid: public(s) for sid, s in specs.items()}, verdict, spec_shas, spec_md)
         anchors = {f"specs/{sid}.json": f"spec-{sid}" for sid in specs}
         anchors.update({f"specs/{sid}.md": f"spec-{sid}" for sid in specs})
         design_cr_id, urls = _present(ctx, outcome, files, "specifications", "gate_2", page, anchors)
@@ -193,6 +203,7 @@ def _from_specify(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[
             specs = {sid: s for sid, s in specs.items() if sid in approved}
             break
         human_comments, prior_specs = _route_gate2_feedback(ctx, design_cr_id, d, specs)
+        previous_verdict, round_offset = verdict, int(verdict.get("round") or round_offset + 1)
     spec_verdict = verdict
     if ctx.policy.design_only:
         ctx.event("run.completed", {"design_only": True, "approved_specs": sorted(specs),
@@ -226,9 +237,14 @@ def _decision_from_event(p: dict[str, Any]) -> GateDecision:
 
 
 def _spec_markdown(ctx: RunContext, spec: dict[str, Any]) -> str:
-    """The writer's spec.md for the spec's latest round, or '' when the session did not produce one."""
+    """The writer's spec.md for this spec: carried on the object by `run_specify`, else the `final-<spec_id>.md` the
+    runner stored at Gate 2 (what `factory resume` reads), else the latest round in the store, else ''."""
     if spec.get("_markdown"):
         return str(spec["_markdown"])
+    try:
+        return ctx.store.get_artifact(ctx.run_id, "specify", f"final-{spec['spec_id']}.md").decode(errors="replace")
+    except FileNotFoundError:
+        pass
     try:
         name = _latest(ctx, "specify", f"{spec['work_item_id']}-", "-spec.md")
         return ctx.store.get_artifact(ctx.run_id, "specify", name).decode(errors="replace")
@@ -237,11 +253,17 @@ def _spec_markdown(ctx: RunContext, spec: dict[str, Any]) -> str:
 
 
 def _latest(ctx: RunContext, stage: str, prefix: str, suffix: str) -> str:
+    """The highest-numbered `<prefix>r<n>...<suffix>` artefact name (numeric, so r10 follows r9)."""
     d = ctx.cfg.runs_dir / ctx.run_id / "artifacts" / stage
-    cands = sorted(p.name for p in d.glob(f"{prefix}*{suffix}") if not p.name.endswith(".sha256"))
+    cands = [p.name for p in d.glob(f"{prefix}*{suffix}") if not p.name.endswith(".sha256")]
     if not cands:
         raise FileNotFoundError(f"no {prefix}*{suffix} under {d}")
-    return cands[-1]
+
+    def round_of(name: str) -> int:
+        mid = name[len(prefix):-len(suffix)]
+        digits = mid[1:].split("-")[0] if mid.startswith("r") else ""
+        return int(digits) if digits.isdigit() else -1
+    return max(cands, key=lambda n: (round_of(n), n))
 
 
 def _latest_json_or(ctx: RunContext, stage: str, prefix: str, suffix: str, default: Any) -> Any:
@@ -251,14 +273,46 @@ def _latest_json_or(ctx: RunContext, stage: str, prefix: str, suffix: str, defau
         return default
 
 
-def _sessions_for(ctx: RunContext, spec_id: str) -> list[dict[str, Any]]:
+def _sessions_for(ctx: RunContext, spec_id: str, work_item_id: str | None = None) -> list[dict[str, Any]]:
+    """Every session behind this spec's change request, for the provenance table: the decomposer and the spec judge
+    rounds (shared by every spec), and the writer, implementer, reviewer, merge-judge and integrator sessions of this
+    spec or its work item, each with its cost and its duration from session.started to session.finished. Live run 2's
+    table listed 5 of 17 sessions with no duration because session.finished carried no spec id (post-mortem issue 16)."""
+    events = ctx.store.events(ctx.run_id)
+    started = {ev.payload.get("session_id"): ev for ev in events if ev.kind == "session.started"}
     out = []
-    for ev in ctx.store.events(ctx.run_id):
-        if ev.kind == "session.finished" and (ev.spec_id == spec_id or ev.stage in ("decompose", "judge")):
-            out.append({"stage": ev.stage, "agent_name": ev.payload.get("agent_id"), "agent_version": ev.payload.get("agent_version"),
-                        "session_id": ev.payload["session_id"], "console_url": ctx.cfg.console_session_url(ev.payload["session_id"]),
-                        "list_cost_usd": ev.payload.get("list_cost_usd")})
+    for ev in events:
+        if ev.kind != "session.finished":
+            continue
+        mine = ev.spec_id == spec_id or (work_item_id is not None and ev.work_item_id == work_item_id)
+        if not (mine or ev.stage in ("decompose", "judge")):
+            continue
+        sid = ev.payload["session_id"]
+        s = started.get(sid)
+        seconds = _seconds_between(s.at, ev.at) if s is not None else None
+        out.append({"stage": ev.stage, "agent_name": ev.payload.get("agent_id"), "agent_version": ev.payload.get("agent_version"),
+                    "agent_key": s.payload.get("agent_key") if s is not None else None,
+                    "session_id": sid, "console_url": ctx.cfg.console_session_url(sid),
+                    "list_cost_usd": ev.payload.get("list_cost_usd"), "stop_reason": ev.payload.get("stop_reason"),
+                    "started_at": s.at if s is not None else None, "finished_at": ev.at,
+                    "duration_seconds": seconds, "duration": _hms(seconds)})
     return out
+
+
+def _seconds_between(start_iso: str, end_iso: str) -> int | None:
+    from datetime import datetime
+    try:
+        return max(0, int((datetime.fromisoformat(end_iso) - datetime.fromisoformat(start_iso)).total_seconds()))
+    except (TypeError, ValueError):
+        return None
+
+
+def _hms(seconds: int | None) -> str:
+    if seconds is None:
+        return "n/a"
+    h, rest = divmod(seconds, 3600)
+    m, s = divmod(rest, 60)
+    return f"{h}h {m:02d}m {s:02d}s" if h else f"{m}m {s:02d}s"
 
 
 def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dict[str, dict], spec_md: dict[str, str],
@@ -293,7 +347,7 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
                                                 "note": "the dependency's change request is open but not merged; this item is built on its branch"},
                           work_item_id=spec["work_item_id"], spec_id=sid, stage="implement")
             verdict = run_implement_one(ctx, spec, repo["url"], base_branch, verifier, deps,
-                                        resume_from=(resume or {}).get(sid))
+                                        spec_md=spec_md.get(sid, ""), resume_from=(resume or {}).get(sid))
             if verdict["result"] != "ready":
                 ctx.event("run.escalated", {"reason": f"{sid}: merge judge said {verdict['result']}",
                                             "summary": verdict.get("summary_for_human", verdict.get("reason"))},
@@ -304,8 +358,12 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
             findings = json.loads(ctx.store.get_artifact(ctx.run_id, "review", _latest(ctx, "review", f"{sid}-", "-findings.merged.json")))
             response = _latest_json_or(ctx, "implement", f"{sid}-", "-review_response.json", {"responses": []})
             test_results = json.loads(ctx.store.get_artifact(ctx.run_id, "implement", _latest(ctx, "implement", f"{sid}-", "-test_results.json")))
+            sessions = _sessions_for(ctx, sid, spec["work_item_id"])
             summary = {"run_id": ctx.run_id, "outcome_title": outcome["title"], "reviewers": [outcome["owner"]["handle"]],
-                       "sessions": _sessions_for(ctx, sid), "list_cost_usd": ctx.store.state(ctx.run_id).list_cost_usd}
+                       "sessions": sessions, "list_cost_usd": ctx.store.state(ctx.run_id).list_cost_usd,
+                       "sessions_cost_usd": round(sum(s["list_cost_usd"] or 0.0 for s in sessions), 2),
+                       "sessions_duration_seconds": sum(s["duration_seconds"] or 0 for s in sessions),
+                       "sessions_duration": _hms(sum(s["duration_seconds"] or 0 for s in sessions))}
             cr = run_integrate(ctx, spec, verdict, findings, response, test_results, summary, base_branch,
                                verifier=verifier, spec_md=spec_md.get(sid, ""), spec_verdict=spec_verdict)
             cr_by_spec[sid] = int(cr.get("id", cr.get("iid")))
@@ -512,10 +570,23 @@ def _resume_after_budget_pause(ctx: RunContext, outcome: dict[str, Any], st: Any
             raise RuntimeError(f"run {ctx.run_id} paused while specifying but holds no decomposition; start a new run instead")
         decomposition = json.loads(ctx.store.get_artifact(ctx.run_id, "decompose", f"r{max(revs)}-decomposition.json"))
         human_comments, prior_specs = _pending_specify_inputs(ctx, events, decomposition)
+        previous_verdict, round_offset = _persisted_specify_rounds(ctx, decomposition)
         ctx.event("run.resumed", {"stage": RunStage.SPECIFYING.value, "from": RunStage.PAUSED_BUDGET.value,
                                   "with_feedback": prior_specs is not None}, stage="specify")
-        return _from_specify(ctx, outcome, decomposition, human_comments, prior_specs)
+        return _from_specify(ctx, outcome, decomposition, human_comments, prior_specs, previous_verdict, round_offset)
     raise RuntimeError(f"run {ctx.run_id} paused in {paused_in.value}, which has no resume path")
+
+
+def _persisted_specify_rounds(ctx: RunContext, decomposition: dict[str, Any]) -> tuple[dict[str, Any] | None, int]:
+    """What a resumed specification stage continues from: the last judge verdict in the store (the writers revise
+    against its issues, the judge sees it as previous_verdict.json) and the highest round any writer draft or verdict
+    already carries. The store never overwrites an artefact, so the stage picks up at the next round."""
+    judged = _rounds(ctx, "judge", "r", "-verdict.json")
+    rounds = list(judged)
+    for w in decomposition["work_items"]:
+        rounds += _rounds(ctx, "specify", f"{w['work_item_id']}-r", "-spec.json")
+    verdict = artifact_json_or_none(ctx, "judge", f"r{max(judged)}-verdict.json") if judged else None
+    return verdict, max(rounds, default=0)
 
 
 def _pending_gate1_feedback(ctx: RunContext, events: list[Any]) -> tuple[str | None, dict[str, Any] | None]:

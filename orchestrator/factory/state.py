@@ -104,9 +104,17 @@ class Policy:
     review_max_rounds: int = 2           # one fresh review per round; see docs/research (Song 2603.16244)
     outcome_max_iterations: int = 4      # platform grader iterations inside a writing session
     run_budget_usd: float = 150.0        # the outcome's constraints.budget_usd: enforced before every session (budget.py)
+    # Per-session dollar caps: observed p95 x ~3 over the first live runs (docs/postmortems/2026-10-10-first-live-runs.md,
+    # issue 17). A session that hits its cap opens a budget gate; the owner raises it or closes the run.
     stage_budget_usd: dict[str, float] = field(default_factory=lambda: {
-        "decompose": 15.0, "specify": 10.0, "judge": 8.0,
-        "implement": 40.0, "review": 15.0, "security_review": 10.0, "merge_judge": 8.0, "integrate": 2.0,
+        "decompose": 4.0, "specify": 3.0, "judge": 6.0,
+        "implement": 15.0, "review": 6.0, "security_review": 6.0, "merge_judge": 3.0, "integrate": 2.0,
+    })
+    # Observed p50 per stage: FACTORY_BUDGET_SCALE never takes a cap below one typical session (a 0.4 scale left the
+    # judge's cap under one round on live run 1 and the verdict was cut off mid-write).
+    stage_budget_floor_usd: dict[str, float] = field(default_factory=lambda: {
+        "decompose": 0.9, "specify": 0.7, "judge": 2.5,
+        "implement": 3.3, "review": 2.6, "security_review": 2.6, "merge_judge": 0.9, "integrate": 0.3,
     })
     parallel_implementations: int = 3    # independent work items implemented at once (separate branches)
     parallel_spec_writers: int = 8       # spec writer sessions at once; all items are written in one go by default
@@ -248,15 +256,19 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
         if "environment_url" in p:
             wi.dev_environment_url = p["environment_url"]
     elif k == "budget.reached":
-        # The next session would take the run past its cap: nothing is in flight, the run parks until a human
-        # raises the budget (budget.raised, then run.resumed) or closes it.
-        if p.get("budget_usd") is not None:
+        # Two ways here, both parking the run until a human decides: the run cap (budget.py: the next session would take
+        # the run past constraints.budget_usd; the payload carries `next` and the run budget) and one session hitting its
+        # own cap (stages/common.run_session; the payload names the session). Several sessions may hit their caps at
+        # once, so a second pause is informational.
+        if p.get("next") is not None and p.get("budget_usd") is not None:
             state.budget_usd = float(p["budget_usd"])
-        _move_run(state, RunStage.PAUSED_BUDGET)
+        if state.stage != RunStage.PAUSED_BUDGET:
+            _move_run(state, RunStage.PAUSED_BUDGET)
     elif k == "budget.raised":
         state.budget_usd = float(p["budget_usd"])
     elif k == "run.escalated":
-        _move_run(state, RunStage.ESCALATED)
+        if state.stage != RunStage.ESCALATED:       # one escalation per failing spec or session; the run escalates once
+            _move_run(state, RunStage.ESCALATED)
     elif k == "run.failed":
         _move_run(state, RunStage.FAILED)
     elif k == "run.resumed":

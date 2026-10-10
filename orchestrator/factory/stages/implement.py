@@ -28,6 +28,8 @@ from dataclasses import dataclass
 
 import json
 import os
+import re
+import shlex
 import shutil
 import signal
 import socket
@@ -35,6 +37,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -44,20 +47,26 @@ from ..budget import reserve_budget
 from ..checks import CheckResult
 from ..state import WorkItemStage
 from . import RunContext
-from .common import enter_item_stage, persist_outputs, platform_skill, provenance, require_json, artifact_json_or_none
+from .common import enter_item_stage, persist_outputs, platform_skill, public, require_json, run_session, stamp_provenance, artifact_json_or_none
 
 NO_FORGE_GIT_SETUP = """Git access: no forge is configured for this run. The repository at {repo_url} is not reachable
 from the sandbox; work on branch {branch} from {base_branch} only if it was mounted for you, otherwise record the
 blocker in blocked.md."""
 
-IMPLEMENT_DESCRIPTION = """Implement specification {spec_id} from /mnt/session/uploads/spec.json (spec.md is the readable form).
+NO_FORGE_GIT_READ_ONLY = """Git access: no forge is configured for this run. If the repository at {repo_url} was mounted for
+you, read branch {branch} there; this session is read-only on it: never commit, never push, and write everything you
+produce under /mnt/session/outputs/."""
+
+IMPLEMENT_DESCRIPTION = """Implement specification {spec_id} from /mnt/session/uploads/spec.json{spec_md_clause}.
 {git}
 {skill_clause}
 {review_clause}
-Write implementation_report.json{response_clause} to /mnt/session/outputs/. The report must map every acceptance criterion
-to the tests that prove it, as `criteria: [{{"ac_id": "AC-1", "tests": ["tests/test_x.py::test_name", ...]}}, ...]`
-(pytest node ids or equivalent test ids); the orchestrator's merge checks read that list and fail any automated criterion
-without a passing test. Run every command in the spec's test_plan before finishing and record the results. {preview_clause}"""
+Write implementation_report.json{response_clause} to /mnt/session/outputs/ and validate it with the validate.py tool
+(schema implementation_report.schema.json). The report must map every acceptance criterion to the tests that prove it, as
+`criteria: [{{"ac_id": "AC-1", "tests": ["tests/test_x.py::test_name", ...]}}, ...]` with pytest node ids exactly as
+`pytest --collect-only -q` prints them; the orchestrator runs the test plan itself, derives the passing set from its own
+pytest run, and fails any automated criterion whose tests it did not collect or did not see pass. Run every command in the
+spec's test_plan before finishing and record the results. {preview_clause}"""
 
 REVIEW_DESCRIPTION = """Review the change for specification {spec_id}. The diff is at /mnt/session/uploads/diff.patch
 (base {base_sha}, head {head_sha}); the repository is cloned at /workspace/repo on branch {branch}.
@@ -330,15 +339,44 @@ class LocalVerifier:
         """The spec's `test_plan.commands`, each in its own process group inside the per-run environment.
 
         When `prepare_environment` failed, nothing is run: every command is recorded with exit_code None and the
-        reason, so `test_plan_commands` fails for the stated cause rather than for missing packages."""
+        reason, so `test_plan_commands` fails for the stated cause rather than for missing packages.
+
+        Every pytest invocation inside a command also writes a junit report (appended through PYTEST_ADDOPTS, so
+        `pytest`, `python -m pytest` and compound shell commands all get it); a command that produced one carries
+        `pytest: {passed, failed, skipped}` with the node ids, which is where the orchestrator's passing-test set
+        comes from (post-mortem issue 5: the set used to be copied from the implementer's own report, so any
+        mapping passed, fabricated ids included)."""
         results = []
         if self.setup is not None and not self.setup.passed:
             return [{"command": cmd, "exit_code": None, "stdout_tail": "",
                      "stderr_tail": f"not run: {SETUP_CHECK} failed ({self.setup.detail[:300]})"} for cmd in commands]
         env = verification_env(self.env_bin)
-        for cmd in commands:
-            results.append({"command": cmd, **self._run_in_group(cmd, repo, env, timeout)})
+        junit_dir = self.workdir / "junit"
+        junit_dir.mkdir(parents=True, exist_ok=True)
+        for i, cmd in enumerate(commands):
+            junit = junit_dir / f"cmd-{i}.xml"
+            junit.unlink(missing_ok=True)
+            addopts = f"{env.get('PYTEST_ADDOPTS', '')} --junitxml={shlex.quote(str(junit))} -o junit_family=xunit1".strip()
+            row: dict[str, Any] = {"command": cmd, **self._run_in_group(cmd, repo, {**env, "PYTEST_ADDOPTS": addopts}, timeout)}
+            if junit.is_file():
+                row["pytest"] = parse_junit(junit.read_bytes())
+            results.append(row)
         return results
+
+    def collect_test_ids(self, repo: Path, timeout: int = 300) -> list[str] | None:
+        """Every pytest node id the checkout collects (`pytest --collect-only -q` in the per-run environment), or
+        None when pytest cannot collect here (no environment, not a pytest repository, a collection error): the
+        mapping is then unverifiable, not verified."""
+        if self.setup is not None and not self.setup.passed:
+            return None
+        try:
+            p = subprocess.run("python -m pytest --collect-only -q", shell=True, cwd=repo, env=verification_env(self.env_bin),
+                               capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return None
+        if p.returncode not in (0, 5):          # 5: no tests collected, which is a (possibly empty) answer
+            return None
+        return [ln.strip() for ln in p.stdout.splitlines() if NODE_ID_RE.match(ln.strip())]
 
     def run_e2e(self, preview_url: str | None, e2e_entries: list[dict[str, Any]], repo: Path | None = None,
                 target: str = "preview", timeout: int = 900) -> list[dict[str, Any]]:
@@ -431,8 +469,72 @@ def _install_plan(repo: Path, setup_cmd: str | None, python: Path, uv: str | Non
             "description": f"dependencies from pyproject ({', '.join(['project'] + extras)}): {' '.join(deps)}"}
 
 
+NODE_ID_RE = re.compile(r"^[^\s:]+::\S+$")
+
+
+def parse_junit(xml: bytes) -> dict[str, list[str]]:
+    """Node ids by outcome from a pytest junit report (junit_family=xunit1, which keeps the `file` attribute).
+
+    A node id is `file::Class::name`: `file` is relative to pytest's rootdir (the checkout), the class chain is what
+    `classname` adds after the module's dotted path, `name` keeps the parametrisation suffix."""
+    out: dict[str, list[str]] = {"passed": [], "failed": [], "skipped": []}
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return out
+    for tc in root.iter("testcase"):
+        node_id = _node_id(tc.get("file"), tc.get("classname", ""), tc.get("name", ""))
+        tags = {child.tag for child in tc}
+        if tags & {"failure", "error"}:
+            out["failed"].append(node_id)
+        elif "skipped" in tags:
+            out["skipped"].append(node_id)
+        else:
+            out["passed"].append(node_id)
+    return out
+
+
+def _node_id(file: str | None, classname: str, name: str) -> str:
+    if not file:
+        parts = [p for p in classname.split(".") if p]
+        return f"{'/'.join(parts)}.py::{name}" if parts else name
+    module = Path(file).with_suffix("").as_posix().replace("/", ".")
+    if classname == module or not classname:
+        chain: list[str] = []
+    elif classname.startswith(module + "."):
+        chain = classname[len(module) + 1:].split(".")
+    else:                                   # rootdir or package layout differs: everything after the module's last component
+        parts = classname.split(".")
+        stem = Path(file).stem
+        chain = parts[len(parts) - parts[::-1].index(stem):] if stem in parts else []
+    return "::".join([file, *chain, name])
+
+
+def passed_test_ids(command_results: list[dict[str, Any]]) -> tuple[list[str], list[str]] | None:
+    """(passed, failed) node ids across every command that ran pytest, or None when none did."""
+    runs = [r["pytest"] for r in command_results if r.get("pytest")]
+    if not runs:
+        return None
+    passed = sorted({t for r in runs for t in r.get("passed", [])})
+    failed = sorted({t for r in runs for t in r.get("failed", [])})
+    return [t for t in passed if t not in set(failed)], failed
+
+
 def _branch_for(run_id: str, spec_id: str) -> str:
     return f"factory/{run_id}/{spec_id}"
+
+
+def git_clauses(ctx: RunContext, repo_url: str, base_branch: str, branch: str) -> tuple[str, str]:
+    """(write clause for the implementer, read-only clause for reviewers, the merge judge and the integrator).
+
+    One clause used to serve every role, so reviewers were told to "commit as you go and push" right before "you
+    never edit source files"; a less careful pass would have pushed its probes and tripped diff_scope on the next
+    verification (post-mortem issue 18)."""
+    if ctx.forge is None:
+        return (NO_FORGE_GIT_SETUP.format(repo_url=repo_url, base_branch=base_branch, branch=branch),
+                NO_FORGE_GIT_READ_ONLY.format(repo_url=repo_url, branch=branch))
+    return (ctx.forge.sandbox_git_instructions(repo_url, base_branch, branch),
+            ctx.forge.sandbox_git_instructions(repo_url, base_branch, branch, read_only=True))
 
 
 @dataclass
@@ -506,16 +608,18 @@ def preview_info(ctx: RunContext, branch: str, head_sha: str | None = None) -> d
 
 
 def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base_branch: str,
-                      verifier: LocalVerifier, dependency_specs: dict[str, dict], *,
+                      verifier: LocalVerifier, dependency_specs: dict[str, dict], *, spec_md: str = "",
                       resume_from: ResumePoint | None = None) -> dict[str, Any]:
     """Drive one spec through implement/review/judge. Returns the final merge_readiness verdict.
 
-    `resume_from` continues the loop after a dead orchestrator (see `ResumePoint`); the work item then already
-    sits in implementing or responding, so no stage event is emitted for the restart."""
+    `spec_md` is the writer's spec.md for this spec (the runner carries it from Gate 2); the implementer, every
+    reviewer pass and the merge judge receive it beside spec.json. `resume_from` continues the loop after a dead
+    orchestrator (see `ResumePoint`); the work item then already sits in implementing or responding, so no stage
+    event is emitted for the restart."""
     sid, wid = spec["spec_id"], spec["work_item_id"]
+    spec_md = (spec_md or spec.get("_markdown") or "").strip()
     branch = _branch_for(ctx.run_id, sid)
-    git = (ctx.forge.sandbox_git_instructions(repo_url, base_branch, branch) if ctx.forge is not None
-           else NO_FORGE_GIT_SETUP.format(repo_url=repo_url, base_branch=base_branch, branch=branch))
+    git, git_ro = git_clauses(ctx, repo_url, base_branch, branch)     # the implementer pushes; everyone else only reads
 
     def mount(checkout: str) -> dict[str, Any] | None:
         return ctx.forge.session_repository_resource(repo_url, checkout) if ctx.forge is not None else None
@@ -537,9 +641,11 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     for round_no in range(resume_from.round_no if resume_from else 1, ctx.policy.review_max_rounds + 2):
         resumed_round = resume_from is not None and round_no == resume_from.round_no
         # ---- implementer (round 1 implements; later rounds respond to findings)
-        uploads = {"spec.json": json.dumps(spec, indent=2).encode(), "spec.md": spec.get("_markdown", "").encode(), **skill_uploads}
+        uploads = {"spec.json": json.dumps(public(spec), indent=2).encode(), **skill_uploads}
+        if spec_md:
+            uploads["spec.md"] = spec_md.encode()
         for dsid, ds in dependency_specs.items():
-            uploads[f"dependency_specs/{dsid}.json"] = json.dumps(ds, indent=2).encode()
+            uploads[f"dependency_specs/{dsid}.json"] = json.dumps(public(ds), indent=2).encode()
         review_clause, response_clause = "", ""
         preview = preview_info(ctx, branch)
         uploads["preview.json"] = json.dumps(preview, indent=2).encode()
@@ -560,23 +666,29 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 raise RuntimeError(f"cannot resume {sid} at round {round_no}: no review_response for round {round_no - 1}'s findings")
         else:
             reserve_budget(ctx, "implement")
-            res = ctx.driver.run(
+            res = run_session(
+                ctx, prefix=f"{sid}-r{round_no}-", spec_id=sid,
                 agent_key="implementer", title=f"{ctx.run_id} implement {sid} r{round_no}", run_id=ctx.run_id,
                 stage="implement", uploads=uploads, work_item_id=wid,
                 description=IMPLEMENT_DESCRIPTION.format(spec_id=sid, git=git, review_clause=review_clause, skill_clause=skill_clause,
+                                                         spec_md_clause=" (spec.md is the readable form)" if spec_md else "",
                                                          response_clause=response_clause, preview_clause=preview_clause),
                 rubric_md=ctx.rubric("implementation"), max_iterations=ctx.policy.outcome_max_iterations,
                 budget_usd=ctx.policy.stage_budget_usd["implement"],
                 repository=mount(base_branch if round_no == 1 else branch),
             )
             if "blocked.md" in res.outputs:
-                persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-")
+                persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-", work_item_id=wid, spec_id=sid)
                 ctx.event("work_item.stage", {"stage": WorkItemStage.BLOCKED.value}, work_item_id=wid, spec_id=sid)
                 return {"result": "escalate", "reason": res.outputs["blocked.md"].decode(errors="replace")}
             report = require_json(res, "implementation_report.json")
+            stamp_provenance(report, ctx, res, "Implementer", "claude-opus-5-5")
+            res.outputs["implementation_report.json"] = json.dumps(report, indent=2).encode()
             if findings:
                 response = require_json(res, "review_response.json")
-            persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-")
+                stamp_provenance(response, ctx, res, "Implementer", "claude-opus-5-5")
+                res.outputs["review_response.json"] = json.dumps(response, indent=2).encode()
+            persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-", work_item_id=wid, spec_id=sid)
         if findings and response is not None:
             response["round"] = round_no - 1
             ctx.event("review.response", {"round": round_no - 1, "dispositions": [r["disposition"] for r in response["responses"]]},
@@ -598,11 +710,16 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             preview = wait_for_preview(ctx, branch, head_sha)
             e2e_results = verifier.run_e2e(preview["url"] if preview["status"] == "ready" else None,
                                            spec["test_plan"].get("e2e", []), repo=repo)
-        passing_tests = [t for ts in checks.criteria_mapping(report).values() for t in ts]  # refined by a CI parser later
+        # The passing set is the orchestrator's own: node ids pytest reported passed in the test_plan run, checked against
+        # what pytest collects in the checkout. A repository pytest cannot collect leaves the mapping unverified (said so
+        # in the check's detail), never silently verified.
+        collected = verifier.collect_test_ids(repo)
+        pytest_runs = passed_test_ids(cmd_results)
+        passing_tests = (pytest_runs[0] if pytest_runs else []) if collected is not None else None
         det = [setup] + checks.run_all_for_merge(
             spec=spec, changed_files=diff["changed"], deleted_files=diff["deleted"], existing_test_files=diff["existing_tests"],
             added_lines_by_file=diff["added_lines"], implementation_report=report, passing_tests=passing_tests,
-            command_results=cmd_results, manifest_path=manifest_path,
+            tests_that_exist=collected, command_results=cmd_results, manifest_path=manifest_path,
             schema_dir=ctx.cfg.schemas_dir, e2e_results=e2e_results,
         )
         test_results = {"commands": cmd_results, "e2e": e2e_results, "preview": preview,
@@ -640,7 +757,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 reserve_budget(ctx, "review", len(to_run), extra={"security_review": 1} if run_sec else None)
             else:
                 reserve_budget(ctx, "security_review", 1)
-        rev_uploads = {"spec.json": uploads["spec.json"], "spec.md": uploads["spec.md"], **skill_uploads,
+        rev_uploads = {"spec.json": uploads["spec.json"], **({"spec.md": uploads["spec.md"]} if "spec.md" in uploads else {}), **skill_uploads,
                        "diff.patch": diff["patch"].encode(),
                        "implementation_report.json": json.dumps(report, indent=2).encode(),
                        "preview.json": json.dumps(preview, indent=2).encode(),
@@ -657,17 +774,20 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         def one_pass(i: int) -> dict[str, Any]:
             if reused.get(i) is not None:
                 return tag_pass(reused[i], str(i))      # this pass finished before the orchestrator died or paused
-            r = ctx.driver.run(
+            r = run_session(
+                ctx, prefix=f"{sid}-r{round_no}-p{i}-", spec_id=sid,
                 agent_key="reviewer", title=f"{ctx.run_id} review {sid} r{round_no} p{i}", run_id=ctx.run_id,
                 stage="review", uploads=rev_uploads, work_item_id=wid,
                 description=REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
-                                                      git=git, round=round_no, second_round=second, skill_clause=skill_clause,
+                                                      git=git_ro, round=round_no, second_round=second, skill_clause=skill_clause,
                                                       preview_clause=rev_preview_clause),
                 rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["review"],
                 metadata={"pass": str(i)}, repository=mount(branch),
             )
             f = require_json(r, "findings.json")
-            persist_outputs(ctx, "review", r, prefix=f"{sid}-r{round_no}-p{i}-")
+            stamp_provenance(f, ctx, r, "Adversarial reviewer", "claude-opus-5-5")
+            r.outputs["findings.json"] = json.dumps(f, indent=2).encode()
+            persist_outputs(ctx, "review", r, prefix=f"{sid}-r{round_no}-p{i}-", work_item_id=wid, spec_id=sid)
             return tag_pass(f, str(i))
 
         def security_pass() -> dict[str, Any] | None:
@@ -678,26 +798,30 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 return tag_pass(reused_sec, "security")      # finished before the orchestrator died or paused
             pre = security.prechecks(repo, diff["changed"], diff["added_lines"])
             ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-security_prechecks.json", json.dumps(pre, indent=2).encode())
-            r = ctx.driver.run(
+            r = run_session(
+                ctx, prefix=f"{sid}-r{round_no}-sec-", spec_id=sid,
                 agent_key="security_reviewer", title=f"{ctx.run_id} security-review {sid} r{round_no}", run_id=ctx.run_id,
                 stage="review", uploads={**rev_uploads, "security_prechecks.json": json.dumps(pre, indent=2).encode()}, work_item_id=wid,
                 description=SECURITY_REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
-                                                               git=git, round=round_no, second_round=second, skill_clause=skill_clause,
+                                                               git=git_ro, round=round_no, second_round=second, skill_clause=skill_clause,
                                                                preview_clause=rev_preview_clause),
                 rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["security_review"],
                 metadata={"pass": "security"}, repository=mount(branch),
             )
             f = require_json(r, "findings.json")
-            persist_outputs(ctx, "review", r, prefix=f"{sid}-r{round_no}-sec-")
+            stamp_provenance(f, ctx, r, "Security reviewer", "claude-opus-5-5")
+            r.outputs["findings.json"] = json.dumps(f, indent=2).encode()
+            persist_outputs(ctx, "review", r, prefix=f"{sid}-r{round_no}-sec-", work_item_id=wid, spec_id=sid)
             return tag_pass(f, "security")
 
         with ThreadPoolExecutor(max_workers=ctx.policy.reviewer_passes + 1) as pool:
             sec_future = pool.submit(security_pass)
             passes = list(pool.map(one_pass, pass_ids))
             sec = sec_future.result()
-        findings = merge_findings(passes + ([sec] if sec else []), sid, round_no, base_sha, head_sha, branch)
+        findings = merge_findings(passes + ([sec] if sec else []), sid, round_no, base_sha, head_sha, branch,
+                                  previous=findings, response=response)
         # A failed deterministic check is a finding the implementer must answer; nobody else can clear it.
-        findings["findings"].extend(deterministic_findings(det, cmd_results, e2e_results))
+        findings["findings"] = apply_deterministic(findings["findings"], deterministic_findings(det, cmd_results, e2e_results))
         ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-findings.merged.json",
                                json.dumps(findings, indent=2).encode())
         ctx.event("review.findings", {"round": round_no, "count": len(findings["findings"]),
@@ -712,13 +836,16 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         enter_item_stage(ctx, wid, sid, WorkItemStage.RESPONDING, deterministic_only=det_only_response)
 
     # ---- merge judge (independent)
-    prior_verdict = artifact_json_or_none(ctx, "merge_judge", f"{sid}-merge_readiness.json") if resume_from else None
+    # The judge sees the real round (the implementer round whose head it judges; the kickoff and merge_readiness.json
+    # used to say "round 1" whatever happened), and its verdict is kept per round.
+    prior_verdict = artifact_json_or_none(ctx, "merge_judge", f"{sid}-r{round_no}-merge_readiness.json") if resume_from else None
     if prior_verdict is not None and prior_verdict.get("_head_sha") == head_sha:
-        ctx.event("merge.verdict", {"result": prior_verdict["result"], "reused": True}, work_item_id=wid, spec_id=sid, actor="agent")
+        ctx.event("merge.verdict", {"result": prior_verdict["result"], "round": round_no, "reused": True}, work_item_id=wid, spec_id=sid, actor="agent")
         return prior_verdict      # judged this very head before the orchestrator died or paused
     enter_item_stage(ctx, wid, sid, WorkItemStage.MERGE_JUDGING)
     mj_uploads = {
-        "spec.json": json.dumps(spec, indent=2).encode(), "diff.patch": diff["patch"].encode(),
+        "spec.json": json.dumps(public(spec), indent=2).encode(), "diff.patch": diff["patch"].encode(),
+        **({"spec.md": spec_md.encode()} if spec_md else {}),
         "findings.json": json.dumps(findings or {"findings": []}, indent=2).encode(),
         "review_response.json": json.dumps(response or {"responses": []}, indent=2).encode(),
         "test_results.json": json.dumps(test_results, indent=2).encode(),
@@ -726,25 +853,27 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         **skill_uploads,
     }
     reserve_budget(ctx, "merge_judge")
-    res = ctx.driver.run(
+    res = run_session(
+        ctx, prefix=f"{sid}-r{round_no}-", spec_id=sid,
         agent_key="merge_judge", title=f"{ctx.run_id} merge-judge {sid}", run_id=ctx.run_id, stage="merge_judge",
         uploads=mj_uploads, work_item_id=wid,
-        description=MERGE_JUDGE_DESCRIPTION.format(spec_id=sid, round=len([1 for _ in range(1)]), git=git, skill_clause=skill_clause,
+        description=MERGE_JUDGE_DESCRIPTION.format(spec_id=sid, round=round_no, git=git_ro, skill_clause=skill_clause,
                                                    criteria_clause=LOCAL_CRITERIA_CLAUSE if ctx.cfg.preview_mode == "local" else CRITERIA_CLAUSE),
         rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["merge_judge"],
         repository=mount(branch),
     )
     verdict = require_json(res, "merge_readiness.json")
+    verdict["round"] = round_no
     # Deterministic checks are not negotiable: a failing check forces another_round or escalate.
     if any(not d.passed for d in det) and verdict["result"] == "ready":
         verdict["result"] = "another_round"
         verdict["summary_for_human"] = "Overridden: deterministic checks failed. " + verdict["summary_for_human"]
     verdict["deterministic_checks"] = [d.to_dict() for d in det]
-    verdict.setdefault("produced_by", provenance(ctx, res, "Merge judge", "claude-opus-5-5", {}))
+    stamp_provenance(verdict, ctx, res, "Merge judge", "claude-opus-5-5")
     verdict["_head_sha"], verdict["_branch"], verdict["_base_sha"] = head_sha, branch, base_sha
     res.outputs["merge_readiness.json"] = json.dumps(verdict, indent=2).encode()
-    persist_outputs(ctx, "merge_judge", res, prefix=f"{sid}-")
-    ctx.event("merge.verdict", {"result": verdict["result"]}, work_item_id=wid, spec_id=sid, actor="agent")
+    persist_outputs(ctx, "merge_judge", res, prefix=f"{sid}-r{round_no}-", work_item_id=wid, spec_id=sid)
+    ctx.event("merge.verdict", {"result": verdict["result"], "round": round_no}, work_item_id=wid, spec_id=sid, actor="agent")
     return verdict
 
 
@@ -826,7 +955,7 @@ def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]]
             rows = [r for r in (e2e_results or []) if r.get("exit_code", 1) != 0]
             repro = "; ".join(f"{r['command']} -> exit {r.get('exit_code')}: {(r.get('stderr_tail') or r.get('stdout_tail') or '')[-300:]}" for r in rows)
             environmental = is_environmental(rows)
-        fix = {"ac_test_mapping": "Map every automated acceptance criterion to a test in implementation_report.json `criteria` ([{ac_id, tests: [...]}]) and make sure those tests exist and pass.",
+        fix = {"ac_test_mapping": "Map every automated acceptance criterion to a test in implementation_report.json `criteria` ([{ac_id, tests: [...]}]) using pytest node ids exactly as `pytest --collect-only -q` prints them; the orchestrator only counts tests it collected and saw pass in its own run of the test plan.",
                "test_plan_commands": "Make every test_plan command exit 0 from a clean checkout; if a command depends on a port or host, make it robust or pick a free port.",
                SETUP_CHECK: "Make the repository installable into a fresh virtual environment: a pyproject.toml whose dependencies resolve (runtime plus a dev/test extra for the test plan), or a `runtime.setup` command in the service manifest that installs what the tests and the entrypoint need."}.get(name, "Fix the cause named in the detail.")
         if environmental:
@@ -848,39 +977,110 @@ def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]]
 
 
 def merge_findings(passes: list[dict[str, Any]], spec_id: str, round_no: int, base_sha: str, head_sha: str,
-                   branch: str) -> dict[str, Any]:
-    """Union of independent reviewer passes, de-duplicated by (category, first location)."""
-    seen: dict[tuple[str, str], dict[str, Any]] = {}
+                   branch: str, previous: dict[str, Any] | None = None, response: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Union of independent reviewer passes, with ids that survive rounds (post-mortem issue 14).
+
+    Round 1: findings are de-duplicated by (category, first location), the strictest severity wins, and they are
+    numbered F-1.. in severity order. A later round gets `previous` (the merged findings the implementer answered)
+    and `response` (its review_response.json): a finding a reviewer re-adjudicated keeps its previous id (matched on
+    `previous_finding_id`, on its own `finding_id` when the category matches, or on (category, location)), the
+    stricter re-evaluation wins across passes (upheld over withdrawn, then the higher severity), every previous
+    finding no pass mentioned (the orchestrator's DET-* included) is carried with the implementer's disposition as
+    its status, and only new findings are numbered, from the highest previous number on. Each finding and each
+    checks_performed row carries the pass that produced it; scope_check is the union of the passes'."""
+    prev_findings = (previous or {}).get("findings", [])
+    prev_by_id = {f["finding_id"]: f for f in prev_findings}
+    prev_by_key = {_loc_key(f): f["finding_id"] for f in reversed(prev_findings)}
+    disposition = {r.get("finding_id"): r.get("disposition") for r in (response or {}).get("responses", [])}
+    carried: dict[str, dict[str, Any]] = {}
+    fresh: dict[tuple[str, str], dict[str, Any]] = {}
     checks_performed: list[dict[str, Any]] = []
     conformance: dict[str, dict[str, Any]] = {}
+    scope: dict[str, set[str]] = {"files_outside_allowed_paths": set(), "unrelated_changes": set()}
     for p in passes:
         checks_performed.extend(p.get("checks_performed", []))
         for f in p.get("findings", []):
-            key = (f["category"], f["evidence"]["locations"][0].split(":")[0] + ":" + f["evidence"]["locations"][0].split(":")[-1][:3])
-            if key not in seen or _sev(f) > _sev(seen[key]):
-                seen[key] = f
+            pid = _previous_id(f, prev_by_id, prev_by_key)
+            if pid is not None:
+                f = {**f, "finding_id": pid, "previous_finding_id": pid}
+                if pid not in carried or _reevaluation_rank(f) > _reevaluation_rank(carried[pid]):
+                    carried[pid] = f
+                continue
+            key = _loc_key(f)
+            if key not in fresh or _sev(f) > _sev(fresh[key]):
+                fresh[key] = f
         for row in p.get("spec_conformance", []):
             prev = conformance.get(row["ac_id"])
             # The stricter status wins across passes.
             if prev is None or _status_rank(row["status"]) > _status_rank(prev["status"]):
                 conformance[row["ac_id"]] = row
-    findings = sorted(seen.values(), key=_sev, reverse=True)
-    for i, f in enumerate(findings, 1):
+        for k in scope:
+            scope[k] |= set((p.get("scope_check") or {}).get(k, []))
+    findings: list[dict[str, Any]] = []
+    for fid, prev in prev_by_id.items():                      # previous order first, ids intact
+        if fid in carried:
+            findings.append(carried[fid])
+        else:
+            answered = disposition.get(fid)
+            findings.append({**prev, "status": answered if answered in ("fixed", "refuted", "accepted_risk") else prev["status"]})
+    next_no = max([int(fid[2:]) for fid in prev_by_id if re.fullmatch(r"F-[0-9]+", fid)] + [0]) + 1
+    for i, f in enumerate(sorted(fresh.values(), key=_sev, reverse=True), next_no):
         f["finding_id"] = f"F-{i}"
+        findings.append(f)
     return {
         "review_id": f"rev_{spec_id.replace('spec_', '')}{round_no:02d}{head_sha[:6]}",
         "spec_id": spec_id, "round": round_no,
         "diff_ref": {"base_sha": base_sha, "head_sha": head_sha, "branch": branch},
         "checks_performed": checks_performed, "findings": findings,
         "spec_conformance": list(conformance.values()),
+        "scope_check": {k: sorted(v) for k, v in scope.items()},
         "produced_by": passes[0].get("produced_by", {}),
     }
 
 
+def apply_deterministic(findings: list[dict[str, Any]], det_findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fold this round's failed deterministic checks into the merged findings: a DET-* id that is failing again
+    replaces its carried entry (open and blocking once more), a carried DET-* whose check now passes is `fixed`
+    unless the implementer's disposition already closed it, and new failures are appended."""
+    failing = {f["finding_id"]: f for f in det_findings}
+    out = []
+    for f in findings:
+        fid = f["finding_id"]
+        if fid in failing:
+            out.append(failing.pop(fid))
+        elif fid.startswith("DET-") and f.get("status") in ("open", "upheld"):
+            out.append({**f, "status": "fixed"})
+        else:
+            out.append(f)
+    return out + list(failing.values())
+
+
+def _loc_key(f: dict[str, Any]) -> tuple[str, str]:
+    loc = (f.get("evidence") or {}).get("locations") or [""]
+    return (f.get("category", ""), loc[0].split(":")[0] + ":" + loc[0].split(":")[-1][:3])
+
+
+def _previous_id(f: dict[str, Any], prev_by_id: dict[str, dict[str, Any]], prev_by_key: dict[tuple[str, str], str]) -> str | None:
+    pid = f.get("previous_finding_id")
+    if pid in prev_by_id:
+        return pid
+    own = f.get("finding_id")
+    if own in prev_by_id and prev_by_id[own].get("category") == f.get("category"):
+        return own
+    return prev_by_key.get(_loc_key(f))
+
+
+def _reevaluation_rank(f: dict[str, Any]) -> tuple[int, int]:
+    return ({"upheld": 3, "open": 2, "fixed": 1, "refuted": 1, "accepted_risk": 1, "withdrawn": 0}.get(f.get("status", "open"), 2), _sev(f))
+
+
 def tag_pass(findings: dict[str, Any], label: str) -> dict[str, Any]:
-    """Mark every finding of a reviewer pass with the pass that produced it (kept through merging)."""
+    """Mark every finding and every checks_performed row of a reviewer pass with the pass that produced it (kept
+    through merging, so two passes' probe counts are never read as one)."""
     for f in findings.get("findings", []):
         f.setdefault("pass", label)
+    for row in findings.get("checks_performed", []):
+        row.setdefault("pass", label)
     return findings
 
 

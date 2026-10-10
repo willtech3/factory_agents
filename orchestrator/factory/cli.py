@@ -65,7 +65,8 @@ def _bind_forge(cfg, outcome: dict, want_forge: bool):
 def _policy(outcome: dict, design_only: bool, budget_usd: float | None = None):
     """Loop limits and budgets. The run budget is the outcome's `constraints.budget_usd` (default $150) and is
     enforced before every session (`budget.py`); `budget_usd` replaces it on a resume whose log carries a raised cap.
-    FACTORY_BUDGET_SCALE (e.g. 0.4) scales every per-stage cap for cheap first runs."""
+    FACTORY_BUDGET_SCALE (e.g. 0.4) scales every per-stage cap for cheap first runs, never below the stage's observed
+    median session (`Policy.stage_budget_floor_usd`)."""
     import os
     from .state import Policy
     scale = float(os.environ.get("FACTORY_BUDGET_SCALE", "1") or 1)
@@ -73,7 +74,8 @@ def _policy(outcome: dict, design_only: bool, budget_usd: float | None = None):
     knob = lambda name, default: int(os.environ.get(name) or default)  # noqa: E731
     run_budget = budget_usd if budget_usd is not None else (outcome.get("constraints", {}).get("budget_usd") or 150.0)
     return Policy(run_budget_usd=float(run_budget), design_only=design_only,
-                  stage_budget_usd={k: round(v * scale, 2) for k, v in base.stage_budget_usd.items()},
+                  stage_budget_usd={k: max(round(v * scale, 2), base.stage_budget_floor_usd.get(k, 0.0))
+                                    for k, v in base.stage_budget_usd.items()},
                   reviewer_passes=knob("FACTORY_REVIEWER_PASSES", base.reviewer_passes),
                   security_review=os.environ.get("FACTORY_SECURITY_REVIEW", "1").lower() not in ("0", "false", "no", "off"),
                   review_max_rounds=knob("FACTORY_REVIEW_MAX_ROUNDS", base.review_max_rounds),
@@ -142,6 +144,10 @@ def _context(cfg, outcome: dict, run_id: str, *, forge: bool, design_only: bool,
         ctx.driver.on_session_started = lambda info: ctx.event(
             "session.started", {k: v for k, v in info.items() if k not in ("run_id", "work_item_id")},
             stage=info["stage"], actor="platform", work_item_id=info.get("work_item_id"))
+        # A session interrupted by a stop or a crash still finished, and its spend still counts.
+        ctx.driver.on_session_finished = lambda info: ctx.event(
+            "session.finished", {k: v for k, v in info.items() if k not in ("run_id", "work_item_id", "stage")},
+            stage=info.get("stage"), actor="platform", work_item_id=info.get("work_item_id"))
     return ctx
 
 
@@ -335,7 +341,7 @@ def gates():
 def decide(gate_id: str, decision: str, comment: str = "", spec: list[str] = typer.Option([], help="approve_subset spec ids"),
            by: str = "cli-user"):
     """Record a gate decision. The artifact hashes shown at the gate are bound to the decision automatically."""
-    from .gates import parse_budget
+    from .gates import parse_budget, run_cap_gate
 
     cfg = cfgmod.load()
     q = _queue(cfg)
@@ -346,7 +352,7 @@ def decide(gate_id: str, decision: str, comment: str = "", spec: list[str] = typ
     if decision not in g["options"]:
         typer.echo(f"{decision} is not an option for this gate; options: {', '.join(g['options'])}")
         raise typer.Exit(1)
-    if g["kind"] == "budget" and decision == "approve" and parse_budget(comment) is None:
+    if run_cap_gate(g["kind"], g.get("artifacts")) and decision == "approve" and parse_budget(comment) is None:
         typer.echo("approving a budget gate needs the new run budget in the comment, e.g. --comment 'budget_usd: 80'")
         raise typer.Exit(1)
     q.record_decision(gate_id, decision, by, comment, spec)

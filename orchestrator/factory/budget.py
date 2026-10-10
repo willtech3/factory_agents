@@ -51,17 +51,19 @@ def spent_usd(ctx: RunContext) -> float:
     return ctx.store.state(ctx.run_id).list_cost_usd
 
 
-def reserve_budget(ctx: RunContext, stage_key: str, sessions: int = 1, *, extra: dict[str, int] | None = None) -> None:
+def reserve_budget(ctx: RunContext, stage_key: str, sessions: int = 1, *, extra: dict[str, int] | None = None,
+                   cap_usd: float | None = None) -> None:
     """Call right before starting `sessions` sessions of stage `stage_key` (before the batch when they run in
     parallel, so that a refusal never leaves a sibling in flight). `extra` names sessions of other caps that start in
     the same batch (a review round's security pass: `{"security_review": 1}`); their caps count toward the check and
-    the pause is recorded against `stage_key` with the batch's total. Returns when the run can afford them; otherwise
-    pauses the run and raises `BudgetPaused`."""
+    the pause is recorded against `stage_key` with the batch's total. `cap_usd` replaces the policy caps with the
+    batch's actual cap (a session re-run with a raised cap after a session-level budget gate). Returns when the run
+    can afford them; otherwise pauses the run and raises `BudgetPaused`."""
     parts = {stage_key: sessions, **{k: n for k, n in (extra or {}).items() if n > 0}}
     total = sum(parts.values())
     if total <= 0:
         return
-    cap = round(sum(float(ctx.policy.stage_budget_usd[k]) * n for k, n in parts.items()), 2)
+    cap = round(float(cap_usd) if cap_usd is not None else sum(float(ctx.policy.stage_budget_usd[k]) * n for k, n in parts.items()), 2)
     budget = float(ctx.policy.run_budget_usd)
     st = ctx.store.state(ctx.run_id)
     spent = round(st.list_cost_usd, 2)
@@ -106,8 +108,10 @@ def _owner_handle(ctx: RunContext) -> str | None:
 
 
 def last_pause(events: list[Any]) -> dict[str, Any] | None:
-    """The payload of the latest `budget.reached` event, or None."""
+    """The payload of the latest `budget.reached` event when it is a run-cap pause (this module's: it carries `next`,
+    the step that could not start), else None. A `budget.reached` from a session that hit its own cap
+    (`stages/common.run_session`) is decided on its gate while the orchestrator waits; it is not a pause to resume."""
     for ev in reversed(events):
         if ev.kind == "budget.reached":
-            return ev.payload
+            return ev.payload if ev.payload.get("next") is not None else None
     return None

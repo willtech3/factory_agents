@@ -24,14 +24,16 @@ from ..forge import Forge
 from ..sessions import SessionContext
 from ..state import WorkItemStage
 from . import RunContext
-from .common import enter_item_stage, persist_outputs, platform_skill, require_json
+from .common import enter_item_stage, persist_outputs, platform_skill, public, require_json, run_session
 
 INTEGRATE_DESCRIPTION = """Open the change request (pull request or merge request) for specification {spec_id}.
 Inputs are under /mnt/session/uploads/ (spec.json, merge_readiness.json, findings.json, review_response.json,
 test_results.json, run_summary.json, cr_template.md). The branch {branch} is already pushed; its head must equal
-{head_sha} (the orchestrator's run-record commit on top of the judged head {judged_sha}). Render the template, call
-open_change_request, and write cr.json to /mnt/session/outputs/. The verification was run in preview mode "{preview_mode}"
-(run_summary.json `preview_mode`; test_results.json `environment` and `preview` say exactly where and how). {skill_clause}"""
+{head_sha} (the orchestrator's run-record commit on top of the judged head {judged_sha}).
+{git}
+Render the template, call open_change_request, and write cr.json to /mnt/session/outputs/. The verification was run in
+preview mode "{preview_mode}" (run_summary.json `preview_mode`; test_results.json `environment` and `preview` say exactly
+where and how). {skill_clause}"""
 
 RECORD_AUTHOR = ("factory", "factory@localhost")
 
@@ -49,10 +51,9 @@ def commit_run_record(repo: Path, run_id: str, spec: dict[str, Any], spec_md: st
     the files are already identical (re-runs are idempotent)."""
     sid = spec["spec_id"]
     paths = run_record_paths(run_id, sid)
-    public = {k: v for k, v in merge_verdict.items() if not k.startswith("_")}
-    files = {paths["spec_json"]: json.dumps(spec, indent=2, sort_keys=True) + "\n",
+    files = {paths["spec_json"]: json.dumps(public(spec), indent=2, sort_keys=True) + "\n",
              paths["spec_md"]: spec_md if spec_md.endswith("\n") or not spec_md else spec_md + "\n",
-             paths["merge_readiness"]: json.dumps(public, indent=2, sort_keys=True) + "\n"}
+             paths["merge_readiness"]: json.dumps(public(merge_verdict), indent=2, sort_keys=True) + "\n"}
     if spec_verdict is not None:
         files[paths["verdict"]] = json.dumps(spec_verdict, indent=2, sort_keys=True) + "\n"
     for rel, content in files.items():
@@ -122,17 +123,19 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
     }
     skill_uploads, skill_clause = platform_skill(ctx)
     reserve_budget(ctx, "integrate")
-    res = ctx.driver.run(
+    res = run_session(
+        ctx, prefix=f"{sid}-", spec_id=sid,
         agent_key="integrator", title=f"{ctx.run_id} integrate {sid}", run_id=ctx.run_id, stage="integrate",
         uploads={**uploads, **skill_uploads}, work_item_id=wid,
         description=INTEGRATE_DESCRIPTION.format(spec_id=sid, branch=branch, head_sha=head_sha, judged_sha=judged_sha,
+                                                 git=ctx.forge.sandbox_git_instructions(ctx.cfg.repo_url, base_branch, branch, read_only=True),
                                                  preview_mode=ctx.cfg.preview_mode, skill_clause=skill_clause),
         rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["integrate"],
         custom_tools={"open_change_request": make_open_change_request(ctx, ctx.forge, sid, wid, branch)},
         repository=ctx.forge.session_repository_resource(ctx.cfg.repo_url, branch),
     )
     cr = require_json(res, "cr.json")
-    persist_outputs(ctx, "integrate", res, prefix=f"{sid}-")
+    persist_outputs(ctx, "integrate", res, prefix=f"{sid}-", work_item_id=wid, spec_id=sid)
     ctx.event("work_item.stage", {"stage": WorkItemStage.CR_OPEN.value, "cr_id": cr.get("id", cr.get("iid"))},
               work_item_id=wid, spec_id=sid)
     return cr

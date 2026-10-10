@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Protocol
+from typing import Any, Protocol
 import uuid
 
 
@@ -29,8 +29,9 @@ class GateKind(str, Enum):
     DECOMPOSITION_REVIEW = "gate_1_decomposition"
     SPEC_READINESS = "gate_2_spec_readiness"
     ESCALATION = "escalation"             # judge or loop could not converge
-    DEPLOY_FAILURE = "deploy_failure"     # Stage 3/5: dev pipeline failed or dev e2e failed; carries the log excerpt
-    BUDGET = "budget"                     # the next session would take the run past constraints.budget_usd (budget.py)
+    BUDGET = "budget"                     # the run budget (budget.py: the next session would pass constraints.budget_usd), or one
+                                          # session's dollar or iteration cap (stages/common.run_session); approve = raise / accept, reject = close
+    DEPLOY_FAILURE = "deploy_failure"     # Stage 5: dev pipeline failed or dev e2e failed; carries the log excerpt
     # Gate 3 (code review) is the forge's own change-request approval; see forge/
 
 
@@ -94,6 +95,17 @@ class StaleDecision(Exception):
     """The decision references artifacts that differ from what the gate presented."""
 
 
+def run_cap_gate(kind: Any, artifacts: Any) -> bool:
+    """A budget gate opened by the run cap (budget.py) presents the pause record `paused-N.json`; one opened for a
+    single session's cap or iteration cap (stages/common.run_session) presents nothing. Only the former is approved
+    with a new run budget. Accepts a Gate's fields or a queue record's (`kind` string, artifact dicts)."""
+    kind = kind.value if isinstance(kind, GateKind) else kind
+    if kind != GateKind.BUDGET.value:
+        return False
+    names = [a.name if isinstance(a, ArtifactRef) else (a.get("name") if isinstance(a, dict) else None) for a in (artifacts or ())]
+    return any(str(n or "").startswith("paused-") for n in names)
+
+
 def validate_decision(gate: Gate, decision: GateDecision) -> None:
     if decision.gate_id != gate.gate_id:
         raise ValueError("decision is for a different gate")
@@ -106,7 +118,7 @@ def validate_decision(gate: Gate, decision: GateDecision) -> None:
         raise ValueError("request_changes requires comments; they become the agent's feedback")
     if decision.decision == Decision.APPROVE_SUBSET and not decision.approved_subset:
         raise ValueError("approve_subset requires at least one approved spec_id")
-    if gate.kind == GateKind.BUDGET and decision.decision == Decision.APPROVE and parse_budget(decision.comments) is None:
+    if run_cap_gate(gate.kind, gate.artifacts) and decision.decision == Decision.APPROVE and parse_budget(decision.comments) is None:
         raise ValueError("approving a budget gate needs the new run budget in the comments, e.g. `budget_usd: 80`")
 
 

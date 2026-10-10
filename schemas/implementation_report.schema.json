@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.example/schemas/implementation_report.schema.json",
+  "title": "ImplementationReport",
+  "description": "The Implementer's account of one implementation round: which tests prove each acceptance criterion, what it ran, what it changed, and what it is unsure about. The orchestrator reads `criteria` for the ac_test_mapping check and verifies every named test against its own pytest run; everything else is a hypothesis for the reviewer to test.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec_id", "criteria", "commands_run", "files_changed"],
+  "properties": {
+    "spec_id": { "type": "string" },
+    "head_sha": { "type": "string", "description": "The pushed commit this report describes." },
+    "branch": { "type": "string" },
+    "criteria": {
+      "type": "array",
+      "minItems": 1,
+      "description": "One entry per acceptance criterion in the spec, in order.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ac_id", "tests"],
+        "properties": {
+          "ac_id": { "type": "string" },
+          "tests": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "pytest node ids exactly as `pytest --collect-only -q` prints them (tests/test_x.py::test_name, tests/test_x.py::TestClass::test_name, tests/test_x.py::test_name[param]). Empty only for a criterion whose verification is not automated_test."
+          },
+          "red_on_base": { "type": "boolean", "description": "Whether the named tests were seen failing on base_sha (rubric I1 level 3)." },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "commands_run": {
+      "type": "array",
+      "description": "Every test_plan.commands entry, as run from a clean state before finishing.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "exit_code"],
+        "properties": {
+          "command": { "type": "string" },
+          "exit_code": { "type": "integer" },
+          "summary": { "type": "string", "description": "The command's own summary line, e.g. '29 passed in 1.2s'." }
+        }
+      }
+    },
+    "e2e_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "target", "exit_code"],
+        "properties": {
+          "command": { "type": "string" },
+          "target": { "type": "string", "enum": ["local", "preview"] },
+          "exit_code": { "type": ["integer", "null"], "description": "null when the entry was not run (no preview yet)." },
+          "covers_ac": { "type": "array", "items": { "type": "string" } },
+          "output_tail": { "type": "string" }
+        }
+      }
+    },
+    "files_changed": { "type": "array", "items": { "type": "string" } },
+    "test_concerns": { "type": "array", "items": { "type": "string" }, "description": "Existing tests the implementer believes are wrong; it never edits them." },
+    "residual_uncertainty": { "type": "array", "items": { "type": "string" } },
+    "notes": { "type": "string" },
+    "produced_by": { "$ref": "provenance.schema.json" }
+  }
+}

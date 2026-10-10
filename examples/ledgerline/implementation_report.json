@@ -1,0 +1,46 @@
+{
+  "spec_id": "spec_smart-retries",
+  "head_sha": "9c1f2e7a0b4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f",
+  "branch": "factory/run_ledger0001/spec_smart-retries",
+  "criteria": [
+    {"ac_id": "AC-1", "tests": ["spec/services/billing/stripe_webhook_handler_spec.rb::payment_failed creates a failed attempt"], "red_on_base": true},
+    {"ac_id": "AC-2", "tests": ["spec/services/billing/stripe_webhook_handler_spec.rb::invoice.paid records success"], "red_on_base": true},
+    {"ac_id": "AC-3", "tests": ["spec/models/payment_attempt_spec.rb::duplicate event id is idempotent"], "red_on_base": true},
+    {"ac_id": "AC-4", "tests": ["spec/services/billing/stripe_webhook_handler_spec.rb::null next_payment_attempt marks final"], "red_on_base": true},
+    {"ac_id": "AC-5", "tests": ["spec/services/billing/stripe_webhook_handler_spec.rb::unknown customer logs and returns"], "red_on_base": true},
+    {"ac_id": "AC-6", "tests": [], "note": "static_check: rubocop in test_plan.commands"},
+    {"ac_id": "AC-7", "tests": ["spec/services/billing/stripe_webhook_handler_spec.rb::payment_failed creates a failed attempt"]},
+    {"ac_id": "AC-8", "tests": ["spec/services/billing/stripe_webhook_handler_spec.rb::handler exceptions surface as 500"], "red_on_base": true}
+  ],
+  "commands_run": [
+    {"command": "bundle exec rspec spec/services/billing/stripe_webhook_handler_spec.rb spec/models/payment_attempt_spec.rb", "exit_code": 0, "summary": "14 examples, 0 failures"},
+    {"command": "bundle exec rubocop app/services/billing app/models/payment_attempt.rb", "exit_code": 0, "summary": "4 files inspected, no offenses detected"}
+  ],
+  "e2e_results": [
+    {"command": "bin/with-server bundle exec rspec spec/e2e/stripe_webhook_preview_spec.rb", "target": "local", "exit_code": 0, "covers_ac": ["AC-1", "AC-3", "AC-5", "AC-8"], "output_tail": "4 examples, 0 failures"},
+    {"command": "E2E_BASE_URL=$BASE_URL bundle exec rspec spec/e2e/stripe_webhook_preview_spec.rb -e 'payment_failed'", "target": "preview", "exit_code": null, "covers_ac": ["AC-1", "AC-3"], "output_tail": "not run: preview.json status pending at push time"}
+  ],
+  "files_changed": [
+    "app/services/billing/stripe_webhook_handler.rb",
+    "app/models/payment_attempt.rb",
+    "db/migrate/20261009_create_payment_attempts.rb",
+    "spec/services/billing/stripe_webhook_handler_spec.rb",
+    "spec/models/payment_attempt_spec.rb",
+    "spec/e2e/stripe_webhook_preview_spec.rb"
+  ],
+  "test_concerns": [],
+  "residual_uncertainty": ["AC-5's log line format is not specified; used the existing billing logger's key=value style."],
+  "produced_by": {
+    "agent_name": "Implementer",
+    "agent_id": "agent_04example",
+    "agent_version": 3,
+    "session_id": "sesn_01exampleimpl1",
+    "thread_id": null,
+    "model": "claude-opus-5-5",
+    "effort": "xhigh",
+    "outcome_iterations": 1,
+    "list_cost_usd": 4.2,
+    "produced_at": "2026-10-09T15:40:00Z",
+    "inputs": [{"artifact": "spec.json", "sha256": "3f7a9c2e1b8d4f6a0c5e2b9d7a1f4c8e6b3d0a2f9c7e5b1d8a4f6c3e0b2d9a7c"}]
+  }
+}

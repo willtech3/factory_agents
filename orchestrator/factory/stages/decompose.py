@@ -9,7 +9,7 @@ from ..budget import reserve_budget
 from ..gates import Decision, GateKind
 from ..state import RunStage
 from . import RunContext
-from .common import make_ask_human, open_gate_and_wait, persist_outputs, platform_skill, provenance, require_json, rubric_text
+from .common import make_ask_human, open_gate_and_wait, persist_outputs, platform_skill, require_json, rubric_text, run_session, stamp_provenance
 
 DESCRIPTION = """Produce a decomposition of the business outcome in /mnt/session/uploads/outcome.json.
 {repo_clause} {skill_clause}
@@ -58,8 +58,8 @@ def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | N
     mount, repo_clause, repo_available = repository_access(ctx, outcome)
     skill_uploads, skill_clause = platform_skill(ctx)
     reserve_budget(ctx, "decompose")
-    res = ctx.driver.run(
-        agent_key="decomposer", title=f"{ctx.run_id} decompose", run_id=ctx.run_id, stage="decompose",
+    res = run_session(
+        ctx, agent_key="decomposer", title=f"{ctx.run_id} decompose", run_id=ctx.run_id, stage="decompose",
         uploads={**uploads, **skill_uploads},
         description=DESCRIPTION.format(feedback_clause=feedback_clause, repo_clause=repo_clause, skill_clause=skill_clause),
         rubric_md=rubric_text(ctx, "decomposition", repo_available), max_iterations=ctx.policy.outcome_max_iterations,
@@ -67,8 +67,11 @@ def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | N
         custom_tools={"ask_human": make_ask_human(ctx, "decomposer")}, repository=mount,
     )
     decomposition = require_json(res, "decomposition.json")
-    decomposition.setdefault("produced_by", provenance(ctx, res, "Decomposer", "claude-opus-5-5",
-                                                       {"outcome.json": ctx.store.put_artifact(ctx.run_id, "intake", "outcome.json", uploads["outcome.json"])}))
+    if prior_decomposition is not None and int(decomposition.get("revision") or 1) <= int(prior_decomposition.get("revision") or 0):
+        # Artefacts are named by revision and the store refuses to overwrite one; the number is the orchestrator's.
+        decomposition["revision"] = int(prior_decomposition.get("revision") or 0) + 1
+    stamp_provenance(decomposition, ctx, res, "Decomposer", "claude-opus-5-5",
+                     {"outcome.json": ctx.store.put_artifact(ctx.run_id, "intake", "outcome.json", uploads["outcome.json"])})
     res.outputs["decomposition.json"] = json.dumps(decomposition, indent=2).encode()
     shas = persist_outputs(ctx, "decompose", res, prefix=f"r{decomposition['revision']}-")
 

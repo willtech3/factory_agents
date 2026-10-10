@@ -64,20 +64,30 @@ def test_driver_interrupts_sessions_still_in_flight(tmp_path, root):
     """A session the driver started and has not finished gets user.interrupt when the orchestrator is stopped."""
     from factory.sessions import SHORT_CALL_TIMEOUT, SessionDriver
 
-    sent = []
+    sent, finished = [], []
 
     class Events:
         def send(self, session_id, events, timeout=None):
             assert timeout == SHORT_CALL_TIMEOUT          # a hung interrupt must not block the shutdown for ten minutes
             sent.append((session_id, events[0]["type"]))
 
-    class Client:
-        beta = type("B", (), {"sessions": type("S", (), {"events": Events()})()})()
+    class Sessions:
+        events = Events()
 
-    d = SessionDriver(make_config(root, tmp_path), client=Client())
-    d.active.update({"sesn_a", "sesn_b"})
+        def retrieve(self, session_id, timeout=None):
+            return SimpleNamespace(usage=SimpleNamespace(list_cost=SimpleNamespace(amount="233")))
+
+    class Client:
+        beta = type("B", (), {"sessions": Sessions()})()
+
+    d = SessionDriver(make_config(root, tmp_path), client=Client(), on_session_finished=finished.append)
+    d.active["sesn_a"] = {"agent_id": "agent_x", "agent_version": 2, "agent_key": "spec_judge", "stage": "judge", "run_id": "run_1", "work_item_id": None, "title": "t"}
+    d.active["sesn_b"] = {"agent_id": "agent_y", "agent_version": 1, "agent_key": "implementer", "stage": "implement", "run_id": "run_1", "work_item_id": "wi-x", "title": "u"}
     assert d.interrupt_active() == ["sesn_a", "sesn_b"]
-    assert sent == [("sesn_a", "user.interrupt"), ("sesn_b", "user.interrupt")] and d.active == set()
+    assert sent == [("sesn_a", "user.interrupt"), ("sesn_b", "user.interrupt")] and d.active == {}
+    # an interrupted session still finished: its spend is reported so the run total counts it (post-mortem issue 16)
+    assert [(f["session_id"], f["stop_reason"], f["list_cost_usd"], f["stage"], f["work_item_id"]) for f in finished] == \
+        [("sesn_a", "interrupted", 2.33, "judge", None), ("sesn_b", "interrupted", 2.33, "implement", "wi-x")]
 
 
 def test_design_sessions_get_the_platform_contract_skill_by_path(tmp_path, root, examples):

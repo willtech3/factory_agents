@@ -332,7 +332,7 @@ def test_budget_pause_is_shown_decided_and_resumed_from_the_console(client, monk
     store = RunStore(runs_dir)
     rid = "run_budgetpause01"
     ctx = RunContext(cfg=client.cfg, store=store, driver=None, queue=client.console.queue, notifier=LogNotifier(), forge=None,
-                     policy=Policy(run_budget_usd=60.0), run_id=rid)
+                     policy=Policy(run_budget_usd=60.0, stage_budget_usd={"review": 15.0, "security_review": 10.0, "merge_judge": 8.0}), run_id=rid)
     ctx.event("run.created", {"outcome_id": "o", "title": "Budgeted", "budget_usd": 60.0})
     store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "Budgeted", "statement": "s",
                                                                  "owner": {"name": "P", "handle": "priya"}}).encode())
@@ -395,6 +395,33 @@ def test_budget_pause_is_shown_decided_and_resumed_from_the_console(client, monk
         out2 = c2.post(f"/api/runs/{rid}/resume").json()                            # without a body: applies what is recorded
         assert out2["pid"] == 777
     assert calls[0][0][-3:] == ["resume", rid, "--budget=90"] and calls[1][0][-2:] == ["resume", rid]
+
+
+def test_console_shows_a_budget_gate(client):
+    """A budget gate (a session stopped on its cap; post-mortem issue 17) has no artefacts and renders as a summary."""
+    from factory.gates import ArtifactRef, Decision, Gate, GateKind
+
+    store = client.console.store
+    rid = "run_budget0000a"
+    actor = {"type": "orchestrator", "id": "orchestrator"}
+    store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
+    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "Budget run"})
+    for stage in ("decomposing", "gate_1_decomposition", "specifying"):
+        store.append(rid, "stage.entered", actor, {"stage": stage})
+    store.append(rid, "budget.reached", {"type": "platform", "id": "platform"},
+                 {"session_id": "sesn_cut", "title": "run spec-judge r1", "budget_usd": 6.0, "list_cost_usd": 6.02, "reason": "budget_reached"}, stage="judge")
+    gate = Gate(run_id=rid, kind=GateKind.BUDGET, artifacts=(), assignees=("priya.n",), summary="Session sesn_cut hit its $6.00 cap. Approve: raise. Reject: close.",
+                options=(Decision.APPROVE, Decision.REJECT))
+    client.console.queue.open(gate)
+    store.append(rid, "gate.opened", actor, {"gate_id": gate.gate_id, "kind": "budget", "artifacts": [], "assignees": ["priya.n"], "summary": gate.summary}, stage="budget")
+    runs = {r["run_id"]: r for r in client.get("/api/runs").json()["runs"]}
+    assert runs[rid]["stage"] == "paused_budget" and runs[rid]["waiting"]["gates"] == 1
+    g = client.get(f"/api/gates/{gate.gate_id}").json()
+    assert g["gate"]["kind"] == "budget" and g["review"]["kind"] == "other" and "hit its $6.00 cap" in g["gate"]["summary"]
+    assert g["gate"]["options"] == ["approve", "reject"]
+    assert [e["kind"] for e in client.get(f"/api/runs/{rid}").json()["events"]][-2:] == ["budget.reached", "gate.opened"]
+    r = client.post(f"/api/gates/{gate.gate_id}/decision", json={"decision": "approve", "by": "priya"}).json()
+    assert r["ok"] and r["recorded"]["artifact_shas"] == []
 
 
 def test_watch_is_offered_for_live_runs_with_open_pull_requests(client, examples):

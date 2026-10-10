@@ -232,9 +232,17 @@ def criteria_mapping(implementation_report: dict[str, Any]) -> dict[str, list[st
 
 
 def ac_test_mapping(spec: dict[str, Any], implementation_report: dict[str, Any],
-                    tests_that_passed: Iterable[str]) -> CheckResult:
-    """Every automated acceptance criterion names a test that exists in the passing set."""
-    passed = set(tests_that_passed)
+                    tests_that_passed: Iterable[str] | None, tests_that_exist: Iterable[str] | None = None) -> CheckResult:
+    """Every automated acceptance criterion names a test the orchestrator collected and saw pass.
+
+    `tests_that_passed` are node ids from the orchestrator's own pytest run (never the implementer's report);
+    `tests_that_exist` is what `pytest --collect-only` lists in the checkout, so a mapped id that pytest does not know
+    is reported as not found rather than as not passing. A mapped id may name a file or a class: it counts when every
+    collected test under it passed. `tests_that_passed=None` means the orchestrator could not run pytest in this
+    repository; the mapping is then checked for presence only and the detail says it is unverified."""
+    verified = tests_that_passed is not None
+    passed = set(tests_that_passed or [])
+    exist = set(tests_that_exist) if tests_that_exist is not None else None
     mapping = criteria_mapping(implementation_report)
     problems = []
     for ac in spec["acceptance_criteria"]:
@@ -244,11 +252,33 @@ def ac_test_mapping(spec: dict[str, Any], implementation_report: dict[str, Any],
         if not tests:
             problems.append(f"{ac['ac_id']}: no test mapped")
             continue
-        missing = [t for t in tests if t not in passed]
-        if missing:
-            problems.append(f"{ac['ac_id']}: tests not found in passing set: {missing}")
-    return CheckResult("ac_test_mapping", not problems, "all automated criteria map to passing tests"
-                       if not problems else "; ".join(problems), {"problems": problems})
+        if not verified:
+            continue
+        unknown = [t for t in tests if exist is not None and not _test_known(t, exist)]
+        if unknown:
+            problems.append(f"{ac['ac_id']}: tests not found (pytest did not collect them): {unknown}")
+        not_passed = [t for t in tests if t not in unknown and not _test_passed(t, passed, exist)]
+        if not_passed:
+            problems.append(f"{ac['ac_id']}: tests did not pass in the orchestrator's run: {not_passed}")
+    if problems:
+        detail = "; ".join(problems)
+    elif verified:
+        detail = "all automated criteria map to tests the orchestrator collected and saw pass"
+    else:
+        detail = "all automated criteria map to a test; UNVERIFIED: the orchestrator ran no pytest in this repository"
+    return CheckResult("ac_test_mapping", not problems, detail, {"problems": problems, "verified": verified})
+
+
+def _test_known(test_id: str, collected: set[str]) -> bool:
+    return test_id in collected or any(c.startswith(test_id + "::") for c in collected)
+
+
+def _test_passed(test_id: str, passed: set[str], collected: set[str] | None) -> bool:
+    if test_id in passed:
+        return True
+    pool = collected if collected is not None else passed
+    under = [c for c in pool if c.startswith(test_id + "::")]
+    return bool(under) and all(c in passed for c in under)
 
 
 def secret_scan(added_lines_by_file: dict[str, list[str]]) -> CheckResult:
@@ -316,22 +346,23 @@ def e2e_passed(results: list[dict[str, Any]], target: str = "preview") -> CheckR
 def run_all_for_merge(
     *, spec: dict[str, Any], changed_files: list[str], deleted_files: list[str],
     existing_test_files: list[str], added_lines_by_file: dict[str, list[str]],
-    implementation_report: dict[str, Any], passing_tests: list[str], command_results: list[dict[str, Any]],
+    implementation_report: dict[str, Any], passing_tests: list[str] | None, command_results: list[dict[str, Any]],
     spec_touches_tests: bool = False,
     manifest_path: Path | None = None, schema_dir: Path | None = None,
-    e2e_results: list[dict[str, Any]] | None = None,
+    e2e_results: list[dict[str, Any]] | None = None, tests_that_exist: list[str] | None = None,
 ) -> list[CheckResult]:
     """The merge judge receives this list verbatim and may not override a failure.
 
-    `manifest_path`/`schema_dir` enable `manifest_valid`; `e2e_results` (from `LocalVerifier.run_e2e`
-    against the preview URL) enables `e2e_preview`. When the spec has preview e2e entries and no
-    results were supplied, `e2e_preview` fails: not running them is not the same as passing them.
+    `passing_tests` and `tests_that_exist` come from the orchestrator's own pytest run and collection (see
+    `ac_test_mapping`). `manifest_path`/`schema_dir` enable `manifest_valid`; `e2e_results` (from
+    `LocalVerifier.run_e2e` against the preview URL) enables `e2e_preview`. When the spec has preview e2e entries
+    and no results were supplied, `e2e_preview` fails: not running them is not the same as passing them.
     """
     out = [
         diff_scope(changed_files + deleted_files, spec["allowed_paths"]),
         protected_tests(changed_files, deleted_files, existing_test_files, spec["allowed_paths"], spec_touches_tests),
         test_weakening(added_lines_by_file),
-        ac_test_mapping(spec, implementation_report, passing_tests),
+        ac_test_mapping(spec, implementation_report, passing_tests, tests_that_exist),
         commands_passed(command_results),
         e2e_coverage(spec),
         secret_scan(added_lines_by_file),

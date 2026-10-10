@@ -16,6 +16,7 @@ EXAMPLE_TO_SCHEMA = {
     "verdict_round2": "judge_verdict.schema.json",
     "findings_round1": "review_findings.schema.json",
     "review_response_round1": "review_response.schema.json",
+    "implementation_report": "implementation_report.schema.json",
     "merge_readiness": "merge_readiness.schema.json",
     "service_manifest": "service_manifest.schema.json",
 }
@@ -48,6 +49,22 @@ def test_sandbox_tool_catches_missing_required(tmp_path, schemas_dir, root, exam
     errors = validate.validate_file(p, schemas_dir)
     assert any("acceptance_criteria" in e for e in errors)
     assert any("allowed_paths" in e and "fewer" in e for e in errors)
+
+
+def test_sandbox_tool_infers_the_implementation_report_schema(root, schemas_dir, tmp_path):
+    """The implementer validates implementation_report.json in-sandbox like every other artefact (post-mortem issue 5)."""
+    sys.path.insert(0, str(root / "orchestrator" / "factory" / "sandbox_tools"))
+    import validate  # noqa: E402
+
+    assert validate._guess_schema(Path("/mnt/session/outputs/implementation_report.json")) == "implementation_report.schema.json"
+    assert validate.validate_file(root / "examples" / "ledgerline" / "implementation_report.json", schemas_dir) == []
+    broken = json.loads((root / "examples" / "ledgerline" / "implementation_report.json").read_text())
+    broken["criteria"][0]["tests"] = "tests/test_x.py::test_a"            # a string, not a list of node ids
+    broken["acceptance_criteria"] = {}                                      # the old, unparsed shape
+    p = tmp_path / "implementation_report.json"
+    p.write_text(json.dumps(broken))
+    errors = validate.validate_file(p, schemas_dir)
+    assert any("tests" in e and "array" in e for e in errors) and any("acceptance_criteria" in e for e in errors)
 
 
 def test_all_schemas_are_valid_json_schema(schemas_dir):

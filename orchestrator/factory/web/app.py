@@ -50,7 +50,8 @@ EXAMPLES = {p.parent.name: p for p in sorted((REPO_ROOT / "examples").glob("*/ou
 TIMELINE_KINDS = {"run.created", "repository.created", "stage.entered", "session.started", "gate.opened", "gate.decided", "question.asked", "question.answered",
                   "judge.verdict", "review.findings", "review.response", "merge.verdict", "cr.opened", "cr.merged", "cr.closed",
                   "deploy.started", "deploy.succeeded", "deploy.failed", "e2e.dev_passed", "e2e.dev_failed", "budget.reached",
-                  "budget.raised", "run.escalated", "run.failed", "run.resumed", "run.completed", "session.finished", "work_item.stage"}
+                  "budget.raised", "session.truncated", "run.escalated", "run.failed", "run.resumed", "run.completed", "session.finished",
+                  "work_item.stage"}
 
 
 class DecisionBody(BaseModel):
@@ -155,9 +156,11 @@ class Console:
                     for ev in events if ev.kind in TIMELINE_KINDS]
         design_only = any(ev.kind == "run.completed" and ev.payload.get("design_only") for ev in events) or \
             any(ev.kind == "run.created" and ev.payload.get("design_only") for ev in events)
-        # A run that died in the implementation stage, or paused at its budget, continues from its artefacts
-        # (`factory resume`); a budget pause first needs the owner's decision on the budget gate.
-        paused = st.stage == RunStage.PAUSED_BUDGET
+        # A run that died in the implementation stage, or paused at its run budget, continues from its artefacts
+        # (`factory resume`); a budget pause first needs the owner's decision on the budget gate. A run paused because
+        # one session hit its own cap is still being driven: its orchestrator waits on that gate, so nothing to resume.
+        budget = self._budget(st, events, gates)
+        paused = budget["paused"]
         resumable = not self.demo.is_demo(run_id) and (paused or (
             st.stage == RunStage.FAILED
             and any(ev.kind == "stage.entered" and ev.payload.get("stage") == "implementing" for ev in events)))
@@ -167,7 +170,7 @@ class Console:
                  "heartbeat": watcher_heartbeat(self.cfg.runs_dir, run_id)}
         return {"run_id": run_id, "title": self._title(run_id, events), "outcome": outcome, "stage": st.stage.value,
                 "cost": round(st.list_cost_usd, 2), "demo": self.demo.is_demo(run_id), "design_only": design_only, "work_items": items,
-                "resumable": resumable, "budget": self._budget(st, events, gates), "watch": watch,
+                "resumable": resumable, "budget": budget, "watch": watch,
                 "gates": gates, "questions": questions, "events": timeline, "artifacts": self._artifacts(run_id),
                 "created_at": events[0].at, "updated_at": events[-1].at}
 
@@ -260,7 +263,9 @@ class Console:
                     s = load(name)
                     if s:
                         specs[s["spec_id"]] = s
-                        md = self._latest(run_id, "specify", f"{s['work_item_id']}-", "-spec.md")
+                        # the runner stores the gate's own spec.md as final-<spec_id>.md; older runs only have the rounds
+                        final = self.cfg.runs_dir / run_id / "artifacts" / "specify" / f"final-{s['spec_id']}.md"
+                        md = final if final.is_file() else self._latest(run_id, "specify", f"{s['work_item_id']}-r", "-spec.md")
                         spec_md[s["spec_id"]] = md.read_text(errors="replace") if md else ""
             titles = {}
             for ev in events:
@@ -274,8 +279,11 @@ class Console:
             report = next((load(n) for n in by_name if n.endswith("deploy_report.json")), None)
             return {"kind": "deploy", "outcome": outcome, "report": report}
         if kind == GateKind.BUDGET.value:
+            record = self._budget_record(rec)
+            if record is None:          # a session's own cap (run_session): the summary says it all
+                return {"kind": "other", "outcome": outcome}
             st = self.store.state(run_id)
-            return {"kind": "budget", "outcome": outcome, "budget": self._budget_record(rec),
+            return {"kind": "budget", "outcome": outcome, "budget": record,
                     "run_stage": st.stage.value, "spent_now_usd": round(st.list_cost_usd, 2), "budget_now_usd": st.budget_usd}
         return {"kind": "other", "outcome": outcome}
 
@@ -288,9 +296,14 @@ class Console:
         return None
 
     def _latest(self, run_id: str, stage: str, prefix: str, suffix: str) -> Path | None:
+        """The highest-numbered `<prefix><n>...<suffix>` artefact (numeric: round 10 after round 9)."""
         d = self.cfg.runs_dir / run_id / "artifacts" / stage
-        cands = sorted(p for p in d.glob(f"{prefix}*{suffix}") if not p.name.endswith(".sha256")) if d.exists() else []
-        return cands[-1] if cands else None
+        cands = [p for p in d.glob(f"{prefix}*{suffix}") if not p.name.endswith(".sha256")] if d.exists() else []
+
+        def round_of(p: Path) -> int:
+            digits = p.name[len(prefix):-len(suffix)].split("-")[0]
+            return int(digits) if digits.isdigit() else -1
+        return max(cands, key=lambda p: (round_of(p), p.name)) if cands else None
 
     def gate_page(self, gate_id: str) -> str:
         g = self.gate(gate_id)
@@ -318,8 +331,8 @@ class Console:
             raise HTTPException(400, "request_changes needs a comment; it becomes the agent's feedback")
         if decision == Decision.APPROVE_SUBSET and not body.approved_subset:
             raise HTTPException(400, "approve_subset needs at least one spec")
-        if rec["kind"] == GateKind.BUDGET.value and decision == Decision.APPROVE:
-            self._check_new_budget(rec, parse_budget(body.comments))
+        if rec["kind"] == GateKind.BUDGET.value and decision == Decision.APPROVE and self._budget_record(rec) is not None:
+            self._check_new_budget(rec, parse_budget(body.comments))     # the run cap: approve needs the new budget
         entry = self.queue.record_decision(gate_id, decision.value, body.by or "console", body.comments, body.approved_subset)
         return {"ok": True, "recorded": entry}
 

@@ -122,7 +122,20 @@ def _ctx(tmp_path, root, driver, **cfg):
 
 
 def _titles(driver) -> list[str]:
-    return [c["title"].split(" ", 1)[1] for c in driver.calls]
+    """Session titles in the order the driver saw them, except that a round's reviewer passes (which run in parallel,
+    so their recorded order is a race) are sorted among themselves."""
+    out = [c["title"].split(" ", 1)[1] for c in driver.calls]
+    i = 0
+    while i < len(out):
+        if out[i].startswith("review "):
+            j = i
+            while j < len(out) and out[j].startswith("review "):
+                j += 1
+            out[i:j] = sorted(out[i:j])
+            i = j
+        else:
+            i += 1
+    return out
 
 
 def _item_path(ctx) -> list[WorkItemStage]:
