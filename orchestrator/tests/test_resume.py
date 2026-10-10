@@ -74,3 +74,23 @@ def test_run_resumed_moves_a_failed_run_back_into_implementation():
         pass
     else:
         raise AssertionError("a completed run must not resume")
+
+
+def test_reentering_the_same_stage_is_a_no_op_not_an_illegal_transition():
+    """Live greenfield run: the resume re-emitted work_item.stage reviewing while the item was already reviewing,
+    and every replay (the Console, the integrate step's cost lookup) raised IllegalTransition."""
+    from factory.state import WorkItemStage
+    st = RunState(run_id="r"); seq = [0]
+
+    def ev(kind, payload, **extra):
+        e = RunEvent(run_id="r", seq=seq[0], kind=kind, actor={"type": "system"}, payload=payload, **extra); seq[0] += 1; reduce(st, e)
+
+    ev("run.created", {"outcome_id": "o"})
+    ev("stage.entered", {"stage": "decomposing"})
+    ev("artifact.produced", {"artifact_type": "decomposition", "revision": 1, "work_items": [{"work_item_id": "wi-a"}]})
+    for s_ in ("spec_drafting", "spec_judging", "spec_approved", "implementing", "reviewing"):
+        ev("work_item.stage", {"stage": s_}, work_item_id="wi-a")
+    ev("work_item.stage", {"stage": "reviewing"}, work_item_id="wi-a")      # again: no-op
+    assert st.work_items["wi-a"].stage == WorkItemStage.REVIEWING
+    ev("stage.entered", {"stage": "decomposing"})                           # run-level same stage: no-op too
+    assert st.stage == RunStage.DECOMPOSING
