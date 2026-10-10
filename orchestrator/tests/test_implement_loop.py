@@ -6,6 +6,7 @@ review round. Every kickoff names the platform-contract skill upload. In local p
 `unreachable_from_sandbox` with no URL while the orchestrator's own instance runs the preview entries."""
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,8 +41,9 @@ def _spec(local: bool) -> dict:
 
 
 def _git(cwd: Path, *args: str) -> str:
-    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args], cwd=cwd, check=True,
-                          capture_output=True, text=True).stdout
+    """git with a fixed identity and no commit signing, whatever the developer's global configuration says."""
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", *args],
+                          cwd=cwd, check=True, capture_output=True, text=True).stdout
 
 
 def _remote(tmp_path: Path) -> Path:
@@ -72,7 +74,9 @@ def _push(origin: Path, tmp: Path, branch: str, base: str, files: dict[str, str]
         (w / rel).parent.mkdir(parents=True, exist_ok=True)
         (w / rel).write_text(content)
     _git(w, "add", "-A")
-    _git(w, "commit", "-q", "-m", f"round {n}")
+    # --allow-empty: a round the loop should not have run (the same files again) must fail the test's assertions on
+    # the session sequence, not crash git with "nothing to commit"
+    _git(w, "commit", "-q", "--allow-empty", "-m", f"round {n}")
     _git(w, "push", "-q", "origin", branch)
 
 
@@ -148,7 +152,7 @@ def _item_path(ctx) -> list[WorkItemStage]:
     return stages
 
 
-@pytest.mark.parametrize("preview_mode", ["platform", "local"])
+@pytest.mark.parametrize("preview_mode", ["platform", pytest.param("local", marks=pytest.mark.skipif(not shutil.which("curl"), reason="the spec's e2e entry uses curl"))])
 def test_deterministic_only_findings_get_a_response_round_and_a_recheck_not_a_review(tmp_path, root, preview_mode):
     origin = _remote(tmp_path)
     driver = Driver(origin, tmp_path, {})                      # reviewers find nothing; round 1 fails only manifest_valid (+ e2e_preview locally)
