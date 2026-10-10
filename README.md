@@ -24,6 +24,7 @@ Three human gates. Judges in separate sessions from authors. Every finding falsi
 | Decisions and their trade-offs | [docs/adr/](docs/adr/) |
 | What to build first | [docs/roadmap.md](docs/roadmap.md) |
 | Run it yourself with a personal GitHub repo and Linear workspace | [docs/07-personal-e2e-setup.md](docs/07-personal-e2e-setup.md) |
+| Onboard existing or new apps and verify them in hosted test sandboxes | [docs/09-app-onboarding.md](docs/09-app-onboarding.md) |
 | Write outcomes and decide Gates 1 and 2 in a browser | [docs/08-factory-console.md](docs/08-factory-console.md) |
 
 ## What is here and how real it is

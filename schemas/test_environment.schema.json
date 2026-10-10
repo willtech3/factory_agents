@@ -52,7 +52,8 @@
         },
         "verify": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Browser recipes write browser-result.json {status:passed,steps:[{description,status:passed,viewport:{width,height},screenshot:unique_filename}],demo:filename} and media into the absolute FACTORY_EVIDENCE_DIR supplied by the controller. Each declared viewport requires an observed step and unique screenshot. API/CLI/worker/library recipes write verification-result.json {status,checks:[{id,status,observation}]}. No outputs in another folder satisfy verification. Screenshot and video names must be flat filenames (no subdirectories), and every step must include viewport. The top-level fields are steps and demo, not runs or demo_video. Preserve all browser assertions and write extra detail to a separate file if needed."
         },
         "stop": {
           "type": "string",
@@ -92,7 +93,8 @@
             "default": 200
           }
         }
-      }
+      },
+      "description": "Browser recipes must include the browser target service with id app. BASE_URL uses that service port."
     },
     "secrets": {
       "type": "array",
@@ -291,6 +293,31 @@
         "required": [
           "browser"
         ]
+      }
+    }
+  ],
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "browser"
+        ]
+      },
+      "then": {
+        "properties": {
+          "services": {
+            "contains": {
+              "properties": {
+                "id": {
+                  "const": "app"
+                }
+              },
+              "required": [
+                "id"
+              ]
+            }
+          }
+        }
       }
     }
   ]

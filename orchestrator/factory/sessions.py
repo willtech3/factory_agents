@@ -116,10 +116,12 @@ class SessionDriver:
             resources.append({"type": "file", "file_id": f.id, "mount_path": "/" + rel_path.lstrip("/")})
         return resources
 
-    def standard_uploads(self) -> dict[str, bytes]:
+    def standard_uploads(self, schema_names: tuple[str, ...] | None = None) -> dict[str, bytes]:
         """Schemas and the sandbox validator are mounted into every session."""
         out: dict[str, bytes] = {}
         for p in self.cfg.schemas_dir.glob("*.schema.json"):
+            if schema_names is not None and p.name not in schema_names:
+                continue
             out[f"schemas/{p.name}"] = p.read_bytes()
         out["tools/validate.py"] = (Path(__file__).parent / "sandbox_tools" / "validate.py").read_bytes()
         return out
@@ -146,6 +148,7 @@ class SessionDriver:
         environment_id: str | None = None,
         vault_ids: list[str] | None = None,
         system_override: str | None = None,
+        schema_names: tuple[str, ...] | None = None,
     ) -> StageResult:
         """`repository` is a session resource from `Forge.session_repository_resource` (the native
         `github_repository` mount, cloned through Anthropic's git proxy at /workspace/repo) or None when
@@ -164,7 +167,7 @@ class SessionDriver:
         else:
             agent = agent_ref.id
 
-        all_uploads = {**self.standard_uploads(), **uploads}
+        all_uploads = {**self.standard_uploads(schema_names), **uploads}
         resources = self._upload_tree(all_uploads)
         if repository:
             resources.append(repository)

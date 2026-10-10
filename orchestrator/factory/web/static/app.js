@@ -784,8 +784,8 @@
     state.config = cfg;
     let app = null, appNotice = null;
     if (params.get("app")) {
-      try { app = await api(appPath(params.get("app"))); appNotice = el("div", { class: "notice info" }, el("b", null, `Requesting a change to ${app.name}. `), "Its repository is preselected under Where. Pick or write the outcome that describes the change; the gates are unchanged."); }
-      catch (e) { appNotice = el("div", { class: "notice bad" }, el("b", null, "The app did not load. "), `${e.message}. Choose the repository below yourself.`); }
+      try { app = await api(appPath(params.get("app"))); appNotice = el("div", { class: "notice info" }, el("b", null, `Requesting a change to ${app.name}. `), "Its repository and hosted test setup are selected. Pick or write the outcome; the verified setup must be on the selected base branch before this run can start."); }
+      catch (e) { appNotice = el("div", { class: "notice bad" }, el("b", null, "The app did not load. "), `${e.message}. Return to Apps before starting this app run.`); }
     }
     const frag = document.createDocumentFragment();
     frag.append(pageHead("Start a run", "Three things decide how a run goes: what, where, and the guardrails. Everything else has defaults from the last calibration.",
@@ -873,7 +873,7 @@
 
     // 3. guardrails
     const budget = el("input", { type: "number", min: "5", step: "5", value: 60 });
-    const preview = el("select", null, el("option", { value: "local" }, "Local, started by the orchestrator"), el("option", { value: "platform" }, "Platform deploy workflow"));
+    const preview = el("select", { disabled: !!app }, ...(app ? [el("option", {value:"managed", selected:true}, "Hosted sandbox · verified app setup")] : []), el("option", { value: "local" }, "Local, started by the orchestrator"), el("option", { value: "platform" }, "Platform deploy workflow"));
     const owner = (outcome && outcome.owner) || {};
     const whoBox = el("div", { class: "who" });
     const syncWho = () => { const ow = (outcome && outcome.owner) || {}; whoBox.replaceChildren(
@@ -882,7 +882,7 @@
       el("span", null, el("b", { class: "ops" }, "Ops"), el("span", { class: "explain" }, "nobody yet"))); };
     const guards = el("div", { class: "guards" },
       el("label", null, "Run budget (USD)", budget, el("span", { class: "h" }, "The last one-item run cost about $33. The run pauses and asks before it goes over.")),
-      el("label", null, "Preview", preview, el("span", { class: "h" }, "Local needs no cloud. Platform needs the deploy workflow in the repository.")),
+      el("label", null, "Preview", preview, el("span", { class: "h" }, app ? "Application, database and browser tests run in a fresh hosted sandbox." : "Local runs app commands on this computer. Platform uses the repository deploy workflow.")),
       el("div", null, el("span", { style: "font-size:13px;color:var(--text-3);display:block;margin-bottom:6px" }, "Who decides"), whoBox, el("a", { href: "#/outcomes", style: "font-size:13px;font-weight:700" }, "Change on the outcome")));
     // more
     const passes = el("input", { type: "number", min: "1", max: "4", value: 2 }), rounds = el("input", { type: "number", min: "1", max: "4", value: 2 });
@@ -930,10 +930,12 @@
     async function go(mode, btn) {
       notice.replaceChildren();
       if (!outcomeId) { notice.append(el("div", { class: "notice bad" }, "Pick an outcome first.")); return; }
+      if (params.get("app") && !app) { notice.append(el("div", {class:"notice bad"}, "The app could not be loaded. Return to Apps before continuing.")); return; }
+      if (app && (repoNew.checked || normRepo(repoUrl.value) !== normRepo(app.repository_url))) { notice.append(el("div", {class:"notice bad"}, "This setup belongs to a different repository. Open the matching app or start a separate run.")); return; }
       btn.disabled = true;
       try {
         await saveRepo();
-        const s = await api("/api/runs", { body: { outcome_id: outcomeId, mode, settings: mode === "demo" ? {} : settings() } });
+        const s = await api("/api/runs", { body: { outcome_id: outcomeId, app_id: app ? app.app_id : undefined, mode, settings: mode === "demo" ? {} : settings() } });
         if (s.run_id) location.hash = `#/runs/${s.run_id}`;
         else { notice.append(el("div", { class: "notice ok" }, el("b", null, "Run started. "), "The crew is waking up; the run appears under Runs within a minute.")); setTimeout(() => { location.hash = "#/runs"; }, 4000); }
       } catch (e) { notice.append(el("div", { class: "notice bad" }, e.message)); btn.disabled = false; }
@@ -1463,8 +1465,8 @@
     const more = el("button", { class: "btn sm", type: "button" }, "Load more repositories");
     const render = () => {
       const q = search.value.trim().toLowerCase();
-      const rows = repositories.filter(r => r.full_name.toLowerCase().includes(q));
       const keep = select.value;
+      const rows = repositories.filter(r => r.full_name.toLowerCase().includes(q) || r.url === keep);
       select.replaceChildren(el("option", { value: "" }, "Choose a repository"), ...rows.map(r => el("option", { value: r.url, disabled: !r.selectable, selected: r.url === keep },
         `${r.full_name} · ${r.private ? "private" : "public"}${r.unavailable_reason ? " · " + r.unavailable_reason : ""}`)));
       status.textContent = !repositories.length ? "No repositories are visible to this GitHub connection. Enter a URL instead."
@@ -1525,7 +1527,6 @@
     name.oninput = () => { nameTouched = true; sync(); };
     const picker = repositoryPicker(r => { picked = r; if (!nameTouched && r) name.value = r.name; sync(); });
     const newUrl = el("input", { type: "url", id: "app-new-url", placeholder: "https://github.com/you/new-app", autocomplete: "off", spellcheck: "false" });
-    const existingPanel = el("div", { class: "stack" }, picker.node, advanced);
     const newPanel = el("div", { class: "stack", hidden: true },
       el("label", { class: "lab", for: "app-new-url" }, "Where the new repository will live"),
       el("p", { class: "help" }, "HTTPS form: https://github.com/owner/name. Nothing is created now; the private repository is created when you publish the setup."), newUrl);
@@ -1537,6 +1538,7 @@
     const advanced = el("details", { class: "tech" }, el("summary", null, "Advanced"),
       el("div", { class: "field" }, el("label", { class: "lab", for: "app-revision" }, "Source branch or commit"),
         el("p", { class: "help" }, "Leave empty to use the repository's default branch. Name a reviewed branch or a commit to onboard code that is not merged yet."), revision));
+    const existingPanel = el("div", { class: "stack" }, picker.node, advanced);
     const syncKind = () => {
       const isNew = kindNew.checked;
       existingBox.classList.toggle("on", !isNew); newBox.classList.toggle("on", isNew);
@@ -1638,7 +1640,7 @@
       const link = x.console_url || consoleUrl(x.session_id);
       sessions.append(el("li", null, el("span", null, words(x.stage) || "Session", " · ",
         link && /^https:\/\//.test(link) ? el("a", { href: link, target: "_blank", rel: "noopener" }, "open in the Anthropic Console") : el("span", { class: "mono" }, String(x.session_id || "").slice(0, 18))),
-        el("span", null, money(x.cost_usd || 0))));
+        el("span", null, x.cost_usd == null ? (x.accounted ? "Usage unavailable" : "Usage pending") : money(x.cost_usd))));
     }
     return el("div", { class: "app-status" },
       el("div", { class: "head" }, crewFigure(appAgentRole(a), appAgentState(a), "s"),
@@ -1646,7 +1648,9 @@
       a.phase && a.phase !== s.text ? el("p", { class: "explain", style: "margin:8px 0 0" }, s.text) : null,
       el("p", { class: "explain", style: "margin:8px 0 0;font-size:12.5px" }, `Updated ${ago(a.updated_at) || "just now"}.`),
       el("dl", { class: "kv app-money" }, el("dt", null, "Budget"), el("dd", null, money(a.budget_usd)), el("dt", null, "Spent"), el("dd", null, money(a.spent_usd || 0)),
-        el("dt", null, "Left"), el("dd", null, appLeft(a))),
+        el("dt", null, "Available"), el("dd", null, appLeft(a))),
+      a.reserved_usd ? el("p", { class: "explain" }, `${money(a.reserved_usd)} is reserved for the current session.`) : null,
+      a.cost_warning ? el("p", { class: "notice warn" }, a.cost_warning) : null,
       (a.sessions || []).length ? el("div", null, el("h3", { class: "mini-h" }, "Charged sessions"), sessions)
         : el("p", { class: "explain", style: "margin:8px 0 0;font-size:12.5px" }, "No agent session has run yet."));
   }
@@ -1709,6 +1713,12 @@
       if (flash) { out.push(el("div", { class: "notice bad", role: "alert" }, flash.text)); flash = null; }
       if (a.error) out.push(el("div", { class: "notice bad", role: "alert" }, el("b", null, "The last step failed. "), a.error));
 
+      if (a.recoverable) {
+        const line = actionLine(), btn = el("button", {class:"btn call", type:"button"}, "Recover interrupted setup");
+        btn.onclick = () => act(btn, line, () => api(`${appPath(appId)}/recover`, {body:{}}));
+        out.push(card("Console restarted", el("div", null, el("p", null, "The previous controller stopped. Recovery interrupts its pending sessions before allowing a retry and retains their budget reservation."), btn, line)));
+      }
+
       // discover: started automatically after adding; offered again when idle
       if (!plan || a.status === "connected" || a.status === "failed") {
         const line = actionLine();
@@ -1737,7 +1747,8 @@
         el("details", null, el("summary", null, "Raw plan JSON"), el("pre", null, JSON.stringify(plan, null, 2))));
       out.push(card("What the agent found", el("div", { class: "stack" },
         !a.plan_sha256 ? el("div", { class: "notice info", style: "margin:0" }, el("b", null, "This plan is out of date. "), "Your answers are saved. Verification and publishing wait until discovery runs again with them.") : null,
-        el("p", { class: "lead" }, plan.summary || "No summary given."),
+        el("p", { class: "lead" }, (plan.summary || "No summary given.").split(/\n\s*\n/)[0]),
+        (plan.summary || "").includes("\n\n") ? el("details", null, el("summary", null, "Read the agent’s full setup explanation"), el("p", {class:"reading"}, plan.summary)) : null,
         plan.app_kind ? el("p", { class: "explain" }, `Kind of app: ${words(plan.app_kind)}`) : null,
         (plan.journeys || []).length ? el("div", null, el("h3", { class: "mini-h" }, "User journeys it would test"), journeys) : null,
         (plan.capabilities || []).length ? el("div", null, el("h3", { class: "mini-h" }, "What a test run can exercise"), capabilityList(plan)) : null,
@@ -1820,7 +1831,7 @@
       if (a.verification) {
         const v = a.verification;
         const uncovered = (plan.capabilities || []).filter(c => !c.available);
-        const stale = a.source_sha && v.head_sha && a.source_sha !== v.head_sha;
+        const stale = (v.source_sha && a.source_sha !== v.source_sha) || (v.plan_sha256 && a.plan_sha256 !== v.plan_sha256);
         out.push(card("Evidence from the last verification", el("div", { class: "stack" },
           el("div", { class: "row-tags" }, el("span", { class: `tag ${v.status === "passed" ? "ok" : v.status === "failed" ? "bad" : "warn"}` }, words(v.status)),
             stale ? el("span", { class: "tag warn" }, "Earlier commit") : null, v.cost_usd != null ? el("span", { class: "tag" }, `${money(v.cost_usd)} charged`) : null),
@@ -1853,7 +1864,7 @@
           : el("p", { class: "explain" }, "Requesting changes opens once the repository exists, after you publish.");
         out.push(card("Setup pull request", el("div", { class: "stack" },
           a.pr_url && /^https:\/\//.test(a.pr_url) ? el("p", null, el("a", { href: a.pr_url, target: "_blank", rel: "noopener" }, "Open the setup pull request"), el("span", { class: "explain" }, " · waiting for an engineer to review and merge")) : null,
-          a.status === "publishing" ? el("p", { class: "explain" }, "Publishing. This page follows it.") : a.pr_url ? null : el("div", null, first, confirmBox, line),
+          a.status === "publishing" ? el("p", { class: "explain" }, "Publishing. This page follows it.") : a.pr_url ? null : !(plan.files || []).length ? el("p", {class:"explain"}, "The existing setup was reused unchanged. No new setup pull request is needed.") : el("div", null, first, confirmBox, line),
           change)));
       }
       out.push(sourceDetails(a));

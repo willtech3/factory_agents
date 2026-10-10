@@ -96,6 +96,7 @@ class OutcomeBody(BaseModel):
 
 class StartRunBody(BaseModel):
     outcome_id: str
+    app_id: str | None = None
     mode: str = "demo"          # demo | design | live
     settings: dict[str, Any] = {}   # tunables from the Start screen; see SETTINGS_ENV
 
@@ -520,6 +521,9 @@ class Console:
         if not design and self.cfg.forge == "github" and target.get("url"):
             # The Console selection is per run; do not inherit a different repository from server defaults.
             repo_env["FORGE_REPO"] = repository_name(target["url"], self.cfg)
+        if body.app_id:
+            from ..onboarding import AppOnboarding
+            repo_env.update(AppOnboarding(self.cfg).run_settings(body.app_id, target))
         gaps = cfgmod.missing(self.cfg, design_only=design)
         if gaps:
             raise HTTPException(409, f"the orchestrator is not configured for a {body.mode} run: {', '.join(gaps)}")
@@ -787,6 +791,10 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
     @app.post("/api/apps/{app_id}/publish")
     def api_app_publish(app_id: str, body: AppPlanBody):
         return onboarding.start(app_id, "publish", body.plan_sha256)
+
+    @app.post("/api/apps/{app_id}/recover")
+    def api_app_recover(app_id: str):
+        return onboarding.recover(app_id)
 
     @app.post("/api/apps/{app_id}/credentials")
     def api_app_credential(app_id: str, body: AppCredentialBody):

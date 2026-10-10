@@ -5,6 +5,7 @@ archive; proposed setup is reviewed by digest and only runs in a hosted sandbox.
 """
 from __future__ import annotations
 
+import base64
 import fcntl
 import io
 import json
@@ -31,6 +32,20 @@ from .test_environments import fingerprint, snapshot, validate_profile, run_host
 BUSY = {"discovering", "verifying", "publishing"}
 APP_ID = re.compile(r"app_[a-f0-9]{12}")
 MAX_SOURCE = 100 * 1024 * 1024
+
+
+def secret_scope(secret):
+    return fingerprint({k: secret[k] for k in ("name", "allowed_hosts", "injection")})
+
+
+def owner_alive(record):
+    try:
+        os.kill(int(record.get("owner_pid") or 0), 0)
+        return bool(record.get("owner_pid"))
+    except (ProcessLookupError, ValueError):
+        return False
+    except PermissionError:
+        return True
 
 
 def now():
@@ -153,8 +168,11 @@ class AppOnboarding:
     def get(self, app_id):
         r = json.loads((self.folder(app_id) / "app.json").read_text())
         r["remaining_usd"] = round(max(0, r["budget_usd"] - r["spent_usd"] - r.get("reserved_usd", 0)), 2)
-        r["credentials"] = [{"name": c["name"], "status": "configured"} for c in r.get("credentials", [])]
-        return {k: v for k, v in r.items() if k not in {"vault_id", "reservation", "owner_pid", "previous_attempt"}}
+        declared = {s["name"]: s for s in r.get("plan", {}).get("profile", {}).get("secrets", [])}
+        r["credentials"] = [{"name": c["name"], "status": "configured" if c.get("vault_id") and c.get("scope_sha256") == secret_scope(declared[c["name"]]) else "needs_reconnect"}
+                            for c in r.get("credentials", []) if c["name"] in declared]
+        r["recoverable"] = r["status"] in BUSY and not owner_alive(r)
+        return {k: v for k, v in r.items() if k not in {"vault_id", "reservation", "owner_pid", "previous_attempt", "last_proposal"}}
 
     def list(self):
         return sorted((self.get(p.parent.name) for p in self.root.glob("app_*/app.json")), key=lambda r: r["updated_at"], reverse=True)
@@ -257,16 +275,38 @@ class AppOnboarding:
             cap = min(3.0 if operation == "discover" else 4.0, available)
             if operation != "publish" and cap < 0.10:
                 raise HTTPException(409, "The onboarding budget is exhausted; no new session was started")
+            previous_attempt = {"plan": r.get("plan") or r.get("last_proposal"), "verification": r.get("verification"), "error": r.get("error")}
             r.update(status={"discover": "discovering", "verify": "verifying", "publish": "publishing"}[operation],
                      phase={"discover": "Inspecting source and preparing a setup proposal", "verify": "Provisioning a fresh hosted test environment", "publish": "Publishing the setup for review"}[operation],
                      error=None, reserved_usd=0 if operation == "publish" else round(cap, 2), owner_pid=os.getpid())
             if operation == "discover":
-                r["previous_attempt"] = {"plan": r.get("plan"), "verification": r.get("verification"), "error": r.get("error")}
+                r["previous_attempt"] = previous_attempt
                 for key in ("plan", "plan_sha256", "verification"):
                     r.pop(key, None)
                 r["evidence"] = []
             self.write(r)
         threading.Thread(target=self._job, args=(app_id, operation, cap), daemon=True, name=f"onboarding-{app_id}").start()
+        return self.get(app_id)
+
+    def recover(self, app_id):
+        with self.locked(app_id) as r:
+            if r["status"] not in BUSY or owner_alive(r):
+                raise HTTPException(409, "The current controller is still running; no recovery was attempted")
+            for session in r["sessions"]:
+                if not session.get("accounted"):
+                    try:
+                        self.client.beta.sessions.events.send(session_id=session["session_id"], events=[{"type": "user.interrupt"}], timeout=30)
+                    except Exception:
+                        raise HTTPException(502, "Could not stop the previous hosted session. Recovery is blocked to avoid duplicate work.") from None
+            if any(not s.get("accounted") for s in r["sessions"]):
+                r["spent_usd"] += r.get("reserved_usd", 0)
+                r["cost_warning"] = "Interrupted controller: the reserved limit was charged because final usage is unavailable."
+                for session in r["sessions"]:
+                    if not session.get("accounted"):
+                        session.update(accounted=True, cost_usd=None, stop_reason="controller_recovered")
+            r.update(status="failed", phase="Controller recovered; review and retry the last step", reserved_usd=0, owner_pid=None,
+                     error="The previous Console process stopped. Its pending sessions were interrupted; no readiness was granted.")
+            self.write(r)
         return self.get(app_id)
 
     def _job(self, app_id, operation, cap):
@@ -308,13 +348,16 @@ class AppOnboarding:
             result = driver.run(agent_key="app_onboarding", title="Onboard " + r["name"], run_id=app_id, stage="onboarding-discovery",
                 uploads={"source.tar": source, "onboarding-request.json": json.dumps(request).encode()},
                 description="Read onboarding-request.json and source.tar. Produce onboarding-plan.json following your instructions and the uploaded schemas. Do not run application commands. Reuse a valid existing recipe if present.",
-                rubric_md=None, max_iterations=1, budget_usd=cap, environment_id=env_id, vault_ids=[])
+                rubric_md=None, max_iterations=1, budget_usd=cap, environment_id=env_id, vault_ids=[],
+                schema_names=("onboarding_plan.schema.json", "test_environment.schema.json"))
             self._finished(app_id, {"session_id": result.session_id, "list_cost_usd": result.list_cost_usd, "stop_reason": result.stop_reason})
             raw = result.outputs.get("onboarding-plan.json")
             if not raw or len(raw) > 2 * 1024 * 1024:
                 raise ValueError("The onboarding agent did not return a complete setup plan within its session limit")
             try:
-                plan = validate_plan(json.loads(raw), r["kind"], repo, self.cfg.schemas_dir)
+                proposal = json.loads(raw)
+                self.update(app_id, last_proposal=proposal)
+                plan = validate_plan(proposal, r["kind"], repo, self.cfg.schemas_dir)
             except (json.JSONDecodeError, UnicodeError):
                 raise ValueError("The onboarding agent returned unreadable setup JSON") from None
             required = any(q["required"] and not r["answers"].get(q["id"]) for q in plan["questions"])
@@ -362,14 +405,17 @@ class AppOnboarding:
         r = self.get(app_id)
         candidate = self._candidate(r)
         with self.locked(app_id) as private:
-            vaults = (private["vault_id"],) if private.get("vault_id") else ()
+            configured = {c["name"] for c in r["credentials"] if c["status"] == "configured"}
+            vaults = tuple(c["vault_id"] for c in private["credentials"] if c["name"] in configured)
         required = {s["name"] for s in r["plan"]["profile"]["secrets"] if s["required"]}
-        if required - {c["name"] for c in r["credentials"]}:
+        if required - configured:
             raise ValueError("Connect the required test credentials before verification")
         out = self.folder(app_id) / ("evidence-" + uuid.uuid4().hex[:10])
         result = run_hosted(self.cfg, candidate, out, profile_relative=r["plan"]["profile_path"], budget_usd=cap,
                             vault_ids=vaults, client=self.client, on_started=lambda x: self._started(app_id, x),
                             on_finished=lambda x: self._finished(app_id, x))
+        result.update(source_sha=r["source_sha"], plan_sha256=r["plan_sha256"])
+        (out / "controller-result.json").write_text(json.dumps(result, indent=2))
         evidence = [{"name": n, "url": f"/api/apps/{app_id}/evidence/{quote(n)}"} for n in result["artifacts"]]
         limited = bool(r["plan"]["limitations"] or any(not c["available"] for c in r["plan"]["capabilities"]))
         status = ("ready_limited" if limited else "ready") if result["status"] == "passed" else "failed"
@@ -387,18 +433,19 @@ class AppOnboarding:
             if not secret:
                 raise HTTPException(400, "This credential is not declared by the reviewed test recipe")
             try:
-                if not r.get("vault_id"):
-                    r["vault_id"] = self.client.beta.vaults.create(display_name=f"Factory test: {r['name']}", metadata={"factory_app_id": app_id}, timeout=60).id
-                    self.write(r)
+                old = next((c for c in r["credentials"] if c["name"] == name), None)
+                scope = secret_scope(secret)
+                # Each declaration gets its own vault; removed or changed scopes are never attached.
                 auth = {"type": "environment_variable", "secret_name": name, "secret_value": value,
                         "networking": {"type": "limited", "allowed_hosts": secret["allowed_hosts"]},
                         "injection_location": {"header": secret["injection"] in {"header", "header-and-body"}, "body": secret["injection"] in {"body", "header-and-body"}}}
-                old = next((c for c in r["credentials"] if c["name"] == name), None)
-                if old:
-                    self.client.beta.vaults.credentials.update(old["id"], vault_id=r["vault_id"], auth={"type": "environment_variable", "secret_value": value}, timeout=60)
+                if old and old.get("vault_id") and old.get("scope_sha256") == scope:
+                    self.client.beta.vaults.credentials.update(old["id"], vault_id=old["vault_id"], auth={"type": "environment_variable", "secret_value": value}, timeout=60)
                 else:
-                    created = self.client.beta.vaults.credentials.create(vault_id=r["vault_id"], display_name=name, auth=auth, timeout=60)
-                    r["credentials"].append({"name": name, "id": created.id})
+                    vault = self.client.beta.vaults.create(display_name=f"Factory test: {r['name']} / {name}", metadata={"factory_app_id": app_id}, timeout=60).id
+                    created = self.client.beta.vaults.credentials.create(vault_id=vault, display_name=name, auth=auth, timeout=60)
+                    r["credentials"] = [c for c in r["credentials"] if c["name"] != name]
+                    r["credentials"].append({"name": name, "id": created.id, "vault_id": vault, "scope_sha256": scope})
                 self.write(r)
             except Exception:
                 raise HTTPException(502, "The test credential could not be saved to the vault. Its value was not stored by Factory.") from None
@@ -408,6 +455,12 @@ class AppOnboarding:
         r = self.get(app_id)
         if not r.get("verification") or r["verification"]["status"] != "passed":
             raise ValueError("Verify this setup before publishing its pull request")
+        if r["verification"].get("plan_sha256") != r.get("plan_sha256") or r["verification"].get("source_sha") != r.get("source_sha"):
+            raise ValueError("The verified source or setup changed; verify the current setup again")
+        files = {f["path"]: f["content"].encode() for f in r["plan"]["files"]}
+        if not files:
+            self.update(app_id, status="ready_limited" if r["plan"]["limitations"] else "ready", phase="Existing setup reused; no setup changes to publish")
+            return
         forge = self.forge(r)
         try:
             if r["kind"] == "greenfield":
@@ -426,17 +479,49 @@ class AppOnboarding:
             response = forge.http.post(forge._r("/git/refs"), json={"ref": "refs/heads/" + branch, "sha": base})
             if response.status_code not in (201, 422):
                 response.raise_for_status()
-            files = {f["path"]: f["content"].encode() for f in r["plan"]["files"]}
-            if not files:
-                self.update(app_id, status="ready_limited" if r["plan"]["limitations"] else "ready", phase="Existing setup reused; no setup changes to publish")
-                return
             forge.commit_files(branch, "feat: add Factory app onboarding and isolated verification", files)
-            pr = forge.create_change_request(source_branch=branch, target_branch=r.get("default_branch", "main"),
+            pr = forge.create_change_request(source_branch=branch, target_branch=(r.get("revision") or r.get("default_branch", "main")) if r["kind"] == "existing" and not re.fullmatch(r"[a-f0-9]{40}", r.get("revision", "")) else r.get("default_branch", "main"),
                 title="Add Factory onboarding and isolated app verification",
                 description=f"{r['plan']['summary']}\n\nHosted baseline verification passed. Setup fingerprint: `{r['plan_sha256']}`.\n\nLimits: " + "; ".join(r["plan"]["limitations"]), labels=[], reviewers=[], draft=True)
             self.update(app_id, pr_url=pr.url, status="ready_limited" if r["plan"]["limitations"] else "ready", phase="Setup pull request is ready for human review")
         finally:
             forge.http.close()
+
+    def run_settings(self, app_id, target):
+        """Resolve trusted per-run bindings server-side; client never supplies vault IDs."""
+        r = self.get(app_id)
+        if r["status"] not in {"ready", "ready_limited"} or r.get("verification", {}).get("status") != "passed":
+            raise HTTPException(409, "Verify this app's current setup before starting a change run")
+        verified = r["verification"]
+        if verified.get("plan_sha256") != r.get("plan_sha256") or verified.get("source_sha") != r.get("source_sha"):
+            raise HTTPException(409, "The onboarding evidence is stale; verify the current setup again")
+        if target.get("url", "").removesuffix(".git").rstrip("/").lower() != r["repository_url"].rstrip("/").lower() or target.get("create"):
+            raise HTTPException(409, "The selected repository differs from this onboarded app")
+        profile = r["plan"]["profile"]
+        configured = {c["name"] for c in r["credentials"] if c["status"] == "configured"}
+        if {s["name"] for s in profile["secrets"] if s["required"]} - configured:
+            raise HTTPException(409, "Reconnect the required test credentials for the current recipe")
+        forge = self.forge(r)
+        try:
+            ref = target.get("default_branch") or r.get("default_branch", "main")
+            def read_json(path):
+                obj = forge._get("/contents/" + quote(safe_path(path), safe="/") + "?ref=" + quote(ref, safe=""))
+                if obj.get("encoding") != "base64" or obj.get("size", 0) > 256 * 1024:
+                    raise ValueError("Unsupported setup file")
+                return json.loads(base64.b64decode(obj["content"]))
+            manifest = read_json(self.cfg.service_manifest_path) if forge.file_exists(ref, self.cfg.service_manifest_path) else {}
+            path = manifest.get("test_environment", {}).get("profile", "test_environment.json")
+            if path != r["plan"]["profile_path"] or fingerprint(read_json(path)) != verified["profile_sha256"]:
+                raise ValueError("Recipe is not the verified version")
+        except Exception:
+            raise HTTPException(409, "The selected base branch does not contain the verified setup. Merge its setup PR, or onboard and verify the current recipe before starting this run.") from None
+        finally:
+            forge.http.close()
+        with self.locked(app_id) as private:
+            vaults = [c["vault_id"] for c in private["credentials"] if c["name"] in configured]
+        return {"FACTORY_PREVIEW": "managed", "FACTORY_APP_ID": app_id,
+                "FACTORY_TEST_PROFILE_SHA256": verified["profile_sha256"],
+                "FACTORY_TEST_VAULT_IDS": ",".join(vaults), "FACTORY_MANAGED_VERIFY_BUDGET_USD": "4"}
 
     def evidence(self, app_id, name):
         r = self.get(app_id)

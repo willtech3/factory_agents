@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from conftest import make_config
-from factory.onboarding import AppOnboarding, unpack_source, validate_plan
+from factory.onboarding import AppOnboarding, unpack_source, validate_plan, secret_scope
 from factory.test_environments import fingerprint, validate_profile
 from factory.sandbox_tools.environment_runner import check_evidence
 from factory.web.app import create_app
@@ -120,8 +120,70 @@ def test_app_api_cross_origin_and_private_metadata(tmp_path,root):
         assert c.post('/api/apps',json=body,headers={'Origin':'https://evil.example'}).status_code==403
         assert c.post('/api/apps',content='x').status_code==415
         r=c.post('/api/apps',json=body).json();aid=r['app_id']
-        app.state.onboarding.update(aid,vault_id='private-vault',credentials=[{'name':'TEST_KEY','id':'private-credential'}])
+        secret={'name':'TEST_KEY','allowed_hosts':['example.com'],'injection':'header'}
+        app.state.onboarding.update(aid,vault_id='private-vault',plan={'profile':{'secrets':[secret]}},credentials=[{'name':'TEST_KEY','id':'private-credential','vault_id':'private-vault','scope_sha256':secret_scope(secret)}])
         data=c.get('/api/apps/'+aid).text
         assert 'private-vault' not in data and 'private-credential' not in data and 'configured' in data
         assert c.post('/api/apps/'+aid+'/credentials',json={'name':'UNDECLARED','value':'never-store-me'}).status_code==400
         assert 'never-store-me' not in (tmp_path/'runs'/'_apps'/aid/'app.json').read_text()
+
+
+def test_changed_secret_scope_is_not_attached_or_claimed_configured(manager,plan):
+    aid=create(manager)['app_id']
+    secret={'name':'TEST_KEY','required':True,'allowed_hosts':['example.com'],'injection':'header'}
+    plan['profile']={'secrets':[secret]}
+    manager.update(aid,plan=plan,credentials=[{'name':'TEST_KEY','id':'c1','vault_id':'v1','scope_sha256':secret_scope(secret)}])
+    assert manager.get(aid)['credentials']==[{'name':'TEST_KEY','status':'configured'}]
+    secret['allowed_hosts']=['different.example']
+    manager.update(aid,plan=plan)
+    assert manager.get(aid)['credentials']==[{'name':'TEST_KEY','status':'needs_reconnect'}]
+    plan['profile']['secrets']=[]
+    manager.update(aid,plan=plan)
+    assert manager.get(aid)['credentials']==[]
+
+
+def test_recovery_stops_orphans_and_conservatively_accounts(manager,monkeypatch):
+    monkeypatch.setattr('factory.onboarding.owner_alive',lambda r:False)
+    aid=create(manager)['app_id']
+    manager.update(aid,status='verifying',owner_pid=999999,reserved_usd=4,sessions=[{'session_id':'s1','cost_usd':None}])
+    calls=[]
+    manager._client=SimpleNamespace(beta=SimpleNamespace(sessions=SimpleNamespace(events=SimpleNamespace(send=lambda **kw:calls.append(kw)))))
+    assert manager.get(aid)['recoverable']
+    r=manager.recover(aid)
+    assert calls[0]['events']==[{'type':'user.interrupt'}]
+    assert r['status']=='failed' and r['spent_usd']==4 and r['reserved_usd']==0
+    with pytest.raises(HTTPException): manager.recover(aid)
+
+
+def test_empty_setup_does_not_create_branch_or_pr(manager,plan):
+    aid=create(manager)['app_id'];plan['files']=[]
+    sha=fingerprint(plan)
+    manager.update(aid,plan=plan,plan_sha256=sha,source_sha='abc',verification={'status':'passed','plan_sha256':sha,'source_sha':'abc'})
+    manager._publish(aid,0)
+    assert manager.get(aid)['phase']=='Existing setup reused; no setup changes to publish'
+    manager.update(aid,plan_sha256='changed')
+    with pytest.raises(ValueError,match='changed'): manager._publish(aid,0)
+
+
+def test_run_binding_uses_only_verified_recipe_and_explicit_test_vaults(manager,plan,monkeypatch):
+    import base64
+    aid=create(manager)['app_id']
+    secret={'name':'TEST_KEY','required':True,'allowed_hosts':['example.com'],'injection':'header'}
+    profile=json.loads(plan['files'][0]['content']);profile['secrets']=[secret];profile['network']['allowed_hosts']=['example.com']
+    plan['profile']=profile
+    sha=fingerprint(plan)
+    manager.update(aid,status='ready',plan=plan,plan_sha256=sha,source_sha='abc',verification={'status':'passed','plan_sha256':sha,'source_sha':'abc','profile_sha256':fingerprint(profile)},
+                   credentials=[{'name':'TEST_KEY','id':'c1','vault_id':'test-only-vault','scope_sha256':secret_scope(secret)}, {'name':'OLD_KEY','id':'c2','vault_id':'old-unused-vault'}],vault_id='legacy-vault')
+    def get(path):
+        payload={'test_environment':{'profile':'test_environment.json'}} if 'service_manifest.json' in path else profile
+        return {'encoding':'base64','size':100,'content':base64.b64encode(json.dumps(payload).encode()).decode()}
+    fake=SimpleNamespace(_get=get,file_exists=lambda *args:True,http=SimpleNamespace(close=lambda:None))
+    monkeypatch.setattr(manager,'forge',lambda r:fake)
+    target={'url':'https://github.com/example/app','default_branch':'main'}
+    env=manager.run_settings(aid,target)
+    assert env['FACTORY_PREVIEW']=='managed' and env['FACTORY_TEST_VAULT_IDS']=='test-only-vault'
+    assert env['FACTORY_TEST_PROFILE_SHA256']==fingerprint(profile)
+    with pytest.raises(HTTPException): manager.run_settings(aid,{**target,'url':'https://github.com/example/other'})
+    profile['name']='changed'
+    with pytest.raises(HTTPException) as exc: manager.run_settings(aid,target)
+    assert exc.value.status_code==409 and 'base branch' in exc.value.detail
