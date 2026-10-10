@@ -37,7 +37,7 @@
     const r = await fetch(path, opts && opts.body ? { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(opts.body) } : opts);
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.detail || data.error || `${r.status} ${r.statusText}`);
+    if (!r.ok) { const err = new Error(data.detail || data.error || `${r.status} ${r.statusText}`); err.status = r.status; throw err; }
     return data;
   }
 
@@ -782,9 +782,15 @@
     setNav("start");
     const [outs, cfg, examples] = await Promise.all([api("/api/outcomes"), state.config || api("/api/config"), api("/api/outcomes/examples")]);
     state.config = cfg;
+    let app = null, appNotice = null;
+    if (params.get("app")) {
+      try { app = await api(appPath(params.get("app"))); appNotice = el("div", { class: "notice info" }, el("b", null, `Requesting a change to ${app.name}. `), "Its repository is preselected under Where. Pick or write the outcome that describes the change; the gates are unchanged."); }
+      catch (e) { appNotice = el("div", { class: "notice bad" }, el("b", null, "The app did not load. "), `${e.message}. Choose the repository below yourself.`); }
+    }
     const frag = document.createDocumentFragment();
     frag.append(pageHead("Start a run", "Three things decide how a run goes: what, where, and the guardrails. Everything else has defaults from the last calibration.",
       [el("span", { style: "display:inline-flex;align-items:center;gap:10px" }, crewFigure("implementer", "working", "s"), el("span", { class: "explain" }, "The crew is ready."))]));
+    if (appNotice) frag.append(appNotice);
 
     // 1. what
     let outcomeId = params.get("outcome") || (outs.outcomes[0] || {}).outcome_id || null;
@@ -855,7 +861,7 @@
     };
     repoExisting.onchange = repoNew.onchange = syncRepoChoice;
     const syncRepo = () => {
-      const repo = ((outcome || {}).target_repositories || [{}])[0] || {};
+      const repo = app ? { url: app.repository_url, default_branch: app.default_branch } : ((outcome || {}).target_repositories || [{}])[0] || {};
       if (repo.create) { repoNew.checked = true; newName.value = repo.url || ""; }
       else { repoExisting.checked = true; repoUrl.value = repo.url || ""; }
       selectedRepo = repositories.find(r => r.url === repoUrl.value) || null;
@@ -949,6 +955,12 @@
     syncWho();
     if (cfg.forge === "github") await loadRepos();
     else { browser.replaceChildren(el("label", null, "Repository URL", repoUrl)); }
+    if (app) {
+      const match = repositories.find(r => normRepo(r.url) === normRepo(app.repository_url));
+      if (match) { repoUrl.value = match.url; selectedRepo = match; repoSelect.value = match.url; repoDetails.textContent = `Selected for ${app.name}: default branch ${match.default_branch}.`; }
+      else manual.open = true;
+      syncSummary();
+    }
   }
 
   // ------------------------------------------------------------------ gate review
@@ -1364,6 +1376,534 @@
     stopPoll();
   }
 
+  // ------------------------------------------------------------------ apps: learn once how to build, run and test an app, then runs use it
+  const APP_STATUS = {
+    connected: ["Connected", "Added. Discovery has not run yet.", ""],
+    discovering: ["Discovering", null, "crew"],
+    needs_input: ["Needs your input", "Discovery stopped at questions only you can answer.", "gate"],
+    setup_ready: ["Ready to verify", "Review what the agent found, then verify it.", "question"],
+    verifying: ["Verifying", "The setup is running in a hosted sandbox with synthetic data.", "crew"],
+    ready: ["Ready", "Verification passed for the capabilities listed as covered.", "ok"],
+    ready_limited: ["Ready, with limits", "Verification passed, but some capabilities were not covered.", "warn"],
+    failed: ["Failed", "The last step did not finish. The error is shown on the page.", "bad"],
+    publishing: ["Publishing", "Opening the setup pull request.", "crew"],
+  };
+  const APP_BUSY = new Set(["discovering", "verifying", "publishing"]);
+  const APP_STEPS = [
+    ["Choose the app", "An existing repository or a new app."],
+    ["Discover the setup", "An agent finds how to build, run and test it."],
+    ["Answer questions", "Only if the agent needs something from you."],
+    ["Verify", "The setup runs once in a hosted sandbox."],
+    ["Evidence", "Results and screenshots from that run."],
+    ["Setup pull request", "Proposed to the repository; a person merges it."],
+  ];
+  const GITHUB_HTTPS = /^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
+  const SECRET_NAME = /^[A-Z][A-Z0-9_]*$/;
+  const appPath = id => `/api/apps/${encodeURIComponent(id)}`;
+  const appHref = id => `#/apps/${encodeURIComponent(id)}`;
+  const appKind = k => (k === "greenfield" ? "New app" : "Existing app");
+  const repoName = url => String(url || "").replace(/^https:\/\/github\.com\//, "");
+  const normRepo = url => String(url || "").trim().replace(/\.git$/, "").replace(/\/+$/, "").toLowerCase();
+  function appStatusText(a) {
+    const [label, text, cls] = APP_STATUS[a.status] || [words(a.status), "", ""];
+    const discovering = a.kind === "greenfield" ? "An agent is proposing a scaffold and test setup from your description."
+      : "An agent is reading the committed source and the existing test setup.";
+    return { label, text: text || discovering, cls };
+  }
+  function appStatusTag(a) { const s = appStatusText(a); return el("span", { class: `tag ${s.cls}` }, s.label); }
+  function appMoney(a) { return `${money(a.spent_usd || 0)} of ${money(a.budget_usd)}`; }
+  function appLeft(a) { return money(a.remaining_usd ?? Math.max(0, (a.budget_usd || 0) - (a.spent_usd || 0))); }
+  function appKey(a) { return JSON.stringify([a.status, a.phase, a.updated_at, a.plan_sha256, a.spent_usd, (a.sessions || []).length, (a.credentials || []).map(c => [c.name, c.status]), a.pr_url, a.error]); }
+  function onboardingFacts() {
+    return card("What onboarding does, and what it does not", el("ul", { class: "facts" },
+      el("li", null, el("b", null, "Runs hosted. "), "Discovery and verification are agent sessions in a hosted sandbox, not on this computer."),
+      el("li", null, el("b", null, "Synthetic data only. "), "Verification uses generated test data and test-only keys, never production data or real accounts."),
+      el("li", null, el("b", null, "Charged to the app's budget. "), "Discovery and verification spend from the budget you set. Each session and its cost is listed on the app page."),
+      el("li", null, el("b", null, "People still decide. "), "The setup arrives as a pull request for an engineer to review and merge. Gate 1 (the plan), Gate 2 (the contracts) and every merge stay with people.")), null, "soft");
+  }
+
+  async function viewApps() {
+    setNav("apps");
+    const apps = (await api("/api/apps")).apps || [];
+    const frag = document.createDocumentFragment();
+    frag.append(pageHead("Apps", "An app is a repository the factory has learned to build, run and test. Onboarding finds that setup, verifies it once in a hosted sandbox, and proposes it as a pull request. Runs on the app then use it to check their work.",
+      [el("a", { class: "btn primary", href: "#/apps/new" }, "Add an app")]));
+    if (!apps.length) {
+      frag.append(card(null, el("div", { class: "empty" }, crewFigure("codebase_researcher", "asleep", "l"), el("h3", null, "No apps yet"),
+        el("div", null, "Add an existing GitHub repository, or describe a new app. An agent works out how to test it; you review before anything is verified or published."),
+        el("a", { class: "btn primary", href: "#/apps/new" }, "Add an app"))));
+    } else {
+      const tbl = el("table", null, el("tr", null, el("th", null, "App"), el("th", null, "Where it is"), el("th", null, "Spend"), el("th", null, "Last activity")));
+      for (const a of apps) {
+        tbl.append(el("tr", { class: "link", onclick: () => { location.hash = appHref(a.app_id); } },
+          el("td", null, el("div", { class: "title" }, el("a", { href: appHref(a.app_id) }, a.name || a.app_id), el("span", { class: "tag" }, appKind(a.kind))),
+            el("div", { class: "explain mono" }, repoName(a.repository_url))),
+          el("td", null, appStatusTag(a), a.phase ? el("div", { class: "explain" }, a.phase) : null),
+          el("td", null, appMoney(a)), el("td", { class: "explain" }, ago(a.updated_at))));
+      }
+      frag.append(card("All apps", tbl, plural(apps.length, "app")));
+    }
+    frag.append(onboardingFacts());
+    $main.replaceChildren(frag);
+    const listKey = list => JSON.stringify(list.map(a => [a.app_id, a.status, a.phase, a.updated_at, a.spent_usd]));
+    state.lastKey.apps = listKey(apps);
+    startPoll(refreshWhenChanged("apps", async () => listKey((await api("/api/apps")).apps || []), viewApps), apps.some(a => APP_BUSY.has(a.status)) ? 4000 : 15000);
+  }
+
+  // The authenticated GitHub repository list, searchable and paged, with a typed URL as the alternative.
+  function repositoryPicker(onPick) {
+    let repositories = [], nextPage = 1;
+    const search = el("input", { type: "search", id: "app-repo-search", placeholder: "Filter by owner or repository name", autocomplete: "off" });
+    const select = el("select", { id: "app-repo-select" }, el("option", { value: "" }, "Choose a repository"));
+    const status = el("p", { class: "explain", role: "status", "aria-live": "polite", style: "margin:0" }, "Loading GitHub repositories…");
+    const details = el("p", { class: "explain", style: "margin:0" });
+    const typed = el("input", { type: "url", id: "app-repo-url", placeholder: "https://github.com/owner/app", autocomplete: "off", spellcheck: "false" });
+    const manual = el("details", null, el("summary", null, "Enter a repository URL instead"),
+      el("label", { class: "lab", for: "app-repo-url" }, "Repository URL"), el("p", { class: "help" }, "HTTPS form: https://github.com/owner/name"), typed);
+    const more = el("button", { class: "btn sm", type: "button" }, "Load more repositories");
+    const render = () => {
+      const q = search.value.trim().toLowerCase();
+      const rows = repositories.filter(r => r.full_name.toLowerCase().includes(q));
+      const keep = select.value;
+      select.replaceChildren(el("option", { value: "" }, "Choose a repository"), ...rows.map(r => el("option", { value: r.url, disabled: !r.selectable, selected: r.url === keep },
+        `${r.full_name} · ${r.private ? "private" : "public"}${r.unavailable_reason ? " · " + r.unavailable_reason : ""}`)));
+      status.textContent = !repositories.length ? "No repositories are visible to this GitHub connection. Enter a URL instead."
+        : !rows.length ? "No matching repositories in the loaded results." : `${rows.length} shown of ${repositories.length} loaded.${nextPage ? " Load more to include older repositories." : ""}`;
+    };
+    const load = async () => {
+      more.disabled = true; status.textContent = "Loading GitHub repositories…";
+      try {
+        const result = await api(`/api/repositories?page=${nextPage || 1}`);
+        const byUrl = new Map(repositories.map(r => [r.url, r]));
+        (result.repositories || []).forEach(r => byUrl.set(r.url, r));
+        repositories = [...byUrl.values()]; nextPage = result.next_page || null;
+        more.hidden = !nextPage; more.textContent = "Load more repositories";
+        render();
+      } catch (e) {
+        status.textContent = `Could not load repositories: ${e.message}`;
+        more.hidden = false; more.textContent = "Retry loading repositories";
+        manual.open = true;
+      } finally { more.disabled = false; }
+    };
+    more.onclick = load;
+    search.oninput = render;
+    select.onchange = () => {
+      const r = repositories.find(x => x.url === select.value) || null;
+      if (r) typed.value = "";
+      details.textContent = r ? `Default branch: ${r.default_branch}. ${r.private ? "Private" : "Public"} repository.` : "";
+      onPick(r ? { url: r.url, name: r.full_name.split("/").pop() } : null);
+    };
+    typed.oninput = () => {
+      select.value = ""; details.textContent = "";
+      onPick(typed.value.trim() ? { url: typed.value.trim(), name: repoName(typed.value.trim()).split("/").pop() } : null);
+    };
+    const node = el("div", { class: "stack" },
+      el("label", { class: "lab", for: "app-repo-search" }, "Find a repository"), search,
+      el("label", { class: "lab", for: "app-repo-select" }, "GitHub repository"), select, details, status, more, manual);
+    return { node, load };
+  }
+
+  async function viewAppNew() {
+    setNav("apps");
+    stopPoll();
+    const cfg = state.config || await api("/api/config");
+    state.config = cfg;
+    const frag = document.createDocumentFragment();
+    frag.append(pageHead("Add an app", "Choose the app, say what it is for, and set a budget. An agent then works out how to build and test it. You review what it finds before anything is verified or published.",
+      null, [el("a", { href: "#/apps" }, "Apps"), " / ", "Add"]));
+
+    // 1. which app
+    let picked = null;
+    const kindExisting = el("input", { type: "radio", name: "app-kind", value: "existing", checked: true });
+    const kindNew = el("input", { type: "radio", name: "app-kind", value: "greenfield" });
+    const existingBox = el("label", { class: "choice on" }, kindExisting, el("span", { class: "txt" }, el("b", null, "An app that already exists"),
+      el("span", null, "A GitHub repository with code. The agent reads its committed source and existing tests.")));
+    const newBox = el("label", { class: "choice" }, kindNew, el("span", { class: "txt" }, el("b", null, "A new app"),
+      el("span", null, "Nothing exists yet. The agent proposes a scaffold and test setup. The private repository is created only when you publish.")));
+    const name = el("input", { type: "text", id: "app-name", autocomplete: "off", maxlength: "80" });
+    let nameTouched = false;
+    name.oninput = () => { nameTouched = true; sync(); };
+    const picker = repositoryPicker(r => { picked = r; if (!nameTouched && r) name.value = r.name; sync(); });
+    const newUrl = el("input", { type: "url", id: "app-new-url", placeholder: "https://github.com/you/new-app", autocomplete: "off", spellcheck: "false" });
+    const existingPanel = el("div", { class: "stack" }, picker.node, advanced);
+    const newPanel = el("div", { class: "stack", hidden: true },
+      el("label", { class: "lab", for: "app-new-url" }, "Where the new repository will live"),
+      el("p", { class: "help" }, "HTTPS form: https://github.com/owner/name. Nothing is created now; the private repository is created when you publish the setup."), newUrl);
+    const description = el("textarea", { id: "app-description", maxlength: "600" });
+    const descLabel = el("label", { class: "lab", for: "app-description" });
+    const descHelp = el("p", { class: "help" });
+    const budget = el("input", { type: "number", id: "app-budget", min: "1", max: "60", step: "1", value: "10", inputmode: "decimal" });
+    const revision = el("input", { type: "text", id: "app-revision", placeholder: "main, a feature branch, or a commit SHA", autocomplete: "off", spellcheck: "false", maxlength: "180" });
+    const advanced = el("details", { class: "tech" }, el("summary", null, "Advanced"),
+      el("div", { class: "field" }, el("label", { class: "lab", for: "app-revision" }, "Source branch or commit"),
+        el("p", { class: "help" }, "Leave empty to use the repository's default branch. Name a reviewed branch or a commit to onboard code that is not merged yet."), revision));
+    const syncKind = () => {
+      const isNew = kindNew.checked;
+      existingBox.classList.toggle("on", !isNew); newBox.classList.toggle("on", isNew);
+      existingPanel.hidden = isNew; newPanel.hidden = !isNew;
+      descLabel.textContent = isNew ? "What the new app should do" : "What the app is for";
+      descHelp.textContent = isNew ? "Two or three sentences. The agent proposes a scaffold from this; you review it before anything is created."
+        : "One or two sentences. They help the agent pick the user journeys worth testing.";
+      sync();
+    };
+    kindExisting.onchange = kindNew.onchange = syncKind;
+    [newUrl, description, budget, revision].forEach(i => i.addEventListener("input", () => sync()));
+
+    const whichCard = card("1. Which app", el("div", { class: "stack" }, el("div", { class: "choices" }, existingBox, newBox), existingPanel, newPanel));
+    const aboutCard = card("2. About it", el("div", { class: "form" },
+      el("div", { class: "field" }, el("label", { class: "lab", for: "app-name" }, "Name"), el("p", { class: "help" }, "How the app is shown in the Console."), name),
+      el("div", { class: "field" }, descLabel, descHelp, description)));
+    const budgetCard = card("3. Budget", el("div", { class: "form" },
+      el("div", { class: "field" }, el("label", { class: "lab", for: "app-budget" }, "Onboarding budget (USD)"),
+        el("p", { class: "help" }, "Discovery and verification are agent sessions charged to this budget, which can be at most $60. The default is $10; change it here before you start. The app page lists every session and what it cost."), budget)));
+
+    // what happens on click
+    const summary = el("ul", { class: "summary-list" });
+    const notice = el("div", { role: "alert" });
+    const body = () => ({ kind: kindNew.checked ? "greenfield" : "existing", name: name.value.trim(),
+      repository_url: (kindNew.checked ? newUrl.value : (picked ? picked.url : "")).trim().replace(/\/+$/, "").replace(/\.git$/, ""),
+      description: description.value.trim(), budget_usd: Number(budget.value), ...(kindNew.checked || !revision.value.trim() ? {} : { revision: revision.value.trim() }) });
+    const problems = b => [
+      !b.name ? "Give the app a name." : null,
+      !b.repository_url ? (b.kind === "greenfield" ? "Say where the new repository will live." : "Choose a repository or enter its URL.") : null,
+      b.repository_url && !GITHUB_HTTPS.test(b.repository_url) ? "The repository URL must look like https://github.com/owner/name." : null,
+      !b.description ? (b.kind === "greenfield" ? "Describe what the new app should do." : "Say in a sentence what the app is for.") : null,
+      !(b.budget_usd > 0 && b.budget_usd <= 60) ? "Set a budget above $0 and at most $60." : null,
+      b.revision && !/^[A-Za-z0-9_.\-/]{1,180}$/.test(b.revision) ? "The source branch or commit may use only letters, digits, and . _ - /" : null,
+    ].filter(Boolean);
+    function sync() {
+      const b = body();
+      summary.replaceChildren(
+        el("li", null, el("b", null, b.name || "An unnamed app"), ` · ${appKind(b.kind).toLowerCase()}`),
+        el("li", null, b.repository_url ? el("span", { class: "mono" }, repoName(b.repository_url)) : "No repository chosen yet", b.revision ? el("span", { class: "mono" }, ` at ${b.revision}`) : null),
+        el("li", null, `Discovery starts at once and is charged to the ${b.budget_usd > 0 ? money(b.budget_usd) : "$0"} budget`),
+        el("li", null, "Verification and publishing wait for your click"));
+    }
+    const addBtn = el("button", { class: "btn call", type: "button", style: "min-height:48px;font-size:16px" }, "Add the app and start discovery");
+    addBtn.onclick = async () => {
+      notice.replaceChildren();
+      const b = body(), bad = problems(b);
+      if (bad.length) { notice.append(el("div", { class: "notice bad" }, el("b", null, "Not added yet. "), ...bad.map(p => el("div", null, p)))); return; }
+      addBtn.disabled = true; addBtn.textContent = "Adding the app…";
+      let app;
+      try { app = await api("/api/apps", { body: b }); } catch (e) {
+        notice.append(el("div", { class: "notice bad" }, el("b", null, "Not added. "), e.message));
+        addBtn.disabled = false; addBtn.textContent = "Add the app and start discovery"; return;
+      }
+      addBtn.textContent = "Starting discovery…";
+      try { await api(`${appPath(app.app_id)}/discover`, { body: {} }); } catch (e) {
+        state.flash = { appId: app.app_id, text: `The app was added, but discovery did not start: ${e.message}` };
+      }
+      location.hash = appHref(app.app_id);
+    };
+    const aside = el("aside", null,
+      card("When you click", el("div", { class: "stack" }, summary, addBtn,
+        el("p", { class: "explain", style: "margin:0;font-size:12.5px" }, "This starts a charged agent session. It reads or proposes code only; it changes nothing in the repository."), notice)),
+      onboardingFacts());
+    frag.append(el("div", { class: "start" }, el("div", { class: "start-main" }, whichCard, aboutCard, budgetCard), aside));
+    $main.replaceChildren(frag);
+    syncKind();
+    picker.load();
+  }
+
+  // ---- one app: the steps so far, the agent's status, and the next thing a person can do
+  function appStepper(a) {
+    const s = a.status, plan = a.plan || null;
+    let idx = { connected: 1, discovering: 1, needs_input: 2, setup_ready: 3, verifying: 3, ready: 5, ready_limited: 5, publishing: 5 }[s] ?? 1;
+    if (a.pr_url && s !== "publishing") idx = APP_STEPS.length;
+    const failed = s === "failed", failedAt = a.verification ? 3 : plan ? 2 : 1;
+    const t = el("div", { class: "stepper app-steps", role: "list", "aria-label": "Onboarding steps" });
+    APP_STEPS.forEach(([label, desc], i) => {
+      const done = failed ? i < failedAt : i < idx;
+      const current = !failed && i === idx;
+      const d = i === 2 && plan && !(plan.questions || []).length && done ? "None were needed." : desc;
+      t.append(el("div", { class: `step${done ? " done" : current ? " current" : ""}`, role: "listitem", "aria-current": current ? "step" : null },
+        el("span", { class: "n" }, i + 1), el("span", { class: "lbl" }, label), el("span", { class: "d" }, d)));
+    });
+    if (failed) t.append(el("div", { class: "step terminal", role: "listitem" }, el("span", { class: "lbl" }, "Failed")));
+    return t;
+  }
+  function appAgentRole(a) { return a.status === "verifying" ? "reviewer" : a.status === "publishing" ? "integrator" : "codebase_researcher"; }
+  function appAgentState(a) {
+    if (APP_BUSY.has(a.status)) return "working";
+    if (a.status === "ready" || a.status === "ready_limited") return "done";
+    if (a.status === "failed" || a.status === "needs_input") return "blocked";
+    return a.status === "connected" ? "asleep" : "still";
+  }
+  function appStatusBody(a) {
+    const s = appStatusText(a);
+    const consoleUrl = sid => state.config && state.config.console_session_url ? state.config.console_session_url.replace("SESSION_ID", sid) : null;
+    const sessions = el("ul", { class: "sessions" });
+    for (const x of a.sessions || []) {
+      const link = x.console_url || consoleUrl(x.session_id);
+      sessions.append(el("li", null, el("span", null, words(x.stage) || "Session", " · ",
+        link && /^https:\/\//.test(link) ? el("a", { href: link, target: "_blank", rel: "noopener" }, "open in the Anthropic Console") : el("span", { class: "mono" }, String(x.session_id || "").slice(0, 18))),
+        el("span", null, money(x.cost_usd || 0))));
+    }
+    return el("div", { class: "app-status" },
+      el("div", { class: "head" }, crewFigure(appAgentRole(a), appAgentState(a), "s"),
+        el("div", null, el("div", { class: "label" }, s.label), el("div", { class: "phase" }, a.phase || s.text))),
+      a.phase && a.phase !== s.text ? el("p", { class: "explain", style: "margin:8px 0 0" }, s.text) : null,
+      el("p", { class: "explain", style: "margin:8px 0 0;font-size:12.5px" }, `Updated ${ago(a.updated_at) || "just now"}.`),
+      el("dl", { class: "kv app-money" }, el("dt", null, "Budget"), el("dd", null, money(a.budget_usd)), el("dt", null, "Spent"), el("dd", null, money(a.spent_usd || 0)),
+        el("dt", null, "Left"), el("dd", null, appLeft(a))),
+      (a.sessions || []).length ? el("div", null, el("h3", { class: "mini-h" }, "Charged sessions"), sessions)
+        : el("p", { class: "explain", style: "margin:8px 0 0;font-size:12.5px" }, "No agent session has run yet."));
+  }
+  function capabilityList(plan) {
+    const ul = el("ul", { class: "caps" });
+    for (const c of plan.capabilities || []) {
+      ul.append(el("li", null, el("span", { class: `tag ${c.available ? "ok" : "warn"}` }, c.available ? "Testable" : "Not testable here"),
+        el("span", { class: "cap" }, c.label || c.id), c.limitation ? el("span", { class: "lim" }, c.limitation) : null));
+    }
+    return ul;
+  }
+  // only what the reviewed test recipe declares (test_environment.schema.json: name, required, allowed_hosts, injection, description)
+  function declaredSecrets(plan) {
+    const list = plan && plan.profile && Array.isArray(plan.profile.secrets) ? plan.profile.secrets : [];
+    return list.filter(x => x && typeof x.name === "string" && SECRET_NAME.test(x.name))
+      .map(x => ({ name: x.name, required: x.required === true, hosts: Array.isArray(x.allowed_hosts) ? x.allowed_hosts.map(String) : [],
+        injection: x.injection ? String(x.injection) : "", purpose: x.description ? String(x.description) : "" }));
+  }
+  function evidenceGallery(a) {
+    const grid = el("div", { class: "evidence-grid" });
+    for (const e of a.evidence || []) {
+      const url = typeof e.url === "string" && e.url.startsWith(`${appPath(a.app_id)}/evidence/`) ? e.url : null;
+      const nm = String(e.name || (url || "").split("/").pop() || "evidence");
+      if (!url) { grid.append(el("figure", null, el("figcaption", null, `${nm} (not a Console evidence link, not shown)`))); continue; }
+      const ext = nm.toLowerCase().split(".").pop();
+      let media;
+      if (["png", "jpg", "jpeg", "webp"].includes(ext)) media = el("a", { href: url, target: "_blank", rel: "noopener" }, el("img", { src: url, alt: nm, loading: "lazy" }));
+      else if (["mp4", "webm"].includes(ext)) media = el("video", { src: url, controls: true, preload: "metadata", playsinline: true, "aria-label": `Recording: ${nm}` });
+      else if (ext === "gif") media = el("details", null, el("summary", null, "Play the recording (GIF)"), el("img", { src: url, alt: `Recording: ${nm}`, loading: "lazy" }));
+      else media = null;
+      grid.append(el("figure", null, media, el("figcaption", null, el("a", { href: url, target: "_blank", rel: "noopener" }, nm))));
+    }
+    return grid;
+  }
+
+  async function viewApp(appId) {
+    setNav("apps");
+    let app = await api(appPath(appId));
+    const drafts = (state.appDrafts = state.appDrafts || {})[appId] || (state.appDrafts[appId] = {});
+    const statusBox = el("div", { role: "status", "aria-live": "polite" });
+    const updateBar = el("div", { class: "notice info", hidden: true });
+    const body = el("div", { class: "start-main" });
+    const headBox = el("div");
+    let pending = null;
+    let flash = state.flash && state.flash.appId === appId ? state.flash : null;
+    if (flash) state.flash = null;
+
+    const busy = () => APP_BUSY.has(app.status);
+    const act = async (btn, line, call) => {
+      btn.disabled = true; line.textContent = "Working…";
+      try { const a = await call(); line.textContent = ""; paint(a && a.app_id ? a : await api(appPath(appId))); }
+      catch (e) { line.textContent = e.status === 409 ? `The agent is already working on this app; the page follows it. (${e.message})` : e.message; btn.disabled = false; if (e.status === 409) tick(); }
+    };
+    const actionLine = () => el("p", { class: "explain action-line", role: "status", "aria-live": "polite" });
+    const charged = text => el("p", { class: "explain", style: "margin:6px 0 0;font-size:12.5px" }, text);
+
+    function sections(a) {
+      const out = [];
+      const plan = a.plan || null;
+      if (flash) { out.push(el("div", { class: "notice bad", role: "alert" }, flash.text)); flash = null; }
+      if (a.error) out.push(el("div", { class: "notice bad", role: "alert" }, el("b", null, "The last step failed. "), a.error));
+
+      // discover: started automatically after adding; offered again when idle
+      if (!plan || a.status === "connected" || a.status === "failed") {
+        const line = actionLine();
+        const btn = el("button", { class: "btn call", type: "button", disabled: busy() }, plan ? "Discover again" : "Start discovery");
+        btn.onclick = () => act(btn, line, () => api(`${appPath(appId)}/discover`, { body: {} }));
+        out.push(card("Discover the setup", el("div", null,
+          el("p", null, a.status === "discovering" ? appStatusText(a).text : a.kind === "greenfield"
+            ? "An agent proposes a scaffold, how to run it, and how to test it, from your description."
+            : "An agent reads the repository's committed source and existing test setup, and proposes how to build, run and test it."),
+          busy() ? el("p", { class: "explain" }, "The agent is working. This page follows it; you can leave and come back.") : el("div", null, btn, charged(`Starts a charged agent session (${appLeft(a)} left in this app's budget).`)), line)));
+      }
+      if (!plan) { out.push(sourceDetails(a)); return out; }
+
+      // what the agent found
+      const journeys = el("ul", { class: "plain-list" }, (plan.journeys || []).map(j => {
+        const cap = (plan.capabilities || []).find(c => c.id === j.capability);
+        return el("li", null, el("b", null, j.title), cap ? el("span", { class: "explain" }, ` · needs ${cap.label || cap.id}${cap.available ? "" : " (not testable here)"}`) : null);
+      }));
+      const files = el("div", { class: "files-list" }, (plan.files || []).map(f => el("details", null, el("summary", null, el("span", { class: "mono" }, f.path)), el("pre", null, f.content || ""))));
+      const tech = el("details", { class: "tech" }, el("summary", null, "Technical details: the test recipe, the files it proposes, and the raw plan"),
+        el("dl", { class: "kv", style: "margin-top:10px" }, el("dt", null, "Plan fingerprint"), el("dd", { class: "mono" }, a.plan_sha256 || "out of date until discovery runs again"),
+          el("dt", null, "Source commit inspected"), el("dd", { class: "mono" }, a.source_sha || "not known yet"),
+          el("dt", null, "Test recipe file"), el("dd", { class: "mono" }, plan.profile_path || "none yet")),
+        (plan.files || []).length ? el("div", null, el("h3", { class: "mini-h" }, `Proposed files (${(plan.files || []).length})`), files) : null,
+        plan.profile ? el("details", null, el("summary", null, "Raw test recipe JSON"), el("pre", null, JSON.stringify(plan.profile, null, 2))) : null,
+        el("details", null, el("summary", null, "Raw plan JSON"), el("pre", null, JSON.stringify(plan, null, 2))));
+      out.push(card("What the agent found", el("div", { class: "stack" },
+        !a.plan_sha256 ? el("div", { class: "notice info", style: "margin:0" }, el("b", null, "This plan is out of date. "), "Your answers are saved. Verification and publishing wait until discovery runs again with them.") : null,
+        el("p", { class: "lead" }, plan.summary || "No summary given."),
+        plan.app_kind ? el("p", { class: "explain" }, `Kind of app: ${words(plan.app_kind)}`) : null,
+        (plan.journeys || []).length ? el("div", null, el("h3", { class: "mini-h" }, "User journeys it would test"), journeys) : null,
+        (plan.capabilities || []).length ? el("div", null, el("h3", { class: "mini-h" }, "What a test run can exercise"), capabilityList(plan)) : null,
+        (plan.limitations || []).length ? el("div", null, el("h3", { class: "mini-h" }, "Limits of this setup"), el("ul", { class: "plain-list" }, plan.limitations.map(x => el("li", null, x)))) : null,
+        tech), a.plan_sha256 ? `plan ${a.plan_sha256.slice(0, 10)}` : null));
+
+      // questions: drafts survive polling; answers are saved, then discovery resumes only on an explicit click
+      const qs = plan.questions || [];
+      if (qs.length) {
+        const answers = a.answers || {};
+        const fields = qs.map(q => {
+          const ta = el("textarea", { id: `answer-${q.id}`, "aria-describedby": `answer-${q.id}-h` });
+          ta.value = drafts[q.id] ?? answers[q.id] ?? "";
+          ta.oninput = () => { drafts[q.id] = ta.value; };
+          return { q, ta, node: el("div", { class: "qa" }, el("label", { for: `answer-${q.id}` }, q.prompt, q.required ? el("span", { class: "req" }, "required") : el("span", { class: "opt" }, "optional")),
+            el("p", { class: "help", id: `answer-${q.id}-h` }, answers[q.id] ? "Saved. Edit and save again to change it." : "Not answered yet."), ta) };
+        });
+        const collect = () => Object.fromEntries(fields.map(f => [f.q.id, f.ta.value.trim()]).filter(([, v]) => v));
+        const missing = () => fields.filter(f => f.q.required && !f.ta.value.trim()).map(f => f.q.prompt);
+        const line = actionLine();
+        const saveBtn = el("button", { class: "btn", type: "button", disabled: busy() }, "Save answers");
+        const againBtn = el("button", { class: "btn call", type: "button", disabled: busy() }, "Save and discover again");
+        const save = async () => { const r = await api(`${appPath(appId)}/answers`, { body: { answers: collect() } }); fields.forEach(f => { delete drafts[f.q.id]; }); return r; };
+        saveBtn.onclick = () => act(saveBtn, line, save);
+        againBtn.onclick = () => {
+          const m = missing();
+          if (m.length) { line.textContent = `Answer the required ${m.length === 1 ? "question" : "questions"} first: ${m.join("; ")}`; return; }
+          act(againBtn, line, async () => { await save(); return api(`${appPath(appId)}/discover`, { body: {} }); });
+        };
+        out.push(card("Questions for you", el("div", { class: "stack" },
+          el("p", { class: "explain" }, "The agent could not find these in the repository. Saving answers marks the plan out of date; discovery runs again only when you click Save and discover again."),
+          ...fields.map(f => f.node), el("div", { class: "startbar" }, saveBtn, againBtn), charged("Discovering again starts a charged agent session."), line), null, a.status === "needs_input" ? "call" : ""));
+      }
+
+      // test credentials: only names the profile declares; write-only
+      const secrets = declaredSecrets(plan);
+      if (secrets.length) {
+        const have = new Map((a.credentials || []).map(c => [c.name, c.status]));
+        const rows = secrets.map(sec => {
+          const input = el("input", { type: "password", id: `secret-${sec.name}`, autocomplete: "new-password", spellcheck: "false" });
+          const line = actionLine();
+          const btn = el("button", { class: "btn sm", type: "button" }, have.get(sec.name) ? "Replace in the test vault" : "Store in the test vault");
+          btn.onclick = () => {
+            const value = input.value; input.value = "";
+            if (!value) { line.textContent = "Paste the test key first."; return; }
+            act(btn, line, () => api(`${appPath(appId)}/credentials`, { body: { name: sec.name, value } }));
+          };
+          const st = have.get(sec.name);
+          return el("div", { class: "secret" },
+            el("div", { class: "row" }, el("span", { class: "mono" }, sec.name), el("span", { class: `tag ${sec.required ? "gate" : ""}` }, sec.required ? "required" : "optional"),
+              el("span", { class: `tag ${st === "configured" ? "ok" : "warn"}` }, st ? words(st) : "not stored")),
+            el("p", { class: "explain", style: "margin:0" }, sec.purpose ? `Unlocks: ${sec.purpose}` : "The recipe does not say what this unlocks."),
+            el("p", { class: "explain", style: "margin:0" }, sec.hosts.length ? `Sent only to ${sec.hosts.join(", ")}${sec.injection ? `, in the request ${sec.injection.replace(/-/g, " ")}` : ""}.` : "The recipe declares no host for this key."),
+            el("label", { class: "lab", for: `secret-${sec.name}` }, `Test value for ${sec.name}`),
+            el("div", { class: "row" }, input, btn), line);
+        });
+        out.push(card("Test credentials", el("div", { class: "stack" },
+          el("p", { class: "explain" }, "Use test-only keys, never production ones. Each value goes once to the hosted test vault and is never shown again; this page keeps only the name and whether it is stored."), ...rows)));
+      }
+
+      // verify the exact plan shown above
+      if (["setup_ready", "verifying", "ready", "ready_limited", "failed"].includes(a.status) && a.plan_sha256) {
+        const line = actionLine();
+        const sha = a.plan_sha256;
+        const unanswered = qs.filter(q => q.required && !(a.answers || {})[q.id]).length;
+        const configured = new Set((a.credentials || []).filter(c => c.status === "configured").map(c => c.name));
+        const keysMissing = secrets.filter(x => x.required && !configured.has(x.name)).map(x => x.name);
+        const blockers = [!plan.profile ? "There is no test recipe yet; answer the questions and discover again." : null,
+          unanswered ? "Answer the required questions and discover again." : null,
+          keysMissing.length ? `Store the required test ${keysMissing.length === 1 ? "key" : "keys"} first: ${keysMissing.join(", ")}.` : null].filter(Boolean);
+        const btn = el("button", { class: "btn call", type: "button", disabled: busy() || blockers.length > 0 }, a.verification ? "Verify again" : "Verify this setup");
+        btn.onclick = () => act(btn, line, () => api(`${appPath(appId)}/verify`, { body: { plan_sha256: sha } }));
+        out.push(card("Verify the setup", el("div", null,
+          el("p", null, `Runs the setup above (plan ${sha.slice(0, 10)}) once in a hosted sandbox with synthetic data, and keeps the results as evidence. It approves no gate and merges nothing.`),
+          blockers.length ? el("ul", { class: "plain-list explain" }, blockers.map(x => el("li", null, x))) : null,
+          a.status === "verifying" ? el("p", { class: "explain" }, "Verification is running. This page follows it.") : el("div", null, btn, charged(`Starts a charged agent session (${appLeft(a)} left).`)), line)));
+      }
+
+      // the result and its evidence, with what it did not cover
+      if (a.verification) {
+        const v = a.verification;
+        const uncovered = (plan.capabilities || []).filter(c => !c.available);
+        const stale = a.source_sha && v.head_sha && a.source_sha !== v.head_sha;
+        out.push(card("Evidence from the last verification", el("div", { class: "stack" },
+          el("div", { class: "row-tags" }, el("span", { class: `tag ${v.status === "passed" ? "ok" : v.status === "failed" ? "bad" : "warn"}` }, words(v.status)),
+            stale ? el("span", { class: "tag warn" }, "Earlier commit") : null, v.cost_usd != null ? el("span", { class: "tag" }, `${money(v.cost_usd)} charged`) : null),
+          v.detail ? el("p", null, v.detail) : null,
+          uncovered.length ? el("div", { class: "notice info", style: "margin:0" }, el("b", null, "Not covered by this verification: "),
+            uncovered.map(c => `${c.label || c.id}${c.limitation ? ` (${c.limitation})` : ""}`).join("; "), ". The app is ready only for what is listed as covered.") : null,
+          (a.evidence || []).length ? evidenceGallery(a) : el("p", { class: "explain" }, "No media was accepted from this verification."),
+          el("dl", { class: "kv" }, el("dt", null, "Tested commit"), el("dd", { class: "mono" }, v.head_sha || "not given"), el("dt", null, "Profile fingerprint"), el("dd", { class: "mono" }, v.profile_sha256 || "not given"),
+            el("dt", null, "Session"), el("dd", { class: "mono" }, v.session_id || "not given"))), stale ? "a newer commit needs a new verification" : null));
+      }
+
+      // publish: an explicit, confirmed step; nothing merges
+      if (a.status === "ready" || a.status === "ready_limited" || a.status === "publishing" || a.pr_url) {
+        const label = a.kind === "greenfield" ? "Create private repository and setup PR" : "Publish setup PR";
+        const line = actionLine();
+        const confirmBox = el("div", { class: "confirm-box", hidden: true });
+        const first = el("button", { class: "btn primary", type: "button", disabled: busy() || !a.plan_sha256 }, label);
+        const sha = a.plan_sha256;
+        first.onclick = () => { confirmBox.hidden = false; first.hidden = true; confirmBtn.focus(); };
+        const confirmBtn = el("button", { class: "btn call", type: "button" }, `Confirm: ${label.toLowerCase()}`);
+        const cancel = el("button", { class: "btn", type: "button", onclick: () => { confirmBox.hidden = true; first.hidden = false; first.focus(); } }, "Cancel");
+        confirmBtn.onclick = () => act(confirmBtn, line, () => api(`${appPath(appId)}/publish`, { body: { plan_sha256: sha } }));
+        confirmBox.append(el("p", { style: "margin:0 0 8px;font-weight:700" }, a.kind === "greenfield"
+          ? `This creates the private repository ${repoName(a.repository_url)} and opens a pull request with the setup.`
+          : `This opens a pull request on ${repoName(a.repository_url)} with the setup files.`),
+          el("p", { class: "explain" }, "Nothing is merged. An engineer reviews and merges the pull request."), el("div", { class: "startbar" }, confirmBtn, cancel));
+        const change = a.kind === "existing" || a.pr_url
+          ? el("div", null, el("a", { class: "btn", href: `#/start?app=${encodeURIComponent(a.app_id)}` }, "Request a change"),
+            el("p", { class: "explain", style: "margin:6px 0 0;font-size:12.5px" }, "Starts a normal run on this app's repository. You still approve the plan and the contracts."))
+          : el("p", { class: "explain" }, "Requesting changes opens once the repository exists, after you publish.");
+        out.push(card("Setup pull request", el("div", { class: "stack" },
+          a.pr_url && /^https:\/\//.test(a.pr_url) ? el("p", null, el("a", { href: a.pr_url, target: "_blank", rel: "noopener" }, "Open the setup pull request"), el("span", { class: "explain" }, " · waiting for an engineer to review and merge")) : null,
+          a.status === "publishing" ? el("p", { class: "explain" }, "Publishing. This page follows it.") : a.pr_url ? null : el("div", null, first, confirmBox, line),
+          change)));
+      }
+      out.push(sourceDetails(a));
+      return out;
+    }
+    function sourceDetails(a) {
+      return el("details", { class: "tech card", style: "padding:12px 18px" }, el("summary", null, "Technical details: repository, branch and commit"),
+        el("dl", { class: "kv", style: "margin-top:10px" },
+          el("dt", null, "Repository"), el("dd", { class: "mono" }, a.repository_url || "not given"),
+          el("dt", null, "Source branch or commit"), el("dd", { class: "mono" }, a.revision || "the default branch"),
+          el("dt", null, "Default branch"), el("dd", { class: "mono" }, a.default_branch || "not known until discovery reads the repository"),
+          el("dt", null, "Source commit inspected"), el("dd", { class: "mono" }, a.source_sha || "not known until discovery reads the repository"),
+          el("dt", null, "App id"), el("dd", { class: "mono" }, a.app_id)));
+    }
+
+    function paint(a) {
+      app = a; pending = null; updateBar.hidden = true;
+      headBox.replaceChildren(pageHead(a.name || a.app_id, a.description || null,
+        [el("span", { class: "tag" }, appKind(a.kind)), appStatusTag(a), el("span", { class: "tag" }, appMoney(a))],
+        [el("a", { href: "#/apps" }, "Apps"), " / ", el("span", { class: "mono" }, repoName(a.repository_url) || a.app_id)]), card(null, appStepper(a), null, "soft"));
+      statusBox.replaceChildren(appStatusBody(a));
+      body.replaceChildren(...sections(a));
+      state.lastKey.app = appKey(a);
+      schedule();
+    }
+    const dirty = () => typing() || [...body.querySelectorAll("input[type=password]")].some(i => i.value) ||
+      Object.keys(drafts).some(k => (drafts[k] || "") !== ((app.answers || {})[k] || ""));
+    async function tick() {
+      if (!document.body.contains(statusBox)) { stopPoll(); return; }
+      let a;
+      try { a = await api(appPath(appId)); } catch (e) { return; }
+      if (appKey(a) === state.lastKey.app) return;
+      statusBox.replaceChildren(appStatusBody(a));
+      if (dirty()) {
+        pending = a;
+        updateBar.replaceChildren(el("b", null, `Now: ${appStatusText(a).label}. `), "Your typing is kept; the rest of the page updates when you are ready. ",
+          el("button", { class: "btn sm", type: "button", onclick: () => paint(pending || a) }, "Show the update"));
+        updateBar.hidden = false;
+        state.lastKey.app = appKey(a);
+        return;
+      }
+      paint(a);
+    }
+    function schedule() { startPoll(tick, busy() ? 3000 : 12000); }
+
+    const aside = el("aside", null, card("Agent status", statusBox), onboardingFacts());
+    $main.replaceChildren(headBox, updateBar, el("div", { class: "start" }, body, aside));
+    paint(app);
+  }
+
   // ------------------------------------------------------------------ settings
   async function viewSettings() {
     setNav("settings");
@@ -1426,6 +1966,9 @@
       else if (path === "/start") await viewStart(params);
       else if (path === "/outcomes") await viewOutcomes();
       else if (path === "/outcomes/new") await viewOutcomeForm(params);
+      else if (path === "/apps") await viewApps();
+      else if (path === "/apps/new") await viewAppNew();
+      else if (path.startsWith("/apps/")) await viewApp(decodeURIComponent(path.slice(6)));
       else if (path === "/settings") await viewSettings();
       else { $main.replaceChildren(card(null, el("div", { class: "empty" }, el("h3", null, "No such page"), el("a", { class: "btn", href: "#/inbox" }, "Back to the board")))); stopPoll(); }
     } catch (e) {
