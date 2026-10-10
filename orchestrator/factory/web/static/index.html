@@ -3,19 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Factory Console</title>
+<title>Factory</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700;800&family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 <div class="app">
   <aside class="side">
-    <a class="brand" href="#/inbox"><span class="dot" aria-hidden="true"></span>Factory</a>
+    <a class="brand" href="#/inbox"><span class="mark" id="brand-mark" aria-hidden="true"></span>Factory</a>
     <nav aria-label="Primary">
-      <a href="#/inbox" data-nav="inbox">Inbox <span class="badge zero" id="inbox-count">0</span></a>
+      <a href="#/inbox" data-nav="inbox">Board <span class="badge zero" id="inbox-count">0</span></a>
       <a href="#/runs" data-nav="runs">Runs</a>
+      <a href="#/start" data-nav="start">Start a run</a>
       <a href="#/outcomes" data-nav="outcomes">Outcomes</a>
       <a href="#/settings" data-nav="settings">Settings</a>
     </nav>

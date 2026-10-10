@@ -75,6 +75,15 @@ def _present(ctx: RunContext, outcome: dict[str, Any], files: dict[str, bytes], 
     return cr_id, urls
 
 
+def policy_snapshot(ctx: RunContext) -> dict[str, Any]:
+    """What this run was tuned with, recorded on run.created so the Console can show it beside the run."""
+    p = ctx.policy
+    return {"run_budget_usd": p.run_budget_usd, "reviewer_passes": p.reviewer_passes, "review_max_rounds": p.review_max_rounds,
+            "security_review": getattr(p, "security_review", True), "parallel_implementations": p.parallel_implementations,
+            "outcome_max_iterations": p.outcome_max_iterations, "stage_budget_usd": dict(p.stage_budget_usd),
+            "preview_mode": ctx.cfg.preview_mode, "design_only": p.design_only}
+
+
 def notes_by_item(comments: str, item_ids: list[str]) -> dict[str, str]:
     """Split a decision's comments into per-item guidance. Lines like `wi-x: text` go to that item; other lines go
     to every item. Used when a gate is approved with notes: approval does not re-run the stage, but the next
@@ -111,7 +120,7 @@ def _feedback(ctx: RunContext, design_cr_id: int | None, d: GateDecision) -> str
 
 
 def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
-    ctx.event("run.created", {"outcome_id": outcome["outcome_id"], "title": outcome["title"],
+    ctx.event("run.created", {"outcome_id": outcome["outcome_id"], "title": outcome["title"], "policy": policy_snapshot(ctx),
                               "forge": ctx.cfg.forge if ctx.forge is not None else None, "gate_surface": ctx.cfg.gate_surface,
                               "design_only": ctx.policy.design_only}, stage="intake")
     ctx.store.put_artifact(ctx.run_id, "intake", "outcome.json", json.dumps(outcome, indent=2).encode())

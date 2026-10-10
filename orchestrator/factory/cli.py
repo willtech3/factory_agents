@@ -68,7 +68,8 @@ def _policy(outcome: dict, design_only: bool):
     scale = float(os.environ.get("FACTORY_BUDGET_SCALE", "1") or 1)
     base = Policy()
     knob = lambda name, default: int(os.environ.get(name) or default)  # noqa: E731
-    return Policy(run_budget_usd=outcome.get("constraints", {}).get("budget_usd") or 150.0, design_only=design_only,
+    budget = os.environ.get("FACTORY_RUN_BUDGET_USD") or outcome.get("constraints", {}).get("budget_usd") or 150.0
+    return Policy(run_budget_usd=float(budget), design_only=design_only,
                   stage_budget_usd={k: round(v * scale, 2) for k, v in base.stage_budget_usd.items()},
                   reviewer_passes=knob("FACTORY_REVIEWER_PASSES", base.reviewer_passes),
                   security_review=os.environ.get("FACTORY_SECURITY_REVIEW", "1").lower() not in ("0", "false", "no", "off"),
