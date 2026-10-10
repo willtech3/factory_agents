@@ -147,8 +147,12 @@ class Console:
                     for ev in events if ev.kind in TIMELINE_KINDS]
         design_only = any(ev.kind == "run.completed" and ev.payload.get("design_only") for ev in events) or \
             any(ev.kind == "run.created" and ev.payload.get("design_only") for ev in events)
+        # A run that died in the implementation stage can continue from its artefacts (`factory resume`).
+        resumable = (st.stage.value == "failed" and not self.demo.is_demo(run_id)
+                     and any(ev.kind == "stage.entered" and ev.payload.get("stage") == "implementing" for ev in events))
         return {"run_id": run_id, "title": self._title(run_id, events), "outcome": outcome, "stage": st.stage.value,
                 "cost": round(st.list_cost_usd, 2), "demo": self.demo.is_demo(run_id), "design_only": design_only, "work_items": items,
+                "resumable": resumable,
                 "gates": gates, "questions": questions, "events": timeline, "artifacts": self._artifacts(run_id),
                 "created_at": events[0].at, "updated_at": events[-1].at}
 
@@ -377,13 +381,30 @@ class Console:
                                     env={**os.environ, "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}, start_new_session=True)
         return {"ok": True, "mode": body.mode, "pid": proc.pid, "log": log.name}
 
+    def resume_run(self, run_id: str) -> dict[str, Any]:
+        """Continue a run that failed during implementation: spawns `factory resume <run_id>` the way start_run spawns
+        `factory run`, so the Console never holds the orchestrator's state itself."""
+        detail = self.run_detail(run_id)
+        if not detail["resumable"]:
+            raise HTTPException(409, f"run {run_id} is {detail['stage']}; only a failed run that reached implementation can be resumed")
+        gaps = cfgmod.missing(self.cfg)
+        if gaps:
+            raise HTTPException(409, f"the orchestrator is not configured for a live run: {', '.join(gaps)}")
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        log = self.logs_dir / f"resume-{run_id}-{int(time.time())}.log"
+        args = [sys.executable, "-u", "-m", "factory.cli", "resume", run_id]
+        with log.open("w") as fh:
+            proc = subprocess.Popen(args, cwd=str(Path(__file__).resolve().parents[2]), stdout=fh, stderr=subprocess.STDOUT,
+                                    env={**os.environ, "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}, start_new_session=True)
+        return {"ok": True, "mode": "resume", "run_id": run_id, "pid": proc.pid, "log": log.name}
+
     def logs(self) -> list[dict[str, Any]]:
         if not self.logs_dir.exists():
             return []
         out = []
         for p in sorted(self.logs_dir.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True):
             text = p.read_text(errors="replace")
-            m = re.search(r"run (run_[a-z0-9]+) started", text)
+            m = re.search(r"run (run_[a-z0-9]+) (?:started|resuming)", text)
             out.append({"name": p.name, "bytes": p.stat().st_size, "modified_at": datetime.fromtimestamp(p.stat().st_mtime, timezone.utc).isoformat(),
                         "run_id": m.group(1) if m else None, "tail": redact(text[-1500:])})
         return out
@@ -527,6 +548,10 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
     @app.post("/api/runs")
     def api_start_run(body: StartRunBody):
         return console.start_run(body)
+
+    @app.post("/api/runs/{run_id}/resume")
+    def api_resume_run(run_id: str):
+        return console.resume_run(run_id)
 
     @app.get("/api/platform")
     def api_platform():

@@ -282,3 +282,38 @@ def test_design_only_flag_and_file_queue_atomic_write(client, tmp_path):
     r = client.get("/api/runs/run_designonly1").json()
     assert r["design_only"] is True
     assert [x for x in client.get("/api/runs").json()["runs"] if x["run_id"] == "run_designonly1"][0]["design_only"] is True
+
+
+def test_resume_is_offered_only_for_failed_runs_that_reached_implementation(client, schemas_dir):
+    """A demo run is never resumable; a failed live run that reached implementation is, and resuming it with an
+    unconfigured orchestrator is refused with the gaps (nothing is spawned)."""
+    import json
+    from factory.store import RunStore
+
+    demo_id = _seed(client)
+    assert client.get(f"/api/runs/{demo_id}").json()["resumable"] is False
+    assert client.post(f"/api/runs/{demo_id}/resume").status_code == 409
+    assert client.post("/api/runs/run_nope/resume").status_code == 404
+
+    runs_dir = client.cfg.runs_dir
+    store = RunStore(runs_dir)
+    rid = "run_deadbeef01"
+    actor = {"type": "system", "id": "test"}
+    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "t"})
+    store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
+    for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness"):
+        store.append(rid, "stage.entered", actor, {"stage": stage})
+    store.append(rid, "run.failed", actor, {"reason": "boom"})
+    # failed before implementation: not resumable
+    assert client.get(f"/api/runs/{rid}").json()["resumable"] is False
+    rid2 = "run_deadbeef02"
+    store.append(rid2, "run.created", actor, {"outcome_id": "o", "title": "t"})
+    store.put_artifact(rid2, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
+    for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness", "implementing"):
+        store.append(rid2, "stage.entered", actor, {"stage": stage})
+    store.append(rid2, "run.failed", actor, {"reason": "RuntimeError: session did not produce review_response.json"})
+    d = client.get(f"/api/runs/{rid2}").json()
+    assert d["stage"] == "failed" and d["resumable"] is True
+    res = client.post(f"/api/runs/{rid2}/resume")
+    assert res.status_code == 409 and "not configured" in res.json()["detail"]
+    assert not list((runs_dir / "_logs").glob("resume-*.log")) if (runs_dir / "_logs").exists() else True

@@ -281,6 +281,7 @@
     frag.append(card("Where it is", el("div", null, stepper(r.stage, r.design_only), el("p", { class: "explain", style: "margin-top:10px" },
       r.stage === "completed" && r.design_only ? "Done: this was a design run. The approved specs are in the files below; nothing was built. Start a full run from the outcome to implement them."
       : r.stage === "completed" ? "Done. Every approved item has a pull request; review and merge happen on the code host."
+      : r.resumable ? "Failed during implementation. The work so far is kept: resume below and the run continues from the last finished step."
       : TERMINAL[r.stage] ? `${stageName}. Nothing more happens in this run.`
       : `Now: ${stageName}.${r.design_only ? " This is a design run: it stops after Gate 2." : ""}`))));
 
@@ -294,6 +295,22 @@
         el("a", { class: "btn primary", href: `#/gates/${g.gate_id}` }, "Review and decide"))));
       for (const g of recorded) body.append(el("div", { class: "notice ok" }, el("b", null, `${DECISION_LABEL[g.recorded.decision] || g.recorded.decision} recorded on ${GATE_SHORT[g.kind]}. `), "The run picks it up within a few seconds. ", el("a", { href: `#/gates/${g.gate_id}` }, "View")));
       frag.append(card("Needs you", body));
+    }
+
+    if (r.resumable) {
+      const why = (r.events || []).slice().reverse().find(e => e.kind === "run.failed");
+      const box = el("div", { class: "stack" },
+        el("p", { class: "explain" }, "The orchestrator stopped before this run reached a pull request", why && why.detail ? `: ${why.detail}` : ".",
+          " Resuming does not repeat finished agent sessions; it re-checks the branch and carries on from there."),
+        el("div", { class: "actions" }, el("button", { class: "btn primary", type: "button", onclick: async (ev) => {
+          const b = ev.currentTarget; b.disabled = true; b.textContent = "Resuming…";
+          try {
+            const res = await api(`/api/runs/${runId}/resume`, { body: {} });
+            box.append(el("div", { class: "notice ok" }, el("b", null, "Resumed. "), `The run continues in the background (log ${res.log}). This page follows it.`));
+            setTimeout(() => viewRun(runId), 2500);
+          } catch (e) { b.disabled = false; b.textContent = "Resume run"; box.append(el("div", { class: "notice bad" }, String(e.message || e))); }
+        } }, "Resume run")));
+      frag.append(card("Resume", box));
     }
 
     const items = el("table", null, el("tr", null, el("th", null, "Work item"), el("th", null, "Stage"), el("th", null, "Depends on"), el("th", null, "Pull request")));
