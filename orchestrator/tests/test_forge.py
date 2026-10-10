@@ -308,10 +308,12 @@ def test_github_seed_retries_while_the_new_repository_is_not_ready_and_reseeds_a
     slept = []
     skill = root / "skills" / "platform-contract" / "SKILL.md"
     created = ensure_repository(f, {"url": "https://github.com/will/newapp", "create": True}, tmpl, skill_file=skill, sleep=slept.append)
-    assert created["default_branch"] == "main" and created["workflow_seeded"] is True and slept == [2.0, 4.0]
+    # two seed commits (skill, then workflow); the mock answers 404 twice per distinct tree body, so each is retried twice
+    assert created["default_branch"] == "main" and created["workflow_seeded"] is True and slept == [2.0, 4.0, 2.0, 4.0]
     trees = [b for m, p, _, b in rec.calls if p.endswith("/git/trees")]
     assert trees[0]["tree"][0]["path"] == ".claude/skills/platform-contract/SKILL.md"      # the skill lands first, on its own
-    assert trees[-1]["tree"][0]["path"] == ".github/workflows/preview.yml"
+    assert trees[-1]["tree"][0]["path"] == ".github/workflows/preview.yml" and len(trees) == 6
+    assert sum(1 for m, p, _, _ in rec.calls if p.endswith("/git/refs/heads/main") and m == "PATCH") == 2
     # a forge that keeps refusing (a token without the workflow scope: GitHub answers 404 for ever): a warning, not a crash
     routes4 = {**routes, "POST /repos/will/newapp/git/trees": (404, {"message": "Not Found"})}
     rec4 = Recorder(routes4)
@@ -319,8 +321,6 @@ def test_github_seed_retries_while_the_new_repository_is_not_ready_and_reseeds_a
     logged = []
     created4 = ensure_repository(f4, {"url": "https://github.com/will/newapp", "create": True}, tmpl, skill_file=skill, sleep=lambda s: None, log=logged.append)
     assert created4["workflow_seeded"] is False and "workflow" in logged[-1] and "gh auth refresh -s workflow" in logged[-1]
-    assert sum(1 for m, p, _, _ in rec.calls if p.endswith("/git/trees")) == 3
-    assert sum(1 for m, p, _, _ in rec.calls if p.endswith("/git/refs/heads/main") and m == "PATCH") == 1
     # a repository that exists but has no workflow (the earlier run died after creating it): seeded, not created
     routes2 = {**routes, "GET /repos/will/newapp": {"id": 9, "default_branch": "main"},
                "GET /repos/will/newapp/contents/.github/workflows/preview.yml": (404, {"message": "Not Found"}),
