@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -37,7 +39,11 @@ from ..surfaces.filequeue import FileQueue
 from .demo import DemoRunner
 
 STATIC = Path(__file__).parent / "static"
-TIMELINE_KINDS = {"run.created", "stage.entered", "gate.opened", "gate.decided", "question.asked", "question.answered",
+RUN_ID = re.compile(r"^run_[a-z0-9]{8,}$")
+OUTCOME_ID = re.compile(r"^out_[a-z0-9]{8,}$")
+EXAMPLES = {"sample-app": REPO_ROOT / "examples" / "sample-app" / "outcome.json",
+            "ledgerline": REPO_ROOT / "examples" / "ledgerline" / "outcome.json"}
+TIMELINE_KINDS = {"run.created", "stage.entered", "session.started", "gate.opened", "gate.decided", "question.asked", "question.answered",
                   "judge.verdict", "review.findings", "review.response", "merge.verdict", "cr.opened", "cr.merged", "cr.closed",
                   "deploy.started", "deploy.succeeded", "deploy.failed", "e2e.dev_passed", "e2e.dev_failed", "budget.reached",
                   "run.escalated", "run.failed", "run.completed", "session.finished", "work_item.stage"}
@@ -61,7 +67,7 @@ class OutcomeBody(BaseModel):
 
 class StartRunBody(BaseModel):
     outcome_id: str
-    mode: str = "demo"          # demo | live
+    mode: str = "demo"          # demo | design | live
 
 
 class Console:
@@ -105,11 +111,14 @@ class Console:
                                              and q["question_id"] in st.open_questions)},
                 "work_items": {"total": len(st.work_items), "by_stage": by_stage},
                 "demo": self.demo.is_demo(run_id),
+                "design_only": any(ev.kind in ("run.created", "run.completed") and ev.payload.get("design_only") for ev in events),
             })
         out.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
         return out
 
     def run_detail(self, run_id: str) -> dict[str, Any]:
+        if not RUN_ID.match(run_id) or not (self.cfg.runs_dir / run_id / "events.jsonl").is_file():
+            raise HTTPException(404, f"no run {run_id}")       # checked first: RunStore.events would create the directory
         events = self.store.events(run_id)
         if not events:
             raise HTTPException(404, f"no run {run_id}")
@@ -136,8 +145,10 @@ class Console:
         timeline = [{"seq": ev.seq, "at": ev.at, "kind": ev.kind, "actor": ev.actor.get("type"), "stage": ev.stage,
                      "work_item_id": ev.work_item_id, "spec_id": ev.spec_id, "payload": _trim(ev.payload)}
                     for ev in events if ev.kind in TIMELINE_KINDS]
+        design_only = any(ev.kind == "run.completed" and ev.payload.get("design_only") for ev in events) or \
+            any(ev.kind == "run.created" and ev.payload.get("design_only") for ev in events)
         return {"run_id": run_id, "title": self._title(run_id, events), "outcome": outcome, "stage": st.stage.value,
-                "cost": round(st.list_cost_usd, 2), "demo": self.demo.is_demo(run_id), "work_items": items,
+                "cost": round(st.list_cost_usd, 2), "demo": self.demo.is_demo(run_id), "design_only": design_only, "work_items": items,
                 "gates": gates, "questions": questions, "events": timeline, "artifacts": self._artifacts(run_id),
                 "created_at": events[0].at, "updated_at": events[-1].at}
 
@@ -281,8 +292,16 @@ class Console:
         return {"ok": True, "recorded": entry}
 
     # ---- outcomes
-    def outcome_template(self) -> dict[str, Any]:
-        ex = self.demo.example_outcome()
+    def example_outcome(self, name: str) -> dict[str, Any]:
+        path = EXAMPLES.get(name)
+        if path is None:
+            raise HTTPException(404, f"no example {name!r}; known: {', '.join(EXAMPLES)}")
+        o = json.loads(path.read_text())
+        o["outcome_id"], o["created_at"] = "", ""
+        return o
+
+    def outcome_template(self, example: str = "sample-app") -> dict[str, Any]:
+        ex = self.example_outcome(example)
         return {"outcome_id": "", "title": "", "statement": "", "created_at": "",
                 "success_metrics": [{"metric": "", "baseline": "", "target": "", "measurement": ""}],
                 "constraints": {"must_not": [], "budget_usd": 150, "deadline": "", "compliance": []},
@@ -331,6 +350,8 @@ class Console:
         return {"ok": True, "outcome_id": outcome["outcome_id"], "path": str(path), "outcome": outcome}
 
     def load_outcome(self, outcome_id: str) -> dict[str, Any]:
+        if not OUTCOME_ID.match(outcome_id):
+            raise HTTPException(404, f"no saved outcome {outcome_id!r}")
         p = self.outcomes_dir / f"{outcome_id}.json"
         if not p.exists():
             raise HTTPException(404, f"no saved outcome {outcome_id}")
@@ -341,24 +362,81 @@ class Console:
         if body.mode == "demo":
             run_id = self.demo.seed(outcome)
             return {"ok": True, "mode": "demo", "run_id": run_id}
-        if body.mode != "live":
-            raise HTTPException(400, "mode must be demo or live")
-        gaps = cfgmod.missing(self.cfg)
+        if body.mode not in ("live", "design"):
+            raise HTTPException(400, "mode must be demo, design, or live")
+        design = body.mode == "design"
+        gaps = cfgmod.missing(self.cfg, design_only=design)
         if gaps:
-            raise HTTPException(409, f"the orchestrator is not configured for a live run: {', '.join(gaps)}")
+            raise HTTPException(409, f"the orchestrator is not configured for a {body.mode} run: {', '.join(gaps)}")
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         log = self.logs_dir / f"{body.outcome_id}-{int(time.time())}.log"
         path = self.outcomes_dir / f"{body.outcome_id}.json"
+        args = [sys.executable, "-u", "-m", "factory.cli", "run", str(path)] + (["--design-only"] if design else [])
         with log.open("w") as fh:
-            proc = subprocess.Popen([sys.executable, "-m", "factory.cli", "run", str(path)], cwd=str(Path(__file__).resolve().parents[2]),
-                                    stdout=fh, stderr=subprocess.STDOUT, env={**os.environ, "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)},
-                                    start_new_session=True)
-        return {"ok": True, "mode": "live", "pid": proc.pid, "log": str(log)}
+            proc = subprocess.Popen(args, cwd=str(Path(__file__).resolve().parents[2]), stdout=fh, stderr=subprocess.STDOUT,
+                                    env={**os.environ, "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}, start_new_session=True)
+        return {"ok": True, "mode": body.mode, "pid": proc.pid, "log": log.name}
+
+    def logs(self) -> list[dict[str, Any]]:
+        if not self.logs_dir.exists():
+            return []
+        out = []
+        for p in sorted(self.logs_dir.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True):
+            text = p.read_text(errors="replace")
+            m = re.search(r"run (run_[a-z0-9]+) started", text)
+            out.append({"name": p.name, "bytes": p.stat().st_size, "modified_at": datetime.fromtimestamp(p.stat().st_mtime, timezone.utc).isoformat(),
+                        "run_id": m.group(1) if m else None, "tail": redact(text[-1500:])})
+        return out
+
+    def log(self, name: str) -> str:
+        p = self.logs_dir / name
+        if not p.is_file() or "/" in name or name.startswith("."):
+            raise HTTPException(404, "no such log")
+        return redact(p.read_text(errors="replace"))
 
     def config(self) -> dict[str, Any]:
         gaps = cfgmod.missing(self.cfg)
+        design_gaps = cfgmod.missing(self.cfg, design_only=True)
         return {"forge": self.cfg.forge, "forge_repo": self.cfg.forge_repo, "gate_surface": self.cfg.gate_surface,
-                "runs_dir": str(self.cfg.runs_dir), "gaps": gaps, "can_run_live": not gaps}
+                "runs_dir": str(self.cfg.runs_dir), "gaps": gaps, "can_run_live": not gaps,
+                "design_gaps": design_gaps, "can_run_design": not design_gaps,
+                "workspace_id": self.cfg.workspace_id, "console_session_url": self.cfg.console_session_url("SESSION_ID"),
+                "agents": {k: {"id": v.id, "version": v.version} for k, v in self.cfg.agents.items()},
+                "environment_id": self.cfg.environment_id}
+
+    _platform_cache: tuple[float, dict[str, Any]] | None = None
+
+    def platform(self, max_age: float = 30.0) -> dict[str, Any]:
+        """The live platform check (agents found, recent sessions), cached briefly so the Settings page can poll."""
+        now = time.time()
+        if self._platform_cache and now - self._platform_cache[0] < max_age:
+            return self._platform_cache[1]
+        out = cfgmod.platform_check(self.cfg)
+        out["sessions"] = []
+        reachable = os.environ.get("ANTHROPIC_API_KEY") and "ANTHROPIC_WORKSPACE_ID" not in (out["error"] or "")
+        if reachable:            # a missing agent is not a reason to hide the sessions that do exist
+            try:
+                client = cfgmod.anthropic_client(self.cfg)
+                page = client.beta.sessions.list(limit=25)
+                for s in list(getattr(page, "data", None) or []):     # one page: iterating the cursor would walk the whole history
+                    meta = getattr(s, "metadata", None) or {}
+                    out["sessions"].append({"id": s.id, "status": getattr(s, "status", None), "title": getattr(s, "title", None),
+                                            "created_at": str(getattr(s, "created_at", "") or ""), "run_id": meta.get("run_id") if isinstance(meta, dict) else None,
+                                            "stage": meta.get("stage") if isinstance(meta, dict) else None,
+                                            "url": self.cfg.console_session_url(s.id)})
+            except Exception as e:  # noqa: BLE001
+                out["sessions_error"] = f"{type(e).__name__}: {str(e)[:200]}"
+        self._platform_cache = (now, out)
+        return out
+
+
+def redact(text: str) -> str:
+    """Blank out every secret-looking environment value (tokens, keys) before a log leaves the process: a git
+    error can echo an authenticated clone URL, and the Settings page shows these logs."""
+    for k, v in os.environ.items():
+        if v and len(v) >= 12 and any(t in k.upper() for t in ("TOKEN", "KEY", "SECRET", "PASSWORD")):
+            text = text.replace(v, "***")
+    return re.sub(r"(https?://)[^/\s:@]+:[^/\s@]+@", r"\1***@", text)
 
 
 def _trim(payload: dict[str, Any], limit: int = 4000) -> dict[str, Any]:
@@ -431,8 +509,12 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
         return {"outcomes": console.outcomes()}
 
     @app.get("/api/outcomes/template")
-    def api_outcome_template():
-        return {"outcome": console.outcome_template()}
+    def api_outcome_template(example: str = "sample-app"):
+        return {"outcome": console.outcome_template(example)}
+
+    @app.get("/api/outcomes/examples")
+    def api_outcome_examples():
+        return {"examples": [{"name": n, "title": json.loads(p.read_text()).get("title"), "path": str(p.relative_to(REPO_ROOT))} for n, p in EXAMPLES.items()]}
 
     @app.get("/api/outcomes/{outcome_id}")
     def api_outcome(outcome_id: str):
@@ -446,6 +528,18 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
     def api_start_run(body: StartRunBody):
         return console.start_run(body)
 
+    @app.get("/api/platform")
+    def api_platform():
+        return console.platform()
+
+    @app.get("/api/logs")
+    def api_logs():
+        return {"logs": console.logs()}
+
+    @app.get("/api/logs/{name}", response_class=PlainTextResponse)
+    def api_log(name: str):
+        return console.log(name)
+
     @app.post("/api/demo/tick")
     def api_demo_tick():
         return {"ticked": console.demo.tick_all()}
@@ -458,6 +552,8 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
         return p.read_text(errors="replace")
 
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+    # Local tool with no auth: refuse requests whose Host is not local, which closes the DNS-rebinding door.
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver"])
 
     @app.middleware("http")
     async def no_store(request, call_next):

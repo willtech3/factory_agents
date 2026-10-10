@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import json
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ class DemoRunner:
         self.examples_dir = examples_dir
         self.store = RunStore(runs_dir)
         self.queue = FileQueue(runs_dir / "_queue")
+        self._lock = threading.Lock()      # the background loop and /api/demo/tick must not advance a run at once
 
     # ------------------------------------------------------------------ public
     def example_outcome(self) -> dict[str, Any]:
@@ -72,6 +74,10 @@ class DemoRunner:
 
     def tick(self, run_id: str) -> str:
         """Advance one phase if the human has done their part. Returns the phase after the tick."""
+        with self._lock:
+            return self._tick(run_id)
+
+    def _tick(self, run_id: str) -> str:
         m = self._load(run_id)
         phase = m.get("phase")
         if phase == "awaiting_answer":

@@ -58,11 +58,13 @@ def test_make_forge_selects_by_config(tmp_path, root):
 
 def test_config_env_aliases_and_defaults(monkeypatch, tmp_path):
     for k in ("FACTORY_FORGE", "FORGE_URL", "FORGE_TOKEN", "FORGE_REPO", "GITHUB_TOKEN", "GITHUB_REPO", "GITLAB_URL",
-              "GITLAB_TOKEN", "GITLAB_PROJECT", "LINEAR_API_KEY", "FACTORY_GATE_SURFACE", "FACTORY_VAULT_ID"):
+              "GITLAB_TOKEN", "GITLAB_PROJECT", "LINEAR_API_KEY", "FACTORY_GATE_SURFACE", "FACTORY_VAULT_ID", "ANTHROPIC_API_KEY",
+              "ANTHROPIC_WORKSPACE_ID"):
         monkeypatch.delenv(k, raising=False)
+    nodotenv = tmp_path / "no.env"
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_x")
     monkeypatch.setenv("GITHUB_REPO", "will/ledgerline")
-    cfg = cfgmod.load(tmp_path / "no-lock.json")
+    cfg = cfgmod.load(tmp_path / "no-lock.json", dotenv_path=nodotenv)
     assert cfg.forge == "github" and cfg.forge_url == "https://github.com" and cfg.forge_token == "ghp_x"
     assert cfg.forge_repo == "will/ledgerline" and cfg.repo_url == "https://github.com/will/ledgerline"
     assert cfg.gate_surface == "forge"
@@ -70,14 +72,14 @@ def test_config_env_aliases_and_defaults(monkeypatch, tmp_path):
     assert not any("FORGE_TOKEN" in g or "FACTORY_VAULT_ID" in g for g in gaps)   # github needs no vault
 
     monkeypatch.setenv("LINEAR_API_KEY", "lin_x")
-    assert cfgmod.load(tmp_path / "no-lock.json").gate_surface == "tracker"
-    assert any("LINEAR_TEAM_ID" in g for g in cfgmod.missing(cfgmod.load(tmp_path / "no-lock.json")))
+    assert cfgmod.load(tmp_path / "no-lock.json", dotenv_path=nodotenv).gate_surface == "tracker"
+    assert any("LINEAR_TEAM_ID" in g for g in cfgmod.missing(cfgmod.load(tmp_path / "no-lock.json", dotenv_path=nodotenv)))
 
     monkeypatch.setenv("FACTORY_FORGE", "gitlab")
     monkeypatch.setenv("GITLAB_URL", "https://gitlab.example.internal")
     monkeypatch.setenv("GITLAB_TOKEN", "glpat")
     monkeypatch.setenv("GITLAB_PROJECT", "group/app")
-    cfg = cfgmod.load(tmp_path / "no-lock.json")
+    cfg = cfgmod.load(tmp_path / "no-lock.json", dotenv_path=nodotenv)
     assert (cfg.forge, cfg.forge_url, cfg.forge_token, cfg.forge_repo) == ("gitlab", "https://gitlab.example.internal", "glpat", "group/app")
     assert any("FACTORY_VAULT_ID" in g for g in cfgmod.missing(cfg))
 
@@ -222,3 +224,27 @@ def test_shared_feedback_renderer_skips_positioned_notes():
 
 def test_old_gitlab_module_is_gone():
     assert not (Path(__file__).resolve().parents[1] / "factory" / "gitlab.py").exists()
+
+
+def test_dotenv_loader_and_design_only_gaps(monkeypatch, tmp_path):
+    for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_WORKSPACE_ID", "FORGE_TOKEN", "GITHUB_TOKEN", "FORGE_REPO", "GITHUB_REPO", "LINEAR_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    env = tmp_path / ".env"
+    env.write_text("# comment\nexport ANTHROPIC_API_KEY='sk-test'\nANTHROPIC_WORKSPACE_ID=wrkspc_1\nFORGE_REPO=\"will/app\"\n")
+    monkeypatch.setenv("FORGE_REPO", "already/set")
+    # load_dotenv writes os.environ directly; register the keys with monkeypatch so the test leaves no trace
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "placeholder"); monkeypatch.delenv("ANTHROPIC_API_KEY")
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "placeholder"); monkeypatch.delenv("ANTHROPIC_WORKSPACE_ID")
+    loaded = cfgmod.load_dotenv(env)
+    assert loaded == ["ANTHROPIC_API_KEY", "ANTHROPIC_WORKSPACE_ID"]      # FORGE_REPO was set: never overridden
+    import os
+    assert os.environ["ANTHROPIC_API_KEY"] == "sk-test" and os.environ["FORGE_REPO"] == "already/set"
+    cfg = cfgmod.load(tmp_path / "no-lock.json", dotenv_path=env)
+    assert cfg.workspace_id == "wrkspc_1"
+    full, design = cfgmod.missing(cfg), cfgmod.missing(cfg, design_only=True)
+    assert any("FORGE_TOKEN" in g for g in full) and not any("FORGE_TOKEN" in g for g in design)
+    assert not any("ANTHROPIC_API_KEY" in g for g in design)
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    assert any("ANTHROPIC_API_KEY" in g for g in cfgmod.missing(cfg, design_only=True))
+    pc = cfgmod.platform_check(cfg)
+    assert pc["ok"] is False and "ANTHROPIC_API_KEY" in pc["error"]

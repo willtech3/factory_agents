@@ -26,7 +26,12 @@ class FileQueue(InMemoryQueue):
         return json.loads(p.read_text()) if p.exists() else {}
 
     def _save(self, name: str, data: dict) -> None:
-        (self.root / name).write_text(json.dumps(data, indent=2, default=lambda o: getattr(o, "value", o.__dict__)))
+        """Write to a temp file and rename, so a poll from the other process never sees a truncated file."""
+        import os, tempfile
+        fd, tmp = tempfile.mkstemp(prefix=f".{name}.", dir=self.root)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(data, indent=2, default=lambda o: getattr(o, "value", o.__dict__)))
+        os.replace(tmp, self.root / name)
 
     # ---- gates
     def open(self, gate: Gate) -> None:

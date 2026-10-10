@@ -30,6 +30,16 @@ app = typer.Typer(no_args_is_help=True, add_completion=False)
 from .surfaces.filequeue import FileQueue  # noqa: E402  (the `file`/`web` gate surface)
 
 
+def _policy(outcome: dict, design_only: bool):
+    """Loop limits and budgets; FACTORY_BUDGET_SCALE (e.g. 0.4) scales every per-stage cap for cheap first runs."""
+    import os
+    from .state import Policy
+    scale = float(os.environ.get("FACTORY_BUDGET_SCALE", "1") or 1)
+    base = Policy()
+    return Policy(run_budget_usd=outcome.get("constraints", {}).get("budget_usd") or 150.0, design_only=design_only,
+                  stage_budget_usd={k: round(v * scale, 2) for k, v in base.stage_budget_usd.items()})
+
+
 def _queue(cfg) -> FileQueue:
     return FileQueue(cfg.runs_dir / "_queue")
 
@@ -48,15 +58,25 @@ def doctor():
     typer.echo(f"pages        {cfg.page_publisher} -> {cfg.runs_dir}/<run_id>/pages/")
     if cfg.forge == "gitlab":
         typer.echo(f"vault        {cfg.vault_id or '(FACTORY_VAULT_ID missing)'}")
+    design_gaps = cfgmod.missing(cfg, design_only=True)
+    pc = cfgmod.platform_check(cfg)
+    if pc["error"]:
+        typer.echo(f"platform     {pc['error']}")
+    else:
+        typer.echo(f"platform     {sum(a['found'] for a in pc['agents'])}/{len(pc['agents'])} agents found on the platform"
+                   f"{' (workspace ' + cfg.workspace_id + ')' if cfg.workspace_id else ''}")
     if gaps:
-        typer.echo("missing: " + ", ".join(gaps))
+        typer.echo("missing for a full run: " + ", ".join(gaps))
+        typer.echo("design-only run (`factory run --design-only`): " + (", ".join(design_gaps) if design_gaps else "ready"))
         raise typer.Exit(1)
     typer.echo("ok")
 
 
 @app.command()
-def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the forge (change requests, pipelines)")):
-    """Start a run from an outcome.json. Blocks at human gates; decide from another terminal or from the tracker."""
+def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the forge (change requests, pipelines)"),
+        design_only: bool = typer.Option(False, "--design-only", help="Real agents through Gate 2 (decompose, specs, judge); "
+                                                                      "no implementation, no forge needed")):
+    """Start a run from an outcome.json. Blocks at human gates; decide from another terminal, the Console, or the tracker."""
     from .forge import make_forge
     from .runner import new_run_id, run as run_pipeline
     from .sessions import SessionDriver
@@ -66,24 +86,42 @@ def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the f
     from .surfaces.tracker import make_tracker_queue
 
     cfg = cfgmod.load()
-    gaps = cfgmod.missing(cfg)
+    gaps = cfgmod.missing(cfg, design_only=design_only)
     if gaps:
         typer.echo("cannot run; missing: " + ", ".join(gaps))
         raise typer.Exit(1)
     outcome = json.loads(outcome_path.read_text())
     run_id = new_run_id()
+    forge_obj = make_forge(cfg) if forge and not (design_only and cfg.gate_surface != "forge") else None
+    if forge_obj is not None:
+        repo_url = (outcome.get("target_repositories") or [{}])[0].get("url", "")
+        if cfg.forge_repo and cfg.forge_repo.strip("/").lower() not in repo_url.rstrip("/").removesuffix(".git").lower():
+            typer.echo(f"cannot run: the outcome targets {repo_url} but FORGE_REPO is {cfg.forge_repo}; they must be the same repository")
+            raise typer.Exit(1)
     queue, notifier = _queue(cfg), LogNotifier()
     tracker = make_tracker_queue(cfg)
     if tracker is not None:
         queue, notifier = CompositeQueue(queue, tracker), CompositeNotifier(notifier, tracker)
     ctx = RunContext(
         cfg=cfg, store=RunStore(cfg.runs_dir), driver=SessionDriver(cfg), queue=queue, notifier=notifier,
-        forge=make_forge(cfg) if forge else None,
-        policy=Policy(run_budget_usd=outcome.get("constraints", {}).get("budget_usd") or 150.0), run_id=run_id,
-        tracker=tracker, pages=make_publisher(cfg),
+        forge=forge_obj,
+        policy=_policy(outcome, design_only),
+        run_id=run_id, tracker=tracker, pages=make_publisher(cfg),
     )
-    typer.echo(f"run {run_id} started (forge={cfg.forge}, gate surface={cfg.gate_surface})")
-    final = run_pipeline(ctx, outcome)
+    ctx.driver.on_session_started = lambda info: ctx.event(
+        "session.started", {k: v for k, v in info.items() if k not in ("run_id", "work_item_id")},
+        stage=info["stage"], actor="platform", work_item_id=info.get("work_item_id"))
+    typer.echo(f"run {run_id} started (forge={cfg.forge if ctx.forge else 'none'}, gate surface={cfg.gate_surface}"
+               f"{', design only' if design_only else ''})")
+    try:
+        final = run_pipeline(ctx, outcome)
+    except Exception as e:  # noqa: BLE001
+        # Record the failure so the Console shows it; a crashed orchestrator must not look like a run in progress.
+        try:
+            ctx.event("run.failed", {"reason": f"{type(e).__name__}: {str(e)[:500]}"})
+        except Exception:  # noqa: BLE001
+            pass
+        raise
     typer.echo(f"run {run_id} finished in state {final.value}")
 
 

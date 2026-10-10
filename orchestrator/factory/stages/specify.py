@@ -18,16 +18,23 @@ from .. import checks
 from ..gates import Decision, GateKind
 from ..state import RunStage, WorkItemStage
 from . import RunContext
-from .common import make_ask_human, open_gate_and_wait, persist_outputs, provenance, require_json
+from .common import make_ask_human, open_gate_and_wait, persist_outputs, provenance, require_json, rubric_text
 
 WRITER_DESCRIPTION = """Write the specification for work item {work_item_id} ({title}).
 Inputs are under /mnt/session/uploads/ (outcome.json, decomposition.json, work_item.json, sibling_specs/,
-and on a revision judge_issues.json and human_comments.md). The repository is cloned at /workspace/repo.
+and on a revision judge_issues.json and human_comments.md). {repo_clause}
 Write spec.json and spec.md to /mnt/session/outputs/ and validate spec.json with the validate.py tool."""
 
+REPO_MOUNTED = "The repository is cloned at /workspace/repo."
+REPO_ABSENT = ("The repository is NOT available in this session: write allowed_paths and interfaces from the decomposition "
+               "and the outcome, and mark anything that depends on the actual code as an open question with a default.")
+
 JUDGE_DESCRIPTION = """Judge the full set of specifications under /mnt/session/uploads/specs/ against rubric.md,
-then judge the set's coherence and goal coverage against outcome.json and decomposition.json.
+then judge the set's coherence and goal coverage against outcome.json and decomposition.json. {repo_clause}
 This is round {round}. Write verdict.json to /mnt/session/outputs/ and validate it."""
+JUDGE_REPO_MOUNTED = "The repository is cloned at /workspace/repo for checking paths, commands, and current behaviour."
+JUDGE_REPO_ABSENT = ("The repository is NOT available in this session: rubric.md says how to score the criteria that would "
+                     "need it. Do not fail a spec for a path or command you cannot check; note it as unverified.")
 
 
 def _write_one(ctx: RunContext, outcome, decomposition, work_item, sibling_specs: dict[str, dict],
@@ -46,12 +53,14 @@ def _write_one(ctx: RunContext, outcome, decomposition, work_item, sibling_specs
         uploads["judge_issues.json"] = json.dumps(judge_issues, indent=2).encode()
     if human_comments:
         uploads["human_comments.md"] = human_comments.encode()
+    from .decompose import repository_access
+    mount, repo_clause, repo_available = repository_access(ctx, outcome, REPO_MOUNTED, REPO_ABSENT)
     res = ctx.driver.run(
         agent_key="spec_writer", title=f"{ctx.run_id} spec {wid} r{round_no}", run_id=ctx.run_id, stage="specify",
-        uploads=uploads, description=WRITER_DESCRIPTION.format(work_item_id=wid, title=work_item["title"]),
-        rubric_md=ctx.rubric("spec"), max_iterations=ctx.policy.outcome_max_iterations,
+        uploads=uploads, description=WRITER_DESCRIPTION.format(work_item_id=wid, title=work_item["title"], repo_clause=repo_clause),
+        rubric_md=rubric_text(ctx, "spec", repo_available), max_iterations=ctx.policy.outcome_max_iterations,
         budget_usd=ctx.policy.stage_budget_usd["specify"], work_item_id=wid,
-        custom_tools={"ask_human": make_ask_human(ctx, "spec_writer")},
+        custom_tools={"ask_human": make_ask_human(ctx, "spec_writer")}, repository=mount,
     )
     spec = require_json(res, "spec.json")
     spec["revision"] = round_no
@@ -63,10 +72,12 @@ def _write_one(ctx: RunContext, outcome, decomposition, work_item, sibling_specs
 
 def _judge(ctx: RunContext, outcome, decomposition, specs: dict[str, dict], round_no: int,
            previous_verdict: dict | None) -> dict[str, Any]:
+    from .decompose import repository_access
+    mount, _clause, repo_available = repository_access(ctx, outcome)
     uploads = {
         "outcome.json": json.dumps(outcome, indent=2).encode(),
         "decomposition.json": json.dumps(decomposition, indent=2).encode(),
-        "rubric.md": ctx.rubric("spec").encode(),
+        "rubric.md": rubric_text(ctx, "spec", repo_available).encode(),
     }
     for sid, s in specs.items():
         # Normalise: the judge sees only the JSON contract, not the writer's prose rendering.
@@ -75,8 +86,8 @@ def _judge(ctx: RunContext, outcome, decomposition, specs: dict[str, dict], roun
         uploads["previous_verdict.json"] = json.dumps(previous_verdict, indent=2).encode()
     res = ctx.driver.run(
         agent_key="spec_judge", title=f"{ctx.run_id} spec-judge r{round_no}", run_id=ctx.run_id, stage="judge",
-        uploads=uploads, description=JUDGE_DESCRIPTION.format(round=round_no), rubric_md=None, max_iterations=1,
-        budget_usd=ctx.policy.stage_budget_usd["judge"],
+        uploads=uploads, description=JUDGE_DESCRIPTION.format(round=round_no, repo_clause=JUDGE_REPO_MOUNTED if repo_available else JUDGE_REPO_ABSENT),
+        rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["judge"], repository=mount,
     )
     verdict = require_json(res, "verdict.json")
     verdict["round"] = round_no

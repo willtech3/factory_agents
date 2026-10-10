@@ -4,6 +4,10 @@ This is the first real run. It uses the defaults the orchestrator now has: GitHu
 
 What you need: an Anthropic Console account with Managed Agents access, a personal GitHub account, a personal Linear workspace (free tier is fine), Python 3.11+, git, and the `ant` CLI.
 
+## 0. The quickest real test: a design run
+
+Before the full setup, you can see real agents run with only the platform configured. Put `ANTHROPIC_API_KEY` (and `ANTHROPIC_WORKSPACE_ID` when the key is not scoped to a workspace; the Console's Settings page tells you) in `.env` at the repository root, start `factory web`, open Outcomes, choose **Load the sample app outcome** (it fills the form from `examples/sample-app/outcome.json`), save, and choose **Start design run**. The decomposer asks its question and opens Gate 1, the spec writers and the judge run, Gate 2 opens, and the run completes without touching any repository. Every session appears under Settings and in the Anthropic Console. The same thing from a terminal is `factory run examples/sample-app/outcome.json --design-only`.
+
 ## 1. Apply the agents and the environment
 
 ```bash
@@ -16,7 +20,7 @@ ant apply --yes agents environments              # writes claude-lock.json (alre
 
 ## 2. A small target repository
 
-The factory changes a repository other than this one. Fork or create a small app with a test suite that runs in under a minute (a Flask or FastAPI service with pytest is ideal). Two things it needs:
+The factory changes a repository other than this one. `examples/sample-app/` is a small FastAPI todo service with tests, a manifest, the preview workflow, and an outcome ("Todos with due dates and an overdue view") written for it; its README shows how to push it to a repository of yours with `gh`. If you use your own app instead, it needs two things:
 
 - `service_manifest.json` at the root (copy `examples/ledgerline/service_manifest.json` and edit; the path is configurable with `FACTORY_SERVICE_MANIFEST_PATH`).
 - `.github/workflows/preview.yml` from [`templates/github-actions-preview.yml`](../templates/github-actions-preview.yml). Its deploy step is a placeholder that only echoes; replace it with a real deploy (Fly, Render, Cloud Run, a docker host) when you want the end-to-end checks to hit a running instance. With the placeholder, the workflow still records a Deployment with an `environment_url`, so the orchestrator's plumbing (preview status, dev deploy observation) can be exercised; the e2e commands will fail against the fake URL and that failure is the correct, fail-closed behaviour.
@@ -35,7 +39,7 @@ Create a **fine-grained personal access token** (Settings → Developer settings
 | Deployments | Read | `environment_url` for the preview and dev URLs |
 | Metadata | Read | implied |
 
-The same token is the `authorization_token` on the `github_repository` session resource (so the sandbox clones through Anthropic's proxy without seeing it) and the orchestrator's own token for the REST API. No vault is needed for the GitHub forge.
+The same token is the `authorization_token` on the `github_repository` session resource (so the sandbox clones through Anthropic's proxy without seeing it) and the orchestrator's own token for the REST API. No vault is needed for the GitHub forge. If `gh` is logged in with the `repo` scope, `export FORGE_TOKEN=$(gh auth token)` works for a first run without creating a token by hand.
 
 ## 4. Linear API key and team id
 
@@ -52,8 +56,11 @@ Optional: `LINEAR_PROJECT_ID` to put every run in one existing project instead o
 
 ## 5. Environment variables
 
+Put them in `.env` at the repository root (ignored by git; loaded by `factory`, never overriding what is already exported) or export them:
+
 ```bash
 export ANTHROPIC_API_KEY=...                       # Console key for the workspace the agents live in
+export ANTHROPIC_WORKSPACE_ID=wrkspc_...           # only when the key is not scoped to a workspace (the SDK then needs the header)
 export ANTHROPIC_WORKSPACE=default                 # only for Console deep links
 export FACTORY_FORGE=github                        # default
 export FORGE_REPO=<you>/<repo>                     # GITHUB_REPO also works
@@ -73,7 +80,7 @@ Then:
 cd orchestrator && .venv/bin/factory doctor
 ```
 
-It prints the agent ids, the environment, `forge github https://github.com <you>/<repo> token=set`, `gate surface tracker`, and `ok`. Anything missing is listed by variable name.
+It prints the agent ids, the environment, `forge github https://github.com <you>/<repo> token=set`, `gate surface tracker`, a live `platform` line saying how many of the eight agents were found on the platform, and `ok`. Anything missing is listed by variable name, separately for a full run and for a design-only run.
 
 ## 6. Run
 

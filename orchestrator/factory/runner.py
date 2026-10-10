@@ -88,7 +88,8 @@ def _feedback(ctx: RunContext, design_cr_id: int | None, d: GateDecision) -> str
 
 def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
     ctx.event("run.created", {"outcome_id": outcome["outcome_id"], "title": outcome["title"],
-                              "forge": ctx.cfg.forge, "gate_surface": ctx.cfg.gate_surface}, stage="intake")
+                              "forge": ctx.cfg.forge if ctx.forge is not None else None, "gate_surface": ctx.cfg.gate_surface,
+                              "design_only": ctx.policy.design_only}, stage="intake")
     ctx.store.put_artifact(ctx.run_id, "intake", "outcome.json", json.dumps(outcome, indent=2).encode())
     repo = outcome["target_repositories"][0]
     if ctx.tracker is not None:
@@ -146,6 +147,10 @@ def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
         fb = _feedback(ctx, design_cr_id, d)
         human_comments = {s["work_item_id"]: fb for s in specs.values()}
     spec_verdict = verdict
+    if ctx.policy.design_only:
+        ctx.event("run.completed", {"design_only": True, "approved_specs": sorted(specs),
+                                    "note": "design-only run: no implementation stage was requested"}, stage="gate_2")
+        return RunStage.COMPLETED
 
     # ---------------- Stage 3 + 4 per spec, in dependency waves
     ctx.event("stage.entered", {"stage": RunStage.IMPLEMENTING.value}, stage="implement")

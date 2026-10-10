@@ -243,7 +243,7 @@ def render_gate2_page(run_id: str, outcome: dict[str, Any], specs: dict[str, dic
     for bucket, items in coherence.items():
         if items:
             coh_html += f"<h3>{_e(bucket.replace('_', ' '))}</h3><ul>" + "".join(
-                f"<li>{_e(it.get('description') or it)} <span class=\"muted\">({', '.join(it.get('related_spec_ids', []))})</span></li>"
+                f"<li>{_e(it.get('description') or it)} <span class=\"muted\">({_e(', '.join(it.get('related_spec_ids', [])))})</span></li>"
                 if isinstance(it, dict) else f"<li>{_e(it)}</li>" for it in items) + "</ul>"
     spec_sections = ""
     nav = [("summary", "Summary"), ("coverage", "Goal coverage")]
@@ -262,7 +262,7 @@ def render_gate2_page(run_id: str, outcome: dict[str, Any], specs: dict[str, dic
         tp = s.get("test_plan", {})
         cmds = "".join(f"<li><code>{_e(c)}</code></li>" for c in tp.get("commands", []))
         e2e = "".join(f"<li><code>{_e(e.get('command'))}</code> <span class=\"muted\">target {_e(e.get('target'))}, "
-                      f"covers {', '.join(e.get('covers_ac', []))}</span></li>" for e in tp.get("e2e", []))
+                      f"covers {_e(', '.join(e.get('covers_ac', [])))}</span></li>" for e in tp.get("e2e", []))
         ps = issues_by_spec.get(sid, {})
         issues = "".join(
             f"<li class=\"{'bad' if i.get('severity') == 'blocking' else 'warn' if i.get('severity') == 'major' else ''}\">"

@@ -49,10 +49,13 @@ class StageResult:
 
 
 class SessionDriver:
-    def __init__(self, cfg: Config, client: anthropic.Anthropic | None = None, unattended: bool = True):
+    def __init__(self, cfg: Config, client: anthropic.Anthropic | None = None, unattended: bool = True,
+                 on_session_started: Callable[[dict[str, Any]], None] | None = None):
         self.cfg = cfg
-        self.client = client or anthropic.Anthropic()
+        from .config import anthropic_client
+        self.client = client or anthropic_client(cfg)
         self.unattended = unattended
+        self.on_session_started = on_session_started   # the orchestrator records `session.started` so the Console can link to it
 
     # ------------------------------------------------------------ uploads
 
@@ -132,6 +135,10 @@ class SessionDriver:
             initial_events=kickoff,
         )
         print(f"[session] {stage} {title}: {self.cfg.console_session_url(session.id)}")
+        if self.on_session_started:
+            self.on_session_started({"session_id": session.id, "agent_id": agent_ref.id, "agent_version": agent_ref.version,
+                                     "agent_key": agent_key, "stage": stage, "run_id": run_id, "work_item_id": work_item_id,
+                                     "title": title, "console_url": self.cfg.console_session_url(session.id)})
 
         ctx = SessionContext(session_id=session.id, run_id=run_id, stage=stage, work_item_id=work_item_id)
         outcome_result: str | None = None
@@ -225,14 +232,21 @@ class SessionDriver:
         )
 
     def _fetch_outputs(self, session_id: str) -> dict[str, bytes]:
-        """List and download /mnt/session/outputs/* (brief indexing lag; retry a few times)."""
+        """Download what the session wrote to /mnt/session/outputs/ (brief indexing lag; retry a few times).
+
+        The session scope lists the uploads too (schemas, tools, inputs) with `downloadable: false`; only files the
+        session produced are downloadable, so filter on that flag and never fail the whole fetch on one file."""
         for attempt in range(4):
             files = self.client.beta.files.list(scope_id=session_id, betas=["managed-agents-2026-04-01"])
-            data = list(files.data)
+            data = [f for f in files.data if getattr(f, "downloadable", True)]
             if data or attempt == 3:
                 out: dict[str, bytes] = {}
                 for f in data:
-                    resp = self.client.beta.files.download(f.id)
+                    try:
+                        resp = self.client.beta.files.download(f.id)
+                    except Exception as e:  # noqa: BLE001  (one undownloadable file must not lose the others)
+                        print(f"[session] {session_id}: could not download {f.filename}: {str(e)[:120]}")
+                        continue
                     out[f.filename] = resp.read() if hasattr(resp, "read") else bytes(resp)
                 return out
             time.sleep(1.5)
