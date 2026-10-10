@@ -146,6 +146,7 @@ class WorkItemState:
     review_round: int = 0
     branch: str | None = None
     cr_id: int | None = None            # change request number (PR) or iid (MR)
+    merge_sha: str | None = None        # the commit on the default branch once the change request is merged (Stage 5 watches its pipeline)
     depends_on: list[str] = field(default_factory=list)
     dev_pipeline_id: int | None = None
     dev_environment_url: str | None = None
@@ -233,6 +234,8 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
             wi.branch = p["branch"]
         if "cr_id" in p:
             wi.cr_id = p["cr_id"]
+        if "merge_sha" in p:
+            wi.merge_sha = p["merge_sha"]
         if "pipeline_id" in p:
             wi.dev_pipeline_id = p["pipeline_id"]
         if "environment_url" in p:
@@ -254,7 +257,8 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
         wi = state.work_items[ev.work_item_id]
         wi.dev_pipeline_id = p.get("pipeline_id", wi.dev_pipeline_id)
         wi.dev_environment_url = p.get("environment_url", wi.dev_environment_url)
-    # Other kinds (cr.opened, judge.verdict, review.findings, deploy.failed, e2e.dev_*) are informational for the timeline.
+    # Other kinds (cr.opened, cr.merged, cr.closed, judge.verdict, review.findings, deploy.failed, e2e.dev_*) are informational
+    # for the timeline; the watcher pairs cr.merged / cr.closed with the work_item.stage event that moves the item.
     return state
 
 

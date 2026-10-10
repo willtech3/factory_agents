@@ -234,6 +234,17 @@ def missing(cfg: Config, design_only: bool = False) -> list[str]:
     return gaps + _surface_gaps(cfg)
 
 
+def missing_for_watch(cfg: Config) -> list[str]:
+    """What `factory watch` needs: the forge (to read change requests, pipelines, and deployments) and the gate surface
+    (to open a DEPLOY_FAILURE gate). No agent runs, so the platform key and the agent ids are not required."""
+    gaps = []
+    if cfg.forge not in FORGES:
+        gaps.append(f"FACTORY_FORGE={cfg.forge!r} (expected github|gitlab)")
+    if not cfg.forge_token:
+        gaps.append("FORGE_TOKEN (orchestrator-side; GITHUB_TOKEN or GITLAB_TOKEN also accepted)")
+    return gaps + _surface_gaps(cfg)
+
+
 def _surface_gaps(cfg: Config) -> list[str]:
     gaps = []
     if cfg.gate_surface not in GATE_SURFACES:

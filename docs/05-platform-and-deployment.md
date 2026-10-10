@@ -26,13 +26,15 @@ For the sandbox to reach the preview, the environment's `allowed_hosts` must inc
 
 ## 3. Stage 5: the observed deploy to dev
 
-After Gate 3, the forge reports `cr.merged`. The platform's pipeline on the default branch deploys to `dev` exactly as it would for a human's merge. The orchestrator ([`stages/deploy_observe.py`](../orchestrator/factory/stages/deploy_observe.py)):
+After Gate 3, the change-request watcher (`factory watch <run_id>`, [`watcher.py`](../orchestrator/factory/watcher.py)) sees the merge on the forge and records `cr.merged`. The platform's pipeline on the default branch deploys to `dev` exactly as it would for a human's merge. The watcher then drives Stage 5 ([`stages/deploy_observe.py`](../orchestrator/factory/stages/deploy_observe.py)) one poll at a time:
 
 1. moves the work item `MERGED -> DEPLOYING_DEV` and records `deploy.started` with the pipeline id (a forge CI webhook can report it first; polling through the `Forge` protocol is the source of truth, because webhooks are not a durable log);
 2. waits for the pipeline to reach a terminal status and records `deploy.succeeded` or `deploy.failed` with a log excerpt from the failed job;
 3. on success reads the dev URL from the `dev` deployment or environment record, runs the spec's `test_plan.e2e` entries (the `preview` ones; "preview" means "a deployed instance") plus the operator's optional smoke suite (`FACTORY_SMOKE_COMMANDS`), and records `e2e.dev_passed` or `e2e.dev_failed`;
 4. on success moves the item to `DEPLOYED_DEV`, the terminal state the Console shows as verified in dev;
 5. on any failure opens a `DEPLOY_FAILURE` gate carrying the log excerpt. The human's options: `request_changes` routes the item back to `IMPLEMENTING` on a fresh branch with the comments as the first finding, `approve` says the failure was the platform's and the next pipeline should be watched (once), `reject` closes the item.
+
+The pieces (`ensure_deploying`, `observe_once`, `open_deploy_failure_gate`, `apply_deploy_decision`) each read the event log before appending, so a watcher restarted at any point continues rather than repeats: an item already deploying is not moved again, an open gate is polled rather than re-opened, a recorded decision is applied. The one thing a restart repeats is an observation interrupted mid-pipeline, recorded as a new `deploy.started` with the next `attempt` number. `observe_deploy` composes the same pieces into one blocking call.
 
 Promotion beyond `dev` is a human act outside the factory. The outcome's `success_metrics[]` now accept `measured_at` and `measured_value` so a human can close the loop from code to business outcome later; no agent sets them.
 
