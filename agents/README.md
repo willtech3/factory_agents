@@ -17,7 +17,7 @@ Review the plan, then re-run with `--yes` once you agree with it. `claude-lock.j
 | `spec_writer` | 2 | Sonnet 5.5, high | no | - | Writes one spec per work item |
 | `spec_judge` | 2 | Opus 5.5, high | no | spec_writer (different model tier, never sees the writer's reasoning) | Grades specs per rubric and judges whether the set achieves the outcome |
 | `implementer` | 3 | Opus 5.5, xhigh | yes | - | Implements one spec in vertical slices with tests |
-| `reviewer` | 3 | Opus 5.5, xhigh | no | implementer (fresh session per round, sees only diff + spec) | Adversarial review with falsifiable findings |
+| `reviewer` | 3 | Opus 5.5, high | no | implementer (fresh session per round, sees only diff + spec) | Adversarial review with falsifiable findings |
 | `security_reviewer` | 3 | Fable 5.1, high | no | implementer (fresh session per round, sees only diff + spec + the orchestrator's pre-checks) | Security review: trust boundaries, attacker-controlled input, authorisation, secrets, dependencies; one CWE per finding; reproduced findings stand whatever their label |
 | `merge_judge` | 3 | Opus 5.5, high | no | both | Audits the reviewer/implementer exchange; decides ready / another round / escalate |
 | `integrator` | 4 | Sonnet 5.5, medium | no (pushes) | - | Opens the change request (PR or MR) with the full evidence bundle |

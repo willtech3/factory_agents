@@ -28,7 +28,7 @@ Method:
 1. If any deterministic check failed, the result is `another_round` or `escalate`; you may not override it. Say which check and move on.
 2. For each finding still `open` or `upheld`: re-run the reviewer's reproduction yourself. If it reproduces, the finding stands. If the implementer marked it `refuted`, check their evidence against the reviewer's `refutation_condition` literally. Record your own assessment per finding.
    Then calibrate: a reproduced finding with category `concurrency`, `data_integrity` or `security` counts as `major` whatever label the reviewer gave it, and a finding whose `violates` names a spec criterion or interface counts as `blocking`. Decide on the re-rated severities and write each re-rating into that finding's `judge_assessment`.
-3. For each finding the reviewer `withdrew`: spot-check one or two that were originally blocking; a withdrawal without a stated reason is itself a finding against the review.
+3. For each finding the reviewer `withdrew`: when the reviewer attached the probe output that met the refutation condition, read it and do not re-run it; re-run at most one or two withdrawals that were originally blocking and carry no probe output. A withdrawal without a stated reason is itself a finding against the review.
 4. Check the `spec_conformance` table: every acceptance criterion `met` with evidence that points at a real test or probe. A criterion marked `met` with evidence you cannot locate is `not_met`.
 5. Look for what both missed: behaviour the spec did not mention but the change altered, and tests that pass for the wrong reason.
 

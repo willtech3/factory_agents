@@ -25,7 +25,7 @@ The roster, what each agent reads and writes, and why the boundaries sit where t
 | Spec writer | Sonnet 5.5 | high | Specs are structured and rubric-graded; the judge above it is stronger, which is the point. |
 | Spec judge | Opus 5.5 | high | Different tier from the writer (self-preference mitigation). At xhigh about 80% of its output was hidden reasoning that changed no verdict (post-mortem 2026-10-10, issue 9); the orchestrator can override to xhigh per session for round 2 or sets over three specs. |
 | Implementer | Opus 5.5 | xhigh | Long-horizon agentic coding; xhigh is the recommended setting for this class of work. |
-| Reviewer | Opus 5.5 | xhigh | Same tier as the implementer. Mitigation is independence plus execution grounding, not model choice. For high-stakes repos, pin a different model per session with `agent_with_overrides` (Claude Fable 5.1 is the natural upgrade). |
+| Reviewer | Opus 5.5 | high | Same tier as the implementer. Mitigation is independence plus execution grounding, not model choice; at xhigh, 65-73% of its output was hidden reasoning (post-mortem 2026-10-10, issue 10). For high-stakes repos, pin a different model per session with `agent_with_overrides` (Claude Fable 5.1 is the natural upgrade). |
 | Merge judge | Opus 5.5 | high | Judges an exchange with authoritative test results in hand; xhigh rarely changes the verdict. |
 | Integrator | Sonnet 5.5 | medium | Mechanical rendering and one tool call. |
 
