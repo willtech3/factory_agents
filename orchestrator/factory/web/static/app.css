@@ -155,6 +155,9 @@ tr.link:hover td { background: var(--surface-2); }
 .list .main { flex: 1; min-width: 0; }
 .list .title { font-weight: 700; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .list .desc { color: var(--text-2); margin-top: 3px; font-size: 14px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+/* narrow columns: title first on its own line, the stage tag and the action wrap under it */
+.list.stacked > li { flex-wrap: wrap; gap: 8px 12px; }
+.list.stacked .main { flex-basis: 100%; order: -1; }
 .list .side-meta { text-align: right; color: var(--text-3); font-size: 12.5px; white-space: nowrap; }
 .list .side-meta b { display: block; color: var(--text); font-size: 14px; }
 
@@ -263,6 +266,8 @@ tr.link:hover td { background: var(--surface-2); }
 .board .k .t { font-weight: 700; line-height: 1.2; }
 .board .k .s { font-size: 13px; color: var(--text-2); }
 .board .k.call { background: var(--call-soft); border: 2px solid var(--call); }
+/* a card's action may not outgrow a narrow board column */
+.board .k .btn { white-space: normal; max-width: 100%; justify-content: center; text-align: center; }
 .board .k.call .since { font-size: 12px; font-weight: 700; color: var(--call-text); }
 .board .k.agent { flex-direction: row; align-items: center; gap: 10px; }
 .board .k.agent .txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
