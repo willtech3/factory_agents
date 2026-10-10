@@ -23,6 +23,7 @@ class Driver:
         self.gate = threading.Barrier(4, timeout=5)   # four writers must be in flight together to pass
 
     def run(self, **kw):
+        self.uploads_seen = getattr(self, "uploads_seen", []); self.uploads_seen.append((kw["agent_key"], sorted(kw["uploads"])))
         if kw["agent_key"] == "spec_writer":
             with self.lock:
                 self.active += 1; self.peak = max(self.peak, self.active)
@@ -68,3 +69,16 @@ def test_waves_policy_serialises_dependent_items(tmp_path, root, examples):
     ctx.driver.gate = threading.Barrier(1)                       # no overlap required
     specs, _ = specify.run_specify(ctx, examples["outcome"], examples["decomposition"])
     assert len(specs) == 4 and ctx.driver.peak < 4
+
+
+def test_owner_notes_reach_the_judge_and_prior_specs_reach_the_writers(tmp_path, root, examples):
+    ctx = _ctx(tmp_path, root, examples, Policy())
+    ctx.driver.gate = threading.Barrier(1)
+    wids = [w["work_item_id"] for w in examples["decomposition"]["work_items"]]
+    notes = {w: "# Notes\n- overdue means due before today" for w in wids}
+    prior = {w: dict(examples["spec_smart_retries"], work_item_id=w) for w in wids}
+    specify.run_specify(ctx, examples["outcome"], examples["decomposition"], notes, prior)
+    writers = [u for k, u in ctx.driver.uploads_seen if k == "spec_writer"]
+    judges = [u for k, u in ctx.driver.uploads_seen if k == "spec_judge"]
+    assert all("human_comments.md" in u and "prior/spec.json" in u for u in writers)
+    assert judges and "human_comments.md" in judges[0]

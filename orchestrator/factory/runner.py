@@ -140,8 +140,9 @@ def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
 
     # ---------------- Stage 2 + Gate 2
     human_comments: dict[str, str] | None = approval_notes or None     # what the owner said while approving the plan
+    prior_specs: dict[str, dict] | None = None
     while True:
-        specs, verdict = run_specify(ctx, outcome, decomposition, human_comments)
+        specs, verdict = run_specify(ctx, outcome, decomposition, human_comments, prior_specs)
         spec_shas = {f"{sid}.json": ctx.store.put_artifact(ctx.run_id, "specify", f"final-{sid}.json",
                                                             json.dumps(s, indent=2).encode()) for sid, s in specs.items()}
         spec_shas["verdict.json"] = ctx.store.put_artifact(ctx.run_id, "judge", "final-verdict.json",
@@ -167,9 +168,13 @@ def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
                           work_item_id=specs[sid]["work_item_id"], spec_id=sid, actor="human")
             specs = {sid: s for sid, s in specs.items() if sid in approved}
             break
-        # request_changes: comments keyed by spec id when the human used "spec_x: ..." lines, else to all.
+        # request_changes: per-item lines (`spec_x: ...` or `wi-x: ...`) go to that item, the rest to every item;
+        # the writers also get the draft the owner commented on.
         fb = _feedback(ctx, design_cr_id, d)
-        human_comments = {s["work_item_id"]: fb for s in specs.values()}
+        ids = [s["work_item_id"] for s in specs.values()] + list(specs)
+        routed = notes_by_item(fb, ids)
+        human_comments = {s["work_item_id"]: (routed.get(s["work_item_id"]) or routed.get(sid) or fb) for sid, s in specs.items()}
+        prior_specs = {s["work_item_id"]: s for s in specs.values()}
     spec_verdict = verdict
     if ctx.policy.design_only:
         ctx.event("run.completed", {"design_only": True, "approved_specs": sorted(specs),
