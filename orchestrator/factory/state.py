@@ -49,17 +49,18 @@ class WorkItemStage(str, Enum):
     BLOCKED = "blocked"                    # implementer wrote blocked.md
 
 
-# Legal run-level transitions. Anything else raises IllegalTransition.
+# Legal run-level transitions. Anything else raises IllegalTransition. The orchestrator can die in any live stage
+# (a gate surface raising while a gate is open included), so run.failed is legal from every non-terminal stage.
 RUN_TRANSITIONS: dict[RunStage, set[RunStage]] = {
-    RunStage.INTAKE: {RunStage.DECOMPOSING, RunStage.CLOSED},
+    RunStage.INTAKE: {RunStage.DECOMPOSING, RunStage.CLOSED, RunStage.FAILED},
     RunStage.DECOMPOSING: {RunStage.GATE_1_DECOMPOSITION, RunStage.ESCALATED, RunStage.PAUSED_BUDGET, RunStage.FAILED},
-    RunStage.GATE_1_DECOMPOSITION: {RunStage.SPECIFYING, RunStage.DECOMPOSING, RunStage.CLOSED},
+    RunStage.GATE_1_DECOMPOSITION: {RunStage.SPECIFYING, RunStage.DECOMPOSING, RunStage.CLOSED, RunStage.FAILED},
     RunStage.SPECIFYING: {RunStage.GATE_2_SPEC_READINESS, RunStage.ESCALATED, RunStage.PAUSED_BUDGET, RunStage.FAILED},
     RunStage.GATE_2_SPEC_READINESS: {RunStage.IMPLEMENTING, RunStage.SPECIFYING, RunStage.GATE_1_DECOMPOSITION, RunStage.CLOSED,
-                                     RunStage.COMPLETED},   # COMPLETED only for design-only runs (Policy.design_only)
+                                     RunStage.COMPLETED, RunStage.FAILED},   # COMPLETED only for design-only runs (Policy.design_only)
     RunStage.IMPLEMENTING: {RunStage.COMPLETED, RunStage.ESCALATED, RunStage.PAUSED_BUDGET, RunStage.FAILED},
     RunStage.ESCALATED: {RunStage.DECOMPOSING, RunStage.SPECIFYING, RunStage.IMPLEMENTING, RunStage.CLOSED, RunStage.FAILED},
-    RunStage.PAUSED_BUDGET: {RunStage.DECOMPOSING, RunStage.SPECIFYING, RunStage.IMPLEMENTING, RunStage.CLOSED},
+    RunStage.PAUSED_BUDGET: {RunStage.DECOMPOSING, RunStage.SPECIFYING, RunStage.IMPLEMENTING, RunStage.CLOSED, RunStage.FAILED},
     RunStage.COMPLETED: set(),
     RunStage.FAILED: {RunStage.IMPLEMENTING},   # `run.resumed` only: a run that died during implementation picks up where its artefacts stop
     RunStage.CLOSED: set(),
