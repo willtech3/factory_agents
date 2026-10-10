@@ -1,0 +1,40 @@
+{
+  "resources": {
+    "./agents/codebase_researcher.md": {
+      "id": "agent_01V6QbSFYa2UVZK37hRoBncz",
+      "version": 1
+    },
+    "./agents/decomposer.md": {
+      "id": "agent_01PsowtEChbuMJTdyvzzpyQn",
+      "version": 1
+    },
+    "./agents/spec_writer.md": {
+      "id": "agent_01AxE2BD34oT5H1dfkwaRDTC",
+      "version": 1
+    },
+    "./agents/spec_judge.md": {
+      "id": "agent_01XKiVyfY2CfSjzGB4JeJnSs",
+      "version": 1
+    },
+    "./agents/implementer.md": {
+      "id": "agent_01VRpRLcYCbSvLCNdVU8rKMS",
+      "version": 1
+    },
+    "./agents/reviewer.md": {
+      "id": "agent_01HxQzdADN7Aomrt8hRsyTu8",
+      "version": 1
+    },
+    "./agents/merge_judge.md": {
+      "id": "agent_01TW45FCcv8XSLJZkJ2tXVQU",
+      "version": 1
+    },
+    "./agents/integrator.md": {
+      "id": "agent_01WDu19kHsS3Xyew5Jofp2Nr",
+      "version": 1
+    },
+    "./environments/factory-cloud.yaml": {
+      "id": "env_01XmyirwbUp692ZoNJtHxouq"
+    }
+  },
+  "_note": "Created by hand in the Console on 2026-10-09 (ant CLI not installed); IDs match agents/*.md v1 and environments/factory-cloud.yaml. Re-running `ant apply` should adopt or recreate these."
+}
