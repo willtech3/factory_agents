@@ -134,17 +134,25 @@ def repo_from_url(url: str) -> str:
     return path[:-4] if path.endswith(".git") else path
 
 
+WORKFLOW_SCOPE_HINT = ("the forge refused to write {path}: on GitHub, writing under .github/workflows/ needs a token with the "
+                       "`workflow` scope (for a gh token: `gh auth refresh -s workflow`), and the Git Data API reports the "
+                       "refusal as 404. The repository is usable; with FACTORY_PREVIEW=local nothing needs the workflow. "
+                       "Add it by hand or re-run with a token that has the scope.")
+
+
 def ensure_repository(forge: Forge, repo: dict[str, Any], workflow_template: Path | None = None, *,
-                      sleep=None, attempts: int = 6) -> dict[str, Any] | None:
-    """Create the outcome's repository when it asks for one (`create: true`) and it does not exist yet, and make
-    sure it carries the preview workflow.
+                      sleep=None, attempts: int = 4, log=print) -> dict[str, Any] | None:
+    """Create the outcome's repository when it asks for one (`create: true`) and it does not exist yet, and try to
+    give it the preview workflow.
 
     A new repository is private unless the outcome says `visibility: public`, initialised so the default branch
     exists, and seeded with the preview workflow template (the platform's job elsewhere; on a personal GitHub
-    the template is the platform). GitHub's git database answers 404 to writes for a few seconds after a
+    the template is the platform). GitHub's git database can answer 404 to writes for a few seconds after a
     repository is created, so the seed commit is retried with backoff. A repository that already exists is left
     alone except for that one file: when `create: true` and the workflow is missing (an earlier attempt died
-    between creation and seeding), it is added. Returns what was created, or None when it already existed."""
+    between creation and seeding), it is added. A seed the forge keeps refusing is a warning, not a failure: the
+    usual cause is a token without GitHub's `workflow` scope, and a run with local previews never needs the
+    file. Returns what was created (with `workflow_seeded`), or None when the repository already existed."""
     import time
     sleep = sleep or time.sleep
     if not repo.get("create"):
@@ -157,19 +165,26 @@ def ensure_repository(forge: Forge, repo: dict[str, Any], workflow_template: Pat
     path = ".github/workflows/preview.yml"
     if workflow_template and workflow_template.is_file() and forge.kind == "github":
         files = {path: workflow_template.read_bytes()}
-        delay = 2.0
+        delay, seeded = 2.0, False
         for attempt in range(attempts):
             try:
                 if created is None and forge.file_exists(branch, path):
+                    seeded = True
                     break                               # existing repository, already seeded
                 forge.commit_files(branch, "factory: preview workflow for factory branches", files)
+                seeded = True
                 break
-            except Exception as e:  # noqa: BLE001  (httpx status errors; the forge is not ready yet)
+            except Exception as e:  # noqa: BLE001  (httpx status errors)
                 status = getattr(getattr(e, "response", None), "status_code", None)
-                if attempt == attempts - 1 or status not in (404, 409, 422, 500, 502, 503):
+                if status not in (403, 404, 409, 422, 500, 502, 503):
                     raise
+                if attempt == attempts - 1:
+                    log("[forge] " + WORKFLOW_SCOPE_HINT.format(path=path) + f" (last response: {status})")
+                    break
                 sleep(delay)
                 delay = min(delay * 2, 20.0)
+        if created is not None:
+            created["workflow_seeded"] = seeded
     return created
 
 

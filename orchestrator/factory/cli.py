@@ -125,7 +125,8 @@ def _context(cfg, outcome: dict, run_id: str, *, forge: bool, design_only: bool)
     )
     if created:
         ctx.event("repository.created", {"url": created["url"], "default_branch": created.get("default_branch"),
-                                         "private": created.get("private"), "forge": cfg.forge}, stage="intake", actor="platform")
+                                         "private": created.get("private"), "forge": cfg.forge,
+                                         "workflow_seeded": created.get("workflow_seeded")}, stage="intake", actor="platform")
     ctx.driver.on_session_started = lambda info: ctx.event(
         "session.started", {k: v for k, v in info.items() if k not in ("run_id", "work_item_id")},
         stage=info["stage"], actor="platform", work_item_id=info.get("work_item_id"))

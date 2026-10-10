@@ -307,7 +307,14 @@ def test_github_seed_retries_while_the_new_repository_is_not_ready_and_reseeds_a
     f = GitHubForge("https://github.com", "ghp_test", "will/newapp", transport=httpx.MockTransport(rec))
     slept = []
     created = ensure_repository(f, {"url": "https://github.com/will/newapp", "create": True}, tmpl, sleep=slept.append)
-    assert created["default_branch"] == "main" and slept == [2.0, 4.0]
+    assert created["default_branch"] == "main" and created["workflow_seeded"] is True and slept == [2.0, 4.0]
+    # a forge that keeps refusing (a token without the workflow scope: GitHub answers 404 for ever): a warning, not a crash
+    routes4 = {**routes, "POST /repos/will/newapp/git/trees": (404, {"message": "Not Found"})}
+    rec4 = Recorder(routes4)
+    f4 = GitHubForge("https://github.com", "ghp_test", "will/newapp", transport=httpx.MockTransport(rec4))
+    logged = []
+    created4 = ensure_repository(f4, {"url": "https://github.com/will/newapp", "create": True}, tmpl, sleep=lambda s: None, log=logged.append)
+    assert created4["workflow_seeded"] is False and "workflow" in logged[0] and "gh auth refresh -s workflow" in logged[0]
     assert sum(1 for m, p, _, _ in rec.calls if p.endswith("/git/trees")) == 3
     assert sum(1 for m, p, _, _ in rec.calls if p.endswith("/git/refs/heads/main") and m == "PATCH") == 1
     # a repository that exists but has no workflow (the earlier run died after creating it): seeded, not created
