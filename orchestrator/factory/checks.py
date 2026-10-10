@@ -199,18 +199,35 @@ def spec_traceability(spec: dict[str, Any], decomposition: dict[str, Any]) -> Ch
 
 
 def criteria_mapping(implementation_report: dict[str, Any]) -> dict[str, list[str]]:
-    """ac_id -> test ids from the implementation report. The implementer writes `criteria`
-    ([{ac_id, tests: [...]}] or {ac_id, test: "..."}); `criteria_to_tests` is accepted too."""
+    """ac_id -> test ids from the implementation report.
+
+    The kickoff asks for `criteria: [{ac_id, tests: [...]}]`. Implementers have also written `criteria_to_tests`
+    (same list shape) and `acceptance_criteria` as a map `{ac_id: {pytest_node_ids|tests|test_ids: [...]}}` or a
+    list of `{ac_id, ...}`; every one of those is read, because the check is about whether the tests exist and
+    pass, not about which key the agent chose."""
     out: dict[str, list[str]] = {}
-    for entry in list(implementation_report.get("criteria") or []) + list(implementation_report.get("criteria_to_tests") or []):
-        if not isinstance(entry, dict) or not entry.get("ac_id"):
-            continue
-        tests = entry.get("tests")
-        if tests is None and entry.get("test"):
-            tests = [entry["test"]]
+
+    def add(ac_id: Any, entry: Any) -> None:
+        if not ac_id or not isinstance(entry, dict):
+            return
+        tests: Any = None
+        for key in ("tests", "pytest_node_ids", "test_ids", "node_ids", "test"):
+            if entry.get(key):
+                tests = entry[key]
+                break
         if isinstance(tests, str):
             tests = [tests]
-        out.setdefault(entry["ac_id"], []).extend(t for t in (tests or []) if isinstance(t, str) and t)
+        out.setdefault(str(ac_id), []).extend(t for t in (tests or []) if isinstance(t, str) and t)
+
+    for key in ("criteria", "criteria_to_tests", "acceptance_criteria"):
+        block = implementation_report.get(key)
+        if isinstance(block, dict):
+            for ac_id, entry in block.items():
+                add(ac_id, entry)
+        elif isinstance(block, list):
+            for entry in block:
+                if isinstance(entry, dict):
+                    add(entry.get("ac_id"), entry)
     return out
 
 

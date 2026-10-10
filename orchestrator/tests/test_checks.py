@@ -160,3 +160,20 @@ def test_failed_deterministic_checks_become_blocking_findings(schemas_dir):
            "checks_performed": [], "findings": fs, "spec_conformance": [], "produced_by": {}}
     r = schema_valid(doc, schemas_dir / "review_findings.schema.json", schemas_dir)
     assert r.passed or "produced_by" in r.detail, r.detail       # findings themselves must be schema-shaped
+
+
+def test_criteria_mapping_reads_the_acceptance_criteria_map_shape():
+    """Live run 2's implementer wrote `acceptance_criteria: {AC-n: {status, pytest_node_ids, e2e_checks}}`."""
+    from factory.checks import ac_test_mapping, criteria_mapping
+
+    report = {"acceptance_criteria": {
+        "AC-1": {"status": "met", "pytest_node_ids": ["tests/test_overdue.py::test_a", "tests/test_todos.py::test_b"], "e2e_checks": ["compat"]},
+        "AC-2": {"status": "met", "pytest_node_ids": ["tests/test_overdue.py::test_c[day]"]},
+        "AC-3": {"status": "met", "test_ids": ["tests/test_overdue.py::test_d"]},
+    }}
+    assert criteria_mapping(report) == {"AC-1": ["tests/test_overdue.py::test_a", "tests/test_todos.py::test_b"],
+                                        "AC-2": ["tests/test_overdue.py::test_c[day]"], "AC-3": ["tests/test_overdue.py::test_d"]}
+    spec = {"acceptance_criteria": [{"ac_id": f"AC-{i}", "verification": "automated_test"} for i in (1, 2, 3)]}
+    assert ac_test_mapping(spec, report, [t for ts in criteria_mapping(report).values() for t in ts]).passed
+    as_list = {"acceptance_criteria": [{"ac_id": "AC-1", "tests": ["t1"]}, {"ac_id": "AC-2", "tests": "t2"}, {"ac_id": "AC-3", "test": "t3"}]}
+    assert criteria_mapping(as_list) == {"AC-1": ["t1"], "AC-2": ["t2"], "AC-3": ["t3"]}

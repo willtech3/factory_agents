@@ -41,8 +41,10 @@ blocker in blocked.md."""
 IMPLEMENT_DESCRIPTION = """Implement specification {spec_id} from /mnt/session/uploads/spec.json (spec.md is the readable form).
 {git}
 {review_clause}
-Write implementation_report.json{response_clause} to /mnt/session/outputs/. Run every command in the spec's test_plan
-before finishing and record the results. {preview_clause}"""
+Write implementation_report.json{response_clause} to /mnt/session/outputs/. The report must map every acceptance criterion
+to the tests that prove it, as `criteria: [{{"ac_id": "AC-1", "tests": ["tests/test_x.py::test_name", ...]}}, ...]`
+(pytest node ids or equivalent test ids); the orchestrator's merge checks read that list and fail any automated criterion
+without a passing test. Run every command in the spec's test_plan before finishing and record the results. {preview_clause}"""
 
 REVIEW_DESCRIPTION = """Review the change for specification {spec_id}. The diff is at /mnt/session/uploads/diff.patch
 (base {base_sha}, head {head_sha}); the repository is cloned at /workspace/repo on branch {branch}.
