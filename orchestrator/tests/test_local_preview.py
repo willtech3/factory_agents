@@ -2,8 +2,8 @@
 
 Everything but the last test runs offline on a stdlib-only repository (a `python -m http.server` entrypoint). The last
 test installs the sample app's declared dependencies into the per-run environment (uv or pip; needs the package index
-or a warm cache) and is the one that proves `pytest` and `uvicorn` resolve inside that environment, not the
-orchestrator's."""
+or a warm cache, hence `@pytest.mark.network`: deselect with `-m "not network"`) and is the one that proves `pytest`
+and `uvicorn` resolve inside that environment, not the orchestrator's."""
 import json
 import os
 import shutil
@@ -15,7 +15,9 @@ from pathlib import Path
 import pytest
 
 from factory.stages.implement import (SETUP_CHECK, LocalPreview, LocalVerifier, deterministic_findings, is_environmental,
-                                      verification_env)
+                                      orchestrator_bin, verification_env)
+
+requires_curl = pytest.mark.skipif(not shutil.which("curl"), reason="the e2e entries use curl")
 
 HTTP_MANIFEST = {"service": "stdlib-http", "runtime": {"kind": "python", "entrypoint": "python -m http.server 8000 --bind 127.0.0.1", "port": 8000},
                  "health": {"path": "/"}, "env": []}
@@ -41,11 +43,39 @@ def test_prepare_environment_builds_a_venv_that_comes_first_on_path(tmp_path):
     assert [r["exit_code"] for r in out] == [0, 0]
     assert Path(out[0]["stdout_tail"].strip()).resolve() == (tmp_path / "verify" / "venv").resolve()
     assert out[1]["stdout_tail"].strip() == str(tmp_path / "verify" / "venv")
-    own_bin = str(Path(sys.executable).resolve().parent)
-    assert own_bin not in verification_env(v.env_bin)["PATH"].split(os.pathsep)
-    assert verification_env(v.env_bin)["PATH"].split(os.pathsep)[0] == str(v.env_bin)
+    path = verification_env(v.env_bin)["PATH"].split(os.pathsep)
+    assert path[0] == str(v.env_bin)
+    if orchestrator_bin() is not None:            # pytest runs from a venv: that venv is gone from PATH, the system's tools are not
+        assert str(orchestrator_bin()) not in path
+    assert shutil.which("sleep", path=os.pathsep.join(path[1:])) is not None
     # a second call is a refresh, not a rebuild
     assert v.prepare_environment(repo, HTTP_MANIFEST).passed
+
+
+def test_verification_env_drops_the_orchestrators_venv_but_keeps_the_system_bin(tmp_path, monkeypatch):
+    """A venv's `python` is a symlink to the base interpreter. Resolving it named `/usr/bin`, which then left PATH and
+    took curl, git and the coreutils with it: every target command exited 127 on Linux (the three tests below, and
+    the implement loop's local-preview round, failed that way). The orchestrator's own venv leaves PATH, the base
+    interpreter's directory stays, the per-run environment comes first, and leaking Python variables are dropped."""
+    orch, base, run_env = tmp_path / "orch", tmp_path / "usr", tmp_path / "run" / "venv"
+    (orch / "bin").mkdir(parents=True)
+    (base / "bin").mkdir(parents=True)
+    (base / "bin" / "python3").write_text("")
+    (orch / "bin" / "python").symlink_to(base / "bin" / "python3")
+    monkeypatch.setattr(sys, "prefix", str(orch))
+    monkeypatch.setattr(sys, "base_prefix", str(base))
+    monkeypatch.setattr(sys, "executable", str(orch / "bin" / "python"))
+    monkeypatch.setenv("PATH", os.pathsep.join([str(orch / "bin"), str(base / "bin"), "/other/bin"]))
+    monkeypatch.setenv("PYTHONPATH", "/leaks/the/orchestrator")
+    monkeypatch.setenv("VIRTUAL_ENV", str(orch))
+    assert orchestrator_bin() == orch / "bin"
+    env = verification_env(run_env / "bin")
+    assert env["PATH"].split(os.pathsep) == [str(run_env / "bin"), str(base / "bin"), "/other/bin"]
+    assert "PYTHONPATH" not in env and env["VIRTUAL_ENV"] == str(run_env)
+    # from a system interpreter nothing is removed: the per-run environment coming first is the whole protection
+    monkeypatch.setattr(sys, "prefix", str(base))
+    assert orchestrator_bin() is None
+    assert verification_env(None)["PATH"].split(os.pathsep) == [str(orch / "bin"), str(base / "bin"), "/other/bin"]
 
 
 def test_a_failing_setup_is_a_deterministic_check_and_nothing_else_runs(tmp_path):
@@ -102,6 +132,7 @@ def test_environmental_failures_are_tagged(tmp_path):
     assert "environmental" not in plain[0]
 
 
+@requires_curl
 def test_local_preview_runs_the_entrypoint_in_the_per_run_environment(tmp_path):
     repo = _stdlib_repo(tmp_path)
     v = LocalVerifier("unused", tmp_path / "verify")
@@ -121,6 +152,8 @@ def test_local_preview_runs_the_entrypoint_in_the_per_run_environment(tmp_path):
         urllib.request.urlopen(url + "/index.html", timeout=1)
 
 
+@pytest.mark.network
+@requires_curl
 @pytest.mark.skipif(not (shutil.which("uv") or shutil.which("pip3")), reason="needs an installer")
 def test_sample_app_runs_from_its_own_pyproject_not_the_orchestrator_venv(tmp_path, root):
     """The sample app declares fastapi/uvicorn/pydantic and dev pytest/httpx; the per-run environment is built from

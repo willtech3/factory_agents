@@ -31,6 +31,7 @@ factory = ["web/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["network: installs packages from the index (or a warm uv cache); deselect with -m 'not network'"]
 
 [tool.ruff]
 line-length = 110
