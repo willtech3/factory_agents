@@ -178,16 +178,29 @@ def _git(repo_dir: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=repo_dir, check=True, capture_output=True, text=True).stdout
 
 
+def orchestrator_bin() -> Path | None:
+    """The bin directory of the virtual environment the orchestrator itself runs from, or None from a system interpreter.
+
+    Taken from `sys.prefix`, never by resolving `sys.executable`: a venv's `python` is a symlink to the base
+    interpreter, so resolving it names the system's own bin directory (`/usr/bin` on Linux), and removing that from
+    PATH took `curl`, `git` and the coreutils away from every target-repository command (exit 127)."""
+    if sys.prefix == sys.base_prefix:
+        return None
+    return Path(sys.prefix) / "bin"
+
+
 def verification_env(env_bin: Path | None) -> dict[str, str]:
     """The environment the target repository's commands run in on the orchestrator host.
 
-    The per-run virtual environment's bin directory comes first on PATH and the orchestrator's own interpreter
-    directory is removed from it, so `python`, `pytest` and the service entrypoint resolve to what the target
-    repository declared, never to the orchestrator's packages (post-mortem 2026-10-10, issue 13). Python
-    environment variables that would leak the orchestrator's modules are dropped."""
+    The per-run virtual environment's bin directory comes first on PATH and the orchestrator's own virtual
+    environment (`orchestrator_bin`) is removed from it, so `python`, `pytest` and the service entrypoint resolve to
+    what the target repository declared, never to the orchestrator's packages (post-mortem 2026-10-10, issue 13).
+    The base interpreter's directory stays: it is where the system's tools live. Python environment variables that
+    would leak the orchestrator's modules are dropped."""
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "__PYVENV_LAUNCHER__")}
-    own_bin = str(Path(sys.executable).resolve().parent)
-    parts = [p for p in env.get("PATH", "").split(os.pathsep) if p and str(Path(p).resolve()) != own_bin]
+    own = orchestrator_bin()
+    own_resolved = str(own.resolve()) if own is not None else None
+    parts = [p for p in env.get("PATH", "").split(os.pathsep) if p and str(Path(p).resolve()) != own_resolved]
     if env_bin is not None:
         parts.insert(0, str(env_bin))
         env["VIRTUAL_ENV"] = str(env_bin.parent)
