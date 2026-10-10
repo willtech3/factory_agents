@@ -40,6 +40,25 @@ class GitLabForge:
     def _p(self, path: str) -> str:
         return f"{self.base}/projects/{self.project}{path}"
 
+    # ---- the project itself
+    def repository_exists(self) -> bool:
+        return self.http.get(f"{self.base}/projects/{self.project}").status_code == 200
+
+    def create_repository(self, private: bool = True, description: str = "") -> dict[str, Any]:
+        """POST /projects (in the parent group when the path has one). UNVERIFIED live."""
+        parts = self.repo.split("/")
+        payload: dict[str, Any] = {"name": parts[-1], "path": parts[-1], "visibility": "private" if private else "public",
+                                   "initialize_with_readme": True, "description": description[:250]}
+        if len(parts) > 1:
+            g = self.http.get(f"{self.base}/groups/{quote('/'.join(parts[:-1]), safe='')}")
+            g.raise_for_status()
+            payload["namespace_id"] = g.json()["id"]
+        r = self.http.post(f"{self.base}/projects", json=payload)
+        r.raise_for_status()
+        d = r.json()
+        return {"url": d.get("web_url", f"{self.url}/{self.repo}"), "default_branch": d.get("default_branch", "main"),
+                "private": private, "id": d.get("id")}
+
     # ---- branches & commits
     def create_branch(self, branch: str, ref: str) -> None:
         r = self.http.post(self._p("/repository/branches"), data={"branch": branch, "ref": ref})

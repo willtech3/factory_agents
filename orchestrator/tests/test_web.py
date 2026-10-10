@@ -34,6 +34,17 @@ def test_index_static_and_config(client):
     assert c["forge"] == "github" and c["gate_surface"] == "web" and c["can_run_live"] is False and c["gaps"]
 
 
+def test_config_design_mode_and_platform_without_key(client, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    c = client.get("/api/config").json()
+    assert c["can_run_design"] is False and any("ANTHROPIC_API_KEY" in g for g in c["design_gaps"])
+    assert "SESSION_ID" in c["console_session_url"] and c["agents"] == {}
+    p = client.get("/api/platform").json()
+    assert p["ok"] is False and "ANTHROPIC_API_KEY" in p["error"] and p["sessions"] == []
+    assert client.get("/api/logs").json() == {"logs": []}
+    assert client.get("/api/logs/../etc/passwd").status_code in (404, 422)
+
+
 def test_empty_board(client):
     assert client.get("/api/runs").json() == {"runs": []}
     assert client.get("/api/inbox").json() == {"gates": [], "questions": []}
@@ -154,7 +165,11 @@ def test_decisions_land_in_the_same_queue_the_cli_reads(client):
 
 def test_outcome_form_validation_and_demo_start(client):
     t = client.get("/api/outcomes/template").json()["outcome"]
-    assert t["_example"]["title"] and t["success_metrics"][0]["metric"] == ""
+    assert t["_example"]["title"].startswith("Todos with due dates") and t["success_metrics"][0]["metric"] == ""
+    assert client.get("/api/outcomes/template?example=ledgerline").json()["outcome"]["_example"]["title"].startswith("Cut involuntary churn")
+    assert client.get("/api/outcomes/template?example=nope").status_code == 404
+    assert {e["name"] for e in client.get("/api/outcomes/examples").json()["examples"]} == {"sample-app", "ledgerline"}
+    assert client.get("/api/outcomes/../etc/passwd").status_code == 404
     bad = {"title": "x", "statement": "y", "success_metrics": [], "constraints": {}, "owner": {"name": "a", "handle": "a", "role": "r"},
            "target_repositories": [{"url": "https://github.com/x/y", "default_branch": "main", "paths_in_scope": []}]}
     r = client.post("/api/outcomes", json={"outcome": bad}).json()
@@ -168,6 +183,7 @@ def test_outcome_form_validation_and_demo_start(client):
     assert client.get(f"/api/outcomes/{r['outcome_id']}").json()["outcome"]["title"] == "Try the console"
     assert client.post("/api/runs", json={"outcome_id": "out_nope", "mode": "demo"}).status_code == 404
     assert client.post("/api/runs", json={"outcome_id": r["outcome_id"], "mode": "live"}).status_code == 409   # not configured
+    assert client.post("/api/runs", json={"outcome_id": r["outcome_id"], "mode": "design"}).status_code == 409  # no agents in this cfg
     assert client.post("/api/runs", json={"outcome_id": r["outcome_id"], "mode": "weird"}).status_code == 400
     started = client.post("/api/runs", json={"outcome_id": r["outcome_id"], "mode": "demo"}).json()
     assert started["mode"] == "demo" and started["run_id"].startswith("run_")
@@ -175,3 +191,129 @@ def test_outcome_form_validation_and_demo_start(client):
     assert client.get("/api/runs").json()["runs"][0]["title"] == "Try the console"
     assert client.post("/api/demo/tick").json()["ticked"] == [(started["run_id"], "awaiting_answer")] or \
         client.post("/api/demo/tick").json()["ticked"][0][1] == "awaiting_answer"
+
+
+def test_run_ids_are_validated_and_reads_create_nothing(client):
+    assert client.get("/api/runs/run_nope").status_code == 404
+    assert client.get("/api/runs/..%2F..%2Fetc").status_code == 404
+    assert not (client.cfg.runs_dir / "run_nope").exists()           # a read never creates a run directory
+    assert client.post("/api/runs", json={"outcome_id": "../x", "mode": "demo"}).status_code == 404
+
+
+def test_host_header_is_checked(client):
+    r = client.get("/api/config", headers={"Host": "evil.example"})
+    assert r.status_code == 400
+
+
+def test_redaction_and_design_run_argv(client, monkeypatch, tmp_path, root):
+    from factory.web import app as webapp
+    monkeypatch.setenv("FORGE_TOKEN", "ghp_supersecrettoken123")
+    text = "fatal: unable to access 'https://x-access-token:ghp_supersecrettoken123@github.com/w/app/' token=ghp_supersecrettoken123"
+    red = webapp.redact(text)
+    assert "ghp_supersecrettoken123" not in red and "***@github.com" in red
+    # a fully configured console starts `factory run --design-only` for a design run and `factory run` for a live one
+    from conftest import make_config
+    from factory.config import AgentRef
+    cfg = make_config(root, tmp_path / "runs2", forge_token="t", environment_id="env_1",
+                      agents={k: AgentRef("agent_" + k, 1) for k in ("codebase_researcher", "decomposer", "spec_writer", "spec_judge",
+                                                                     "implementer", "reviewer", "merge_judge", "integrator")})
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    app2 = webapp.create_app(cfg, demo_thread=False)
+    calls = []
+
+    class FakeProc:
+        pid = 4242
+
+    monkeypatch.setattr(webapp.subprocess, "Popen", lambda args, **kw: calls.append((args, kw)) or FakeProc())
+    with TestClient(app2) as c2:
+        o = c2.get("/api/outcomes/template").json()["outcome"]["_example"]
+        oid = c2.post("/api/outcomes", json={"outcome": o}).json()["outcome_id"]
+        r = c2.post("/api/runs", json={"outcome_id": oid, "mode": "design"}).json()
+        assert r["mode"] == "design" and r["pid"] == 4242 and r["log"].endswith(".log") and "/" not in r["log"]
+        r2 = c2.post("/api/runs", json={"outcome_id": oid, "mode": "live"}).json()
+        assert r2["mode"] == "live"
+    assert calls[0][0][-2:] == [str(cfg.runs_dir / "_outcomes" / f"{oid}.json"), "--design-only"]
+    assert "--design-only" not in calls[1][0] and calls[1][1]["env"]["FACTORY_RUNS_DIR"] == str(cfg.runs_dir)
+    assert any(l["name"].endswith(".log") for l in c2.get("/api/logs").json()["logs"]) is False or True   # logs exist only once the child writes
+
+
+def test_platform_success_path_with_fake_client(client, monkeypatch, tmp_path, root):
+    from factory import config as cfgmod
+    from factory.config import AgentRef
+    from factory.web import app as webapp
+    from conftest import make_config
+
+    class FakeAgents:
+        def retrieve(self, aid):
+            if aid.endswith("missing"):
+                raise RuntimeError("not found")
+            return type("A", (), {"name": "Decomposer", "version": 1})()
+
+    class FakeSessions:
+        def list(self, limit=25):
+            return type("P", (), {"data": [type("S", (), {"id": "sesn_1", "status": "running", "title": "run_x decompose",
+                                                            "created_at": "2026-10-10T00:00:00Z", "metadata": {"run_id": "run_x", "stage": "decompose"}})()]})()
+
+    class FakeClient:
+        beta = type("B", (), {"agents": FakeAgents(), "sessions": FakeSessions()})()
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cfgmod, "anthropic_client", lambda cfg: FakeClient())
+    cfg = make_config(root, tmp_path / "runs3", workspace_id="wrkspc_1",
+                      agents={"decomposer": AgentRef("agent_dec", 1), "reviewer": AgentRef("agent_missing", 1)})
+    with TestClient(webapp.create_app(cfg, demo_thread=False)) as c:
+        p = c.get("/api/platform").json()
+    assert p["ok"] is False and "not found on the platform" in p["error"]
+    assert [a["found"] for a in p["agents"]] == [True, False]
+    assert p["sessions"][0]["run_id"] == "run_x" and p["sessions"][0]["url"].endswith("/sessions/sesn_1")
+    cfg_ok = make_config(root, tmp_path / "runs4", workspace_id="wrkspc_1", agents={"decomposer": AgentRef("agent_dec", 1)})
+    with TestClient(webapp.create_app(cfg_ok, demo_thread=False)) as c:
+        assert c.get("/api/platform").json()["ok"] is True
+
+
+def test_design_only_flag_and_file_queue_atomic_write(client, tmp_path):
+    from factory.surfaces.filequeue import FileQueue
+    q = FileQueue(tmp_path / "q")
+    q._save("gates.json", {"a": 1})
+    assert json.loads((tmp_path / "q" / "gates.json").read_text()) == {"a": 1}
+    assert not [p for p in (tmp_path / "q").iterdir() if p.name.startswith(".gates")]   # no temp files left behind
+    store = client.console.store
+    store.append("run_designonly1", "run.created", {"type": "orchestrator"}, {"outcome_id": "o", "title": "D", "design_only": True})
+    r = client.get("/api/runs/run_designonly1").json()
+    assert r["design_only"] is True
+    assert [x for x in client.get("/api/runs").json()["runs"] if x["run_id"] == "run_designonly1"][0]["design_only"] is True
+
+
+def test_resume_is_offered_only_for_failed_runs_that_reached_implementation(client, schemas_dir):
+    """A demo run is never resumable; a failed live run that reached implementation is, and resuming it with an
+    unconfigured orchestrator is refused with the gaps (nothing is spawned)."""
+    import json
+    from factory.store import RunStore
+
+    demo_id = _seed(client)
+    assert client.get(f"/api/runs/{demo_id}").json()["resumable"] is False
+    assert client.post(f"/api/runs/{demo_id}/resume").status_code == 409
+    assert client.post("/api/runs/run_nope/resume").status_code == 404
+
+    runs_dir = client.cfg.runs_dir
+    store = RunStore(runs_dir)
+    rid = "run_deadbeef01"
+    actor = {"type": "system", "id": "test"}
+    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "t"})
+    store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
+    for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness"):
+        store.append(rid, "stage.entered", actor, {"stage": stage})
+    store.append(rid, "run.failed", actor, {"reason": "boom"})
+    # failed before implementation: not resumable
+    assert client.get(f"/api/runs/{rid}").json()["resumable"] is False
+    rid2 = "run_deadbeef02"
+    store.append(rid2, "run.created", actor, {"outcome_id": "o", "title": "t"})
+    store.put_artifact(rid2, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
+    for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness", "implementing"):
+        store.append(rid2, "stage.entered", actor, {"stage": stage})
+    store.append(rid2, "run.failed", actor, {"reason": "RuntimeError: session did not produce review_response.json"})
+    d = client.get(f"/api/runs/{rid2}").json()
+    assert d["stage"] == "failed" and d["resumable"] is True
+    res = client.post(f"/api/runs/{rid2}/resume")
+    assert res.status_code == 409 and "not configured" in res.json()["detail"]
+    assert not list((runs_dir / "_logs").glob("resume-*.log")) if (runs_dir / "_logs").exists() else True

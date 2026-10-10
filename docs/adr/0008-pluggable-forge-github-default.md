@@ -24,3 +24,4 @@ The orchestrator was hard-wired to GitLab: a `GitLabClient`, `GITLAB_*` configur
 - Gate 3 on GitHub is a PR review: `change_request_approved` treats the latest non-comment review per user as that user's position. On a personal repository the owner cannot request a review from themselves (GitHub 422); the forge tolerates it.
 - `parse_pipeline_webhook` dispatches on payload shape (GitLab `object_kind: pipeline` vs GitHub `workflow_run`).
 - Pre-ADR names (`GitLabClient`, `on_mr_merged`) remain as aliases for one release.
+- A repository can be created by the factory (`Forge.repository_exists` / `create_repository`, `ensure_repository`) when the outcome marks it `create: true`; the forge is then bound to the outcome's repository, and `FORGE_REPO` is derived from the outcome's URL when unset.

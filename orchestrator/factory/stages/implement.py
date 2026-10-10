@@ -18,9 +18,15 @@ vault/bearer-header clone instructions of ADR-0003. Both come from `Forge.sandbo
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import json
 import os
+import socket
 import subprocess
+import sys
+import time
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -28,7 +34,7 @@ from typing import Any
 from .. import checks
 from ..state import WorkItemStage
 from . import RunContext
-from .common import persist_outputs, provenance, require_json
+from .common import persist_outputs, provenance, require_json, artifact_json_or_none
 
 NO_FORGE_GIT_SETUP = """Git access: no forge is configured for this run. The repository at {repo_url} is not reachable
 from the sandbox; work on branch {branch} from {base_branch} only if it was mounted for you, otherwise record the
@@ -37,8 +43,10 @@ blocker in blocked.md."""
 IMPLEMENT_DESCRIPTION = """Implement specification {spec_id} from /mnt/session/uploads/spec.json (spec.md is the readable form).
 {git}
 {review_clause}
-Write implementation_report.json{response_clause} to /mnt/session/outputs/. Run every command in the spec's test_plan
-before finishing and record the results. {preview_clause}"""
+Write implementation_report.json{response_clause} to /mnt/session/outputs/. The report must map every acceptance criterion
+to the tests that prove it, as `criteria: [{{"ac_id": "AC-1", "tests": ["tests/test_x.py::test_name", ...]}}, ...]`
+(pytest node ids or equivalent test ids); the orchestrator's merge checks read that list and fail any automated criterion
+without a passing test. Run every command in the spec's test_plan before finishing and record the results. {preview_clause}"""
 
 REVIEW_DESCRIPTION = """Review the change for specification {spec_id}. The diff is at /mnt/session/uploads/diff.patch
 (base {base_sha}, head {head_sha}); the repository is cloned at /workspace/repo on branch {branch}.
@@ -50,6 +58,11 @@ Write findings.json to /mnt/session/outputs/ and validate it. You never edit sou
 PREVIEW_CLAUSE = """The platform has deployed this branch to a preview environment; its URL and pipeline are in
 /mnt/session/uploads/preview.json. Run every test_plan.e2e entry with target "preview" against that URL (export
 BASE_URL from preview.json) and record each command's exit code and output. The orchestrator re-runs them itself."""
+
+LOCAL_PREVIEW_CLAUSE = """No preview environment is reachable from this sandbox (see /mnt/session/uploads/preview.json). Run the
+test_plan.e2e entries with target "local" now against an instance you start yourself and record the results; record the
+"preview" entries as not run. The orchestrator runs every "preview" entry itself against an instance it starts from the
+service manifest's entrypoint, so the service must start with that command and answer the manifest's health path."""
 
 NO_PREVIEW_CLAUSE = """No preview environment exists for this branch yet (see "status" in /mnt/session/uploads/preview.json).
 Push your branch early; the platform's pipeline deploys it. Run the test_plan.e2e entries with target "local" now and
@@ -65,6 +78,70 @@ Write merge_readiness.json to /mnt/session/outputs/ and validate it."""
 
 def _git(repo_dir: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=repo_dir, check=True, capture_output=True, text=True).stdout
+
+
+class LocalPreview:
+    """Start the service from its manifest on a free port, wait for its health path, serve as the preview.
+
+    The development stand-in for the platform's per-branch preview (`FACTORY_PREVIEW=local`): the manifest's
+    `runtime.entrypoint` runs from the checkout with the manifest's port replaced by a free one (also exported as
+    PORT), and `health.path` must answer 200 within `timeout`. Dependencies must be importable from the
+    orchestrator's interpreter (its bin directory is put first on PATH), which is true for the sample app."""
+
+    def __init__(self, repo: Path, manifest: dict[str, Any], timeout: float = 60.0):
+        self.repo, self.manifest, self.timeout = repo, manifest, timeout
+        self.proc: subprocess.Popen | None = None
+        self.url: str | None = None
+        self.log = repo.parent / "preview.log"
+
+    def start(self) -> str:
+        rt = self.manifest.get("runtime") or {}
+        entry = rt.get("entrypoint")
+        if not entry:
+            raise RuntimeError("service manifest has no runtime.entrypoint; cannot start a local preview")
+        port = _free_port()
+        cmd = entry.replace(str(rt.get("port") or ""), str(port)) if rt.get("port") else entry
+        env = {**os.environ, "PORT": str(port), "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ.get('PATH', '')}"}
+        self.proc = subprocess.Popen(cmd, shell=True, cwd=self.repo, env=env, stdout=self.log.open("w"), stderr=subprocess.STDOUT,
+                                     start_new_session=True)
+        self.url = f"http://127.0.0.1:{port}"
+        health = (self.manifest.get("health") or {}).get("path", "/health")
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            if self.proc.poll() is not None:
+                raise RuntimeError(f"local preview exited with {self.proc.returncode}; see {self.log}")
+            try:
+                with urllib.request.urlopen(self.url + health, timeout=2) as r:
+                    if r.status == (self.manifest.get("health") or {}).get("expect_status", 200):
+                        return self.url
+            except Exception:  # noqa: BLE001
+                time.sleep(0.5)
+        self.stop()
+        raise RuntimeError(f"local preview did not answer {health} within {self.timeout}s; see {self.log}")
+
+    def stop(self) -> None:
+        if self.proc and self.proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(self.proc.pid), 15)
+            except Exception:  # noqa: BLE001
+                self.proc.terminate()
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        self.proc = None
+
+    def __enter__(self) -> str:
+        return self.start()
+
+    def __exit__(self, *exc: Any) -> None:
+        self.stop()
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 class LocalVerifier:
@@ -107,8 +184,9 @@ class LocalVerifier:
 
     def run_commands(self, repo: Path, commands: list[str], timeout: int = 1800) -> list[dict[str, Any]]:
         results = []
+        env = {**os.environ, "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ.get('PATH', '')}"}
         for cmd in commands:
-            p = subprocess.run(cmd, shell=True, cwd=repo, capture_output=True, text=True, timeout=timeout)
+            p = subprocess.run(cmd, shell=True, cwd=repo, env=env, capture_output=True, text=True, timeout=timeout)
             results.append({"command": cmd, "exit_code": p.returncode,
                             "stdout_tail": p.stdout[-4000:], "stderr_tail": p.stderr[-4000:]})
         return results
@@ -148,6 +226,20 @@ def _branch_for(run_id: str, spec_id: str) -> str:
     return f"factory/{run_id}/{spec_id}"
 
 
+@dataclass
+class ResumePoint:
+    """Where `run_implement_one` picks a spec up again after the orchestrator died mid-loop (`factory resume`).
+
+    `round_no` is the implementer round to continue at. `report` (and `response`, from round 2 on) are that round's
+    outputs when its session finished and they were persisted: the implementer is then not run again and the loop
+    goes straight to the orchestrator's verification. `findings` is the merged review of the previous round, which
+    that round answers. Reviewer passes and the merge verdict already persisted for the round are reused too."""
+    round_no: int = 1
+    findings: dict[str, Any] | None = None
+    report: dict[str, Any] | None = None
+    response: dict[str, Any] | None = None
+
+
 def wait_for_preview(ctx: RunContext, branch: str, head_sha: str, *, poll_seconds: float = 20.0,
                      sleep=None, clock=None) -> dict[str, Any]:
     """Give the platform's pipeline time to deploy `head_sha` before running e2e against the preview.
@@ -176,6 +268,10 @@ def preview_info(ctx: RunContext, branch: str, head_sha: str | None = None) -> d
     """
     info: dict[str, Any] = {"branch": branch, "status": "unavailable", "url": None, "pipeline": None,
                             "head_sha": head_sha}
+    if ctx.cfg.preview_mode == "local":
+        info["mode"] = "local"
+        info["note"] = "the orchestrator starts the service itself from the manifest and runs the preview checks against it"
+        return info
     if ctx.forge is None:
         return info
     try:
@@ -197,8 +293,12 @@ def preview_info(ctx: RunContext, branch: str, head_sha: str | None = None) -> d
 
 
 def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base_branch: str,
-                      verifier: LocalVerifier, dependency_specs: dict[str, dict]) -> dict[str, Any]:
-    """Drive one spec through implement/review/judge. Returns the final merge_readiness verdict."""
+                      verifier: LocalVerifier, dependency_specs: dict[str, dict], *,
+                      resume_from: ResumePoint | None = None) -> dict[str, Any]:
+    """Drive one spec through implement/review/judge. Returns the final merge_readiness verdict.
+
+    `resume_from` continues the loop after a dead orchestrator (see `ResumePoint`); the work item then already
+    sits in implementing or responding, so no stage event is emitted for the restart."""
     sid, wid = spec["spec_id"], spec["work_item_id"]
     branch = _branch_for(ctx.run_id, sid)
     git = (ctx.forge.sandbox_git_instructions(repo_url, base_branch, branch) if ctx.forge is not None
@@ -206,14 +306,16 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
 
     def mount(checkout: str) -> dict[str, Any] | None:
         return ctx.forge.session_repository_resource(repo_url, checkout) if ctx.forge is not None else None
-    ctx.event("work_item.stage", {"stage": WorkItemStage.IMPLEMENTING.value, "branch": branch}, work_item_id=wid, spec_id=sid)
+    if resume_from is None:
+        ctx.event("work_item.stage", {"stage": WorkItemStage.IMPLEMENTING.value, "branch": branch}, work_item_id=wid, spec_id=sid)
 
-    findings: dict[str, Any] | None = None
+    findings: dict[str, Any] | None = resume_from.findings if resume_from else None
     response: dict[str, Any] | None = None
     verdict: dict[str, Any] | None = None
     base_sha = _git(verifier.checkout(base_branch), "rev-parse", "HEAD").strip()
 
-    for round_no in range(1, ctx.policy.review_max_rounds + 2):
+    for round_no in range(resume_from.round_no if resume_from else 1, ctx.policy.review_max_rounds + 2):
+        resumed_round = resume_from is not None and round_no == resume_from.round_no
         # ---- implementer (round 1 implements; later rounds respond to findings)
         uploads = {"spec.json": json.dumps(spec, indent=2).encode(), "spec.md": spec.get("_markdown", "").encode()}
         for dsid, ds in dependency_specs.items():
@@ -221,32 +323,39 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         review_clause, response_clause = "", ""
         preview = preview_info(ctx, branch)
         uploads["preview.json"] = json.dumps(preview, indent=2).encode()
-        preview_clause = PREVIEW_CLAUSE if preview["status"] == "ready" else NO_PREVIEW_CLAUSE
+        preview_clause = PREVIEW_CLAUSE if preview["status"] == "ready" else (LOCAL_PREVIEW_CLAUSE if preview.get("mode") == "local" else NO_PREVIEW_CLAUSE)
         if findings:
             uploads["findings.json"] = json.dumps(findings, indent=2).encode()
             review_clause = ("Reviewer findings are at /mnt/session/uploads/findings.json. Respond to every finding "
                              "(fixed / refuted with evidence / accepted_risk) and push the updated branch.")
             response_clause = " and review_response.json"
-        res = ctx.driver.run(
-            agent_key="implementer", title=f"{ctx.run_id} implement {sid} r{round_no}", run_id=ctx.run_id,
-            stage="implement", uploads=uploads, work_item_id=wid,
-            description=IMPLEMENT_DESCRIPTION.format(spec_id=sid, git=git, review_clause=review_clause,
-                                                     response_clause=response_clause, preview_clause=preview_clause),
-            rubric_md=ctx.rubric("implementation"), max_iterations=ctx.policy.outcome_max_iterations,
-            budget_usd=ctx.policy.stage_budget_usd["implement"],
-            repository=mount(base_branch if round_no == 1 else branch),
-        )
-        if "blocked.md" in res.outputs:
+        if resumed_round and resume_from.report is not None:
+            # This round's implementer finished before the orchestrator died; its outputs are in the store.
+            report, response = resume_from.report, resume_from.response
+            if findings and response is None:
+                raise RuntimeError(f"cannot resume {sid} at round {round_no}: no review_response for round {round_no - 1}'s findings")
+        else:
+            res = ctx.driver.run(
+                agent_key="implementer", title=f"{ctx.run_id} implement {sid} r{round_no}", run_id=ctx.run_id,
+                stage="implement", uploads=uploads, work_item_id=wid,
+                description=IMPLEMENT_DESCRIPTION.format(spec_id=sid, git=git, review_clause=review_clause,
+                                                         response_clause=response_clause, preview_clause=preview_clause),
+                rubric_md=ctx.rubric("implementation"), max_iterations=ctx.policy.outcome_max_iterations,
+                budget_usd=ctx.policy.stage_budget_usd["implement"],
+                repository=mount(base_branch if round_no == 1 else branch),
+            )
+            if "blocked.md" in res.outputs:
+                persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-")
+                ctx.event("work_item.stage", {"stage": WorkItemStage.BLOCKED.value}, work_item_id=wid, spec_id=sid)
+                return {"result": "escalate", "reason": res.outputs["blocked.md"].decode(errors="replace")}
+            report = require_json(res, "implementation_report.json")
+            if findings:
+                response = require_json(res, "review_response.json")
             persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-")
-            ctx.event("work_item.stage", {"stage": WorkItemStage.BLOCKED.value}, work_item_id=wid, spec_id=sid)
-            return {"result": "escalate", "reason": res.outputs["blocked.md"].decode(errors="replace")}
-        report = require_json(res, "implementation_report.json")
-        if findings:
-            response = require_json(res, "review_response.json")
+        if findings and response is not None:
             response["round"] = round_no - 1
             ctx.event("review.response", {"round": round_no - 1, "dispositions": [r["disposition"] for r in response["responses"]]},
                       work_item_id=wid, spec_id=sid, actor="agent")
-        persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-")
 
         # ---- authoritative verification (orchestrator side)
         repo = verifier.checkout(branch)
@@ -255,10 +364,13 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         cmd_results = verifier.run_commands(repo, spec["test_plan"]["commands"])
         # End-to-end against the preview the platform deployed for head_sha. The URL comes from the forge's
         # deployment record, not from the implementer's report; "not run" counts as failed.
-        preview = wait_for_preview(ctx, branch, head_sha)
-        e2e_results = verifier.run_e2e(preview["url"] if preview["status"] == "ready" else None,
-                                       spec["test_plan"].get("e2e", []), repo=repo)
-        passing_tests = [t for m in report.get("criteria_to_tests", []) for t in m.get("tests", [])]  # refined by CI parser
+        if ctx.cfg.preview_mode == "local":
+            preview, e2e_results = _local_preview_e2e(ctx, repo, branch, head_sha, verifier, spec)
+        else:
+            preview = wait_for_preview(ctx, branch, head_sha)
+            e2e_results = verifier.run_e2e(preview["url"] if preview["status"] == "ready" else None,
+                                           spec["test_plan"].get("e2e", []), repo=repo)
+        passing_tests = [t for ts in checks.criteria_mapping(report).values() for t in ts]  # refined by a CI parser later
         det = checks.run_all_for_merge(
             spec=spec, changed_files=diff["changed"], deleted_files=diff["deleted"], existing_test_files=diff["existing_tests"],
             added_lines_by_file=diff["added_lines"], implementation_report=report, passing_tests=passing_tests,
@@ -278,8 +390,10 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         rev_uploads = {"spec.json": uploads["spec.json"], "spec.md": uploads["spec.md"],
                        "diff.patch": diff["patch"].encode(),
                        "implementation_report.json": json.dumps(report, indent=2).encode(),
-                       "preview.json": json.dumps(preview, indent=2).encode()}
-        rev_preview_clause = PREVIEW_CLAUSE if preview["status"] == "ready" else NO_PREVIEW_CLAUSE
+                       "preview.json": json.dumps(preview, indent=2).encode(),
+                       "deterministic_checks.json": json.dumps([d.to_dict() for d in det], indent=2).encode()}
+        rev_preview_clause = PREVIEW_CLAUSE if preview["status"] == "ready" and preview.get("mode") != "local" else (
+            LOCAL_PREVIEW_CLAUSE if preview.get("mode") == "local" else NO_PREVIEW_CLAUSE)
         second = ""
         if findings and response:
             rev_uploads["previous_findings.json"] = json.dumps(findings, indent=2).encode()
@@ -288,6 +402,10 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                       "(upheld/withdrawn), then review the new hunks.")
 
         def one_pass(i: int) -> dict[str, Any]:
+            if resumed_round:
+                prior = artifact_json_or_none(ctx, "review", f"{sid}-r{round_no}-p{i}-findings.json")
+                if prior is not None:
+                    return prior      # this pass finished before the orchestrator died
             r = ctx.driver.run(
                 agent_key="reviewer", title=f"{ctx.run_id} review {sid} r{round_no} p{i}", run_id=ctx.run_id,
                 stage="review", uploads=rev_uploads, work_item_id=wid,
@@ -304,6 +422,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         with ThreadPoolExecutor(max_workers=ctx.policy.reviewer_passes) as pool:
             passes = list(pool.map(one_pass, range(1, ctx.policy.reviewer_passes + 1)))
         findings = merge_findings(passes, sid, round_no, base_sha, head_sha, branch)
+        # A failed deterministic check is a finding the implementer must answer; nobody else can clear it.
+        findings["findings"].extend(deterministic_findings(det, cmd_results))
         ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-findings.merged.json",
                                json.dumps(findings, indent=2).encode())
         ctx.event("review.findings", {"round": round_no, "count": len(findings["findings"]),
@@ -323,6 +443,10 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         "test_results.json": json.dumps({"commands": cmd_results, "e2e": e2e_results, "preview": preview}, indent=2).encode(),
         "deterministic_checks.json": json.dumps([d.to_dict() for d in det], indent=2).encode(),
     }
+    prior_verdict = artifact_json_or_none(ctx, "merge_judge", f"{sid}-merge_readiness.json") if resume_from else None
+    if prior_verdict is not None and prior_verdict.get("_head_sha") == head_sha:
+        ctx.event("merge.verdict", {"result": prior_verdict["result"], "reused": True}, work_item_id=wid, spec_id=sid, actor="agent")
+        return prior_verdict      # judged this very head before the orchestrator died
     res = ctx.driver.run(
         agent_key="merge_judge", title=f"{ctx.run_id} merge-judge {sid}", run_id=ctx.run_id, stage="merge_judge",
         uploads=mj_uploads, work_item_id=wid,
@@ -342,6 +466,49 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     persist_outputs(ctx, "merge_judge", res, prefix=f"{sid}-")
     ctx.event("merge.verdict", {"result": verdict["result"]}, work_item_id=wid, spec_id=sid, actor="agent")
     return verdict
+
+
+def _local_preview_e2e(ctx: RunContext, repo: Path, branch: str, head_sha: str, verifier: "LocalVerifier",
+                       spec: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Start the checked-out service from its manifest and run the spec's preview entries against it."""
+    manifest_path = repo / ctx.cfg.service_manifest_path
+    preview: dict[str, Any] = {"branch": branch, "head_sha": head_sha, "mode": "local", "status": "failed", "url": None, "pipeline": None}
+    if not manifest_path.is_file():
+        preview["error"] = f"no service manifest at {ctx.cfg.service_manifest_path}; cannot start a local preview"
+        return preview, verifier.run_e2e(None, spec["test_plan"].get("e2e", []), repo=repo)
+    try:
+        with LocalPreview(repo, json.loads(manifest_path.read_text())) as url:
+            preview.update(status="ready", url=url)
+            return preview, verifier.run_e2e(url, spec["test_plan"].get("e2e", []), repo=repo)
+    except Exception as e:  # noqa: BLE001
+        preview["error"] = str(e)[:500]
+        return preview, verifier.run_e2e(None, spec["test_plan"].get("e2e", []), repo=repo)
+
+
+def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Findings (review_findings schema shape) for every failed deterministic check, so the implementer sees
+    exactly what blocks the merge and can fix or refute it like any other finding."""
+    out = []
+    for d in det:
+        if d.passed:
+            continue
+        name = d.check.split(":")[0]
+        repro = ""
+        if name == "test_plan_commands":
+            failed = [r for r in (command_results or []) if r.get("exit_code", 1) != 0]
+            repro = "; ".join(f"{r['command']} -> exit {r.get('exit_code')}: {(r.get('stderr_tail') or r.get('stdout_tail') or '')[-300:]}" for r in failed)
+        out.append({
+            "finding_id": f"DET-{name}", "severity": "blocking",
+            "category": "test_quality" if name in ("ac_test_mapping", "test_plan_commands", "test_weakening", "protected_tests", "e2e_coverage", "e2e_preview") else "spec_deviation",
+            "claim": f"Deterministic check `{name}` failed: {d.detail}",
+            "evidence": {"locations": ["deterministic_checks.json:1"], **({"reproduction": repro} if repro else {}), "observed": d.detail},
+            "violates": f"orchestrator check {name} (cannot be overridden by any judge)",
+            "refutation_condition": f"`{name}` passes on the orchestrator's next verification of the pushed head",
+            "status": "open",
+            "suggested_fix": {"ac_test_mapping": "Map every automated acceptance criterion to a test in implementation_report.json `criteria` ([{ac_id, tests: [...]}]) and make sure those tests exist and pass.",
+                              "test_plan_commands": "Make every test_plan command exit 0 from a clean checkout; if a command depends on a port or host, make it robust or pick a free port."}.get(name, "Fix the cause named in the detail."),
+        })
+    return out
 
 
 def merge_findings(passes: list[dict[str, Any]], spec_id: str, round_no: int, base_sha: str, head_sha: str,

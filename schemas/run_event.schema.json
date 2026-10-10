@@ -15,6 +15,7 @@
       "type": "string",
       "enum": [
         "run.created",
+        "repository.created",
         "stage.entered",
         "stage.exited",
         "session.started",
@@ -39,7 +40,7 @@
         "e2e.dev_failed",
         "budget.reached",
         "run.escalated",
-        "run.failed",
+        "run.failed", "run.resumed",
         "run.completed"
       ]
     },

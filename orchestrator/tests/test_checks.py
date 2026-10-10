@@ -128,3 +128,52 @@ def test_run_all_for_merge_includes_e2e_and_manifest(examples, root, schemas_dir
         **common, e2e_results=e2e, manifest_path=root / "examples" / "ledgerline" / "service_manifest.json", schema_dir=schemas_dir)}
     assert all(c.passed for c in names.values()), [c.detail for c in names.values() if not c.passed]
     assert "manifest_valid" in names and "e2e_preview" in names
+
+
+def test_ac_test_mapping_reads_the_report_shape_the_implementer_writes():
+    from factory.checks import ac_test_mapping, criteria_mapping
+
+    spec = {"acceptance_criteria": [{"ac_id": "AC-1", "verification": "automated_test"}, {"ac_id": "AC-2", "verification": "manual_check"},
+                                    {"ac_id": "AC-3", "verification": "automated_test"}]}
+    report = {"criteria": [{"ac_id": "AC-1", "tests": ["tests/test_x.py::test_a"], "status": "met"}, {"ac_id": "AC-3", "test": "tests/test_x.py::test_c"}]}
+    assert criteria_mapping(report) == {"AC-1": ["tests/test_x.py::test_a"], "AC-3": ["tests/test_x.py::test_c"]}
+    ok = ac_test_mapping(spec, report, ["tests/test_x.py::test_a", "tests/test_x.py::test_c"])
+    assert ok.passed, ok.detail
+    bad = ac_test_mapping(spec, {"criteria": [{"ac_id": "AC-1", "tests": []}]}, [])
+    assert not bad.passed and "AC-1: no test mapped" in bad.detail and "AC-3: no test mapped" in bad.detail
+    legacy = ac_test_mapping(spec, {"criteria_to_tests": [{"ac_id": "AC-1", "tests": ["t1"]}, {"ac_id": "AC-3", "tests": ["t3"]}]}, ["t1", "t3"])
+    assert legacy.passed
+
+
+def test_failed_deterministic_checks_become_blocking_findings(schemas_dir):
+    from factory.checks import CheckResult, schema_valid
+    from factory.stages.implement import deterministic_findings
+
+    det = [CheckResult("diff_scope", True, "ok"), CheckResult("test_plan_commands", False, "failed: ['make e2e']"),
+           CheckResult("ac_test_mapping", False, "AC-1: no test mapped")]
+    cmds = [{"command": "make e2e", "exit_code": 2, "stderr_tail": "port in use"}]
+    fs = deterministic_findings(det, cmds)
+    assert [f["finding_id"] for f in fs] == ["DET-test_plan_commands", "DET-ac_test_mapping"]
+    assert all(f["severity"] == "blocking" and f["status"] == "open" for f in fs)
+    assert "port in use" in fs[0]["evidence"]["reproduction"]
+    doc = {"review_id": "rev_x", "spec_id": "spec_x", "round": 1, "diff_ref": {"base_sha": "a", "head_sha": "b", "branch": "c"},
+           "checks_performed": [], "findings": fs, "spec_conformance": [], "produced_by": {}}
+    r = schema_valid(doc, schemas_dir / "review_findings.schema.json", schemas_dir)
+    assert r.passed or "produced_by" in r.detail, r.detail       # findings themselves must be schema-shaped
+
+
+def test_criteria_mapping_reads_the_acceptance_criteria_map_shape():
+    """Live run 2's implementer wrote `acceptance_criteria: {AC-n: {status, pytest_node_ids, e2e_checks}}`."""
+    from factory.checks import ac_test_mapping, criteria_mapping
+
+    report = {"acceptance_criteria": {
+        "AC-1": {"status": "met", "pytest_node_ids": ["tests/test_overdue.py::test_a", "tests/test_todos.py::test_b"], "e2e_checks": ["compat"]},
+        "AC-2": {"status": "met", "pytest_node_ids": ["tests/test_overdue.py::test_c[day]"]},
+        "AC-3": {"status": "met", "test_ids": ["tests/test_overdue.py::test_d"]},
+    }}
+    assert criteria_mapping(report) == {"AC-1": ["tests/test_overdue.py::test_a", "tests/test_todos.py::test_b"],
+                                        "AC-2": ["tests/test_overdue.py::test_c[day]"], "AC-3": ["tests/test_overdue.py::test_d"]}
+    spec = {"acceptance_criteria": [{"ac_id": f"AC-{i}", "verification": "automated_test"} for i in (1, 2, 3)]}
+    assert ac_test_mapping(spec, report, [t for ts in criteria_mapping(report).values() for t in ts]).passed
+    as_list = {"acceptance_criteria": [{"ac_id": "AC-1", "tests": ["t1"]}, {"ac_id": "AC-2", "tests": "t2"}, {"ac_id": "AC-3", "test": "t3"}]}
+    assert criteria_mapping(as_list) == {"AC-1": ["t1"], "AC-2": ["t2"], "AC-3": ["t3"]}

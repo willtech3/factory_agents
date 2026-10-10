@@ -8,18 +8,43 @@ from .. import checks
 from ..gates import Decision, GateKind
 from ..state import RunStage
 from . import RunContext
-from .common import make_ask_human, open_gate_and_wait, persist_outputs, provenance, require_json
+from .common import make_ask_human, open_gate_and_wait, persist_outputs, provenance, require_json, rubric_text
 
 DESCRIPTION = """Produce a decomposition of the business outcome in /mnt/session/uploads/outcome.json.
-The target repository is cloned at /workspace/repo (read it; do not modify it).
+{repo_clause}
 Write decomposition.json and decomposition.md to /mnt/session/outputs/ and validate the JSON with
 `python -I /mnt/session/uploads/tools/validate.py /mnt/session/outputs/decomposition.json`.
 {feedback_clause}"""
 
+REPO_MOUNTED = "The target repository is cloned at /workspace/repo (read it; do not modify it)."
+REPO_ABSENT = ("The target repository is NOT available in this session. Decompose from the outcome alone; record "
+               "anything you would have checked in the codebase as an assumption or an open question with a default.")
+
+
+def repository_access(ctx: RunContext, outcome: dict[str, Any], mounted: str = REPO_MOUNTED, absent: str = REPO_ABSENT
+                      ) -> tuple[dict[str, Any] | None, str, bool]:
+    """How this session reaches the outcome's repository: (session resource, kickoff clause, available).
+
+    GitHub: the native `github_repository` resource and a "it is mounted" clause. GitLab: no resource, the vault
+    clone instructions of ADR-0003 (read-only use here). No forge: nothing, and the agent is told so."""
+    repos = outcome.get("target_repositories") or []
+    if ctx.forge is None or not repos:
+        return None, absent, False
+    url, branch = repos[0]["url"], repos[0].get("default_branch", "main")
+    resource = ctx.forge.session_repository_resource(url, branch)
+    if resource is not None:
+        return resource, mounted, True
+    return None, ctx.forge.sandbox_git_instructions(url, branch, branch) + " Read it; do not modify or push it.", True
+
+
+def repository_mount(ctx: RunContext, outcome: dict[str, Any]) -> dict[str, Any] | None:
+    return repository_access(ctx, outcome)[0]
+
 
 def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | None = None,
                   prior_decomposition: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
-    ctx.event("stage.entered", {"stage": RunStage.DECOMPOSING.value}, stage="decompose")
+    if ctx.store.state(ctx.run_id).stage != RunStage.DECOMPOSING:   # the automatic retry stays in the same stage
+        ctx.event("stage.entered", {"stage": RunStage.DECOMPOSING.value}, stage="decompose")
     uploads = {"outcome.json": json.dumps(outcome, indent=2).encode(),
                "outcome.md": outcome["statement"].encode()}
     feedback_clause = ""
@@ -29,12 +54,13 @@ def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | N
         feedback_clause = ("This is a re-run after human review. Read /mnt/session/uploads/prior/feedback.md first "
                            "and address every comment explicitly in decomposition.md. Increment `revision`.")
 
+    mount, repo_clause, repo_available = repository_access(ctx, outcome)
     res = ctx.driver.run(
         agent_key="decomposer", title=f"{ctx.run_id} decompose", run_id=ctx.run_id, stage="decompose",
-        uploads=uploads, description=DESCRIPTION.format(feedback_clause=feedback_clause),
-        rubric_md=ctx.rubric("decomposition"), max_iterations=ctx.policy.outcome_max_iterations,
+        uploads=uploads, description=DESCRIPTION.format(feedback_clause=feedback_clause, repo_clause=repo_clause),
+        rubric_md=rubric_text(ctx, "decomposition", repo_available), max_iterations=ctx.policy.outcome_max_iterations,
         budget_usd=ctx.policy.stage_budget_usd["decompose"],
-        custom_tools={"ask_human": make_ask_human(ctx, "decomposer")},
+        custom_tools={"ask_human": make_ask_human(ctx, "decomposer")}, repository=mount,
     )
     decomposition = require_json(res, "decomposition.json")
     decomposition.setdefault("produced_by", provenance(ctx, res, "Decomposer", "claude-opus-5-5",

@@ -1,0 +1,19 @@
+{
+  "service": "sample-todo",
+  "runtime": {
+    "kind": "container",
+    "version": "python-3.12",
+    "entrypoint": "uvicorn app.main:app --host 0.0.0.0 --port 8000",
+    "port": 8000
+  },
+  "health": {
+    "path": "/health",
+    "expect_status": 200,
+    "timeout_seconds": 5
+  },
+  "env": [
+    {"name": "LOG_LEVEL", "secret": false, "required": false, "description": "uvicorn log level; info by default"}
+  ],
+  "migrations": {"command": "true", "description": "No database; nothing to migrate"},
+  "resources": {"cpu": "0.25", "memory": "256Mi"}
+}

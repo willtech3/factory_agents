@@ -5,7 +5,8 @@ The design is complete enough to iterate on. What exists has not run against the
 ## Spike 1: platform plumbing (1 to 2 days)
 Goal: one `decomposer` session end to end on the Ledgerline example outcome against a real (fork of a) repository, following [07-personal-e2e-setup.md](07-personal-e2e-setup.md) with a personal GitHub repository and Linear workspace.
 - `ant apply --dry-run agents environments`, review the plan, apply. Commit `claude-lock.json`.
-- Fine-grained GitHub PAT, Linear API key and team id, `factory doctor`.
+- `ANTHROPIC_API_KEY` (and `ANTHROPIC_WORKSPACE_ID`) in `.env`; `factory doctor` reports the agents found on the platform. Start with a **design run** (`factory run --design-only`, or the Console's Start design run) on `examples/sample-app/outcome.json`: decomposer, spec writers, judge, two gates, no repository.
+- Fine-grained GitHub PAT (or `gh auth token`), Linear API key and team id, `factory doctor`.
 - Run `factory run <your outcome.json>`; confirm the `github_repository` resource mounts the repository at `/workspace/repo` and that `git push` from the sandbox works through the proxy.
 - Confirm the Linear mapping live: project and issues appear, the gate comment carries the hashes, a label plus comment is read back as a decision, `feedback.md` renders. Fix GraphQL field names in `surfaces/tracker.py` as needed.
 - (Work setup, later) Create the vault and the `GITLAB_TOKEN` environment-variable credential. **Verify** that git over HTTPS to your GitLab accepts `Authorization: Bearer <PAT>` through the egress substitution. If it does not, implement the `push_branch` host-side custom tool fallback in ADR-0003.

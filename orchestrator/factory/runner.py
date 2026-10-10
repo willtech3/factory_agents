@@ -21,7 +21,8 @@ from typing import Any
 from .gates import Decision, GateDecision
 from .stages import RunContext
 from .stages.decompose import gate_1, run_decompose
-from .stages.implement import LocalVerifier, run_implement_one
+from .stages.common import artifact_json_or_none
+from .stages.implement import LocalVerifier, ResumePoint, run_implement_one
 from .stages.integrate import run_integrate
 from .stages.specify import gate_2, run_specify
 from .state import RunStage, WorkItemStage
@@ -74,6 +75,29 @@ def _present(ctx: RunContext, outcome: dict[str, Any], files: dict[str, bytes], 
     return cr_id, urls
 
 
+def notes_by_item(comments: str, item_ids: list[str]) -> dict[str, str]:
+    """Split a decision's comments into per-item guidance. Lines like `wi-x: text` go to that item; other lines go
+    to every item. Used when a gate is approved with notes: approval does not re-run the stage, but the next
+    stage's writers should still hear what the human said about each item."""
+    general, per_item = [], {i: [] for i in item_ids}
+    for line in (comments or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        head, sep, rest = line.partition(":")
+        if sep and head.strip() in per_item:
+            if rest.strip():
+                per_item[head.strip()].append(rest.strip())     # an empty "wi-x:" line says nothing
+        else:
+            general.append(line)
+    out = {}
+    for i in item_ids:
+        parts = general + per_item[i]
+        if parts:
+            out[i] = "# Notes from the owner at Gate 1\n" + "\n".join(f"- {p}" for p in parts)
+    return out
+
+
 def _feedback(ctx: RunContext, design_cr_id: int | None, d: GateDecision) -> str:
     parts = [d.comments] if d.comments.strip() else []
     if ctx.forge is not None and design_cr_id is not None:
@@ -88,7 +112,8 @@ def _feedback(ctx: RunContext, design_cr_id: int | None, d: GateDecision) -> str
 
 def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
     ctx.event("run.created", {"outcome_id": outcome["outcome_id"], "title": outcome["title"],
-                              "forge": ctx.cfg.forge, "gate_surface": ctx.cfg.gate_surface}, stage="intake")
+                              "forge": ctx.cfg.forge if ctx.forge is not None else None, "gate_surface": ctx.cfg.gate_surface,
+                              "design_only": ctx.policy.design_only}, stage="intake")
     ctx.store.put_artifact(ctx.run_id, "intake", "outcome.json", json.dumps(outcome, indent=2).encode())
     repo = outcome["target_repositories"][0]
     if ctx.tracker is not None:
@@ -107,6 +132,7 @@ def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
                                       {"decomposition.md": "full", "decomposition.json": "work-items"})
         d = gate_1(ctx, outcome, decomposition, shas, urls)
         if d.decision == Decision.APPROVE:
+            approval_notes = notes_by_item(d.comments, [w["work_item_id"] for w in decomposition["work_items"]])
             break
         if d.decision == Decision.REJECT:
             ctx.event("stage.entered", {"stage": RunStage.CLOSED.value}, stage="gate_1", actor="human")
@@ -114,9 +140,10 @@ def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
         feedback, prior = _feedback(ctx, design_cr_id, d), decomposition
 
     # ---------------- Stage 2 + Gate 2
-    human_comments: dict[str, str] | None = None
+    human_comments: dict[str, str] | None = approval_notes or None     # what the owner said while approving the plan
+    prior_specs: dict[str, dict] | None = None
     while True:
-        specs, verdict = run_specify(ctx, outcome, decomposition, human_comments)
+        specs, verdict = run_specify(ctx, outcome, decomposition, human_comments, prior_specs)
         spec_shas = {f"{sid}.json": ctx.store.put_artifact(ctx.run_id, "specify", f"final-{sid}.json",
                                                             json.dumps(s, indent=2).encode()) for sid, s in specs.items()}
         spec_shas["verdict.json"] = ctx.store.put_artifact(ctx.run_id, "judge", "final-verdict.json",
@@ -142,46 +169,20 @@ def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
                           work_item_id=specs[sid]["work_item_id"], spec_id=sid, actor="human")
             specs = {sid: s for sid, s in specs.items() if sid in approved}
             break
-        # request_changes: comments keyed by spec id when the human used "spec_x: ..." lines, else to all.
+        # request_changes: per-item lines (`spec_x: ...` or `wi-x: ...`) go to that item, the rest to every item;
+        # the writers also get the draft the owner commented on.
         fb = _feedback(ctx, design_cr_id, d)
-        human_comments = {s["work_item_id"]: fb for s in specs.values()}
+        ids = [s["work_item_id"] for s in specs.values()] + list(specs)
+        routed = notes_by_item(fb, ids)
+        human_comments = {s["work_item_id"]: (routed.get(s["work_item_id"]) or routed.get(sid) or fb) for sid, s in specs.items()}
+        prior_specs = {s["work_item_id"]: s for s in specs.values()}
     spec_verdict = verdict
+    if ctx.policy.design_only:
+        ctx.event("run.completed", {"design_only": True, "approved_specs": sorted(specs),
+                                    "note": "design-only run: no implementation stage was requested"}, stage="gate_2")
+        return RunStage.COMPLETED
 
-    # ---------------- Stage 3 + 4 per spec, in dependency waves
-    ctx.event("stage.entered", {"stage": RunStage.IMPLEMENTING.value}, stage="implement")
-    auth_url = ctx.forge.authenticated_url(repo["url"]) if ctx.forge is not None else repo["url"]
-    verifier = LocalVerifier(auth_url, ctx.cfg.runs_dir / ctx.run_id / "verify")
-    merged_or_open: set[str] = set()
-    remaining = dict(specs)
-    while remaining:
-        ready = [s for s in remaining.values()
-                 if all(dep in merged_or_open or dep not in specs for dep in s["dependencies"]["specs"])]
-        if not ready:
-            ctx.event("run.escalated", {"reason": f"unsatisfiable dependencies among {sorted(remaining)}"})
-            return RunStage.ESCALATED
-        for spec in ready[: ctx.policy.parallel_implementations]:
-            sid = spec["spec_id"]
-            deps = {dsid: specs[dsid] for dsid in spec["dependencies"]["specs"] if dsid in specs}
-            verdict = run_implement_one(ctx, spec, repo["url"], repo["default_branch"], verifier, deps)
-            if verdict["result"] != "ready":
-                ctx.event("run.escalated", {"reason": f"{sid}: merge judge said {verdict['result']}",
-                                            "summary": verdict.get("summary_for_human", verdict.get("reason"))},
-                          spec_id=sid)
-                ctx.notifier.escalated(ctx.run_id, f"{sid}: {verdict['result']}")
-                remaining.pop(sid)
-                continue
-            findings = json.loads(ctx.store.get_artifact(ctx.run_id, "review", _latest(ctx, "review", f"{sid}-", "-findings.merged.json")))
-            response = _latest_json_or(ctx, "implement", f"{sid}-", "-review_response.json", {"responses": []})
-            test_results = json.loads(ctx.store.get_artifact(ctx.run_id, "implement", _latest(ctx, "implement", f"{sid}-", "-test_results.json")))
-            summary = {"run_id": ctx.run_id, "outcome_title": outcome["title"], "reviewers": [outcome["owner"]["handle"]],
-                       "sessions": _sessions_for(ctx, sid), "list_cost_usd": ctx.store.state(ctx.run_id).list_cost_usd}
-            run_integrate(ctx, spec, verdict, findings, response, test_results, summary, repo["default_branch"],
-                          verifier=verifier, spec_md=spec_md.get(sid, ""), spec_verdict=spec_verdict)
-            merged_or_open.add(sid)   # Gate 3 (human review + merge) is tracked by the CR watcher, not this loop
-            remaining.pop(sid)
-
-    ctx.event("run.completed", {"specs_with_change_requests": sorted(merged_or_open)})
-    return RunStage.COMPLETED
+    return implement_and_integrate(ctx, outcome, specs, spec_md, spec_verdict)
 
 
 def _spec_markdown(ctx: RunContext, spec: dict[str, Any]) -> str:
@@ -218,3 +219,115 @@ def _sessions_for(ctx: RunContext, spec_id: str) -> list[dict[str, Any]]:
                         "session_id": ev.payload["session_id"], "console_url": ctx.cfg.console_session_url(ev.payload["session_id"]),
                         "list_cost_usd": ev.payload.get("list_cost_usd")})
     return out
+
+
+def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dict[str, dict], spec_md: dict[str, str],
+                            spec_verdict: dict[str, Any] | None, resume: dict[str, ResumePoint] | None = None) -> RunStage:
+    """Stage 3 + 4 per approved spec, in dependency waves. `resume` (from `factory resume`) says where each spec's
+    implement/review loop continues; specs whose change request is already open are not touched again."""
+    repo = outcome["target_repositories"][0]
+    if resume is None:
+        ctx.event("stage.entered", {"stage": RunStage.IMPLEMENTING.value}, stage="implement")
+    auth_url = ctx.forge.authenticated_url(repo["url"]) if ctx.forge is not None else repo["url"]
+    verifier = LocalVerifier(auth_url, ctx.cfg.runs_dir / ctx.run_id / "verify")
+    merged_or_open: set[str] = {sid for sid in specs if _cr_already_open(ctx, sid)}   # finished before a resume
+    remaining = {sid: s for sid, s in specs.items() if sid not in merged_or_open}
+    while remaining:
+        ready = [s for s in remaining.values()
+                 if all(dep in merged_or_open or dep not in specs for dep in s["dependencies"]["specs"])]
+        if not ready:
+            ctx.event("run.escalated", {"reason": f"unsatisfiable dependencies among {sorted(remaining)}"})
+            return RunStage.ESCALATED
+        for spec in ready[: ctx.policy.parallel_implementations]:
+            sid = spec["spec_id"]
+            deps = {dsid: specs[dsid] for dsid in spec["dependencies"]["specs"] if dsid in specs}
+            verdict = run_implement_one(ctx, spec, repo["url"], repo["default_branch"], verifier, deps,
+                                        resume_from=(resume or {}).get(sid))
+            if verdict["result"] != "ready":
+                ctx.event("run.escalated", {"reason": f"{sid}: merge judge said {verdict['result']}",
+                                            "summary": verdict.get("summary_for_human", verdict.get("reason"))},
+                          spec_id=sid)
+                ctx.notifier.escalated(ctx.run_id, f"{sid}: {verdict['result']}")
+                remaining.pop(sid)
+                continue
+            findings = json.loads(ctx.store.get_artifact(ctx.run_id, "review", _latest(ctx, "review", f"{sid}-", "-findings.merged.json")))
+            response = _latest_json_or(ctx, "implement", f"{sid}-", "-review_response.json", {"responses": []})
+            test_results = json.loads(ctx.store.get_artifact(ctx.run_id, "implement", _latest(ctx, "implement", f"{sid}-", "-test_results.json")))
+            summary = {"run_id": ctx.run_id, "outcome_title": outcome["title"], "reviewers": [outcome["owner"]["handle"]],
+                       "sessions": _sessions_for(ctx, sid), "list_cost_usd": ctx.store.state(ctx.run_id).list_cost_usd}
+            run_integrate(ctx, spec, verdict, findings, response, test_results, summary, repo["default_branch"],
+                          verifier=verifier, spec_md=spec_md.get(sid, ""), spec_verdict=spec_verdict)
+            merged_or_open.add(sid)   # Gate 3 (human review + merge) is tracked by the CR watcher, not this loop
+            remaining.pop(sid)
+
+    ctx.event("run.completed", {"specs_with_change_requests": sorted(merged_or_open)})
+    return RunStage.COMPLETED
+
+
+def _cr_already_open(ctx: RunContext, spec_id: str) -> bool:
+    return any(ev.kind == "cr.opened" and ev.spec_id == spec_id and not ev.payload.get("design")
+               for ev in ctx.store.events(ctx.run_id))
+
+
+def resume_points(ctx: RunContext, specs: dict[str, dict]) -> dict[str, ResumePoint]:
+    """Per spec, the implementer round to continue at, read from what the dead orchestrator persisted.
+
+    The latest persisted implementation_report (round n) means that round's session finished: continue at round n
+    with its report (and its review_response from round 2 on), answering round n-1's merged findings; the
+    orchestrator's own verification of that head is redone, and reviewer passes or a merge verdict already stored
+    for the round are reused. A round-n report without the response its findings required, or no report at all,
+    means that round's implementer runs (again)."""
+    out: dict[str, ResumePoint] = {}
+    for sid in specs:
+        rounds = _rounds(ctx, "implement", f"{sid}-r", "-implementation_report.json")
+        if not rounds:
+            out[sid] = ResumePoint(round_no=1)
+            continue
+        n = max(rounds)
+        findings = artifact_json_or_none(ctx, "review", f"{sid}-r{n - 1}-findings.merged.json") if n > 1 else None
+        if n > 1 and findings is None:
+            raise RuntimeError(f"cannot resume {sid}: round {n} report exists but round {n - 1} has no merged findings")
+        report = json.loads(ctx.store.get_artifact(ctx.run_id, "implement", f"{sid}-r{n}-implementation_report.json"))
+        response = artifact_json_or_none(ctx, "implement", f"{sid}-r{n}-review_response.json")
+        if n > 1 and response is None:
+            out[sid] = ResumePoint(round_no=n, findings=findings)            # rerun round n's implementer
+        else:
+            out[sid] = ResumePoint(round_no=n, findings=findings, report=report, response=response)
+    return out
+
+
+def _rounds(ctx: RunContext, stage: str, prefix: str, suffix: str) -> list[int]:
+    d = ctx.cfg.runs_dir / ctx.run_id / "artifacts" / stage
+    out = []
+    for p in d.glob(f"{prefix}*{suffix}"):
+        if p.name.endswith(".sha256"):
+            continue
+        mid = p.name[len(prefix):-len(suffix)]
+        if mid.isdigit():
+            out.append(int(mid))
+    return sorted(out)
+
+
+def resume(ctx: RunContext) -> RunStage:
+    """Continue a run that died during the implementation stage (`factory resume <run_id>`): the orchestrator
+    crashed, was killed, or lost a session's outputs. Nothing before Gate 2 is re-run; the outcome, the approved
+    specs and the judge's verdict are read back from the store, and each spec's loop continues at the round whose
+    work the store holds (`resume_points`). Only the implementation stage is resumable: the design stages are cheap
+    to redo and their gates were decided on artefacts a human saw."""
+    st = ctx.store.state(ctx.run_id)
+    events = ctx.store.events(ctx.run_id)
+    if st.stage not in (RunStage.FAILED, RunStage.IMPLEMENTING):
+        raise RuntimeError(f"run {ctx.run_id} is {st.stage.value}; only a run that failed or stopped during implementation can be resumed")
+    if not any(ev.kind == "stage.entered" and ev.payload.get("stage") == RunStage.IMPLEMENTING.value for ev in events):
+        raise RuntimeError(f"run {ctx.run_id} never reached the implementation stage; start a new run instead")
+    outcome = json.loads(ctx.store.get_artifact(ctx.run_id, "intake", "outcome.json"))
+    approved = [ev.payload["spec_id"] for ev in events
+                if ev.kind == "work_item.stage" and ev.payload.get("stage") == WorkItemStage.SPEC_APPROVED.value]
+    specs = {sid: json.loads(ctx.store.get_artifact(ctx.run_id, "specify", f"final-{sid}.json")) for sid in dict.fromkeys(approved)}
+    spec_verdict = artifact_json_or_none(ctx, "judge", "final-verdict.json")
+    spec_md = {sid: _spec_markdown(ctx, s) for sid, s in specs.items()}
+    points = resume_points(ctx, specs)
+    ctx.event("run.resumed", {"stage": RunStage.IMPLEMENTING.value, "from": st.stage.value,
+                              "points": {sid: {"round": pt.round_no, "implementer_done": pt.report is not None} for sid, pt in points.items()}},
+              stage="implement")
+    return implement_and_integrate(ctx, outcome, specs, spec_md, spec_verdict, resume=points)

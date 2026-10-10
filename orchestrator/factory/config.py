@@ -63,8 +63,10 @@ class Config:
     service_manifest_path: str          # fixed path in the app repo, named by the platform contract
     dev_environment_name: str           # environment the default branch deploys to
     preview_environment_prefix: str     # environment name prefix for per-branch previews
+    preview_mode: str                   # platform (read the forge's deployment record) | local (the orchestrator starts the service itself)
     smoke_commands: tuple[str, ...]     # optional suite run against dev after every deploy ($BASE_URL substituted)
     console_workspace: str
+    workspace_id: str | None            # ANTHROPIC_WORKSPACE_ID: required when the API key is not scoped to a workspace
     runs_dir: Path
     schemas_dir: Path
     rubrics_dir: Path
@@ -87,7 +89,31 @@ def _first(*names: str, default: str | None = None) -> str | None:
     return default
 
 
-def load(lock_path: Path | None = None) -> Config:
+def load_dotenv(path: Path | None = None, override: bool = False) -> list[str]:
+    """Load KEY=VALUE lines from the repo's .env into os.environ (never overriding what is set). Returns the keys loaded.
+    No dependency, no interpolation; quotes around values are stripped. Values are never logged."""
+    path = path or REPO_ROOT / ".env"
+    loaded: list[str] = []
+    if not path.is_file():
+        return loaded
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):]
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        if key and (override or key not in os.environ):
+            os.environ[key] = value
+            loaded.append(key)
+    return loaded
+
+
+def load(lock_path: Path | None = None, dotenv_path: Path | None = None) -> Config:
+    load_dotenv(dotenv_path)
     lock_path = lock_path or REPO_ROOT / "claude-lock.json"
     agents: dict[str, AgentRef] = {}
     env_id = os.environ.get("FACTORY_ENVIRONMENT_ID", "")
@@ -97,7 +123,8 @@ def load(lock_path: Path | None = None) -> Config:
         for key, file in AGENT_FILES.items():
             entry = resources.get(file)
             if entry:
-                agents[key] = AgentRef(id=entry["id"], version=entry.get("version"))
+                v = entry.get("version")
+                agents[key] = AgentRef(id=entry["id"], version=int(v) if v not in (None, "") else None)   # ant writes "1"
         env_entry = resources.get(ENVIRONMENT_FILE)
         if env_entry and not env_id:
             env_id = env_entry["id"]
@@ -136,9 +163,11 @@ def load(lock_path: Path | None = None) -> Config:
         service_manifest_path=os.environ.get("FACTORY_SERVICE_MANIFEST_PATH", "service_manifest.json"),
         dev_environment_name=os.environ.get("FACTORY_DEV_ENVIRONMENT", "dev"),
         preview_environment_prefix=os.environ.get("FACTORY_PREVIEW_ENVIRONMENT_PREFIX", "preview/"),
+        preview_mode=(os.environ.get("FACTORY_PREVIEW") or "platform").lower(),
         smoke_commands=tuple(c for c in os.environ.get("FACTORY_SMOKE_COMMANDS", "").split(";") if c.strip()),
         console_workspace=os.environ.get("ANTHROPIC_WORKSPACE", "default"),
-        runs_dir=Path(os.environ.get("FACTORY_RUNS_DIR", REPO_ROOT / "runs")),
+        workspace_id=os.environ.get("ANTHROPIC_WORKSPACE_ID"),
+        runs_dir=Path(os.environ.get("FACTORY_RUNS_DIR", REPO_ROOT / "runs")).resolve(),   # absolute: subprocesses start elsewhere
         schemas_dir=REPO_ROOT / "schemas",
         rubrics_dir=REPO_ROOT / "rubrics",
         templates_dir=REPO_ROOT / "templates",
@@ -146,19 +175,64 @@ def load(lock_path: Path | None = None) -> Config:
     )
 
 
-def missing(cfg: Config) -> list[str]:
-    """Reconciliation before the first run: every agent and resource must exist."""
+def anthropic_client(cfg: Config):
+    """The SDK client the orchestrator uses. A key that is not scoped to a workspace needs the workspace id header."""
+    import anthropic
+    headers = {"anthropic-workspace-id": cfg.workspace_id} if cfg.workspace_id else None
+    return anthropic.Anthropic(default_headers=headers)
+
+
+def platform_check(cfg: Config) -> dict:
+    """One cheap live call per agent: does the platform have the agents the lock file names? Returns
+    {ok, error, agents: [{key, id, version, found, name}]}. Never raises; never logs the key."""
+    out: dict = {"ok": False, "error": None, "agents": [], "environment_id": cfg.environment_id}
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        out["error"] = "ANTHROPIC_API_KEY is not set"
+        return out
+    try:
+        client = anthropic_client(cfg)
+        for key, ref in cfg.agents.items():
+            try:
+                a = client.beta.agents.retrieve(ref.id)
+                out["agents"].append({"key": key, "id": ref.id, "version": ref.version, "found": True,
+                                      "name": getattr(a, "name", None), "latest_version": getattr(a, "version", None)})
+            except Exception as e:  # noqa: BLE001
+                msg = str(e)
+                if "anthropic-workspace-id" in msg:
+                    out["error"] = "the API key is not scoped to a workspace: set ANTHROPIC_WORKSPACE_ID (Console -> workspace settings)"
+                    return out
+                out["agents"].append({"key": key, "id": ref.id, "version": ref.version, "found": False, "error": msg[:200]})
+        out["ok"] = bool(out["agents"]) and all(a["found"] for a in out["agents"])
+        if not out["ok"] and not out["error"]:
+            out["error"] = "some agents in claude-lock.json were not found on the platform"
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+    return out
+
+
+def missing(cfg: Config, design_only: bool = False) -> list[str]:
+    """Reconciliation before the first run: every agent and resource must exist.
+
+    `design_only` runs (decompose, Gate 1, specify, judge, Gate 2; no code) need the platform and the gate
+    surface but no forge, so forge and vault gaps are not reported for them."""
     gaps = [f"agent:{k}" for k in AGENT_FILES if k not in cfg.agents]
     if not cfg.environment_id:
         gaps.append("environment_id (run `ant apply agents environments`)")
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        gaps.append("ANTHROPIC_API_KEY (the Console workspace the agents live in)")
+    if design_only:
+        return gaps + _surface_gaps(cfg)
     if cfg.forge not in FORGES:
         gaps.append(f"FACTORY_FORGE={cfg.forge!r} (expected github|gitlab)")
     if not cfg.forge_token:
         gaps.append("FORGE_TOKEN (orchestrator-side; GITHUB_TOKEN or GITLAB_TOKEN also accepted)")
-    if not cfg.forge_repo:
-        gaps.append("FORGE_REPO (owner/repo or group/project)")
     if cfg.forge == "gitlab" and not cfg.vault_id:
         gaps.append("FACTORY_VAULT_ID (sandbox git access for the gitlab forge, ADR-0003)")
+    return gaps + _surface_gaps(cfg)
+
+
+def _surface_gaps(cfg: Config) -> list[str]:
+    gaps = []
     if cfg.gate_surface not in GATE_SURFACES:
         gaps.append(f"FACTORY_GATE_SURFACE={cfg.gate_surface!r} (expected forge|tracker|file|web)")
     if cfg.gate_surface == "tracker":

@@ -22,6 +22,19 @@ def provenance(ctx: RunContext, res: StageResult, agent_name: str, model: str, i
     }
 
 
+NO_REPO_RUBRIC_NOTE = """> **No repository is mounted in this session.** Criteria that require inspecting the code (paths or commands
+> exist, grounding in the codebase, questions the repository would answer) cannot be verified here: score them on
+> internal consistency and plausibility instead of 0, and say so in the evidence. Everything else applies in full.
+
+"""
+
+
+def rubric_text(ctx: RunContext, name: str, repo_available: bool) -> str:
+    """The stage rubric, prefixed with a note when the session has no repository (design-only runs without a forge)."""
+    text = ctx.rubric(name)
+    return text if repo_available else NO_REPO_RUBRIC_NOTE + text
+
+
 def persist_outputs(ctx: RunContext, stage: str, res: StageResult, prefix: str = "") -> dict[str, str]:
     """Store every file the session wrote; return name -> sha256."""
     shas = {}
@@ -34,6 +47,14 @@ def persist_outputs(ctx: RunContext, stage: str, res: StageResult, prefix: str =
                                    "outcome_result": res.outcome_result, "stop_reason": res.stop_reason},
               stage=stage, actor="platform")
     return shas
+
+
+def artifact_json_or_none(ctx: RunContext, stage: str, name: str) -> Any:
+    """A persisted artefact parsed as JSON, or None when the store does not hold it (used by `factory resume`)."""
+    try:
+        return json.loads(ctx.store.get_artifact(ctx.run_id, stage, name))
+    except FileNotFoundError:
+        return None
 
 
 def require_json(res: StageResult, name: str) -> dict[str, Any]:

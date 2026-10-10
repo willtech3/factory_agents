@@ -49,18 +49,20 @@ class WorkItemStage(str, Enum):
     BLOCKED = "blocked"                    # implementer wrote blocked.md
 
 
-# Legal run-level transitions. Anything else raises IllegalTransition.
+# Legal run-level transitions. Anything else raises IllegalTransition. The orchestrator can die in any live stage
+# (a gate surface raising while a gate is open included), so run.failed is legal from every non-terminal stage.
 RUN_TRANSITIONS: dict[RunStage, set[RunStage]] = {
-    RunStage.INTAKE: {RunStage.DECOMPOSING, RunStage.CLOSED},
+    RunStage.INTAKE: {RunStage.DECOMPOSING, RunStage.CLOSED, RunStage.FAILED},
     RunStage.DECOMPOSING: {RunStage.GATE_1_DECOMPOSITION, RunStage.ESCALATED, RunStage.PAUSED_BUDGET, RunStage.FAILED},
-    RunStage.GATE_1_DECOMPOSITION: {RunStage.SPECIFYING, RunStage.DECOMPOSING, RunStage.CLOSED},
+    RunStage.GATE_1_DECOMPOSITION: {RunStage.SPECIFYING, RunStage.DECOMPOSING, RunStage.CLOSED, RunStage.FAILED},
     RunStage.SPECIFYING: {RunStage.GATE_2_SPEC_READINESS, RunStage.ESCALATED, RunStage.PAUSED_BUDGET, RunStage.FAILED},
-    RunStage.GATE_2_SPEC_READINESS: {RunStage.IMPLEMENTING, RunStage.SPECIFYING, RunStage.GATE_1_DECOMPOSITION, RunStage.CLOSED},
+    RunStage.GATE_2_SPEC_READINESS: {RunStage.IMPLEMENTING, RunStage.SPECIFYING, RunStage.GATE_1_DECOMPOSITION, RunStage.CLOSED,
+                                     RunStage.COMPLETED, RunStage.FAILED},   # COMPLETED only for design-only runs (Policy.design_only)
     RunStage.IMPLEMENTING: {RunStage.COMPLETED, RunStage.ESCALATED, RunStage.PAUSED_BUDGET, RunStage.FAILED},
     RunStage.ESCALATED: {RunStage.DECOMPOSING, RunStage.SPECIFYING, RunStage.IMPLEMENTING, RunStage.CLOSED, RunStage.FAILED},
-    RunStage.PAUSED_BUDGET: {RunStage.DECOMPOSING, RunStage.SPECIFYING, RunStage.IMPLEMENTING, RunStage.CLOSED},
+    RunStage.PAUSED_BUDGET: {RunStage.DECOMPOSING, RunStage.SPECIFYING, RunStage.IMPLEMENTING, RunStage.CLOSED, RunStage.FAILED},
     RunStage.COMPLETED: set(),
-    RunStage.FAILED: set(),
+    RunStage.FAILED: {RunStage.IMPLEMENTING},   # `run.resumed` only: a run that died during implementation picks up where its artefacts stop
     RunStage.CLOSED: set(),
 }
 
@@ -105,7 +107,10 @@ class Policy:
         "implement": 40.0, "review": 15.0, "merge_judge": 8.0, "integrate": 2.0,
     })
     parallel_implementations: int = 3    # independent work items implemented at once (separate branches)
+    parallel_spec_writers: int = 8       # spec writer sessions at once; all items are written in one go by default
+    spec_waves: bool = False             # True: write specs in dependency-order waves instead of all at once
     reviewer_passes: int = 2             # independent reviewer copies per round, findings merged
+    design_only: bool = False            # stop after Gate 2: real agents for decompose/specify/judge, no code stage, no forge needed
     preview_wait_seconds: int = 1800     # how long verification waits for the platform to deploy head_sha to its preview
     dev_pipeline_timeout_seconds: int = 3600  # Stage 5: how long to watch the dev pipeline before a DEPLOY_FAILURE gate
 
@@ -237,6 +242,11 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
         _move_run(state, RunStage.ESCALATED)
     elif k == "run.failed":
         _move_run(state, RunStage.FAILED)
+    elif k == "run.resumed":
+        # `factory resume`: back into the stage the run died in (no-op when the process was killed before run.failed).
+        to = RunStage(p["stage"])
+        if state.stage != to:
+            _move_run(state, to)
     elif k == "run.completed":
         _move_run(state, RunStage.COMPLETED)
     elif k in ("deploy.started", "deploy.succeeded") and ev.work_item_id in state.work_items:

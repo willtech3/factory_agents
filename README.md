@@ -35,6 +35,7 @@ Three human gates. Judges in separate sessions from authors. Every finding falsi
 - **`orchestrator/`** Python. An event-sourced run state machine, hash-bound human gates, deterministic checks, a Managed Agents session driver, one module per stage (including the observed deploy to dev), a pluggable forge (`forge/`: GitHub default, GitLab second), pluggable gate surfaces (`surfaces/`: Linear tracker, artifact pages, Jira stub, the file queue), the Factory Console (`web/`: a local web app for outcomes, the runs board, the approval inbox, and Gate 1 and 2 review, with a demo driver), and a CLI. The state machine, checks, gates, graders, deploy observation, forge request shapes, tracker mapping, page rendering, and the run-record commit are tested (`pytest`: 83 passing). The session driver and forge clients follow the documented APIs but have not been run live yet; pipeline and deployment reads are unverified on both forges.
 - **`evals/`** A four-level evaluation plan, dataset specifications with sample rows, deterministic and stochastic graders (kappa, bootstrap and Bayesian intervals, pass^k, paired discrimination), and a runner whose session-producing step is a stub until the live spike.
 - **`templates/`** The change-request description template and a GitHub Actions preview workflow that records Deployments the orchestrator reads.
+- **`examples/sample-app/`** A small FastAPI todo service with tests, a manifest, the preview workflow, and an outcome written for it: the real end-to-end test case, meant to be pushed to a repository of your own.
 - **`examples/ledgerline/`** A complete fictional run: outcome, decomposition, a spec, a judge verdict, review findings, the implementer's response, and a merge-readiness verdict.
 
 ## Running the tests
@@ -49,11 +50,12 @@ cd orchestrator && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]" &&
 cd orchestrator && .venv/bin/factory web --demo     # http://127.0.0.1:8765/
 ```
 
-A simulated run from `examples/ledgerline/` asks you a question, then opens Gate 1 and Gate 2 for you to decide. See [docs/08-factory-console.md](docs/08-factory-console.md).
+A simulated run from `examples/ledgerline/` asks you a question, then opens Gate 1 and Gate 2 for you to decide. With `ANTHROPIC_API_KEY` in `.env`, **Start design run** on an outcome runs the real decomposer, spec writers, and judge through Gate 2 with no repository needed. See [docs/08-factory-console.md](docs/08-factory-console.md).
 
 ## Applying the agents (when ready to spike)
 
 ```bash
+brew install anthropics/tap/ant              # the ant CLI, once
 ant apply --dry-run -v agents environments   # review the plan
 ant apply --yes agents environments          # creates agents + environment, writes claude-lock.json (commit it)
 cd orchestrator && .venv/bin/factory doctor  # reconciles IDs, forge, gate surface
