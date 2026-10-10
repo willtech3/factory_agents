@@ -79,8 +79,8 @@ The spec conforms to the platform-contract skill (`skills/platform-contract/SKIL
 - 3: as 2, and the spec states what the preview environment must contain (seed data, test-mode keys) for `test_plan.e2e` to run.
 
 ## S12. End-to-end coverage of user-visible behaviour
-Every acceptance criterion with `user_visible: true` is covered by at least one `test_plan.e2e` entry that runs against a deployed instance (`target: preview`), and every criterion is honestly flagged. Agents declare victory without end-to-end verification unless the harness demands it (practitioners.md §3, Anthropic effective harnesses); the orchestrator's `e2e_coverage` check enforces the mapping, the judge checks the flags.
-- 0: a `user_visible` criterion has no e2e entry, or a criterion that an external system or user plainly observes is flagged `false`.
-- 1: covered, but an entry's command would not fail if the criterion were unmet (asserts only a 200).
-- 2: every user-visible criterion covered by a command that fails when the behaviour is wrong.
-- 3: as 2, with a `local` counterpart so the implementer can iterate before the preview deploys.
+Every acceptance criterion with `user_visible: true` is covered by at least one `test_plan.e2e` entry, and every criterion is honestly flagged. The entry runs against a deployed instance (`target: preview`) whenever one verification run can observe the behaviour. When it cannot, because the behaviour needs time to pass or an event no single run can produce (a date rollover, a scheduled retry, a third party's webhook), the honest shape is `user_visible: true`, a `target: local` entry that forces the condition (a patched clock, a replayed event) and a `verification_note` on the criterion naming why one run cannot observe it and what the local entry stands in for. Agents declare victory without end-to-end verification unless the harness demands it (practitioners.md §3, Anthropic effective harnesses); the orchestrator's `e2e_coverage` check enforces the mapping and counts `local` and `preview` entries alike, the judge checks the flags and the targets.
+- 0: a behaviour that one verification run can observe on the deployed service is flagged `false`, has no e2e entry, or has only a `local` entry.
+- 1: covered, but an entry's command would not fail if the criterion were unmet (asserts only a 200), or a `local` stand-in has no `verification_note`.
+- 2: every user-visible criterion covered by a command that fails when the behaviour is wrong: a `preview` entry where one run can observe it, otherwise a `local` entry plus the `verification_note`.
+- 3: as 2, with a `local` counterpart for every `preview` entry so the implementer can iterate before the preview deploys.
