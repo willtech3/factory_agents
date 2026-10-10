@@ -1882,7 +1882,8 @@
           v.detail ? el("p", null, v.detail) : null,
           v.phases ? el("ul", {class:"plain-list"}, v.phases.map(p => el("li", null, `${words(p.phase)}: ${words(p.status)}${p.seconds != null ? ` · ${p.seconds}s` : ""}${p.exit_code ? ` · exit ${p.exit_code}` : ""}`))) : null,
           uncovered.length ? el("div", { class: "notice info", style: "margin:0" }, el("b", null, "Not covered by this verification: "),
-            uncovered.map(c => `${c.label || c.id}${c.limitation ? ` (${c.limitation})` : ""}`).join("; "), ". The app is ready only for what is listed as covered.") : null,
+            uncovered.map(c => `${c.label || c.id}${c.limitation ? ` (${c.limitation})` : ""}`).join("; "),
+            v.status === "passed" && !stale ? ". The app is ready only for the verified journeys." : ". This attempt does not establish readiness for the current setup.") : null,
           (a.evidence || []).length ? evidenceGallery(a) : el("p", { class: "explain" }, "No media was accepted from this verification."),
           el("dl", { class: "kv" }, el("dt", null, "Source commit"), el("dd", { class: "mono" }, v.source_sha || a.source_sha || "new scaffold"), el("dt", null, "Tested snapshot"), el("dd", { class: "mono" }, v.head_sha || "not given"), el("dt", null, "Profile fingerprint"), el("dd", { class: "mono" }, v.profile_sha256 || "not given"),
             el("dt", null, "Session"), el("dd", { class: "mono" }, v.session_id || "not given"))), stale ? "a newer commit needs a new verification" : null));

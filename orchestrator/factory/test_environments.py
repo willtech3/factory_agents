@@ -160,6 +160,9 @@ SYSTEM = """You operate a Factory-owned ephemeral test sandbox. Run only the upl
 controller harness and report its result. Do not edit application source, profile,
 harness, evidence or results; do not create commits, push, deploy, delegate, or
 change permissions. Do not read, print, copy or search for credential values.
+Start the harness once. It enforces the reviewed profile's lifecycle timeouts;
+do not wrap it in a shorter timeout or terminate it because a tool call is slow.
+If your tool returns a running process handle, wait on that same process.
 Read-only diagnosis of failed command exit codes is permitted. If a command needs
 approval, stop and report the specific blocker; do not substitute another route.
 The user approved browser automation inside this isolated cloud sandbox. The
