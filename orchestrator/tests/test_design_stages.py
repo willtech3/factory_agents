@@ -62,12 +62,13 @@ def test_decompose_retry_does_not_reenter_the_stage(tmp_path, root, examples):
 
 def test_driver_interrupts_sessions_still_in_flight(tmp_path, root):
     """A session the driver started and has not finished gets user.interrupt when the orchestrator is stopped."""
-    from factory.sessions import SessionDriver
+    from factory.sessions import SHORT_CALL_TIMEOUT, SessionDriver
 
     sent = []
 
     class Events:
-        def send(self, session_id, events):
+        def send(self, session_id, events, timeout=None):
+            assert timeout == SHORT_CALL_TIMEOUT          # a hung interrupt must not block the shutdown for ten minutes
             sent.append((session_id, events[0]["type"]))
 
     class Client:
