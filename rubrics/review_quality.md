@@ -10,7 +10,7 @@ Every finding has a `claim`, `evidence.locations`, `violates`, and a `refutation
 
 ## R2. Severity is calibrated
 `blocking` only for criterion violations or data corruption; `major` for real defects outside criteria or security/concurrency; style is `nit`.
-- 0: a style issue marked blocking, or a criterion violation marked minor.
+- 0: a style issue marked blocking, a criterion violation marked minor, or a reproduced concurrency, data-consistency or security defect marked below major.
 - 2: calibrated.
 
 ## R3. Checks performed are real and sufficient

@@ -1,0 +1,180 @@
+{
+  "commands": [
+    {
+      "command": "python -m pytest -q",
+      "exit_code": 0,
+      "stdout_tail": ".....................................                                    [100%]\n37 passed in 0.25s\n",
+      "stderr_tail": ""
+    },
+    {
+      "command": "python -m pytest -q tests/test_todos.py tests/test_overdue.py",
+      "exit_code": 0,
+      "stdout_tail": ".....................................                                    [100%]\n37 passed in 0.20s\n",
+      "stderr_tail": ""
+    },
+    {
+      "command": "test -f tests/test_overdue.py && test -f tests/e2e_overdue.py",
+      "exit_code": 0,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": "git diff --exit-code main -- tests/test_todos.py pyproject.toml service_manifest.json .github",
+      "exit_code": 0,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": "test -z \"$( (git diff --name-only main; git ls-files -o --exclude-standard) | grep -vxE 'app/storage\\.py|app/main\\.py|README\\.md|tests/test_overdue\\.py|tests/e2e_overdue\\.py' )\"",
+      "exit_code": 0,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": "python -c \"import ast,glob,sys; ok=set(sys.stdlib_module_names)|{'app','fastapi','pydantic','uvicorn','pytest','httpx','starlette'}; fs=glob.glob('app/**/*.py',recursive=True)+glob.glob('tests/**/*.py',recursive=True); bad=[(f,m) for f in fs for n in ast.walk(ast.parse(open(f).read())) for m in ([a.name.split('.')[0] for a in n.names] if isinstance(n,ast.Import) else [n.module.split('.')[0]] if isinstance(n,ast.ImportFrom) and n.level==0 else []) if m not in ok]; print('disallowed imports:',bad); sys.exit(bool(bad))\"",
+      "exit_code": 0,
+      "stdout_tail": "disallowed imports: []\n",
+      "stderr_tail": ""
+    },
+    {
+      "command": "python -c \"import ast; d=ast.get_docstring(ast.parse(open('app/main.py').read())); r=open('README.md').read(); assert 'GET /todos/overdue' in d and 'due_date' in d, 'docstring'; assert all(s in r for s in ['GET /todos/overdue','due_date','overdue','YYYY-MM-DD','strictly before','UTC']), 'README'\"",
+      "exit_code": 0,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": "! grep -nE \"sleep|datetime\\.now|date\\.today\" tests/test_overdue.py",
+      "exit_code": 0,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": "! grep -nE \"extra *=|model_config|ConfigDict\" app/main.py",
+      "exit_code": 0,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "command": "python tests/e2e_overdue.py local-all",
+      "exit_code": 0,
+      "stdout_tail": "starting /Users/will/Desktop/factory_agents/orchestrator/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 53145 --log-level warning\nPASS empty-overdue --strict\nPASS compat\nPASS create-future\nPASS create-past\nPASS boundary\nPASS listing\nPASS overdue-list\nPASS empty-overdue\nPASS complete\nPASS malformed\n10 passed, 0 failed\n",
+      "stderr_tail": ""
+    },
+    {
+      "command": "PYTHONPATH=. python tests/e2e_overdue.py rollover-local",
+      "exit_code": 0,
+      "stdout_tail": "PASS rollover-local\n1 passed, 0 failed\n",
+      "stderr_tail": ""
+    }
+  ],
+  "e2e": [
+    {
+      "command": "python tests/e2e_overdue.py compat \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-1"
+      ],
+      "base_url": "http://127.0.0.1:53217",
+      "exit_code": 0,
+      "stdout_tail": "PASS compat\n1 passed, 0 failed\n",
+      "stderr_tail": ""
+    },
+    {
+      "command": "python tests/e2e_overdue.py create-future \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-2"
+      ],
+      "base_url": "http://127.0.0.1:53217",
+      "exit_code": 0,
+      "stdout_tail": "PASS create-future\n1 passed, 0 failed\n",
+      "stderr_tail": ""
+    },
+    {
+      "command": "python tests/e2e_overdue.py create-past \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-3"
+      ],
+      "base_url": "http://127.0.0.1:53217",
+      "exit_code": 0,
+      "stdout_tail": "PASS create-past\n1 passed, 0 failed\n",
+      "stderr_tail": ""
+    },
+    {
+      "command": "python tests/e2e_overdue.py boundary \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-4"
+      ],
+      "base_url": "http://127.0.0.1:53217",
+      "exit_code": 0,
+      "stdout_tail": "PASS boundary\n1 passed, 0 failed\n",
+      "stderr_tail": ""
+    },
+    {
+      "command": "python tests/e2e_overdue.py listing \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-5",
+        "AC-10"
+      ],
+      "base_url": "http://127.0.0.1:53217",
+      "exit_code": 0,
+      "stdout_tail": "PASS listing\n1 passed, 0 failed\n",
+      "stderr_tail": ""
+    },
+    {
+      "command": "python tests/e2e_overdue.py overdue-list \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-6"
+      ],
+      "base_url": "http://127.0.0.1:53217",
+      "exit_code": 0,
+      "stdout_tail": "PASS overdue-list\n1 passed, 0 failed\n",
+      "stderr_tail": ""
+    },
+    {
+      "command": "python tests/e2e_overdue.py empty-overdue \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-7"
+      ],
+      "base_url": "http://127.0.0.1:53217",
+      "exit_code": 0,
+      "stdout_tail": "PASS empty-overdue\n1 passed, 0 failed\n",
+      "stderr_tail": ""
+    },
+    {
+      "command": "python tests/e2e_overdue.py complete \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-8"
+      ],
+      "base_url": "http://127.0.0.1:53217",
+      "exit_code": 0,
+      "stdout_tail": "PASS complete\n1 passed, 0 failed\n",
+      "stderr_tail": ""
+    },
+    {
+      "command": "python tests/e2e_overdue.py malformed \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-9"
+      ],
+      "base_url": "http://127.0.0.1:53217",
+      "exit_code": 0,
+      "stdout_tail": "PASS malformed\n1 passed, 0 failed\n",
+      "stderr_tail": ""
+    }
+  ],
+  "preview": {
+    "branch": "factory/run_57fde1adc2/spec_wi-due-dates-overdue",
+    "head_sha": "1ad4332091c2dac9d49aefd4c7d2350982f1576d",
+    "mode": "local",
+    "status": "ready",
+    "url": "http://127.0.0.1:53217",
+    "pipeline": null
+  }
+}

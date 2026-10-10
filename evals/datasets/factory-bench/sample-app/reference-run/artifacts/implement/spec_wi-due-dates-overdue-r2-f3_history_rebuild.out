@@ -1,0 +1,8 @@
+# F-3 history rebuild: tree identity of rebuilt commits
+5fd5533^{tree}=32d029a94e0168ff2eaada382b9717ee7e2bab00  23128cd^{tree}=32d029a94e0168ff2eaada382b9717ee7e2bab00
+7a5bfd4^{tree}=71212e44189dfbeba54e3956dc6a8370e87c78fd  1ad4332^{tree}=71212e44189dfbeba54e3956dc6a8370e87c78fd
+branch main..origin/factory/run_57fde1adc2/spec_wi-due-dates-overdue:
+93ced45 AC-4: pin the UTC half of the overdue rule (review F-2)
+e563e95 AC-3, AC-5: single-object responses derive overdue from one snapshot of the todo (review F-1)
+7a5bfd4 AC-4, AC-5, AC-6, AC-8: list endpoints judge every todo against one clock reading; boundary, listing, overdue-list and complete checks
+5fd5533 AC-1, AC-2, AC-3, AC-7, AC-9, AC-10, AC-13: optional due_date on POST /todos (null or a real YYYY-MM-DD date, else 422), overdue derived per response, GET /todos/overdue, docs and e2e runner

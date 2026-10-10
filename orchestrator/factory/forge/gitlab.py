@@ -87,6 +87,9 @@ class GitLabForge:
                 found.add(p)
         return found
 
+    def file_exists(self, branch: str, path: str) -> bool:
+        return self.http.head(self._p(f"/repository/files/{quote(path, safe='')}"), params={"ref": branch}).status_code == 200
+
     def file_url(self, branch: str, path: str) -> str:
         return f"{self.url}/{self.repo}/-/blob/{branch}/{path}"
 

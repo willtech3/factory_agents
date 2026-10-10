@@ -99,6 +99,9 @@ class GitHubForge:
         r.raise_for_status()
         return commit["sha"]
 
+    def file_exists(self, branch: str, path: str) -> bool:
+        return self.http.get(self._r(f"/contents/{path}"), params={"ref": branch}).status_code == 200
+
     def file_url(self, branch: str, path: str) -> str:
         return f"{self.url}/{self.repo}/blob/{branch}/{path}"
 

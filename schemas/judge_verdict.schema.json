@@ -35,7 +35,7 @@
               "properties": {
                 "criterion": { "type": "string" },
                 "score": { "type": "integer", "minimum": 0, "maximum": 3, "description": "0 = fails, 1 = partially, 2 = meets, 3 = exemplary. Rubric defines the anchors." },
-                "evidence": { "type": "string", "description": "Quote or reference to the spec text that justifies the score." }
+                "evidence": { "type": "string", "maxLength": 400, "description": "One sentence pointing at the spec (section, AC id) or the repository (path:line) that justifies the score. A reference, not a quotation." }
               }
             }
           },

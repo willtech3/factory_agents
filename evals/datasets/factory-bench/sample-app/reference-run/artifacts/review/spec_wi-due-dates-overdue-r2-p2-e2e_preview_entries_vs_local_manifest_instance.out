@@ -1,0 +1,72 @@
+[pass 1] python tests/e2e_overdue.py compat "$BASE_URL"
+PASS compat
+1 passed, 0 failed
+  exit 0
+[pass 1] python tests/e2e_overdue.py create-future "$BASE_URL"
+PASS create-future
+1 passed, 0 failed
+  exit 0
+[pass 1] python tests/e2e_overdue.py create-past "$BASE_URL"
+PASS create-past
+1 passed, 0 failed
+  exit 0
+[pass 1] python tests/e2e_overdue.py boundary "$BASE_URL"
+PASS boundary
+1 passed, 0 failed
+  exit 0
+[pass 1] python tests/e2e_overdue.py listing "$BASE_URL"
+PASS listing
+1 passed, 0 failed
+  exit 0
+[pass 1] python tests/e2e_overdue.py overdue-list "$BASE_URL"
+PASS overdue-list
+1 passed, 0 failed
+  exit 0
+[pass 1] python tests/e2e_overdue.py empty-overdue "$BASE_URL"
+PASS empty-overdue
+1 passed, 0 failed
+  exit 0
+[pass 1] python tests/e2e_overdue.py complete "$BASE_URL"
+PASS complete
+1 passed, 0 failed
+  exit 0
+[pass 1] python tests/e2e_overdue.py malformed "$BASE_URL"
+PASS malformed
+1 passed, 0 failed
+  exit 0
+[pass 2] python tests/e2e_overdue.py compat "$BASE_URL"
+PASS compat
+1 passed, 0 failed
+  exit 0
+[pass 2] python tests/e2e_overdue.py create-future "$BASE_URL"
+PASS create-future
+1 passed, 0 failed
+  exit 0
+[pass 2] python tests/e2e_overdue.py create-past "$BASE_URL"
+PASS create-past
+1 passed, 0 failed
+  exit 0
+[pass 2] python tests/e2e_overdue.py boundary "$BASE_URL"
+PASS boundary
+1 passed, 0 failed
+  exit 0
+[pass 2] python tests/e2e_overdue.py listing "$BASE_URL"
+PASS listing
+1 passed, 0 failed
+  exit 0
+[pass 2] python tests/e2e_overdue.py overdue-list "$BASE_URL"
+PASS overdue-list
+1 passed, 0 failed
+  exit 0
+[pass 2] python tests/e2e_overdue.py empty-overdue "$BASE_URL"
+PASS empty-overdue
+1 passed, 0 failed
+  exit 0
+[pass 2] python tests/e2e_overdue.py complete "$BASE_URL"
+PASS complete
+1 passed, 0 failed
+  exit 0
+[pass 2] python tests/e2e_overdue.py malformed "$BASE_URL"
+PASS malformed
+1 passed, 0 failed
+  exit 0

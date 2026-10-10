@@ -1,0 +1,26 @@
+## pass 1
+[0] python tests/e2e_overdue.py compat "$BASE_URL" :: PASS compat 1 passed, 0 failed 
+[0] python tests/e2e_overdue.py create-future "$BASE_URL" :: PASS create-future 1 passed, 0 failed 
+[0] python tests/e2e_overdue.py create-past "$BASE_URL" :: PASS create-past 1 passed, 0 failed 
+[0] python tests/e2e_overdue.py boundary "$BASE_URL" :: PASS boundary 1 passed, 0 failed 
+[0] python tests/e2e_overdue.py listing "$BASE_URL" :: PASS listing 1 passed, 0 failed 
+[0] python tests/e2e_overdue.py overdue-list "$BASE_URL" :: PASS overdue-list 1 passed, 0 failed 
+[0] python tests/e2e_overdue.py empty-overdue "$BASE_URL" :: PASS empty-overdue 1 passed, 0 failed 
+[0] python tests/e2e_overdue.py complete "$BASE_URL" :: PASS complete 1 passed, 0 failed 
+[0] python tests/e2e_overdue.py malformed "$BASE_URL" :: PASS malformed 1 passed, 0 failed 
+## pass 2
+[0] python tests/e2e_overdue.py compat "$BASE_URL" :: PASS compat 1 passed, 0 failed 
+[0] python tests/e2e_overdue.py create-future "$BASE_URL" :: PASS create-future 1 passed, 0 failed 
+[0] python tests/e2e_overdue.py create-past "$BASE_URL" :: PASS create-past 1 passed, 0 failed 
+[0] python tests/e2e_overdue.py boundary "$BASE_URL" :: PASS boundary 1 passed, 0 failed 
+[0] python tests/e2e_overdue.py listing "$BASE_URL" :: PASS listing 1 passed, 0 failed 
+[0] python tests/e2e_overdue.py overdue-list "$BASE_URL" :: PASS overdue-list 1 passed, 0 failed 
+[0] python tests/e2e_overdue.py empty-overdue "$BASE_URL" :: PASS empty-overdue 1 passed, 0 failed 
+[0] python tests/e2e_overdue.py complete "$BASE_URL" :: PASS complete 1 passed, 0 failed 
+[0] python tests/e2e_overdue.py malformed "$BASE_URL" :: PASS malformed 1 passed, 0 failed 
+## all
+PASS malformed
+9 passed, 0 failed
+## strict on populated (expected FAIL)
+FAIL empty-overdue --strict: empty-overdue --strict: GET /todos/overdue is [{'id': 5, 'title': 'e2e-create-past', 'done': False, 'created_at': '2026-10-10T12:57:22.488310+00:00', 'due_date': '2000-01-01', 'overdue': True}, {'id': 6, 'title': 'e2e-boundary-2026-10-09', 'done': False, 'created_at': '2026-10-10T12:57:22.590393+00:00', 'due_date': '2026-10-09', 'overdue': True}, {'id': 9, 'title': 'e2e-listing-open-2000-01-01', 'done': False, 'created_at': '2026-10-10T12:57:22.727625+00:00', 'due_date': '2000-01-01', 'overdue': True}, {'id': 17, 'title': 'e2e-overdue-a', 'done': False, 'created_at': '2026-10-10T12:57:22.854708+00:00', 'due_date': '2000-01-01', 'overdue': True}, {'id': 22, 'title': 'e2e-overdue-f', 'done': False, 'created_at': '2026-10-10T12:57:22.865940+00:00', 'due_date': '2026-10-09', 'overdue': True}, {'id': 32, 'title': 'e2e-create-past', 'done': False, 'created_at': '2026-10-10T12:57:23.615706+00:00', 'due_date': '2000-01-01', 'overdue': True}, {'id': 33, 'title': 'e2e-boundary-2026-10-09', 'done': False, 'created_at': '2026-10-10T12:57:23.731487+00:00', 'due_date': '2026-10-09', 'overdue': True}, {'id': 36, 'title': 'e2e-listing-open-2000-01-01', 'done': False, 'created_at': '2026-10-10T12:57:23.850101+00:00', 'due_date': '2000-01-01', 'overdue': True}, {'id': 44, 'title': 'e2e-overdue-a', 'done': False, 'created_at': '2026-10-10T12:57:23.987417+00:00', 'due_date': '2000-01-01', 'overdue': True}, {'id': 49, 'title': 'e2e-overdue-f', 'done': False, 'created_at': '2026-10-10T12:57:23.999136+00:00', 'due_date': '2026-10-09', 'overdue': True}, {'id': 59, 'title': 'e2e-create-past', 'done': False, 'created_at': '2026-10-10T12:57:24.546794+00:00', 'due_date': '2000-01-01', 'overdue': True}, {'id': 60, 'title': 'e2e-boundary-2026-10-09', 'done': False, 'created_at': '2026-10-10T12:57:24.550035+00:00', 'due_date': '2026-10-09', 'overdue': True}, {'id': 63, 'title': 'e2e-listing-open-2000-01-01', 'done': False, 'created_at': '2026-10-10T12:57:24.556143+00:00', 'due_date': '2000-01-01', 'overdue': True}, {'id': 71, 'title': 'e2e-overdue-a', 'done': False, 'created_at': '2026-10-10T12:57:24.578097+00:00', 'due_date': '2000-01-01', 'overdue': True}, {'id': 76, 'title': 'e2e-overdue-f', 'done': False, 'created_at': '2026-10-10T12:57:24.587296+00:00', 'due_date': '2026-10-09', 'overdue': True}], want [] (needs a server holding no todos)
+0 passed, 1 failed

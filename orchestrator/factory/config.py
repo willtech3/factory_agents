@@ -28,10 +28,13 @@ AGENT_FILES = {
     "spec_judge": "./agents/spec_judge.md",
     "implementer": "./agents/implementer.md",
     "reviewer": "./agents/reviewer.md",
+    "security_reviewer": "./agents/security_reviewer.md",
     "merge_judge": "./agents/merge_judge.md",
     "integrator": "./agents/integrator.md",
 }
 ENVIRONMENT_FILE = "./environments/factory-cloud.yaml"
+# Agents a run can do without: when not applied, the orchestrator skips their pass and says so.
+OPTIONAL_AGENTS = {"security_reviewer"}
 
 FORGES = ("github", "gitlab")
 GATE_SURFACES = ("forge", "tracker", "file", "web")   # web = the Factory Console over the file queue
@@ -215,7 +218,7 @@ def missing(cfg: Config, design_only: bool = False) -> list[str]:
 
     `design_only` runs (decompose, Gate 1, specify, judge, Gate 2; no code) need the platform and the gate
     surface but no forge, so forge and vault gaps are not reported for them."""
-    gaps = [f"agent:{k}" for k in AGENT_FILES if k not in cfg.agents]
+    gaps = [f"agent:{k}" for k in AGENT_FILES if k not in cfg.agents and k not in OPTIONAL_AGENTS]
     if not cfg.environment_id:
         gaps.append("environment_id (run `ant apply agents environments`)")
     if not os.environ.get("ANTHROPIC_API_KEY"):

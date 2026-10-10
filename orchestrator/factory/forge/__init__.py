@@ -48,6 +48,7 @@ class Forge(Protocol):
     # ---- branches and commits (design CR, run record)
     def create_branch(self, branch: str, ref: str) -> None: ...
     def commit_files(self, branch: str, message: str, files: dict[str, bytes]) -> str: ...
+    def file_exists(self, branch: str, path: str) -> bool: ...
     def file_url(self, branch: str, path: str) -> str: ...
 
     # ---- change requests (Gate 3, and the design CR when the gate surface is the forge)
@@ -133,23 +134,73 @@ def repo_from_url(url: str) -> str:
     return path[:-4] if path.endswith(".git") else path
 
 
-def ensure_repository(forge: Forge, repo: dict[str, Any], workflow_template: Path | None = None) -> dict[str, Any] | None:
-    """Create the outcome's repository when it asks for one (`create: true`) and it does not exist yet.
+WORKFLOW_SCOPE_HINT = ("the forge refused to write {path}: on GitHub, writing under .github/workflows/ needs a token with the "
+                       "`workflow` scope (for a gh token: `gh auth refresh -s workflow`), and the Git Data API reports the "
+                       "refusal as 404. The repository is usable; with FACTORY_PREVIEW=local nothing needs the workflow. "
+                       "Add it by hand or re-run with a token that has the scope.")
+
+
+SKILL_PATH = ".claude/skills/platform-contract/SKILL.md"
+
+
+def ensure_repository(forge: Forge, repo: dict[str, Any], workflow_template: Path | None = None, *,
+                      skill_file: Path | None = None, sleep=None, attempts: int = 4, log=print) -> dict[str, Any] | None:
+    """Create the outcome's repository when it asks for one (`create: true`) and it does not exist yet, and try to
+    give it the preview workflow.
 
     A new repository is private unless the outcome says `visibility: public`, initialised so the default branch
     exists, and seeded with the preview workflow template (the platform's job elsewhere; on a personal GitHub
-    the template is the platform). Returns what was created, or None when the repository already existed."""
-    if not repo.get("create") or forge.repository_exists():
+    the template is the platform). GitHub's git database can answer 404 to writes for a few seconds after a
+    repository is created, so the seed commit is retried with backoff. A repository that already exists is left
+    alone except for that one file: when `create: true` and the workflow is missing (an earlier attempt died
+    between creation and seeding), it is added. A seed the forge keeps refusing is a warning, not a failure: the
+    usual cause is a token without GitHub's `workflow` scope, and a run with local previews never needs the
+    file. Returns what was created (with `workflow_seeded`), or None when the repository already existed."""
+    import time
+    sleep = sleep or time.sleep
+    if not repo.get("create"):
         return None
-    created = forge.create_repository(private=repo.get("visibility", "private") != "public",
-                                      description=repo.get("description", "Created by the software factory"))
-    files: dict[str, bytes] = {}
+    created = None
+    if not forge.repository_exists():
+        created = forge.create_repository(private=repo.get("visibility", "private") != "public",
+                                          description=repo.get("description", "Created by the software factory"))
+    branch = (created or {}).get("default_branch") or repo.get("default_branch", "main")
+    # The platform-contract skill is seeded first and on its own: the agents read it from the repository's
+    # .claude/skills/ and its path needs no special token scope. The workflow follows, with its own retries.
+    if skill_file and skill_file.is_file() and forge.kind == "github":
+        if created is not None or not forge.file_exists(branch, SKILL_PATH):
+            _seed(forge, branch, "factory: platform contract skill", {SKILL_PATH: skill_file.read_bytes()},
+                  sleep=sleep, attempts=attempts, log=log, hint="the forge refused to write {path}")
+    path = ".github/workflows/preview.yml"
     if workflow_template and workflow_template.is_file() and forge.kind == "github":
-        files[".github/workflows/preview.yml"] = workflow_template.read_bytes()
-    if files:
-        forge.commit_files(created.get("default_branch") or repo.get("default_branch", "main"),
-                           "factory: preview workflow for factory branches", files)
+        seeded = True if (created is None and forge.file_exists(branch, path)) else _seed(
+            forge, branch, "factory: preview workflow for factory branches", {path: workflow_template.read_bytes()},
+            sleep=sleep, attempts=attempts, log=log, hint=WORKFLOW_SCOPE_HINT)
+        if created is not None:
+            created["workflow_seeded"] = seeded
     return created
+
+
+def _seed(forge: Forge, branch: str, message: str, files: dict[str, bytes], *, sleep, attempts: int, log, hint: str) -> bool:
+    """One commit with `files`, retried with backoff while the forge answers a transient or refusing status.
+    Returns whether it landed; a refusal that outlasts the retries is logged with `hint` and swallowed."""
+    import time
+    sleep = sleep or time.sleep
+    delay = 2.0
+    for attempt in range(attempts):
+        try:
+            forge.commit_files(branch, message, files)
+            return True
+        except Exception as e:  # noqa: BLE001  (httpx status errors)
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status not in (403, 404, 409, 422, 500, 502, 503):
+                raise
+            if attempt == attempts - 1:
+                log("[forge] " + hint.format(path=", ".join(files)) + f" (last response: {status})")
+                return False
+            sleep(delay)
+            delay = min(delay * 2, 20.0)
+    return False
 
 
 def ref_slug(ref: str) -> str:

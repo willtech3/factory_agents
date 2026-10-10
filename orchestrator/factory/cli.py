@@ -51,7 +51,8 @@ def _bind_forge(cfg, outcome: dict, want_forge: bool):
     forge_obj = make_forge(cfg)
     created = None
     if forge_obj is not None and repo.get("create"):
-        created = ensure_repository(forge_obj, repo, cfg.templates_dir / "github-actions-preview.yml")
+        created = ensure_repository(forge_obj, repo, cfg.templates_dir / "github-actions-preview.yml",
+                                    skill_file=cfg.templates_dir.parent / "skills" / "platform-contract" / "SKILL.md")
         if created:
             typer.echo(f"created repository {created['url']} (default branch {created.get('default_branch')})")
     return cfg, forge_obj, created
@@ -67,6 +68,7 @@ def _policy(outcome: dict, design_only: bool):
     return Policy(run_budget_usd=outcome.get("constraints", {}).get("budget_usd") or 150.0, design_only=design_only,
                   stage_budget_usd={k: round(v * scale, 2) for k, v in base.stage_budget_usd.items()},
                   reviewer_passes=knob("FACTORY_REVIEWER_PASSES", base.reviewer_passes),
+                  security_review=os.environ.get("FACTORY_SECURITY_REVIEW", "1").lower() not in ("0", "false", "no", "off"),
                   review_max_rounds=knob("FACTORY_REVIEW_MAX_ROUNDS", base.review_max_rounds),
                   parallel_implementations=knob("FACTORY_PARALLEL_IMPLEMENTATIONS", base.parallel_implementations),
                   outcome_max_iterations=knob("FACTORY_OUTCOME_MAX_ITERATIONS", base.outcome_max_iterations))
@@ -125,7 +127,8 @@ def _context(cfg, outcome: dict, run_id: str, *, forge: bool, design_only: bool)
     )
     if created:
         ctx.event("repository.created", {"url": created["url"], "default_branch": created.get("default_branch"),
-                                         "private": created.get("private"), "forge": cfg.forge}, stage="intake", actor="platform")
+                                         "private": created.get("private"), "forge": cfg.forge,
+                                         "workflow_seeded": created.get("workflow_seeded")}, stage="intake", actor="platform")
     ctx.driver.on_session_started = lambda info: ctx.event(
         "session.started", {k: v for k, v in info.items() if k not in ("run_id", "work_item_id")},
         stage=info["stage"], actor="platform", work_item_id=info.get("work_item_id"))

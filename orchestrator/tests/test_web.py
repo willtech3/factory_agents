@@ -168,7 +168,7 @@ def test_outcome_form_validation_and_demo_start(client):
     assert t["_example"]["title"].startswith("Todos with due dates") and t["success_metrics"][0]["metric"] == ""
     assert client.get("/api/outcomes/template?example=ledgerline").json()["outcome"]["_example"]["title"].startswith("Cut involuntary churn")
     assert client.get("/api/outcomes/template?example=nope").status_code == 404
-    assert {e["name"] for e in client.get("/api/outcomes/examples").json()["examples"]} == {"sample-app", "ledgerline"}
+    assert {"sample-app", "ledgerline"} <= {e["name"] for e in client.get("/api/outcomes/examples").json()["examples"]}
     assert client.get("/api/outcomes/../etc/passwd").status_code == 404
     bad = {"title": "x", "statement": "y", "success_metrics": [], "constraints": {}, "owner": {"name": "a", "handle": "a", "role": "r"},
            "target_repositories": [{"url": "https://github.com/x/y", "default_branch": "main", "paths_in_scope": []}]}

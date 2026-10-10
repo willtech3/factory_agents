@@ -1,0 +1,48 @@
+{
+  "outcome_id": "out_4e93d2a0d0",
+  "title": "Todos with due dates and an overdue view",
+  "statement": "People use the todo service to track small tasks, but nothing tells them when a task is late. Add an optional due date to a todo, let the API list what is overdue, and make it obvious in the response when a task is past due. Keep the API backwards compatible: existing clients that never send a due date must keep working unchanged.",
+  "success_metrics": [
+    {
+      "metric": "Overdue visibility",
+      "baseline": "No way to tell a late task from an open one",
+      "target": "GET /todos/overdue returns exactly the open todos whose due date is in the past, and each todo in any listing carries an overdue flag",
+      "measurement": "Automated API tests in tests/"
+    },
+    {
+      "metric": "Backwards compatibility",
+      "baseline": "Current clients create todos with only a title",
+      "target": "Every existing test still passes unchanged; a todo without a due date is never overdue",
+      "measurement": "The existing test suite plus new tests"
+    }
+  ],
+  "constraints": {
+    "must_not": [
+      "Do not add a database; storage stays in memory",
+      "Do not change the shape of existing fields on a todo",
+      "Do not add new dependencies beyond the standard library and what is already in pyproject"
+    ],
+    "budget_usd": 60,
+    "deadline": "2026-11-30",
+    "compliance": []
+  },
+  "context_links": [],
+  "target_repositories": [
+    {
+      "url": "https://github.com/willtech3/factory-sample-app",
+      "default_branch": "main",
+      "paths_in_scope": [
+        "app/**",
+        "tests/**",
+        "README.md"
+      ]
+    }
+  ],
+  "owner": {
+    "name": "Will",
+    "handle": "willtech3",
+    "role": "Owner"
+  },
+  "clarifications": [],
+  "created_at": "2026-10-10T08:10:54.068302+00:00"
+}

@@ -1,0 +1,14 @@
+## /tmp/rv2
+2 passed, 1 warning in 0.76s
+## /tmp/mut_todict_overdue_first
+E       assert True is not True
+FAILED ::test_post_response_consistent_whichever_read_comes_first[is_overdue]
+1 failed, 1 passed, 1 warning in 0.38s
+## /tmp/mut_todict_no_copy
+E       assert False is not False
+FAILED ::test_post_response_consistent_whichever_read_comes_first[asdict] - A...
+1 failed, 1 passed, 1 warning in 0.43s
+## /tmp/wt_r1
+E       assert False is not False
+FAILED ::test_post_response_consistent_whichever_read_comes_first[asdict] - A...
+1 failed, 1 passed, 1 warning in 0.40s

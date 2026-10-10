@@ -1,0 +1,42 @@
+[
+  {
+    "check": "diff_scope",
+    "passed": true,
+    "detail": "all changed files inside allowed_paths"
+  },
+  {
+    "check": "protected_tests",
+    "passed": true,
+    "detail": "no existing tests modified"
+  },
+  {
+    "check": "test_weakening",
+    "passed": true,
+    "detail": "no skip/xfail markers added"
+  },
+  {
+    "check": "ac_test_mapping",
+    "passed": false,
+    "detail": "AC-1: no test mapped; AC-2: no test mapped; AC-3: no test mapped; AC-4: no test mapped; AC-5: no test mapped; AC-6: no test mapped; AC-7: no test mapped; AC-8: no test mapped; AC-9: no test mapped; AC-10: no test mapped; AC-11: no test mapped"
+  },
+  {
+    "check": "test_plan_commands",
+    "passed": true,
+    "detail": "all test plan commands exit 0"
+  },
+  {
+    "check": "e2e_coverage",
+    "passed": true,
+    "detail": "every user_visible criterion has an e2e entry"
+  },
+  {
+    "check": "manifest_valid",
+    "passed": true,
+    "detail": "valid"
+  },
+  {
+    "check": "e2e_preview",
+    "passed": true,
+    "detail": "all 9 e2e entries exit 0 on preview"
+  }
+]
