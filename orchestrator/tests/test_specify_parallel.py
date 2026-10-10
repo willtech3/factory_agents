@@ -24,6 +24,8 @@ class Driver:
 
     def run(self, **kw):
         self.uploads_seen = getattr(self, "uploads_seen", []); self.uploads_seen.append((kw["agent_key"], sorted(kw["uploads"])))
+        self.calls = getattr(self, "calls", []); self.calls.append(kw)
+        round_no = int(kw["title"].rsplit(" r", 1)[1])
         if kw["agent_key"] == "spec_writer":
             with self.lock:
                 self.active += 1; self.peak = max(self.peak, self.active)
@@ -37,9 +39,9 @@ class Driver:
             spec = dict(self.examples["spec_smart_retries"], spec_id=f"spec_{wid.removeprefix('wi-')}", work_item_id=wid)
             return SimpleNamespace(session_id="s", agent_id="w", agent_version=1, outcome_result="satisfied", outcome_iterations=1,
                                    list_cost_usd=0.1, stop_reason="end_turn", events_seen=1, custom_tool_calls=[],
-                                   outputs={"spec.json": json.dumps(spec).encode(), "spec.md": b"# s"})
+                                   outputs={"spec.json": json.dumps(spec).encode(), "spec.md": f"# {wid} as written in round {round_no}".encode()})
         self.judge_uploads = sorted(kw["uploads"])
-        verdict = dict(self.examples["verdict_round2"])
+        verdict = dict(self.examples["verdict_round2"], round=round_no)
         return SimpleNamespace(session_id="j", agent_id="j", agent_version=1, outcome_result=None, outcome_iterations=0,
                                list_cost_usd=0.1, stop_reason="end_turn", events_seen=1, custom_tool_calls=[],
                                outputs={"verdict.json": json.dumps(verdict).encode()})
@@ -82,3 +84,43 @@ def test_owner_notes_reach_the_judge_and_prior_specs_reach_the_writers(tmp_path,
     judges = [u for k, u in ctx.driver.uploads_seen if k == "spec_judge"]
     assert all("human_comments.md" in u and "prior/spec.json" in u for u in writers)
     assert judges and "human_comments.md" in judges[0]
+
+
+def test_gate_2_send_back_keeps_every_round_and_hands_each_consumer_this_rounds_markdown(tmp_path, root, examples):
+    """Post-mortem issue 1: a Gate 2 request-changes re-enters run_specify with a round offset and the previous verdict.
+    Round numbers keep counting (cycle B never overwrites cycle A's artefacts), the judge reads the spec.md the writer
+    produced in that round (not a stale one from the store), and the first judge after the send-back sees the previous
+    verdict beside the owner's comments."""
+    ctx = _ctx(tmp_path, root, examples, Policy())
+    ctx.driver.gate = threading.Barrier(1)
+    outcome, decomposition = examples["outcome"], examples["decomposition"]
+    sid, wid = "spec_smart-retries", "wi-smart-retries"
+
+    specs_a, verdict_a = specify.run_specify(ctx, outcome, decomposition)                       # cycle A
+    judge_a = [c for c in ctx.driver.calls if c["agent_key"] == "spec_judge"][-1]
+    assert verdict_a["round"] == 1 and specs_a[sid]["_markdown"] == f"# {wid} as written in round 1"
+    assert judge_a["uploads"][f"specs/{sid}.md"] == specs_a[sid]["_markdown"].encode()
+    assert "previous_verdict.json" not in judge_a["uploads"]
+    assert "_markdown" not in json.loads(judge_a["uploads"][f"specs/{sid}.json"])                # private key never uploaded
+
+    # the owner sends the set back: the runner passes the drafts, the notes, the verdict and the round offset
+    prior = {s["work_item_id"]: s for s in specs_a.values()}
+    notes = {w: "# Notes\n- overdue means due before today" for w in prior}
+    specs_b, verdict_b = specify.run_specify(ctx, outcome, decomposition, notes, prior,
+                                             previous_verdict=verdict_a, round_offset=verdict_a["round"])
+    assert verdict_b["round"] == 2 and all(s["revision"] == 2 for s in specs_b.values())
+    judge_b = [c for c in ctx.driver.calls if c["agent_key"] == "spec_judge"][-1]
+    assert judge_b["uploads"][f"specs/{sid}.md"] == f"# {wid} as written in round 2".encode() != judge_a["uploads"][f"specs/{sid}.md"]
+    assert json.loads(judge_b["uploads"]["previous_verdict.json"])["round"] == 1 and "human_comments.md" in judge_b["uploads"]
+    assert "This is round 2" in judge_b["description"]
+    writers_b = [c for c in ctx.driver.calls if c["agent_key"] == "spec_writer" and c["title"].endswith(" r2")]
+    assert len(writers_b) == 4 and all("prior/spec.json" in c["uploads"] and "human_comments.md" in c["uploads"] for c in writers_b)
+
+    # both rounds are in the store, under their own names, and spec.json holds no private keys
+    d = tmp_path / ctx.run_id / "artifacts" / "specify"
+    assert (d / f"{wid}-r1-spec.md").read_text() == f"# {wid} as written in round 1"
+    assert (d / f"{wid}-r2-spec.md").read_text() == f"# {wid} as written in round 2"
+    assert "_markdown" not in json.loads((d / f"{wid}-r2-spec.json").read_text())
+    rounds = [e.payload["spec_round"] for e in ctx.store.events(ctx.run_id)
+              if e.kind == "work_item.stage" and e.work_item_id == wid and "spec_round" in e.payload]
+    assert rounds == [1, 2]

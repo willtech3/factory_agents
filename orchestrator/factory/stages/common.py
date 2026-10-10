@@ -11,6 +11,14 @@ from ..sessions import SessionContext, StageResult
 from . import RunContext
 
 
+def public(artifact: dict[str, Any]) -> dict[str, Any]:
+    """The artefact without the orchestrator's private keys (`_markdown`, `_head_sha`, `_branch`, ...).
+
+    Private keys travel with the object in memory between stages; what is persisted, uploaded to a session, validated
+    against a schema or committed to the repository is always the public form."""
+    return {k: v for k, v in artifact.items() if not k.startswith("_")}
+
+
 def provenance(ctx: RunContext, res: StageResult, agent_name: str, model: str, inputs: dict[str, str]) -> dict[str, Any]:
     from datetime import datetime, timezone
     return {

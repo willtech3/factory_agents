@@ -82,6 +82,10 @@ class SessionDriver:
         """Upload each file and return `file` resources mounted under /mnt/session/uploads/<path>."""
         resources = []
         for rel_path, content in files.items():
+            if not content:
+                # A 0-byte spec.md reached every implementer and reviewer of live run 2 (post-mortem issue 1). An empty
+                # upload is always an orchestrator bug: the agent would read nothing and say so in its own words.
+                raise ValueError(f"refusing to upload an empty file as {rel_path}")
             f = self.client.beta.files.upload(file=(Path(rel_path).name, content), timeout=SHORT_CALL_TIMEOUT)
             resources.append({"type": "file", "file_id": f.id, "mount_path": "/" + rel_path.lstrip("/")})
         return resources

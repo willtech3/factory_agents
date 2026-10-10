@@ -34,13 +34,13 @@ from typing import Any
 from .. import checks, security
 from ..state import WorkItemStage
 from . import RunContext
-from .common import persist_outputs, provenance, require_json, artifact_json_or_none
+from .common import persist_outputs, provenance, public, require_json, artifact_json_or_none
 
 NO_FORGE_GIT_SETUP = """Git access: no forge is configured for this run. The repository at {repo_url} is not reachable
 from the sandbox; work on branch {branch} from {base_branch} only if it was mounted for you, otherwise record the
 blocker in blocked.md."""
 
-IMPLEMENT_DESCRIPTION = """Implement specification {spec_id} from /mnt/session/uploads/spec.json (spec.md is the readable form).
+IMPLEMENT_DESCRIPTION = """Implement specification {spec_id} from /mnt/session/uploads/spec.json{spec_md_clause}.
 {git}
 {review_clause}
 Write implementation_report.json{response_clause} to /mnt/session/outputs/. The report must map every acceptance criterion
@@ -305,13 +305,16 @@ def preview_info(ctx: RunContext, branch: str, head_sha: str | None = None) -> d
 
 
 def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base_branch: str,
-                      verifier: LocalVerifier, dependency_specs: dict[str, dict], *,
+                      verifier: LocalVerifier, dependency_specs: dict[str, dict], *, spec_md: str = "",
                       resume_from: ResumePoint | None = None) -> dict[str, Any]:
     """Drive one spec through implement/review/judge. Returns the final merge_readiness verdict.
 
-    `resume_from` continues the loop after a dead orchestrator (see `ResumePoint`); the work item then already
-    sits in implementing or responding, so no stage event is emitted for the restart."""
+    `spec_md` is the writer's spec.md for this spec (the runner carries it from Gate 2); the implementer, every
+    reviewer pass and the merge judge receive it beside spec.json. `resume_from` continues the loop after a dead
+    orchestrator (see `ResumePoint`); the work item then already sits in implementing or responding, so no stage
+    event is emitted for the restart."""
     sid, wid = spec["spec_id"], spec["work_item_id"]
+    spec_md = (spec_md or spec.get("_markdown") or "").strip()
     branch = _branch_for(ctx.run_id, sid)
     git = (ctx.forge.sandbox_git_instructions(repo_url, base_branch, branch) if ctx.forge is not None
            else NO_FORGE_GIT_SETUP.format(repo_url=repo_url, base_branch=base_branch, branch=branch))
@@ -329,9 +332,11 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     for round_no in range(resume_from.round_no if resume_from else 1, ctx.policy.review_max_rounds + 2):
         resumed_round = resume_from is not None and round_no == resume_from.round_no
         # ---- implementer (round 1 implements; later rounds respond to findings)
-        uploads = {"spec.json": json.dumps(spec, indent=2).encode(), "spec.md": spec.get("_markdown", "").encode()}
+        uploads = {"spec.json": json.dumps(public(spec), indent=2).encode()}
+        if spec_md:
+            uploads["spec.md"] = spec_md.encode()
         for dsid, ds in dependency_specs.items():
-            uploads[f"dependency_specs/{dsid}.json"] = json.dumps(ds, indent=2).encode()
+            uploads[f"dependency_specs/{dsid}.json"] = json.dumps(public(ds), indent=2).encode()
         review_clause, response_clause = "", ""
         preview = preview_info(ctx, branch)
         uploads["preview.json"] = json.dumps(preview, indent=2).encode()
@@ -351,6 +356,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 agent_key="implementer", title=f"{ctx.run_id} implement {sid} r{round_no}", run_id=ctx.run_id,
                 stage="implement", uploads=uploads, work_item_id=wid,
                 description=IMPLEMENT_DESCRIPTION.format(spec_id=sid, git=git, review_clause=review_clause,
+                                                         spec_md_clause=" (spec.md is the readable form)" if spec_md else "",
                                                          response_clause=response_clause, preview_clause=preview_clause),
                 rubric_md=ctx.rubric("implementation"), max_iterations=ctx.policy.outcome_max_iterations,
                 budget_usd=ctx.policy.stage_budget_usd["implement"],
@@ -399,7 +405,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
 
         # ---- fresh-context adversarial review (N independent passes, merged)
         ctx.event("work_item.stage", {"stage": WorkItemStage.REVIEWING.value, "review_round": round_no}, work_item_id=wid, spec_id=sid)
-        rev_uploads = {"spec.json": uploads["spec.json"], "spec.md": uploads["spec.md"],
+        rev_uploads = {"spec.json": uploads["spec.json"], **({"spec.md": uploads["spec.md"]} if "spec.md" in uploads else {}),
                        "diff.patch": diff["patch"].encode(),
                        "implementation_report.json": json.dumps(report, indent=2).encode(),
                        "preview.json": json.dumps(preview, indent=2).encode(),
@@ -474,7 +480,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     # ---- merge judge (independent)
     ctx.event("work_item.stage", {"stage": WorkItemStage.MERGE_JUDGING.value}, work_item_id=wid, spec_id=sid)
     mj_uploads = {
-        "spec.json": json.dumps(spec, indent=2).encode(), "diff.patch": diff["patch"].encode(),
+        "spec.json": json.dumps(public(spec), indent=2).encode(), "diff.patch": diff["patch"].encode(),
+        **({"spec.md": spec_md.encode()} if spec_md else {}),
         "findings.json": json.dumps(findings or {"findings": []}, indent=2).encode(),
         "review_response.json": json.dumps(response or {"responses": []}, indent=2).encode(),
         "test_results.json": json.dumps({"commands": cmd_results, "e2e": e2e_results, "preview": preview}, indent=2).encode(),

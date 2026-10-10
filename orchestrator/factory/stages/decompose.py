@@ -63,6 +63,9 @@ def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | N
         custom_tools={"ask_human": make_ask_human(ctx, "decomposer")}, repository=mount,
     )
     decomposition = require_json(res, "decomposition.json")
+    if prior_decomposition is not None and int(decomposition.get("revision") or 1) <= int(prior_decomposition.get("revision") or 0):
+        # Artefacts are named by revision and the store refuses to overwrite one; the number is the orchestrator's.
+        decomposition["revision"] = int(prior_decomposition.get("revision") or 0) + 1
     decomposition.setdefault("produced_by", provenance(ctx, res, "Decomposer", "claude-opus-5-5",
                                                        {"outcome.json": ctx.store.put_artifact(ctx.run_id, "intake", "outcome.json", uploads["outcome.json"])}))
     res.outputs["decomposition.json"] = json.dumps(decomposition, indent=2).encode()

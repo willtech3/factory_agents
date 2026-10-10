@@ -18,6 +18,12 @@ from typing import Any, Iterable
 from .state import RunEvent, RunState, replay
 
 
+class ArtifactConflict(FileExistsError):
+    """An artefact name already holds different content. Artefacts are named per round and a human may have decided
+    on them, so the store never overwrites silently (live run 2's second Gate 2 cycle overwrote the spec and verdict the
+    owner had just reviewed; docs/postmortems/2026-10-10-first-live-runs.md issue 1)."""
+
+
 class RunStore:
     def __init__(self, root: Path):
         self.root = root
@@ -61,10 +67,22 @@ class RunStore:
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
 
-    def put_artifact(self, run_id: str, stage: str, name: str, content: bytes) -> str:
+    def put_artifact(self, run_id: str, stage: str, name: str, content: bytes, *, replace: bool = False) -> str:
+        """Store `content` under `<stage>/<name>` and return its sha256.
+
+        Writing the same bytes again is a no-op; writing different bytes under an existing name raises
+        `ArtifactConflict` unless `replace=True`. Session outputs and gate artefacts are never replaced: they carry a
+        round number in their name and a new round gets a new name. `replace` is for the orchestrator's own pointer
+        and re-derived files (`final-*`, the re-verification of a head after a resume)."""
         p = self.artifact_path(run_id, stage, name)
-        p.write_bytes(content)
         digest = hashlib.sha256(content).hexdigest()
+        if p.exists() and not replace:
+            existing = hashlib.sha256(p.read_bytes()).hexdigest()
+            if existing == digest:
+                return digest
+            raise ArtifactConflict(f"{run_id}: {stage}/{name} already holds different content "
+                                   f"(sha256 {existing[:12]} on disk, {digest[:12]} offered); artefacts are not overwritten")
+        p.write_bytes(content)
         p.with_suffix(p.suffix + ".sha256").write_text(digest)
         return digest
 

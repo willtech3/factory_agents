@@ -23,7 +23,7 @@ from ..forge import Forge
 from ..sessions import SessionContext
 from ..state import WorkItemStage
 from . import RunContext
-from .common import persist_outputs, require_json
+from .common import persist_outputs, public, require_json
 
 INTEGRATE_DESCRIPTION = """Open the change request (pull request or merge request) for specification {spec_id}.
 Inputs are under /mnt/session/uploads/ (spec.json, merge_readiness.json, findings.json, review_response.json,
@@ -47,10 +47,9 @@ def commit_run_record(repo: Path, run_id: str, spec: dict[str, Any], spec_md: st
     the files are already identical (re-runs are idempotent)."""
     sid = spec["spec_id"]
     paths = run_record_paths(run_id, sid)
-    public = {k: v for k, v in merge_verdict.items() if not k.startswith("_")}
-    files = {paths["spec_json"]: json.dumps(spec, indent=2, sort_keys=True) + "\n",
+    files = {paths["spec_json"]: json.dumps(public(spec), indent=2, sort_keys=True) + "\n",
              paths["spec_md"]: spec_md if spec_md.endswith("\n") or not spec_md else spec_md + "\n",
-             paths["merge_readiness"]: json.dumps(public, indent=2, sort_keys=True) + "\n"}
+             paths["merge_readiness"]: json.dumps(public(merge_verdict), indent=2, sort_keys=True) + "\n"}
     if spec_verdict is not None:
         files[paths["verdict"]] = json.dumps(spec_verdict, indent=2, sort_keys=True) + "\n"
     for rel, content in files.items():

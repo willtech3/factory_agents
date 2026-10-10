@@ -21,7 +21,7 @@ from typing import Any
 from .gates import Decision, GateDecision
 from .stages import RunContext
 from .stages.decompose import gate_1, run_decompose
-from .stages.common import artifact_json_or_none
+from .stages.common import artifact_json_or_none, public
 from .stages.implement import LocalVerifier, ResumePoint, run_implement_one
 from .stages.integrate import run_integrate
 from .stages.specify import gate_2, run_specify
@@ -142,17 +142,26 @@ def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
     # ---------------- Stage 2 + Gate 2
     human_comments: dict[str, str] | None = approval_notes or None     # what the owner said while approving the plan
     prior_specs: dict[str, dict] | None = None
+    previous_verdict: dict[str, Any] | None = None                      # the verdict the owner sent back, if any
+    round_offset = 0                                                    # rounds keep counting across send-backs
     while True:
-        specs, verdict = run_specify(ctx, outcome, decomposition, human_comments, prior_specs)
+        specs, verdict = run_specify(ctx, outcome, decomposition, human_comments, prior_specs,
+                                     previous_verdict=previous_verdict, round_offset=round_offset)
+        # `final-*` point at the current candidate for the gate (replaced on every cycle); the per-round artefacts the
+        # owner decided on keep their names and are never overwritten.
         spec_shas = {f"{sid}.json": ctx.store.put_artifact(ctx.run_id, "specify", f"final-{sid}.json",
-                                                            json.dumps(s, indent=2).encode()) for sid, s in specs.items()}
-        spec_shas["verdict.json"] = ctx.store.put_artifact(ctx.run_id, "judge", "final-verdict.json",
-                                                           json.dumps(verdict, indent=2).encode())
+                                                            json.dumps(public(s), indent=2).encode(), replace=True)
+                     for sid, s in specs.items()}
         spec_md = {sid: _spec_markdown(ctx, s) for sid, s in specs.items()}
-        files = {**{f"specs/{sid}.json": json.dumps(s, indent=2).encode() for sid, s in specs.items()},
-                 **{f"specs/{sid}.md": spec_md[sid].encode() for sid in specs},
+        for sid, md in spec_md.items():
+            if md:
+                ctx.store.put_artifact(ctx.run_id, "specify", f"final-{sid}.md", md.encode(), replace=True)
+        spec_shas["verdict.json"] = ctx.store.put_artifact(ctx.run_id, "judge", "final-verdict.json",
+                                                           json.dumps(verdict, indent=2).encode(), replace=True)
+        files = {**{f"specs/{sid}.json": json.dumps(public(s), indent=2).encode() for sid, s in specs.items()},
+                 **{f"specs/{sid}.md": spec_md[sid].encode() for sid in specs if spec_md[sid]},
                  "verdict.json": json.dumps(verdict, indent=2).encode()}
-        page = render_gate2_page(ctx.run_id, outcome, specs, verdict, spec_shas, spec_md)
+        page = render_gate2_page(ctx.run_id, outcome, {sid: public(s) for sid, s in specs.items()}, verdict, spec_shas, spec_md)
         anchors = {f"specs/{sid}.json": f"spec-{sid}" for sid in specs}
         anchors.update({f"specs/{sid}.md": f"spec-{sid}" for sid in specs})
         design_cr_id, urls = _present(ctx, outcome, files, "specifications", "gate_2", page, anchors)
@@ -176,6 +185,7 @@ def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
         routed = notes_by_item(fb, ids)
         human_comments = {s["work_item_id"]: (routed.get(s["work_item_id"]) or routed.get(sid) or fb) for sid, s in specs.items()}
         prior_specs = {s["work_item_id"]: s for s in specs.values()}
+        previous_verdict, round_offset = verdict, int(verdict.get("round") or round_offset + 1)
     spec_verdict = verdict
     if ctx.policy.design_only:
         ctx.event("run.completed", {"design_only": True, "approved_specs": sorted(specs),
@@ -186,9 +196,14 @@ def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
 
 
 def _spec_markdown(ctx: RunContext, spec: dict[str, Any]) -> str:
-    """The writer's spec.md for the spec's latest round, or '' when the session did not produce one."""
+    """The writer's spec.md for this spec: carried on the object by `run_specify`, else the `final-<spec_id>.md` the
+    runner stored at Gate 2 (what `factory resume` reads), else the latest round in the store, else ''."""
     if spec.get("_markdown"):
         return str(spec["_markdown"])
+    try:
+        return ctx.store.get_artifact(ctx.run_id, "specify", f"final-{spec['spec_id']}.md").decode(errors="replace")
+    except FileNotFoundError:
+        pass
     try:
         name = _latest(ctx, "specify", f"{spec['work_item_id']}-", "-spec.md")
         return ctx.store.get_artifact(ctx.run_id, "specify", name).decode(errors="replace")
@@ -197,11 +212,17 @@ def _spec_markdown(ctx: RunContext, spec: dict[str, Any]) -> str:
 
 
 def _latest(ctx: RunContext, stage: str, prefix: str, suffix: str) -> str:
+    """The highest-numbered `<prefix>r<n>...<suffix>` artefact name (numeric, so r10 follows r9)."""
     d = ctx.cfg.runs_dir / ctx.run_id / "artifacts" / stage
-    cands = sorted(p.name for p in d.glob(f"{prefix}*{suffix}") if not p.name.endswith(".sha256"))
+    cands = [p.name for p in d.glob(f"{prefix}*{suffix}") if not p.name.endswith(".sha256")]
     if not cands:
         raise FileNotFoundError(f"no {prefix}*{suffix} under {d}")
-    return cands[-1]
+
+    def round_of(name: str) -> int:
+        mid = name[len(prefix):-len(suffix)]
+        digits = mid[1:].split("-")[0] if mid.startswith("r") else ""
+        return int(digits) if digits.isdigit() else -1
+    return max(cands, key=lambda n: (round_of(n), n))
 
 
 def _latest_json_or(ctx: RunContext, stage: str, prefix: str, suffix: str, default: Any) -> Any:
@@ -253,7 +274,7 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
                                                 "note": "the dependency's change request is open but not merged; this item is built on its branch"},
                           work_item_id=spec["work_item_id"], spec_id=sid, stage="implement")
             verdict = run_implement_one(ctx, spec, repo["url"], base_branch, verifier, deps,
-                                        resume_from=(resume or {}).get(sid))
+                                        spec_md=spec_md.get(sid, ""), resume_from=(resume or {}).get(sid))
             if verdict["result"] != "ready":
                 ctx.event("run.escalated", {"reason": f"{sid}: merge judge said {verdict['result']}",
                                             "summary": verdict.get("summary_for_human", verdict.get("reason"))},
