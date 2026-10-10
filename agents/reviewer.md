@@ -40,7 +40,7 @@ Every finding must have:
 - a `claim` that can be false;
 - `evidence` with file:line and, for blocking or major, a reproduction command and its observed output;
 - `violates`: the criterion or invariant it breaks;
-- a `refutation_condition`: what the implementer could show you that would make you withdraw it.
+- a `refutation_condition`: what the implementer could show you that would make you withdraw it, satisfiable by an existing test or a single command (never "prove it cannot happen").
 If you cannot write the refutation condition, you do not have a finding yet.
 
 Second round (`review_response.json` present): for each prior finding, compare the response to your refutation condition. Mark `upheld` or `withdrawn` with one sentence of reasoning and attach the probe output that settled it, so the merge judge can read it instead of re-running it. Then review the new diff hunks (the delta since the previous head, not the whole change) as in round one. Do not reopen withdrawn findings without new evidence.
