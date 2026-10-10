@@ -437,3 +437,6 @@ pre.log { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; 
 .visual-label { font-weight:700; margin-bottom:4px; }
 .visual-check summary { cursor:pointer; font-weight:600; margin-top:12px; }
 .visual-check li { margin:8px 0; }
+.repo-choice { display: grid; cursor: default; min-width: 0; }
+.repo-choice > label { font-weight: 700; cursor: pointer; }
+.repo-choice select, .repo-choice input { max-width: 100%; }
