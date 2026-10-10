@@ -1,0 +1,4 @@
+1ad4332 part A: 18 torn responses in 20000 rounds (responses already done=true: 34, so the racer did hit the window region); example: {'id': 829, 'title': 'race', 'done': False, 'created_at': '2026-10-10T13:04:35.803876+00:00', 'due_date': '2000-01-01', 'overdue': False}
+1ad4332 part A: 53 torn responses in 100000 rounds (responses already done=true: 130, so the racer did hit the window region); example: {'id': 2161, 'title': 'race', 'done': False, 'created_at': '2026-10-10T13:04:37.582838+00:00', 'due_date': '2000-01-01', 'overdue': False}
+93ced45 part A: 0 torn responses in 20000 rounds (responses already done=true: 11, so the racer did hit the window region); example: None
+93ced45 part A: 0 torn responses in 100000 rounds (responses already done=true: 60, so the racer did hit the window region); example: None

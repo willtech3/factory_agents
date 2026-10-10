@@ -1,0 +1,444 @@
+{
+  "review_id": "rev_wi-due-dates-overdue0293ced4",
+  "spec_id": "spec_wi-due-dates-overdue",
+  "round": 2,
+  "diff_ref": {
+    "base_sha": "6dec6943e8333d0a747f0dd34578e3e823e51319",
+    "head_sha": "93ced45f6f75c244414e70df150301f72e81f147",
+    "branch": "factory/run_57fde1adc2/spec_wi-due-dates-overdue"
+  },
+  "checks_performed": [
+    {
+      "check": "Spec criteria read before the diff, with a planned disproof for each",
+      "method": "Read spec.json; spec.md is empty (0 bytes). Read previous_findings.json and review_response.json and noted the refutation condition of each round-1 finding. For each AC, planned the input that would break it: key order, explicit null vs omitted, D-1/D/D+1 with month and year edges, completed past-due todos, route shadowing, [] vs null, the 16 AC-9 values plus leap years, a clock advance with no write, protected files, the import allow-list and the doc strings. For round 2, also planned how each new hunk could break: the snapshot copy in to_dict, the patched-datetime test, and the TZ in local-all.",
+      "result": "Plan executed in the checks below."
+    },
+    {
+      "check": "diff.patch matches the branch head",
+      "method": "git fetch origin; git rev-parse HEAD origin/factory/run_57fde1adc2/spec_wi-due-dates-overdue; cmp <(git diff 6dec694 93ced45) /mnt/session/uploads/diff.patch; git diff --stat; git diff --name-status main HEAD",
+      "result": "HEAD and origin both point to 93ced45f. The uploaded diff is byte-identical to the branch diff. It touches 5 files: README.md, app/main.py and app/storage.py (modified), and tests/e2e_overdue.py and tests/test_overdue.py (added)."
+    },
+    {
+      "check": "History rewrite (response to F-3) changed no content",
+      "method": "git rev-parse <c>^{tree} for the old and new commits; git merge-base --is-ancestor {d33b244,23128cd,1ad4332} HEAD; git diff --stat 1ad4332 93ced45 (probes/f3_every_commit.sh, output in f3_every_commit.out)",
+      "result": "The trees match: 5fd5533 = 23128cd = 32d029a and 7a5bfd4 = 1ad4332 = 71212e4. None of d33b244, 23128cd or 1ad4332 is an ancestor of HEAD. Since round 1, content changed only in e563e95 (app/storage.py to_dict, one new test) and 93ced45 (one new test, plus the TZ for local-all in tests/e2e_overdue.py): 3 files, +47/-8."
+    },
+    {
+      "check": "New hunks read in commit order",
+      "method": "git show e563e95; git show 93ced45. Then read app/storage.py, app/main.py, tests/test_overdue.py and tests/e2e_overdue.py at HEAD in full.",
+      "result": "e563e95: to_dict now takes snapshot = dataclasses.replace(self) and returns {**asdict(snapshot), 'overdue': snapshot.is_overdue(today)}. replace() reads each field of the shared Todo once, so done is read once; the snapshot is private to the call. The new test test_post_response_stays_consistent_when_completed_while_it_is_built wraps app.storage.asdict so that store.complete(1) runs after the fields have been read. 93ced45: test_today_utc_is_the_utc_date_not_the_host_date replaces app.storage.datetime with a subclass pinned at 1999-12-31T23:30Z (naive now() reads as UTC+10, i.e. 2000-01-01). local_all starts uvicorn with env TZ='<-12>12' before 12:00 UTC and TZ='<+14>-14' from 12:00 UTC. No route, validation, README or docstring change."
+    },
+    {
+      "check": "All 11 test_plan.commands at HEAD on Python 3.12 (manifest runtime) and 3.11",
+      "method": "Clean clone /tmp/rv2 at 93ced45 with local main = 6dec694. Venvs with only the dependencies (no editable install, so `app` resolves from the checkout): fastapi 0.143.0, pydantic 2.14.0, starlette 1.7.0, uvicorn 0.54.0, httpx 0.28.1, pytest 9.1.1. Ran probes/run_test_plan.sh, which runs each command verbatim; outputs are in test_plan_py312.out and test_plan_py311.out.",
+      "result": "11/11 exit 0 on both versions. pytest gives 39 passed (3 existing + 36 new) for both pytest commands. The scope, protected-file, import allow-list, docstring/README and grep checks all exit 0. local-all: 10 passed, 0 failed, with the server under TZ=<+14>-14. rollover-local: 1 passed. Separately confirmed that the scope command fails (exit 1) when a stray untracked file is present, so the check is live."
+    },
+    {
+      "check": "Test plan at every commit in main..HEAD (rewritten slices)",
+      "method": "One worktree per commit; probes/run_test_plan.sh in each (f3_every_commit.out)",
+      "result": "All 11 commands exit 0 at 5fd5533 (29 passed; local-all 6/6), 7a5bfd4 (37; 10/10), e563e95 (38; 10/10) and 93ced45 (39; 10/10)."
+    },
+    {
+      "check": "New tests are red on base",
+      "method": "Worktree at 6dec694 with head's tests/test_overdue.py and tests/e2e_overdue.py copied in; ran pytest, local-all and rollover-local",
+      "result": "pytest: 29 failed and 7 errors, so all 36 new tests are red, while the 3 original tests pass. local-all: 0 passed, 10 failed. rollover-local: 0 passed, 1 failed."
+    },
+    {
+      "check": "implementation_report criteria[*].tests node ids exist and pass",
+      "method": "Collected the distinct ids from implementation_report.json criteria and compared them with `pytest --collect-only -q` using comm; then ran all of them explicitly by id",
+      "result": "39 distinct ids, identical to the 39 collected nodes. All 39 pass. Each automated_test criterion (AC-1 to AC-11) lists at least one id; AC-12 and AC-13 list their static commands."
+    },
+    {
+      "check": "Round-1 F-1 against its refutation condition (a)",
+      "method": "Wrote probes/probe_race_post_response.py because the round-1 probe directory did not exist in this sandbox. It runs store.create('race', date(2000,1,1)).to_dict(), which is exactly what POST /todos does, against a thread that spins store.complete() on the id about to be handed out and on the one just handed out, with sys.setswitchinterval(1e-6). Ran it at 1ad4332 (round-1 head) and at 93ced45. Also ran head's test_overdue.py against the 1ad4332 code.",
+      "result": "At 1ad4332: 12 and 6 torn responses in 20000 rounds, e.g. {'done': False, 'due_date': '2000-01-01', 'overdue': False} (probe_race_round1_head.out). At 93ced45: 0 and 0 in 20000 rounds, and 0 and 0 in 100000 rounds (probe_race_head.out). The new regression test fails on the 1ad4332 code (1 failed, 35 passed; head_tests_on_round1_head.out). Condition (a) is met, so F-1 is withdrawn."
+    },
+    {
+      "check": "Round-1 F-2 against its refutation condition",
+      "method": "probes/mutants_round2.sh: each mutant is a fresh copy of head with app/storage.py:11 changed, then the plan's pytest, local-all and rollover-local run with TZ=UTC, as on the orchestrator (mutants_round2.out). Mutants: date.today(), datetime.now().date(), and two further host-local variants, datetime.now(timezone.utc).astimezone().date() and datetime.fromtimestamp(<utc ts>).date().",
+      "result": "date.today() and datetime.now().date(): pytest 1 failed, 38 passed (test_today_utc_is_the_utc_date_not_the_host_date), and local-all 7 passed, 3 failed (boundary: 'due 2026-10-10 with UTC today 2026-10-10: POST overdue True, want False'; listing; overdue-list). astimezone() and fromtimestamp(): pytest passes (39), because their local conversion does not go through the patched now(); local-all catches both (7 passed, 3 failed). rollover-local passes for every mutant, as expected because it patches the clock. The condition is met for both named mutants, so F-2 is withdrawn."
+    },
+    {
+      "check": "local-all zone choice always yields a host date different from the UTC date",
+      "method": "TZ='<-12>12' and TZ='<+14>-14' python -c 'time.strftime(...)'. probes/f2_zone_choice_check.py walks every minute of a UTC day through the real POSIX TZ parser (time.tzset), using the same hour<12 rule as tests/e2e_overdue.py:342.",
+      "result": "Both strings parse: at 12:58 UTC, <-12>12 gives local 00:58 on the same date and <+14>-14 gives 02:58 on the next day. With the rule as written, 0 of 1440 minutes share the UTC date. Residual, not raised: the zone is chosen once at start, so a local-all run that crosses 12:00 UTC (or 00:00 UTC under +14) loses detection power for that run. A correct server ignores TZ, so this never causes a false failure."
+    },
+    {
+      "check": "Round-1 F-3 against its refutation condition",
+      "method": "probes/f3_every_commit.sh: TestClient POSTs of '2026-11-30T00:00:00', 0, 1700000000, '2026-11-30T17:00:00Z', '2027-02-29' and True at d33b244 and at every commit in main..HEAD, plus the ancestry and tree checks above",
+      "result": "At d33b244: '2026-11-30T00:00:00' -> 201 (stored as 2026-11-30) and 0 -> 201 (stored as 1970-01-01). At 5fd5533, 7a5bfd4, e563e95 and 93ced45, all six give 422 with 0 todos stored. d33b244 is no longer reachable from the branch. Literally, my round-1 condition (squash-merge, or d33b244 returning 422) is not met. But the claim depended on d33b244 sitting in the branch history, and that premise is now false, so F-3 is withdrawn."
+    },
+    {
+      "check": "Round-1 DET-ac_test_mapping (orchestrator finding) against its refutation condition",
+      "method": "Read /mnt/session/uploads/deterministic_checks.json for this head, plus the node-id check above. This is recorded here, not under findings, because the id 'DET-ac_test_mapping' does not fit the findings finding_id pattern ^F-[0-9]{1,3}$.",
+      "result": "WITHDRAWN. The condition was 'ac_test_mapping passes on the orchestrator's next verification of the pushed head', and deterministic_checks.json now reports ac_test_mapping passed: true ('all automated criteria map to passing tests'). The 39 mapped ids are exactly the collected nodes, and all pass."
+    },
+    {
+      "check": "Strength of the F-1 regression test (mutation)",
+      "method": "Two to_dict mutants in probes/mutants_round2.sh: todict_no_copy (snapshot = self) and todict_overdue_first (overdue = self.is_overdue(today) then {**asdict(self), ...}, i.e. no snapshot with the reads in the other order). Each was run through pytest, local-all, rollover-local and the race probe. Then a scratch two-hook test outside the repo (probes/scratch_test_f1_both_orders.py) was run against head, both mutants and 1ad4332.",
+      "result": "todict_no_copy is caught by the new test, and the probe shows 14 torn in 20000. todict_overdue_first passes all 39 tests, local-all 10/10 and rollover-local, yet the probe shows 35 torn in 20000, e.g. {'done': True, 'due_date': '2000-01-01', 'overdue': True}. Raised as F-4 (nit). With the scratch is_overdue hook, the gap closes: head passes both hooks, todict_overdue_first fails the is_overdue hook, and the 1ad4332 code fails the asdict hook."
+    },
+    {
+      "check": "test_plan.e2e entries with target local",
+      "method": "From the head clone: `python tests/e2e_overdue.py local-all` and `PYTHONPATH=. python tests/e2e_overdue.py rollover-local` (test_plan commands 10 and 11; Python 3.12 and 3.11)",
+      "result": "local-all exits 0 on both Pythons: PASS for empty-overdue --strict, compat, create-future, create-past, boundary, listing, overdue-list, empty-overdue, complete and malformed (10 passed, 0 failed; server started with TZ=<+14>-14). rollover-local exits 0 (1 passed): overdue flips from false to true on both endpoints when the patched clock moves from D to D+1 with no write."
+    },
+    {
+      "check": "test_plan.e2e entries with target preview",
+      "method": "curl -m 5 http://127.0.0.1:54991/health (the URL in preview.json: status 'ready', mode 'local', pipeline null)",
+      "result": "NOT RUN against the preview: connection refused (curl exit 7), matching what the orchestrator stated. The orchestrator runs these 9 entries itself. deterministic_checks.json reports e2e_preview passed ('all 9 e2e entries exit 0 on preview'); that is the platform's claim, not verified here."
+    },
+    {
+      "check": "Manifest entrypoint starts and answers the health path; preview commands run against it (supplementary, not the preview)",
+      "method": "From the head clone: `uvicorn app.main:app --host 0.0.0.0 --port 8000` (the service_manifest.json entrypoint verbatim, Python 3.12 venv). Checked GET /health and GET /todos/overdue. Ran the 9 preview commands with BASE_URL=http://127.0.0.1:8000 twice on the same instance, then `all`, then `empty-overdue --strict` on the populated instance (e2e_preview_cmds_vs_local_manifest_instance.out).",
+      "result": "/health returns 200 {\"status\":\"ok\"}, and /todos/overdue returns 200 [] on the fresh instance. All 9 commands exit 0 on the first pass and again on the second, so they tolerate an instance already holding todos. `all` gives 9 passed. --strict on the populated instance fails as designed ('needs a server holding no todos')."
+    },
+    {
+      "check": "Adversarial live probes against the manifest-entrypoint instance",
+      "method": "python probes/probe_live.py http://127.0.0.1:8000 (probe_live.out)",
+      "result": "bad=0. These 34 further malformed due_date values all return 422, and the todo count is unchanged (81 before and after): \\r, leading space and tab, 2026-1-30, 2026-11-3, +2026-11-30, a Z suffix, NUL, full-width and Arabic-Indic digits, en dash, BOM, 2100-02-29, 1900-02-29, month 00, day 00, 2026-04-31, 'null', 'None', double newline, slashes, d-m-y, ISO week, ordinal date, a 5-digit year, a +00:00 suffix, a 100,000-char string, {}, an object, -1, 1e20, false, [] and 0000-00-00. Accepted with exact echo and the correct flag: 2000-02-29 (true), 2028-02-29 (false), 0001-01-01 (true), 9999-12-31 (false), UTC yesterday (true), UTC today (false). Spoofed overdue/done/id/created_at are ignored, and title rules are unchanged. Non-JSON and array bodies, and duplicate keys whose last value is invalid, give 422. Routing: /todos/overdue?x=1 gives 200 and POST /todos/overdue gives 405. GET /todos/1 gives 405, since there is still no GET /todos/{id}. DELETE /todos/overdue and POST /todos/overdue/complete give 422, the same as base. A replayed complete is idempotent, unknown and negative ids give 404, and a deleted overdue todo leaves the list. Racing POST past-due against complete of the next id over HTTP: 0 torn in 600 POSTs. With 5 writers (create/complete/delete) and 6 readers on both list endpoints: 649 reads, 357 writes, 0 order, shape or rule violations. At rest, GET /todos/overdue equals the flagged subset of GET /todos (118 of 1007)."
+    },
+    {
+      "check": "Scope, forbidden changes, platform contract",
+      "method": "Test plan commands 4 and 5; git diff --check main HEAD; grep for skip/xfail in tests/; git diff main HEAD -- tests/test_todos.py; read the changed lines of every file; checked whether /mnt/skills holds the platform-contract skill",
+      "result": "Only the 5 allowed paths changed, with no untracked files. tests/test_todos.py, pyproject.toml, service_manifest.json and .github/ are identical to main. git diff --check is clean. No skip or xfail was added, and no dependency, env var or date library. overdue is still not a stored field, and TodoIn has no extra=. No IAM, networking, manifest, CI or platform-repository change. /mnt/skills is empty, so the platform-contract skill is unavailable and the reserved-area check rests on those files being untouched. The new F-2 test patches app.storage.datetime rather than today_utc. I judged this compliant with the forbidden change ('No time.sleep, datetime.now() or date.today() in tests/test_overdue.py; control today via app.storage.today_utc or far-past/future dates'): it reads no real clock, and today_utc itself cannot be tested by patching today_utc. Plan command 8 passes."
+    },
+    {
+      "check": "Lock-hold cost added by the snapshot copy",
+      "method": "PYTHONPATH=. python probes/lock_hold.py at 1ad4332 and at 93ced45 (lock_hold.out)",
+      "result": "Time in list_dicts, nearly all of it under the store lock: 5.1/23.7/132 ms at 1k/10k/50k todos on the round-1 code, against 4.0/38.2/253 ms at head. replace() runs under the lock, where complete() already cannot interleave, so on the list path the copy is redundant and roughly doubles hold time at scale. Not raised: an in-memory sample service is not expected to hold tens of thousands of todos, and correctness is unaffected."
+    },
+    {
+      "check": "e2e harness failure path after the TZ change",
+      "method": "local-all against a copy of head whose app/main.py raises on import; then pgrep for leftover uvicorn processes",
+      "result": "Exits 1 with 'FAIL local-all: server exited with code 1 before /health answered'. No server is leaked; the only uvicorn left running was my own manifest instance, which I stopped afterwards."
+    },
+    {
+      "check": "Implementation report statements against inputs",
+      "method": "Compared implementation_report.json and review_response.json with preview.json, deterministic_checks.json and my own runs",
+      "result": "The report says preview.json was 'unavailable' with a null url. The uploaded preview.json says status 'ready', mode 'local', url http://127.0.0.1:54991, and that URL is unreachable. Either way the preview entries are not run here; this has no code impact. The report's test counts (39 passed; local-all 10/0; rollover-local pass), its F-1 numbers (torn >0 at 1ad4332, 0 at head) and its F-2 mutant outcomes all match my reproductions."
+    },
+    {
+      "check": "Repository left untouched",
+      "method": "git -C /workspace/repo status --short; git rev-parse HEAD",
+      "result": "Clean, HEAD 93ced45. All work used clones, worktrees and venvs under /tmp. Probes and outputs are under /mnt/session/outputs/probes/. Nothing was committed or pushed: the reviewer does not edit source."
+    },
+    {
+      "check": "Inputs read; acceptance criteria before the diff",
+      "method": "Read spec.json (spec.md is empty, 0 bytes), previous_findings.json (round 1: F-1, F-2, F-3, DET-ac_test_mapping), review_response.json, implementation_report.json, preview.json, deterministic_checks.json. Treated every claim in the response and the report as a hypothesis and re-ran it myself.",
+      "result": "Per-criterion disproof plan carried over from round 1. Round 2 focus: each prior refutation condition, then the new hunks (e563e95, 93ced45) and the history rebuild."
+    },
+    {
+      "check": "Diff identity and history rebuild (F-3 premise)",
+      "method": "cmp <(git diff 6dec694 93ced45) /mnt/session/uploads/diff.patch; git log 6dec694..93ced45; git merge-base --is-ancestor {d33b244,23128cd,1ad4332} 93ced45; git rev-parse 5fd5533^{tree} 23128cd^{tree} 7a5bfd4^{tree} 1ad4332^{tree}; git diff --stat 1ad4332 93ced45",
+      "result": "Uploaded diff is identical to the branch. History is now 5fd5533, 7a5bfd4, e563e95, 93ced45 on 6dec694. None of d33b244, 23128cd or 1ad4332 is an ancestor of the head. 5fd5533 has the same tree as 23128cd (32d029a9) and 7a5bfd4 the same as 1ad4332 (71212e44), so the rebuilt slices contain no unreviewed content. The whole change since round 1's head is 3 files, 47 insertions and 8 deletions: app/storage.py (to_dict snapshot), tests/test_overdue.py (2 tests), tests/e2e_overdue.py (TZ for local-all)."
+    },
+    {
+      "check": "Re-evaluation of F-1 (torn done/overdue in single-object responses)",
+      "method": "Rebuilt my round-1 probe as /mnt/session/outputs/probes/probe_race_post_response.py (part A: store.create('race', date(2000,1,1)).to_dict(), what app/main.py:50 does, against a thread spinning store.complete(next id), with sys.setswitchinterval(1e-6)). Ran it at 93ced45 and at round-1 head 1ad4332 (git worktree) for 20000 and 100000 rounds. Ran the new regression test on 1ad4332 by copying the head tests/test_overdue.py into that worktree. Read app/storage.py:27-29, and grepped app/ for attribute writes.",
+      "result": "WITHDRAWN. Refutation condition (a) is met: to_dict now derives both asdict and overdue from a single replace(self) copy, and part A reports 0 torn in 20000 and 0 in 100000 at head. The control 1ad4332 reports 18/20000 and 53/100000, and the racer did reach the window (11 and 60 responses already done=true at head). The only field write in app/ is `todo.done = True` (app/storage.py:63, under the lock, never reverted), so one snapshot is sufficient, and the complete route's to_dict always yields done true and overdue false. test_post_response_stays_consistent_when_completed_while_it_is_built fails on 1ad4332 (1 failed, 35 passed; done False, overdue False) and passes at head. Output: probes/probe_race_post_response.out."
+    },
+    {
+      "check": "Re-evaluation of F-2 (UTC half of the rule unpinned)",
+      "method": "bash /mnt/session/outputs/probes/f2_local_clock_mutants.sh /tmp/rv2_venv312/bin: fresh clones of 93ced45 with app/storage.py:11 replaced, then the plan's pytest, local-all and rollover-local with TZ=UTC exported. Mutants: date.today(), datetime.now().date(), datetime.now(timezone.utc).astimezone().date(), and two correct UTC variants (datetime.utcnow().date(), datetime.fromtimestamp(time.time(), timezone.utc).date()). Output: probes/f2_local_clock_mutants.out.",
+      "result": "WITHDRAWN. The refutation condition is met. Under TZ=UTC, `return date.today()` gives pytest 1 failed, 38 passed (exit 1: test_today_utc_is_the_utc_date_not_the_host_date) and local-all 7 passed, 3 failed (boundary, listing, overdue-list; exit 1). `return datetime.now().date()` gives the same two failures. Unmodified head gives 39 passed and 10/10. The astimezone() mutant passes pytest, but local-all catches it (3 failed). Observation, not raised: the new pytest test also fails the two correct UTC variants, because it pins the datetime.now(tz) call shape. spec.interfaces[app.storage.today_utc] prescribes exactly that body, so the coupling is to the spec, and this was my round-1 suggested fix (a)."
+    },
+    {
+      "check": "F-2: local-all zone choice (both branches)",
+      "method": "TZ='<-12>12' and TZ='<+14>-14' with date(1) and python time.strftime('%z') plus naive date.today(); python3 probes/f2_zone_choice_check.py (the expression at tests/e2e_overdue.py:342 for all 1440 minutes of a UTC day). The '<-12>12' branch cannot run live at 13:xx UTC, so I started the date.today() mutant and head under TZ='<-14>14' (local date = UTC date - 1, the situation that branch creates) and ran boundary, listing and overdue-list. Output: probes/f2_previous_day_zone.out.",
+      "result": "Python follows both POSIX strings (-1200 / +1400, no tzdata needed). 0 of 1440 minutes give a local date equal to the UTC date. In the previous-day zone the mutant FAILs all three checks (e.g. 'due 2026-10-09 with UTC today 2026-10-10: POST overdue False, want True') and head PASSes all three. Residual, not raised: a single local-all run that spans 00:00 or 12:00 UTC loses mutant detection for the rest of that run. Correct code is unaffected because it ignores TZ."
+    },
+    {
+      "check": "Re-evaluation of F-3 (intermediate commit stored malformed due dates)",
+      "method": "PYTHONPATH=. python /mnt/session/outputs/probes/f3_ac9_every_commit.py in git worktrees at every commit in 6dec694..93ced45 and at d33b244 as a control. It POSTs all 16 AC-9 values plus 2027-02-29 via TestClient, counts stored todos, and checks that 2028-02-29 and null are accepted. Output: probes/f3_ac9_every_commit.out.",
+      "result": "WITHDRAWN. The claim's premise is gone: d33b244 is no longer reachable from the branch head, so no merge strategy can land it on main. At 5fd5533, 7a5bfd4, e563e95 and 93ced45 all 17 values give 422, 0 are stored, and 2028-02-29 and null give 201. The control d33b244 still gives 201 for '2026-11-30T00:00:00' and 0, so the probe does detect the defect. My literal refutation conditions (a squash merge, or d33b244 returning 422) did not foresee a history rebuild. The rebuild is the reorder fix I suggested, and it falsifies the claim directly."
+    },
+    {
+      "check": "Re-evaluation of DET-ac_test_mapping (orchestrator-owned, round 1 blocking)",
+      "method": "Read /mnt/session/uploads/deterministic_checks.json for this round. Extracted every id in implementation_report.json criteria[*].tests, ran them explicitly by node id, and compared against pytest --collect-only and against the spec's automated_test criteria.",
+      "result": "WITHDRAWN. Its refutation condition ('ac_test_mapping passes on the orchestrator's next verification') is met: deterministic_checks.json reports ac_test_mapping passed ('all automated criteria map to passing tests'). The 39 distinct mapped ids are all collected and give 39 passed. No automated AC (AC-1..AC-11) lacks a mapped test. The finding is not repeated in the findings array because its orchestrator id does not match the schema's ^F-[0-9]{1,3}$ pattern."
+    },
+    {
+      "check": "All 11 test_plan.commands at head, verbatim",
+      "method": "Clean clone /tmp/rv2 at 93ced45 with local main = 6dec694 (= origin/main per git ls-remote). bash /mnt/session/outputs/probes/run_test_plan.sh reads the commands from spec.json. Python 3.12.3 (manifest runtime) venv: fastapi 0.143.0, pydantic 2.14.0, starlette 1.7.0, uvicorn 0.54.0, httpx 0.28.1, pytest 9.1.1. Repeated on Python 3.11.16.",
+      "result": "11/11 exit 0 on both interpreters: pytest 39 passed in both pytest commands (3 in test_todos.py, 36 in test_overdue.py); scope, protected-file, import allow-list ('disallowed imports: []'), docstring/README, forbidden-grep checks all pass; local-all 10 passed, 0 failed (server under TZ=<+14>-14); rollover-local 1 passed. The single warning is starlette's httpx deprecation from fastapi.testclient (third-party, not from this change). Output: probes/test_plan_head_py312.out, probes/test_plan_head_py311.out."
+    },
+    {
+      "check": "test_plan.commands at each rebuilt commit",
+      "method": "run_test_plan.sh in worktrees at 5fd5533, 7a5bfd4, e563e95 (local main = 6dec694 in each).",
+      "result": "11/11 exit 0 at each commit: pytest 29 / 37 / 38 passed; local-all 6/6, 10/10, 10/10; rollover-local pass. Every slice stands alone. Output: probes/test_plan_<sha>.out."
+    },
+    {
+      "check": "test_plan.e2e entries with target local",
+      "method": "python tests/e2e_overdue.py local-all and PYTHONPATH=. python tests/e2e_overdue.py rollover-local from the head clone (plan commands 10 and 11), on Python 3.12 and 3.11.",
+      "result": "local-all exit 0: PASS empty-overdue --strict, compat, create-future, create-past, boundary, listing, overdue-list, empty-overdue, complete, malformed (10 passed, 0 failed). The server starts on a free 127.0.0.1 port with TZ=<+14>-14, and no server process is left behind. rollover-local exit 0: PASS (overdue flips false to true on both endpoints from D to D+1 with no write)."
+    },
+    {
+      "check": "test_plan.e2e entries with target preview",
+      "method": "curl -m 5 http://127.0.0.1:54991/health (URL in preview.json, status 'ready', mode 'local', pipeline null).",
+      "result": "NOT RUN against the preview: connection refused (curl exit 7), as the orchestrator stated. The orchestrator runs these 9 entries itself, and this is the platform's situation, not a defect of the change. deterministic_checks.json separately reports 'e2e_preview: all 9 e2e entries exit 0 on preview' (platform claim, not verified by me)."
+    },
+    {
+      "check": "Manifest entrypoint and health path; preview commands run locally (supplementary, not the preview)",
+      "method": "From the head clone ran the manifest entrypoint verbatim: `uvicorn app.main:app --host 0.0.0.0 --port 8000`. curl /health and /todos/overdue, then each of the 9 preview commands with BASE_URL=http://127.0.0.1:8000, twice in sequence on the same instance. Output: probes/e2e_preview_entries_vs_local_manifest_instance.out.",
+      "result": "/health 200 {\"status\":\"ok\"}; /todos/overdue 200 []. 9/9 exit 0 on the first pass and 9/9 on the replay, so the checks tolerate an instance that already holds todos. The service starts with the manifest command and answers the manifest health path."
+    },
+    {
+      "check": "Live adversarial probe (concurrency, cross-endpoint, edge inputs, replays)",
+      "method": "python /mnt/session/outputs/probes/probe_live.py http://127.0.0.1:8000 8 against the manifest-entrypoint instance: 6 writers (create past/UTC-yesterday/UTC-today/future/null/omitted, race to complete the next id, complete 50%, delete 10%) and 6 readers on both list endpoints. Every POST, complete and list response is checked for key order, the rule against the UTC date, done-and-overdue, ascending unique ids, and an overdue list holding only open overdue todos. Then: at-rest equality, 30 extra malformed values, spoofed server fields, duplicate JSON keys, replayed complete, 404/422/405 paths. Output: probes/probe_live.out.",
+      "result": "639 writes and 979 reads with 0 violations. At rest, GET /todos/overdue equals the overdue-flagged subset of GET /todos (88 of 633). 30 extra malformed values (\\r, leading space and tab, unpadded parts, +year, Z suffix, full-width and Arabic-Indic digits, NUL, BOM, 2026-11-31, 2100-02-29, month and day 00, 'null', a 100k-char string, {}, -1, 1e20, false, [], slashes, ISO week and ordinal dates, 5-digit year, minute-precision datetime) all give 422, and the count is 633 before and after. Spoofed done/overdue/id/created_at are ignored (a past date still gives overdue true). Duplicate due_date keys: last-wins, invalid gives 422 and valid gives 201. A replayed complete gives an identical 200 with overdue false. An unknown id gives 404, a non-int id 422; GET /todos/overdue?x=1 gives 200; POST /todos/overdue and GET /todos/1 give 405. Empty title plus bad date reports both errors."
+    },
+    {
+      "check": "New hunk e563e95: Todo.to_dict snapshot",
+      "method": "Read app/storage.py:27-29 and dataclasses.replace semantics: it calls __init__ with every init field read once, created_at is passed through so default_factory does not run, and there is no __post_init__. Checked that to_dict output is unchanged: tests assert POST body == GET element (tests/test_overdue.py:108, e2e create-past and complete). Considered the alternative fix, a lock-held build in the POST routes: it would deadlock against the test's hook, but that is only test coupling to the chosen design.",
+      "result": "Correct. The output keys and order are unchanged (id, title, done, created_at, due_date, overdue), the signatures match spec.interfaces, the POST routes still call to_dict() and list_dicts still builds under the lock with one clock read (test_list_endpoints_read_the_clock_once_per_request passes). No defect found."
+    },
+    {
+      "check": "Cost of the snapshot on the lock-held list path",
+      "method": "PYTHONPATH=. python /mnt/session/outputs/probes/list_dicts_cost.py at 1ad4332 and 93ced45 (best of 5 list_dicts() calls at 1k/10k/50k todos). Output: probes/list_dicts_cost.out.",
+      "result": "1ad4332: 2.6 / 28.1 / 152 ms; 93ced45: 4.1 / 45.7 / 222 ms. The copy is redundant inside list_dicts, because the lock already excludes complete(), and it adds about 50-60% lock hold time. Not raised: the spec sets no performance budget, the cost is negligible at the scale of an in-memory sample service, and the only way to avoid it without duplicating the is_overdue rule is to restructure to_dict, which the spec defines as asdict plus overdue."
+    },
+    {
+      "check": "New hunk 93ced45: test_today_utc_is_the_utc_date_not_the_host_date and local-all TZ",
+      "method": "Read tests/test_overdue.py:188-201 and tests/e2e_overdue.py:333-344 and the updated module docstring. Ran full pytest under TZ=Pacific/Kiritimati, Etc/GMT+12, <+14>-14, <-12>12 and UTC, in reversed node-id order, and 5 repeated runs. Plan command 8 (forbidden strings) at head. Checked that the monkeypatch of app.storage.datetime is undone and that no todo is created while it is active.",
+      "result": "39 passed in every zone, in reversed order, and in 5/5 repeats, so pytest has no host-TZ or order dependence. Command 8 passes: the PinnedClock subclass defines now() and never calls datetime.now() or date.today(). The test patches app.storage.datetime rather than today_utc, but it never reads the real clock, which is the intent of forbidden_changes. Patching today_utc is impossible when today_utc itself is under test. local-all passes os.environ through (LOG_LEVEL, PATH kept) and only adds TZ. The docstring matches the behaviour. No defect found."
+    },
+    {
+      "check": "Scope, forbidden changes, platform contract",
+      "method": "Plan commands 4 and 5; git diff --name-only 6dec694 93ced45 and 1ad4332 93ced45; git diff --check; grep for overdue stored on Todo; inspected for IAM/networking/manifest/.github/pyproject/dependency changes.",
+      "result": "Only allowed paths changed (README.md, app/main.py, app/storage.py, tests/e2e_overdue.py, tests/test_overdue.py), and round 2 touches only app/storage.py and the two test files. tests/test_todos.py, pyproject.toml, service_manifest.json and .github/ equal main. git diff --check is clean. No new dependency, env var or date library. overdue is not a dataclass field. TodoIn has no extra=/model_config/ConfigDict. Nothing reserved by the platform contract is touched. The platform-contract skill is not mounted here, so this rests on those files being unchanged."
+    },
+    {
+      "check": "Docs (AC-13 prose)",
+      "method": "Read the README.md diff (lines 15-30) and the app/main.py:1-5 docstring at head (README unchanged since round 1: tree identity above).",
+      "result": "README states the rule correctly: open, due_date strictly before the current UTC calendar date; due today, completed and undated todos are never overdue. It also covers the [] response, the 422 for malformed dates, acceptance of past dates, and that due dates cannot be edited. The docstring lists GET /todos/overdue and due_date."
+    },
+    {
+      "check": "Implementation report statements vs inputs",
+      "method": "Compared implementation_report.json and review_response.json claims with my reruns and with preview.json.",
+      "result": "Counts and outcomes reproduce: 39 passed, local-all 10/10 under <+14>-14, mutant failures, tree identities, 0 torn at head. One inaccuracy with no code impact: the report gives the preview as 'unavailable' with url null, while the uploaded preview.json says status 'ready' with url http://127.0.0.1:54991 (unreachable). Either way the preview entries are recorded as not run."
+    },
+    {
+      "check": "Repository left untouched; no commits or pushes",
+      "method": "git -C /workspace/repo status --short; git rev-parse HEAD. All work was done in /tmp/rv2 (clone), /tmp/wt_* (worktrees), /tmp/f2m_* (mutant clones), and venvs under /tmp; probes live in /mnt/session/outputs/probes/. All uvicorn servers I started were stopped.",
+      "result": "/workspace/repo is clean at 93ced45. The only repository operation was `git fetch origin`, which updated remote-tracking refs. Nothing was committed or pushed: the reviewer edits no source, and committing review artifacts would put files outside allowed_paths and fail AC-12's scope check."
+    }
+  ],
+  "findings": [
+    {
+      "finding_id": "F-1",
+      "severity": "minor",
+      "category": "concurrency",
+      "claim": "Round 1: Todo.to_dict() read `done` twice without the store lock (asdict(self), then is_overdue()), so a concurrent complete() could make POST /todos answer done=false, overdue=false for a past-due todo.",
+      "evidence": {
+        "locations": [
+          "app/storage.py:27-29",
+          "tests/test_overdue.py:111-125"
+        ],
+        "reproduction": "cd <checkout> && PYTHONPATH=. python /mnt/session/outputs/probes/probe_race_post_response.py 20000   (at 1ad4332 and at 93ced45)",
+        "observed": "1ad4332: '12 torn responses in 20000 rounds; example: {... 'done': False, 'due_date': '2000-01-01', 'overdue': False}' and 6/20000. 93ced45: 0/20000 twice and 0/100000 twice. The new test fails on the 1ad4332 code (1 failed, 35 passed) and passes at head.",
+        "expected": "0 torn responses at head; met."
+      },
+      "violates": [
+        "interfaces['Todo response object']: overdue true iff done is false AND due_date is not null AND due_date < today_utc()"
+      ],
+      "refutation_condition": "(a) to_dict derives overdue from one snapshot (or the routes build under the lock) and the race probe reports 0 torn in 20000 rounds; or (b) the owner waives consistency under concurrent writes.",
+      "status": "withdrawn",
+      "suggested_fix": "WITHDRAWN: condition (a) is met. to_dict now builds both keys from replace(self) (app/storage.py:28-29), and the probe gives 0 torn in 20000 and 100000 rounds at head, against 6 to 12 per 20000 on the round-1 code."
+    },
+    {
+      "finding_id": "F-2",
+      "severity": "minor",
+      "category": "test_quality",
+      "claim": "Round 1: no test_plan command failed when app.storage.today_utc returned the host-local date instead of the UTC date.",
+      "evidence": {
+        "locations": [
+          "tests/test_overdue.py:188-201",
+          "tests/e2e_overdue.py:340-344"
+        ],
+        "reproduction": "bash /mnt/session/outputs/probes/mutants_round2.sh /tmp/rv2 /tmp/venv312/bin   (mutants today_date_today and today_naive_now; all runs with TZ=UTC)",
+        "observed": "date.today(): pytest '1 failed, 38 passed' (test_today_utc_is_the_utc_date_not_the_host_date); local-all '7 passed, 3 failed' (boundary: 'due 2026-10-10 with UTC today 2026-10-10: POST overdue True, want False', listing, overdue-list). datetime.now().date(): the same. Unmodified head: 39 passed, local-all 10/0.",
+        "expected": "At least one plan command fails for each named mutant under TZ=UTC; met."
+      },
+      "violates": [
+        "spec.goal: overdue iff open and due_date strictly before the current UTC calendar date"
+      ],
+      "refutation_condition": "A test_plan command, run with TZ=UTC, fails on head with app/storage.py:11 replaced by `return date.today()` and by `return datetime.now().date()`.",
+      "status": "withdrawn",
+      "suggested_fix": "WITHDRAWN: both named mutants fail pytest and local-all under TZ=UTC. Two further host-local variants (astimezone(), fromtimestamp()) pass pytest but are caught by local-all."
+    },
+    {
+      "finding_id": "F-3",
+      "severity": "minor",
+      "category": "test_quality",
+      "claim": "No test in the test plan pins the UTC half of the overdue rule: with app.storage.today_utc returning the host-local date, pytest, local-all and rollover-local all still pass in a UTC environment, so a regression to local time would merge green.",
+      "evidence": {
+        "locations": [
+          "app/storage.py:10-11",
+          "tests/test_overdue.py:188-201",
+          "tests/e2e_overdue.py:340-344"
+        ],
+        "reproduction": "bash /mnt/session/outputs/probes/f2_local_clock_mutants.sh /tmp/rv2_venv312/bin   (fresh clones of 93ced45, app/storage.py:11 mutated, TZ=UTC exported; full output in probes/f2_local_clock_mutants.out)",
+        "observed": "Round 2, TZ=UTC: `return date.today()` -> pytest 'FAILED tests/test_overdue.py::test_today_utc_is_the_utc_date_not_the_host_date / 1 failed, 38 passed' (exit 1); local-all 'FAIL boundary: due 2026-10-10 with UTC today 2026-10-10: POST overdue True, want False', FAIL listing, FAIL overdue-list, '7 passed, 3 failed' (exit 1). `return datetime.now().date()` -> the same failures. Unmodified head: 39 passed, 10 passed.",
+        "expected": "Refutation condition: a test_plan command run with TZ=UTC fails on both mutants. Met by pytest and by local-all independently."
+      },
+      "violates": [
+        "spec.goal: 'overdue iff open and due_date strictly before the current UTC calendar date'",
+        "spec.interfaces[app.storage.today_utc]: return datetime.now(timezone.utc).date()",
+        "AC-4 (rule under a live clock)"
+      ],
+      "refutation_condition": "Withdrawn if the implementer shows a test_plan command (pytest or the local e2e entries, run in an environment whose TZ is UTC, like the orchestrator's) that fails on head with app/storage.py:11 replaced by `return date.today()` (and by `return datetime.now().date()`), or shows that the orchestrator's local or preview runs always use a host time zone whose calendar date differs from UTC.",
+      "status": "withdrawn"
+    },
+    {
+      "finding_id": "F-4",
+      "severity": "nit",
+      "category": "maintainability",
+      "claim": "Round 1: intermediate commit d33b244 on the branch accepted '2026-11-30T00:00:00' and 0 as due_date, so a non-squash merge would leave a commit on main that stores malformed due dates.",
+      "evidence": {
+        "locations": [
+          "app/main.py:19-28 (at 5fd5533 and later)"
+        ],
+        "reproduction": "bash /mnt/session/outputs/probes/f3_every_commit.sh /tmp/rv2 /tmp/venv312/bin",
+        "observed": "'d33b244 is NOT an ancestor of HEAD'. At 5fd5533, 7a5bfd4, e563e95 and 93ced45, '2026-11-30T00:00:00', 0, 1700000000, '2026-11-30T17:00:00Z', '2027-02-29' and True all give 422 with 0 stored. d33b244 itself still gives 201 for the first two, but it is unreachable from the branch. Tree identity: 5fd5533^{tree} = 23128cd^{tree}, and 7a5bfd4^{tree} = 1ad4332^{tree}.",
+        "expected": "No commit in main..HEAD accepts a malformed due_date; met."
+      },
+      "violates": [
+        "AC-9 (at an intermediate commit only)"
+      ],
+      "refutation_condition": "Squash-merge, or d33b244 shown to reject both values with 422.",
+      "status": "withdrawn",
+      "suggested_fix": "WITHDRAWN: the implementer applied the suggested reordering, so the first commit that accepts due_date already validates it strictly, and d33b244 is no longer in the branch history. My literal condition did not anticipate the fix being applied. The claim's premise is now false, verified per commit above."
+    },
+    {
+      "finding_id": "F-5",
+      "severity": "nit",
+      "category": "test_quality",
+      "claim": "The F-1 regression test (tests/test_overdue.py:113-125) catches a torn done/overdue read only when asdict() runs before the done-dependent overdue computation. Suppose Todo.to_dict is rewritten to compute overdue from self first and then call asdict(self) with no snapshot. Then all 39 pytest tests, local-all and rollover-local still pass, yet POST /todos can return a torn response: done=true, overdue=true for a todo completed concurrently. The plan therefore does not protect the invariant F-1 restored against that plausible refactor. Head itself is correct.",
+      "evidence": {
+        "locations": [
+          "tests/test_overdue.py:113-125",
+          "app/storage.py:27-29"
+        ],
+        "reproduction": "bash /mnt/session/outputs/probes/mutants_round2.sh /tmp/rv2 /tmp/venv312/bin   (mutant todict_overdue_first: to_dict body replaced by `overdue = self.is_overdue(today); return {**asdict(self), \"overdue\": overdue}`), then in that copy: python -m pytest -q -p no:cacheprovider /mnt/session/outputs/probes/scratch_test_f1_both_orders.py",
+        "observed": "todict_overdue_first: pytest '39 passed'; local-all '10 passed, 0 failed'; rollover-local '1 passed'; race probe '35 torn responses in 20000 rounds; example: {'id': 17, 'title': 'race', 'done': True, ..., 'due_date': '2000-01-01', 'overdue': True}'. Scratch two-hook test: head '2 passed'; todict_overdue_first 'FAILED ...[is_overdue]'; 1ad4332 code 'FAILED ...[asdict]'.",
+        "expected": "A test_plan command fails for a to_dict that reads done twice in either order, as it already does for the asdict-first order (round-1 code and the todict_no_copy mutant)."
+      },
+      "violates": [
+        "interfaces['Todo response object']: overdue true iff done is false AND due_date is not null AND due_date < today_utc() (regression protection for review F-1)"
+      ],
+      "refutation_condition": "I withdraw this if the implementer shows a test_plan command that fails on head with Todo.to_dict replaced by `overdue = self.is_overdue(today); return {**asdict(self), \"overdue\": overdue}`, or shows that this variant cannot produce a torn response (probe_race_post_response.py reports 0 torn in 20000 rounds against it).",
+      "status": "open",
+      "suggested_fix": "Parametrize the existing test over a second hook point: monkeypatch app.storage.Todo.is_overdue with a wrapper that calls the original and then store.complete(1), and assert overdue is (not done) as now. probes/scratch_test_f1_both_orders.py does exactly this: head passes both cases, and each single-read-order regression fails one of them."
+    }
+  ],
+  "spec_conformance": [
+    {
+      "ac_id": "AC-1",
+      "status": "not_assessed",
+      "evidence": "user_visible; the preview at http://127.0.0.1:54991 (preview.json) refused connections, so the preview entry `compat` was not run there. Local evidence, all passing at 93ced45: pytest test_title_only_and_unknown_field_keep_existing_behaviour (key order, id 1, ISO created_at, due_date null, overdue false, no 'priority'); local-all PASS compat; `compat` against the manifest entrypoint started locally exits 0 twice; probe_live shows spoofed and unknown fields ignored."
+    },
+    {
+      "ac_id": "AC-2",
+      "status": "not_assessed",
+      "evidence": "user_visible; the preview at http://127.0.0.1:54991 (preview.json) refused connections, so the preview entry `create-future` was not run there. Local: pytest test_future_and_null_due_dates_are_echoed_and_not_overdue passed; local-all PASS create-future; supplementary manifest-instance run exits 0."
+    },
+    {
+      "ac_id": "AC-3",
+      "status": "not_assessed",
+      "evidence": "user_visible; the preview at http://127.0.0.1:54991 (preview.json) refused connections, so the preview entry `create-past` was not run there. Local: pytest test_past_due_date_is_accepted_and_overdue (POST and GET /todos both overdue true) and test_post_response_stays_consistent_when_completed_while_it_is_built passed; local-all PASS create-past; race probe 0 torn at head (F-1 withdrawn)."
+    },
+    {
+      "ac_id": "AC-4",
+      "status": "not_assessed",
+      "evidence": "user_visible; the preview at http://127.0.0.1:54991 (preview.json) refused connections, so the preview entry `boundary` was not run there. Local: pytest test_overdue_is_strictly_before_today[day|month-edge|year-edge] and test_today_utc_is_the_utc_date_not_the_host_date passed; local-all PASS boundary with the server under TZ=<+14>-14 (its host date differs from UTC), so the UTC rule is exercised live; host-local mutants fail local-all (mutants_round2.out)."
+    },
+    {
+      "ac_id": "AC-5",
+      "status": "not_assessed",
+      "evidence": "user_visible; the preview at http://127.0.0.1:54991 (preview.json) refused connections, so the preview entry `listing` was not run there. Local: pytest test_listing_obeys_rule_for_every_element and test_list_endpoints_read_the_clock_once_per_request[list] passed; local-all PASS listing; probe_live readers saw 0 order, shape or rule violations across 649 reads under 357 concurrent writes."
+    },
+    {
+      "ac_id": "AC-6",
+      "status": "not_assessed",
+      "evidence": "user_visible; the preview at http://127.0.0.1:54991 (preview.json) refused connections, so the preview entry `overdue-list` was not run there. Local: pytest test_overdue_list_is_exactly_open_past_due_todos_in_id_order (exactly [a, f], equal to their GET /todos entries) passed; local-all PASS overdue-list; the route returns 200; at rest GET /todos/overdue equals the flagged subset of GET /todos (118 of 1007)."
+    },
+    {
+      "ac_id": "AC-7",
+      "status": "not_assessed",
+      "evidence": "user_visible; the preview at http://127.0.0.1:54991 (preview.json) refused connections, so the preview entry `empty-overdue` (shape only) was not run there. Local: pytest test_overdue_list_is_empty_list_when_nothing_is_overdue passed; local-all PASS empty-overdue --strict (exact [] on a fresh server, before and after adding non-overdue todos); the fresh manifest instance returned 200 []."
+    },
+    {
+      "ac_id": "AC-8",
+      "status": "not_assessed",
+      "evidence": "user_visible; the preview at http://127.0.0.1:54991 (preview.json) refused connections, so the preview entry `complete` was not run there. Local: pytest test_completing_clears_overdue_and_removes_from_list (200, done true, due_date 2000-01-01, overdue false; off the overdue list; still in GET /todos; 99 -> 404) passed; local-all PASS complete; probe_live: a replayed complete is idempotent, and unknown and negative ids give 404."
+    },
+    {
+      "ac_id": "AC-9",
+      "status": "not_assessed",
+      "evidence": "user_visible; the preview at http://127.0.0.1:54991 (preview.json) refused connections, so the preview entry `malformed` was not run there. Local: 17 parametrized pytest cases (the 16 AC-9 values plus 2027-02-29) give 422 with no todo stored, and 2028-02-29, 2026-11-30, 0001-01-01 and 9999-12-31 are accepted; local-all PASS malformed; probe_live: 34 further malformed values give 422 with the count unchanged; every commit in main..HEAD rejects the AC-9 datetime and integer values (F-3 withdrawn)."
+    },
+    {
+      "ac_id": "AC-10",
+      "status": "not_assessed",
+      "evidence": "user_visible. By owner decision there is no preview rollover entry, and the preview `listing` entry (per-request invariant only) was not run because the preview was unreachable. The authoritative local evidence passes: pytest test_overdue_flips_when_the_date_advances_without_a_write (false and absent at D, true and present at D+1 on both endpoints; 'overdue' not in vars(Todo)); `PYTHONPATH=. python tests/e2e_overdue.py rollover-local` PASS."
+    },
+    {
+      "ac_id": "AC-11",
+      "status": "met",
+      "evidence": "`python -m pytest -q` and `python -m pytest -q tests/test_todos.py tests/test_overdue.py` both give 39 passed (3 in tests/test_todos.py, 36 in tests/test_overdue.py) at 93ced45 on Python 3.12 and 3.11. `git diff --exit-code main -- tests/test_todos.py` exits 0, so the file is unedited. All 36 new tests are red on base."
+    },
+    {
+      "ac_id": "AC-12",
+      "status": "met",
+      "evidence": "Test plan commands 3, 4, 5, 6, 8 and 9 exit 0 in a clean clone with main = 6dec694. The changed files are exactly the 5 allowed paths, with no untracked files, and the scope check was shown to fail on a stray file. The import check prints 'disallowed imports: []'. There is no extra=, model_config or ConfigDict in app/main.py, and no sleep, datetime.now or date.today in tests/test_overdue.py."
+    },
+    {
+      "ac_id": "AC-13",
+      "status": "met",
+      "evidence": "Test plan command 7 exits 0. On reading the prose: the app/main.py:3-4 docstring lists 'GET /todos/overdue' and 'due_date'. README.md:15-30 states the rule correctly (open and strictly before the current UTC calendar date; a todo due today, a completed one or an undated one is never overdue), plus the [] response and the 422 for malformed dates. Unchanged since round 1."
+    }
+  ],
+  "produced_by": {
+    "agent_name": "adversarial-reviewer",
+    "agent_id": "agent_adversarial_reviewer",
+    "agent_version": 1,
+    "session_id": "sesn_unknown",
+    "thread_id": null,
+    "model": "claude",
+    "effort": null,
+    "outcome_iterations": null,
+    "list_cost_usd": null,
+    "produced_at": "2026-10-10T13:05:00Z",
+    "inputs": [
+      {
+        "artifact": "spec.json",
+        "sha256": "f60a0883cb4187305e7e8ad71c4584016466a9361ac070d1b22fa7a0380adefb"
+      },
+      {
+        "artifact": "diff.patch",
+        "sha256": "0788cedfc3470f7d8b494f56546520172a79c4426cff752277fa8922fa74d1ce"
+      },
+      {
+        "artifact": "previous_findings.json",
+        "sha256": "d5b4533fafb3642ae28b791de958d9bce7be5825a0a89684e5464f87c169d87e"
+      },
+      {
+        "artifact": "review_response.json",
+        "sha256": "79555d0de394f10ce124f079a61549ab998303b370d7d6f73ce5006bcd0fafec"
+      },
+      {
+        "artifact": "implementation_report.json",
+        "sha256": "32e3cd86cb7a8d3b88fa95a4748cb4a157104c98917c2af7a6645221e91be223"
+      },
+      {
+        "artifact": "preview.json",
+        "sha256": "eaa2fb507d0a600d5043fe7bdd7a37973ab8575d9053ce125d98114fac2da5be"
+      },
+      {
+        "artifact": "deterministic_checks.json",
+        "sha256": "d2b29c75332eecb3ec65990c248a2b1f7560c1a43c6b4c57348ea4ea9ad59502"
+      }
+    ]
+  }
+}

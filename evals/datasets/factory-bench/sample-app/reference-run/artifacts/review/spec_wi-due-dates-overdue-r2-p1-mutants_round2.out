@@ -1,0 +1,73 @@
+##### mutant today_date_today
+    11c11
+    <     return datetime.now(timezone.utc).date()
+    ---
+    >     return date.today()
+    pytest: FAILED tests/test_overdue.py::test_today_utc_is_the_utc_date_not_the_host_date
+    pytest: 1 failed, 38 passed, 1 warning in 0.81s
+    local-all: starting TZ=<+14>-14 /tmp/venv312/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 50349 --log-level warning
+    local-all: FAIL boundary: boundary: due 2026-10-10 with UTC today 2026-10-10: POST overdue True, want False
+    local-all: FAIL listing: listing: {'id': 10, 'title': 'e2e-boundary-2026-10-10', 'done': False, 'created_at': '2026-10-10T12:55:28.203198+00:00', 'due_date': '2026-10-10', 'overdue': True} has overdue True but the rule gives False for UTC today 2026-10-10
+    local-all: FAIL overdue-list: overdue-list: own todos in GET /todos/overdue are ['e2e-overdue-a', 'e2e-overdue-e', 'e2e-overdue-f'], want ['e2e-overdue-a', 'e2e-overdue-f'] (UTC today 2026-10-10)
+    local-all: 7 passed, 3 failed
+    rollover-local: 1 passed, 0 failed
+##### mutant today_naive_now
+    11c11
+    <     return datetime.now(timezone.utc).date()
+    ---
+    >     return datetime.now().date()
+    pytest: FAILED tests/test_overdue.py::test_today_utc_is_the_utc_date_not_the_host_date
+    pytest: 1 failed, 38 passed, 1 warning in 0.91s
+    local-all: starting TZ=<+14>-14 /tmp/venv312/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 49485 --log-level warning
+    local-all: FAIL boundary: boundary: due 2026-10-10 with UTC today 2026-10-10: POST overdue True, want False
+    local-all: FAIL listing: listing: {'id': 10, 'title': 'e2e-boundary-2026-10-10', 'done': False, 'created_at': '2026-10-10T12:55:31.089288+00:00', 'due_date': '2026-10-10', 'overdue': True} has overdue True but the rule gives False for UTC today 2026-10-10
+    local-all: FAIL overdue-list: overdue-list: own todos in GET /todos/overdue are ['e2e-overdue-a', 'e2e-overdue-e', 'e2e-overdue-f'], want ['e2e-overdue-a', 'e2e-overdue-f'] (UTC today 2026-10-10)
+    local-all: 7 passed, 3 failed
+    rollover-local: 1 passed, 0 failed
+##### mutant today_astimezone_local
+    11c11
+    <     return datetime.now(timezone.utc).date()
+    ---
+    >     return datetime.now(timezone.utc).astimezone().date()
+    pytest: 39 passed, 1 warning in 0.89s
+    local-all: starting TZ=<+14>-14 /tmp/venv312/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 55703 --log-level warning
+    local-all: FAIL boundary: boundary: due 2026-10-10 with UTC today 2026-10-10: POST overdue True, want False
+    local-all: FAIL listing: listing: {'id': 10, 'title': 'e2e-boundary-2026-10-10', 'done': False, 'created_at': '2026-10-10T12:55:34.122245+00:00', 'due_date': '2026-10-10', 'overdue': True} has overdue True but the rule gives False for UTC today 2026-10-10
+    local-all: FAIL overdue-list: overdue-list: own todos in GET /todos/overdue are ['e2e-overdue-a', 'e2e-overdue-e', 'e2e-overdue-f'], want ['e2e-overdue-a', 'e2e-overdue-f'] (UTC today 2026-10-10)
+    local-all: 7 passed, 3 failed
+    rollover-local: 1 passed, 0 failed
+##### mutant today_fromtimestamp_local
+    11c11
+    <     return datetime.now(timezone.utc).date()
+    ---
+    >     return datetime.fromtimestamp(datetime.now(timezone.utc).timestamp()).date()
+    pytest: 39 passed, 1 warning in 0.98s
+    local-all: starting TZ=<+14>-14 /tmp/venv312/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 53577 --log-level warning
+    local-all: FAIL boundary: boundary: due 2026-10-10 with UTC today 2026-10-10: POST overdue True, want False
+    local-all: FAIL listing: listing: {'id': 10, 'title': 'e2e-boundary-2026-10-10', 'done': False, 'created_at': '2026-10-10T12:55:37.045522+00:00', 'due_date': '2026-10-10', 'overdue': True} has overdue True but the rule gives False for UTC today 2026-10-10
+    local-all: FAIL overdue-list: overdue-list: own todos in GET /todos/overdue are ['e2e-overdue-a', 'e2e-overdue-e', 'e2e-overdue-f'], want ['e2e-overdue-a', 'e2e-overdue-f'] (UTC today 2026-10-10)
+    local-all: 7 passed, 3 failed
+    rollover-local: 1 passed, 0 failed
+##### mutant todict_no_copy
+    28c28
+    <         snapshot = replace(self)  # done is read once, so a concurrent complete() cannot split done from overdue
+    ---
+    >         snapshot = self  # done is read once, so a concurrent complete() cannot split done from overdue
+    pytest: FAILED tests/test_overdue.py::test_post_response_stays_consistent_when_completed_while_it_is_built
+    pytest: 1 failed, 38 passed, 1 warning in 0.86s
+    local-all: starting TZ=<+14>-14 /tmp/venv312/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 47985 --log-level warning
+    local-all: 10 passed, 0 failed
+    rollover-local: 1 passed, 0 failed
+    race probe: 14 torn responses in 20000 rounds; example: {'id': 711, 'title': 'race', 'done': False, 'created_at': '2026-10-10T12:55:41.024225+00:00', 'due_date': '2000-01-01', 'overdue': False}
+##### mutant todict_overdue_first
+    28,29c28,29
+    <         snapshot = replace(self)  # done is read once, so a concurrent complete() cannot split done from overdue
+    <         return {**asdict(snapshot), "overdue": snapshot.is_overdue(today)}
+    ---
+    >         overdue = self.is_overdue(today)
+    >         return {**asdict(self), "overdue": overdue}
+    pytest: 39 passed, 1 warning in 0.89s
+    local-all: starting TZ=<+14>-14 /tmp/venv312/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 33457 --log-level warning
+    local-all: 10 passed, 0 failed
+    rollover-local: 1 passed, 0 failed
+    race probe: 35 torn responses in 20000 rounds; example: {'id': 17, 'title': 'race', 'done': True, 'created_at': '2026-10-10T12:55:45.753096+00:00', 'due_date': '2000-01-01', 'overdue': True}

@@ -1,0 +1,3 @@
+# tests/test_overdue.py from 93ced45 run against the round-1 head 1ad4332 (python 3.12.3): the F-1 test is red there; the F-2 test is green there because 1ad4332's today_utc is correct (it goes red only on the local-clock mutants, see f2_local_clock_mutants.out)
+FAILED tests/test_overdue.py::test_post_response_stays_consistent_when_completed_while_it_is_built
+1 failed, 38 passed, 1 warning in 0.95s

@@ -1,0 +1,240 @@
+{
+  "verdict_id": "ver_4e93d2a0d0r1j1",
+  "decomposition_id": "dec_4e93d2a0d0r1",
+  "round": 1,
+  "overall": {
+    "result": "revise",
+    "blocking_issue_count": 2,
+    "summary_for_human": "Result: revise. 2 blocking, 3 major. One spec covers the one work item. The content is strong but is not one contract yet.\nRead first: the spec is two different documents. spec.json (rev 1) and spec.md ('rev 2') disagree on the clock seam (today_utc vs utc_today), storage signatures, the test file, the e2e script path and CLI, allowed_paths, and what each AC-n means. Gate 2 reads the MD; the orchestrator enforces the JSON. The MD is the more correct of the two: right pydantic facts, flags the placeholder deploy, tests unknown-field compat.\nSecond blocker: AC-10 (the overdue flag flips when the UTC date passes) is user-visible, but no preview e2e check can pass for a correct build in one run. The JSON has no preview entry; the MD's seed/verify pair exits 3 on the same day.\nTwo decisions are yours, not the writer's. (1) The Deploy step in .github/workflows/preview.yml is an echo placeholder, so no preview e2e can run, and the decomposition's 'deploys it as it is' is wrong. Wire a real deploy, or accept local e2e plus pytest for this run. (2) For AC-10, accept local or in-process evidence, or widen scope to a manifest-declared test clock. If neither is acceptable, this becomes an escalation.\nStrong: goal and metrics traced, a precise rule (open AND due_date < UTC today), boundary/leap-day/year tests, malformed-date cases grounded in real pydantic behaviour, tight allowed_paths, useful forbidden_changes. Also fix: the JSON context wrongly says ints get 422 (0 is accepted as 1970-01-01) and that the orchestrator starts the instance; the JSON's local-all fails on a correct build as specified.\nNot verified: the platform-contract skill was unavailable, so S11 was judged from the rubric and the manifest schema (manifest valid). The owner decisions the specs cite (human_comments.md) are not in my inputs."
+  },
+  "per_spec": [
+    {
+      "spec_id": "spec_wi-due-dates-overdue",
+      "criteria": [
+        {
+          "criterion": "S1. Goal traces to the work item and the outcome",
+          "score": 3,
+          "evidence": "JSON goal states the post-merge truth ('a client can send an optional calendar due_date ... every todo the API returns carries due_date ... and a boolean overdue computed at response time; and GET /todos/overdue returns exactly the overdue todos'), names both metrics ('Overdue visibility' and 'Backwards compatibility'), and names the production miss signal: 'The goal is missed if, on the running service, any todo's overdue flag disagrees with the rule, GET /todos/overdue differs from the flagged todos, a title-only POST changes any existing field, or a malformed due_date is stored instead of returning 422'. Matches all five parts of the work item intent. The MD goal says the same in substance."
+        },
+        {
+          "criterion": "S2. Acceptance criteria are verifiable",
+          "score": 1,
+          "evidence": "Each AC is Given/When/Then, observable, and automated_test or static_check. But criteria have two readings. (1) The same AC id means different things in the two artifacts. JSON AC-4 is the D-1/D/D+1 boundary, MD AC-4 is key order on GET /todos. JSON AC-7 is the empty overdue list, MD AC-7 is the boundary. JSON AC-11 is 'All three existing tests ... pass', MD AC-11 is unit invariants ('calls app.storage.utc_today exactly once per request'). The MD has an AC-14 the JSON lacks. (2) JSON AC-13 says 'README.md has a short section stating: the optional due_date (YYYY-MM-DD, UTC), the overdue flag and the exact rule (open and due_date strictly before today's UTC date)', but its check (test_plan.commands[4]) asserts only the substrings 'GET /todos/overdue', 'due_date' and 'overdue'. A README without the rule passes."
+        },
+        {
+          "criterion": "S3. Criteria are complete for the goal",
+          "score": 3,
+          "evidence": "JSON criteria cover the title-only POST (AC-1), future and null dates (AC-2), past dates accepted and immediately overdue (AC-3), the D-1/D/D+1 boundary (AC-4), the rule on every GET /todos element including 'A todo with due_date null is never overdue' (AC-5), the exact overdue list excluding completed, future, no-date and due-today todos (AC-6), the empty state '[] (an empty JSON list, not null and not an error)' (AC-7), complete flips the flag and an unknown id still returns 404 (AC-8), 12 malformed values returning 422 with nothing stored (AC-9), flag derived at response time (AC-10) and existing tests unedited (AC-11). Error paths and empty states are covered. Unknown-field tolerance is promised in the interface but has no AC; see issue I-6. It sits outside the goal's back-compat clause ('title-only clients'), so the score is not lowered."
+        },
+        {
+          "criterion": "S4. Interfaces are precise",
+          "score": 1,
+          "evidence": "Taken alone, each artifact is fully typed with example payloads and states back-compat. JSON: 'id:int, title:str, done:bool, created_at:str ..., due_date: str|null (\"YYYY-MM-DD\"...), overdue: bool'. Across the spec, though, types and optionality are not settled. Todo.due_date is 'str | None' in the JSON and 'date | None' in the MD. The JSON has 'Todo.to_dict(self, today: date | None = None)' while the MD has 'Todo.to_dict(self, today: date)  # today is required'. The clock seam is 'app.storage.today_utc' (JSON) versus 'app.storage.utc_today' (MD). The store method is 'TodoStore.list_dicts(self, overdue_only: bool = False)' versus 'TodoStore.list_overdue(self, today: date)'. The e2e CLI is 'tests/e2e_overdue.py <check> [base_url]' versus 'tests/e2e/overdue_e2e.py [--base-url URL] [--fresh] [--wait-ready SECONDS] MODE'. Two implementers given these produce incompatible code: one's tests cannot patch the other's clock."
+        },
+        {
+          "criterion": "S5. Scope is bounded",
+          "score": 3,
+          "evidence": "JSON allowed_paths lists five explicit files and no globs: 'app/storage.py', 'app/main.py', 'README.md', 'tests/test_overdue.py', 'tests/e2e_overdue.py'. It excludes the existing tests/test_todos.py. non_goals name adjacent work (PATCH/PUT, reminders, datetime due dates, persistence, response_model refactor, GET /todos/{todo_id}). forbidden_changes name tempting moves: 'Do not store the overdue flag on the Todo', 'Do not edit tests/test_todos.py', 'Do not use time.sleep, datetime.now() or date.today() in tests/test_overdue.py'. The MD's paths differ (tests/test_due_dates.py, tests/e2e/overdue_e2e.py) but are equally tight; that divergence is issue I-1."
+        },
+        {
+          "criterion": "S6. Grounded in the current code",
+          "score": 0,
+          "evidence": "Most line references hold: storage.py:10-18 (Todo), 27-29 (list sorts by id), 31-36 (create); main.py:3 (endpoint docstring), 16-17 (TodoIn), 25-46 (routes return plain dicts). The context also names the existing tests to keep green. Two claims in the JSON context are wrong. (a) 'Verified in a scratch venv (fastapi 0.143, pydantic 2.14): a plain `date | None` body field returns 422 for ... ints and bool'. With exactly those versions, POST {\"due_date\": 0} returns 200 with 1970-01-01, because lax date accepts midnight-aligned Unix timestamps; 1700000000 does return 422. (b) 'The e2e checks need nothing from the environment except $BASE_URL; the orchestrator starts the instance and exports it.' .github/workflows/preview.yml:4 says 'The orchestrator never deploys; it reads what this workflow records', and the Deploy step at preview.yml:64-73 is an echo-only placeholder. The MD context states both facts correctly ('integer timestamps'; 'PREVIEW CAVEAT ... placeholder')."
+        },
+        {
+          "criterion": "S7. Test plan is executable",
+          "score": 2,
+          "evidence": "Checked at base 6dec694: 'python -m pytest -q' \u2192 3 passed; 'git diff --exit-code main -- tests/test_todos.py pyproject.toml service_manifest.json .github' \u2192 rc 0; the AST import scan runs (rc 0, 'disallowed imports: []'). new_tests map every automated AC from AC-1 to AC-11. Static AC-12 and AC-13 map to commands. The harness is named: the file defines its own autouse store.clear() and TestClient fixtures (they live in test_todos.py), and the clock is patched with 'monkeypatch.setattr(\"app.storage.today_utc\", ...)'. Not 3: the must-pass command 'python tests/e2e_overdue.py local-all', built as the interface describes it, fails on a correct implementation (issue I-4). '! grep ... tests/test_overdue.py' also passes when the file is absent (verified rc 0), and nothing checks that the new test file exists."
+        },
+        {
+          "criterion": "S8. Dependencies and ordering",
+          "score": 2,
+          "evidence": "dependencies.specs is [], matching the decomposition's depends_on []. The spec consumes no sibling interfaces. Not 3: the one real dependency, a preview deploy that actually serves the branch, is undeclared ('external': []), and the JSON says nothing about what happens while it is missing. The MD does: 'Preview verification depends on a real deploy ... the orchestrator should report them as not runnable rather than passed'."
+        },
+        {
+          "criterion": "S9. Open questions have defaults",
+          "score": 3,
+          "evidence": "The JSON has two questions, both 'blocking': false with defaults: the UTC-midnight cutoff ('Yes ... UTC matches created_at'), and preview freshness ('no preview check depends on it'). Neither is answered by the repository. Fewer than four. Nit: Q2's premise ('orchestrator-started preview instance') is wrong, and its default cites 'the owner's decision', which no input records (issue I-9). The MD's three questions are also all defaulted and non-blocking."
+        },
+        {
+          "criterion": "S10. Length and density",
+          "score": 1,
+          "evidence": "spec.md is 197 lines, under 200 only because paragraphs are single lines: 21 lines exceed 300 characters, the context (line 17) is 2,499 characters, and the file holds 4,049 words / 28 KB. Wrapped at 120 columns it is 365 lines. That is for an S-size change to about 100 lines of code. It carries material the implementer does not need: writer-process notes ('so no researcher was spawned'), Gate-process commentary inside the Goal ('Decisions: the Gate 1 owner notes ... so Gate 2 should confirm it explicitly'), and a multi-day seed/verify e2e mechanism (line 121) that cannot complete within a verification run. Not restating the codebase, so not 0."
+        },
+        {
+          "criterion": "S11. Deployable through the platform contract",
+          "score": 2,
+          "evidence": "The platform-contract skill was not available in this session (/mnt/skills is empty), so the contract was taken from the rubric's own statement of it. service_manifest.json is present at the repo root and valid against schemas/service_manifest.schema.json (validate.py: 'valid'). The work needs no env var, migration, port or health change, and none is requested, so no config interface is needed. forbidden_changes bar service_manifest.json and .github/. Nothing touches IAM, networking or the platform repository. Not 3: the JSON's statement of what the preview needs ('nothing from the environment except $BASE_URL; the orchestrator starts the instance') rests on a wrong premise. It also omits that the preview Deploy step is a placeholder (preview.yml:64-73), so the environment it describes does not exist yet."
+        },
+        {
+          "criterion": "S12. End-to-end coverage of user-visible behaviour",
+          "score": 0,
+          "evidence": "JSON AC-10 is 'user_visible': true but has only target:local entries ('rollover-local', in-process TestClient). Its own note says 'AC-10 has no preview entry'. That is a user_visible criterion without a preview e2e entry. The true flag is honest, since a user sees the flag flip the next day; the problem is the missing coverage. The MD adds preview 'rollover-seed'/'rollover-verify', but verify 'Exits 3 ... when run on the same UTC day as the seed'. The e2e contract is 'Shell command that exits 0 on success', and verify also needs a runner-local ${TMPDIR} file plus an in-memory preview todo that survives a UTC day. So no correct build can pass it in one verification run. Also, the preview entries for the empty state (JSON AC-7 'is [] whenever that subset is empty'; MD AC-6 'only asserts the response is 200 and a JSON array') cannot fail when the empty-state behaviour is wrong. AC-1 to AC-9 otherwise have preview entries plus a local counterpart."
+        }
+      ],
+      "issues": [
+        {
+          "issue_id": "I-1",
+          "severity": "blocking",
+          "location": "spec_wi-due-dates-overdue: spec.json (revision 1) vs spec.md (header 'revision 2'), whole document",
+          "description": "The JSON and the MD are two different specifications under one spec_id. Checked by string search: the JSON never mentions utc_today, test_due_dates, overdue_e2e, list_overdue or rollover-seed, and the MD never mentions today_utc, tests/test_overdue.py, e2e_overdue or list_dicts. They differ on: the clock seam (app.storage.today_utc vs app.storage.utc_today); storage signatures (Todo.due_date str|None vs date|None; to_dict(today=None) vs to_dict(today) required; list_dicts(overdue_only) vs list_overdue(today); in the MD routes sample the clock, in the JSON storage does); the new test file (tests/test_overdue.py vs tests/test_due_dates.py); the e2e script path and CLI; allowed_paths; AC numbering and content (13 vs 14 ACs, ids map to different behaviours); the malformed-value lists in AC-9; AC-10 preview coverage; and the open questions (2 vs 3). Gate 2 reads the MD while the orchestrator enforces the JSON. An implementer following the MD would change files the JSON's diff-scope check rejects, and the JSON's e2e commands ('python tests/e2e_overdue.py ...') would point at a file that does not exist.",
+          "suggested_resolution": "Ship one revision: generate one artifact mechanically from the other so they cannot drift, and make the revision numbers agree. Choose the content deliberately. The MD already fixes I-3, I-4 and I-6, so starting from it and carrying the fixes into the JSON is likely less work, but that is the writer's call."
+        },
+        {
+          "issue_id": "I-2",
+          "severity": "blocking",
+          "location": "spec_wi-due-dates-overdue: AC-10 and test_plan.e2e (JSON 'rollover-local'; MD 'rollover-seed'/'rollover-verify')",
+          "description": "AC-10 (the overdue flag flips when the UTC date passes, with no write) is honestly flagged user_visible, but neither artifact gives it a preview check that a correct build can pass in one verification run. The JSON has no target:preview entry for it. The MD's preview pair needs a second run on a later UTC day, exits 3 (non-zero, so a failure under the 'exits 0 on success' contract) when run on the seed day, keeps state in a runner-local ${TMPDIR} file, and needs the in-memory preview instance to keep the todo across a day and any redeploy. The post-merge re-run against dev has no seed at all. The spec cannot redefine exit code 3 as 'not a failure' (MD open question 3).",
+          "suggested_resolution": "Do not flip user_visible to false to escape the rule. Put the choice to the owner in the spec and record the answer. Option (a): the owner accepts pytest plus the local rollover run as AC-10's evidence; drop or neutralise preview entries that cannot exit 0 for a correct build, and state the waiver. Option (b): the user-visible claim becomes 'at every request, overdue equals the rule against the server's UTC date' (already on preview via the listing check), and the derive-at-response-time property becomes an in-process invariant. This needs explicit owner sign-off because it can read as a dodge. Option (c): a deployable test clock, which needs a manifest env var declared as a config interface. service_manifest.json is outside the outcome's paths_in_scope, so (c) needs the owner to widen scope."
+        },
+        {
+          "issue_id": "I-3",
+          "severity": "major",
+          "location": "spec_wi-due-dates-overdue: spec.json context ('Verified in a scratch venv ...' and 'Platform (inferred ...)' paragraphs); AC-9; dependencies.external",
+          "description": "Two wrong claims about the repository and libraries. (a) 'a plain `date | None` body field returns 422 for ... ints': verified false with fastapi 0.143 / pydantic 2.14, where {\"due_date\": 0} returns 200 as 1970-01-01. JSON AC-9 omits 0, so a validator that checks only string inputs would pass every planned test and still accept integer timestamps. (b) 'the orchestrator starts the instance and exports it': preview.yml:4 says the orchestrator never deploys, and the Deploy step (preview.yml:64-73) only echoes a placeholder URL. The JSON never mentions the placeholder, so its preview e2e entries have nothing real to run against.",
+          "suggested_resolution": "Correct both statements. Add 0 (a midnight-aligned timestamp) to AC-9's malformed list. Declare the real preview deploy as an external dependency and raise it as an open question, as the MD does."
+        },
+        {
+          "issue_id": "I-4",
+          "severity": "major",
+          "location": "spec_wi-due-dates-overdue: spec.json interfaces 'tests/e2e_overdue.py' and test_plan.e2e entry for AC-7; test_plan.commands 'python tests/e2e_overdue.py local-all'",
+          "description": "The JSON contradicts itself on when the strict empty check runs. The interface says 'all (runs those nine in order against base_url)', with empty-overdue seventh, after create-past, boundary and overdue-list have created open past-due todos. It also says 'No check mutates a todo it did not create' and never requires checks to delete their todos. Yet empty-overdue --strict is 'used by local-all on a fresh server' and 'runs first on a fresh server'. Built as the interface reads, the must-pass 'local-all' command fails on a correct implementation, because the strict [] assertion sees todos from earlier checks.",
+          "suggested_resolution": "State the order in the interface itself: the strict empty assertion runs before any check creates todos (the MD's --fresh does this), or checks delete what they create. Then make the two statements agree."
+        },
+        {
+          "issue_id": "I-5",
+          "severity": "minor",
+          "location": "spec_wi-due-dates-overdue: spec.json AC-13 and test_plan.commands[4]",
+          "description": "AC-13's Then requires the README to state the format, UTC and 'the exact rule (open and due_date strictly before today's UTC date)'. The command checks only 'GET /todos/overdue', 'due_date' and 'overdue'. A reader cannot tell whether the criterion is about content or about substrings.",
+          "suggested_resolution": "List the exact strings the check enforces (the MD's AC-13 does: YYYY-MM-DD, 'strictly before', UTC) and say that prose quality is left to review."
+        },
+        {
+          "issue_id": "I-6",
+          "severity": "minor",
+          "location": "spec_wi-due-dates-overdue: spec.json interfaces 'POST /todos' ('Unknown extra fields are still ignored as today') and non_functional.backwards_compatibility",
+          "description": "Ignoring unknown request fields is promised, but no JSON AC, test or forbidden change pins it. Adding extra='forbid' to TodoIn would pass every JSON test and break clients that send extra keys today, which bears on the Backwards compatibility metric. The MD covers it (AC-1 second request, a forbidden change, and a grep for extra='forbid').",
+          "suggested_resolution": "Add the unknown-field case to an AC and a planned test, and forbid stricter extra handling."
+        },
+        {
+          "issue_id": "I-7",
+          "severity": "minor",
+          "location": "spec_wi-due-dates-overdue: spec.md test_plan commands (import scan and diff-scope lines)",
+          "description": "The MD's import allow-list matches module names as prefixes. A probe on a scratch branch showed 'import requests' and 'import jsonschema' both pass, matched by 're' and 'json'; only freezegun was caught. requests is a tempting import for an e2e script, so the check meant to enforce 'no new dependencies' (AC-14) is weaker than it looks. The diff-scope line ('git diff --name-only main') also misses untracked files.",
+          "suggested_resolution": "Anchor each allowed module name (for example require a space, dot or end of line after it), or use the JSON's AST scan against sys.stdlib_module_names."
+        },
+        {
+          "issue_id": "I-8",
+          "severity": "minor",
+          "location": "spec_wi-due-dates-overdue: preview e2e entry for the empty state (JSON AC-7 'empty-overdue'; MD AC-6 'overdue-list')",
+          "description": "On a shared preview the empty-state entries cannot fail when the empty-state behaviour is wrong. The JSON asserts [] only 'whenever that subset is empty', which never happens after earlier checks. The MD asserts only '200 and a JSON array'. Both admit this, and both have a local strict counterpart.",
+          "suggested_resolution": "Keep the local strict check as the evidence and say in the AC's verification_note that the preview entry checks shape only, so nobody reads it as proving the empty case."
+        },
+        {
+          "issue_id": "I-9",
+          "severity": "minor",
+          "location": "spec_wi-due-dates-overdue: spec.md Goal ('Decisions: the Gate 1 owner notes (human_comments.md ...)') and Open question 1; spec.json open_questions[1] ('per the owner's decision')",
+          "description": "Both artifacts cite owner decisions that no input records: outcome.clarifications is [], the decomposition records none, and human_comments.md is not among the inputs. A Gate 2 reviewer cannot trace which rules the owner actually chose and which are the writer's defaults.",
+          "suggested_resolution": "Quote the decisions and where they are recorded, or present them as defaults awaiting confirmation."
+        },
+        {
+          "issue_id": "I-10",
+          "severity": "minor",
+          "location": "spec_wi-due-dates-overdue: spec.md (lines 6, 17, 121 and generally)",
+          "description": "The line count is under 200 only because of very long lines (365 lines when wrapped at 120 columns; 4,049 words). There is process and gate commentary the implementer cannot act on.",
+          "suggested_resolution": "Remove the writer-process and gate commentary, and cut the context down to facts that change what the implementer writes."
+        },
+        {
+          "issue_id": "I-11",
+          "severity": "nit",
+          "location": "spec_wi-due-dates-overdue: spec.json interfaces 'tests/e2e_overdue.py'; test_plan.e2e 'malformed' and 'overdue-list'",
+          "description": "Four small problems. (1) The script is called 'Standard library only (urllib)', but rollover-local imports app.main and fastapi.testclient. Run as 'python tests/e2e_overdue.py rollover-local', sys.path[0] is tests/, so it imports app only if the package is installed; the MD sets PYTHONPATH=. (2) The preview 'malformed' check asserts 'the GET /todos length is unchanged', which is racy on a shared preview; the MD's probe-title approach is not. (3) The preview overdue-list fixture omits the 'due today' todo listed in AC-6's Given. (4) Nothing fails if tests/test_overdue.py is never created.",
+          "suggested_resolution": "State the import and PYTHONPATH requirement, assert on the check's own probe todos rather than list length, align the fixture with AC-6, and add a test -f (or name the test ids)."
+        }
+      ]
+    }
+  ],
+  "coherence": {
+    "interface_mismatches": [],
+    "overlaps": [],
+    "gaps": [],
+    "ordering_problems": [],
+    "contradictions": [
+      {
+        "issue_id": "C-1",
+        "severity": "major",
+        "location": "set: decomposition.summary ('The existing preview workflow deploys it as it is') and decomposition.assumptions ('The workflow deploys any push to factory/** branches') vs .github/workflows/preview.yml:64-73",
+        "description": "Upstream factual error. The preview workflow's Deploy step is a placeholder that only echoes and records https://<slug>.preview.example.com; the repo README says to replace it before e2e checks can hit a running instance. No target:preview e2e entry in any version of the spec can pass until a real deploy exists. The fix lives in .github/, which is outside the outcome's paths_in_scope, so the spec writer cannot resolve it.",
+        "suggested_resolution": "Owner or platform decision before implementation: wire a real deploy step, or explicitly accept local e2e plus pytest as this run's evidence. The spec should carry this as an external dependency (the MD does; the JSON does not, see I-3)."
+      },
+      {
+        "issue_id": "C-2",
+        "severity": "nit",
+        "location": "set: decomposition.work_items[0].touches.likely_paths lists 'tests/test_todos.py' vs intent part (5) 'The existing three tests in tests/test_todos.py pass without edits'",
+        "description": "The decomposition lists the existing test file as a likely path while also requiring it to stay unedited. Both spec artifacts resolve this correctly: they forbid edits and put new tests in a new file.",
+        "suggested_resolution": "No spec change needed; noted so Gate 2 is not surprised that test_todos.py is absent from allowed_paths."
+      }
+    ]
+  },
+  "goal_coverage": [
+    {
+      "metric": "Overdue visibility",
+      "covering_acs": [
+        "spec_wi-due-dates-overdue/AC-3",
+        "spec_wi-due-dates-overdue/AC-4",
+        "spec_wi-due-dates-overdue/AC-5",
+        "spec_wi-due-dates-overdue/AC-6",
+        "spec_wi-due-dates-overdue/AC-7",
+        "spec_wi-due-dates-overdue/AC-8",
+        "spec_wi-due-dates-overdue/AC-10"
+      ],
+      "assessment": "covered",
+      "note": "AC ids are the JSON's. Past dates flagged (AC-3), the strictly-before-UTC-today boundary (AC-4), the flag on every GET /todos element by the rule (AC-5), the exact overdue list excluding completed, future, no-date and due-today todos (AC-6), the empty list (AC-7), the flag and list after completion (AC-8), and the flag derived at response time (AC-10). The stated measurement is automated API tests in tests/, which the planned pytest tests meet. Deployed-environment evidence is not yet achievable: AC-10 has no passable preview check (I-2) and the preview deploy is a placeholder (C-1). The MD numbers the same behaviours AC-3, AC-4, AC-5, AC-6, AC-7, AC-8, AC-10 with different meanings (I-1)."
+    },
+    {
+      "metric": "Backwards compatibility",
+      "covering_acs": [
+        "spec_wi-due-dates-overdue/AC-1",
+        "spec_wi-due-dates-overdue/AC-2",
+        "spec_wi-due-dates-overdue/AC-5",
+        "spec_wi-due-dates-overdue/AC-11",
+        "spec_wi-due-dates-overdue/AC-12"
+      ],
+      "assessment": "covered",
+      "note": "Title-only POST returns the old keys and values plus due_date null and overdue false (AC-1). An explicit null due_date behaves like an omitted one (AC-2). A null due date is never overdue (AC-5). test_todos.py stays unedited and passes (AC-11; I confirmed the 3 tests pass at base 6dec694). Protected files stay unchanged and no new dependency is added (AC-12). Gap: clients that send unknown extra fields are protected only by the interface text in the JSON, not by an AC (I-6)."
+    }
+  ],
+  "produced_by": {
+    "agent_name": "spec-judge",
+    "agent_id": "agent_spec_judge",
+    "agent_version": 1,
+    "session_id": "sesn_01KnfTFzhhoL9HqEFW1PxNCV",
+    "thread_id": null,
+    "model": "claude",
+    "effort": null,
+    "outcome_iterations": null,
+    "list_cost_usd": null,
+    "produced_at": "2026-10-10T11:20:28Z",
+    "inputs": [
+      {
+        "artifact": "outcome.json",
+        "sha256": "7008a18a3bbb0deec7d9ca237488118e10bce6b1b61a6e88b833205388a1f8fa"
+      },
+      {
+        "artifact": "decomposition.json",
+        "sha256": "4931077f13a950e63bddb9a95cc524456504a31caa00c85ffc34ad7af8d917d0"
+      },
+      {
+        "artifact": "rubric.md",
+        "sha256": "5b137fdaa8c075ff20b8062c957a69afbd7f2aa8ea51a24987208b05a6aa0220"
+      },
+      {
+        "artifact": "specs/spec_wi-due-dates-overdue.json",
+        "sha256": "fd4aa2cd290b509a2bb36c2f27592eb744e524a1520d39ecffe7248d810a48ec"
+      },
+      {
+        "artifact": "specs/spec_wi-due-dates-overdue.md",
+        "sha256": "020adca566e0d435608825b83883dd057c9f2ac1060178ef508b9d92f6c92142"
+      }
+    ]
+  }
+}

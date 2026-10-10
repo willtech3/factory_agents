@@ -1,0 +1,474 @@
+{
+  "spec_id": "spec_wi-due-dates-overdue",
+  "spec_revision": 2,
+  "branch": "factory/run_57fde1adc2/spec_wi-due-dates-overdue",
+  "base_sha": "6dec6943e8333d0a747f0dd34578e3e823e51319",
+  "head_sha": "93ced45f6f75c244414e70df150301f72e81f147",
+  "review_round_answered": 1,
+  "review_response": "/mnt/session/outputs/review_response.json",
+  "summary": "Optional due_date (null or a real YYYY-MM-DD date, else 422) on POST /todos; every todo response carries due_date and an overdue flag derived at response time (open AND due_date strictly before the current UTC date); GET /todos/overdue returns exactly the overdue todos in ascending id order. Review round 1: F-1 fixed (to_dict snapshots the todo once), F-2 fixed (UTC half of the rule pinned in pytest and in local-all), F-3 fixed (history rebuilt so the first commit accepting due_date already validates it strictly; force-pushed with lease), DET-ac_test_mapping fixed (criteria[*].tests below maps every AC to collected, passing pytest node ids).",
+  "criteria": [
+    {
+      "ac_id": "AC-1",
+      "verification": "automated_test",
+      "tests": [
+        "tests/test_overdue.py::test_title_only_and_unknown_field_keep_existing_behaviour"
+      ],
+      "status": "met",
+      "e2e": [
+        "python tests/e2e_overdue.py local-all (compat)",
+        "python tests/e2e_overdue.py compat \"$BASE_URL\""
+      ]
+    },
+    {
+      "ac_id": "AC-2",
+      "verification": "automated_test",
+      "tests": [
+        "tests/test_overdue.py::test_future_and_null_due_dates_are_echoed_and_not_overdue"
+      ],
+      "status": "met",
+      "e2e": [
+        "python tests/e2e_overdue.py local-all (create-future)",
+        "python tests/e2e_overdue.py create-future \"$BASE_URL\""
+      ]
+    },
+    {
+      "ac_id": "AC-3",
+      "verification": "automated_test",
+      "tests": [
+        "tests/test_overdue.py::test_past_due_date_is_accepted_and_overdue",
+        "tests/test_overdue.py::test_post_response_stays_consistent_when_completed_while_it_is_built"
+      ],
+      "status": "met",
+      "e2e": [
+        "python tests/e2e_overdue.py local-all (create-past)",
+        "python tests/e2e_overdue.py create-past \"$BASE_URL\""
+      ]
+    },
+    {
+      "ac_id": "AC-4",
+      "verification": "automated_test",
+      "tests": [
+        "tests/test_overdue.py::test_overdue_is_strictly_before_today[day]",
+        "tests/test_overdue.py::test_overdue_is_strictly_before_today[month-edge]",
+        "tests/test_overdue.py::test_overdue_is_strictly_before_today[year-edge]",
+        "tests/test_overdue.py::test_today_utc_is_the_utc_date_not_the_host_date"
+      ],
+      "status": "met",
+      "e2e": [
+        "python tests/e2e_overdue.py local-all (boundary; server runs with TZ whose date differs from UTC)",
+        "python tests/e2e_overdue.py boundary \"$BASE_URL\""
+      ]
+    },
+    {
+      "ac_id": "AC-5",
+      "verification": "automated_test",
+      "tests": [
+        "tests/test_overdue.py::test_listing_obeys_rule_for_every_element",
+        "tests/test_overdue.py::test_list_endpoints_read_the_clock_once_per_request[list]",
+        "tests/test_overdue.py::test_post_response_stays_consistent_when_completed_while_it_is_built"
+      ],
+      "status": "met",
+      "e2e": [
+        "python tests/e2e_overdue.py local-all (listing)",
+        "python tests/e2e_overdue.py listing \"$BASE_URL\""
+      ]
+    },
+    {
+      "ac_id": "AC-6",
+      "verification": "automated_test",
+      "tests": [
+        "tests/test_overdue.py::test_overdue_list_is_exactly_open_past_due_todos_in_id_order",
+        "tests/test_overdue.py::test_list_endpoints_read_the_clock_once_per_request[overdue]"
+      ],
+      "status": "met",
+      "e2e": [
+        "python tests/e2e_overdue.py local-all (overdue-list)",
+        "python tests/e2e_overdue.py overdue-list \"$BASE_URL\""
+      ]
+    },
+    {
+      "ac_id": "AC-7",
+      "verification": "automated_test",
+      "tests": [
+        "tests/test_overdue.py::test_overdue_list_is_empty_list_when_nothing_is_overdue"
+      ],
+      "status": "met",
+      "e2e": [
+        "python tests/e2e_overdue.py local-all (empty-overdue --strict, then empty-overdue)",
+        "python tests/e2e_overdue.py empty-overdue \"$BASE_URL\""
+      ]
+    },
+    {
+      "ac_id": "AC-8",
+      "verification": "automated_test",
+      "tests": [
+        "tests/test_overdue.py::test_completing_clears_overdue_and_removes_from_list"
+      ],
+      "status": "met",
+      "e2e": [
+        "python tests/e2e_overdue.py local-all (complete)",
+        "python tests/e2e_overdue.py complete \"$BASE_URL\""
+      ]
+    },
+    {
+      "ac_id": "AC-9",
+      "verification": "automated_test",
+      "tests": [
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[month-13]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[feb-30]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[year-0]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[not-a-date]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[empty-string]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[basic-format]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[datetime-utc]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[datetime-midnight]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[trailing-space]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[trailing-newline]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[int-yyyymmdd]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[int-zero]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[int-timestamp]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[float]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[bool]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[list]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[non-leap-feb-29]",
+        "tests/test_overdue.py::test_real_calendar_dates_are_accepted[2028-02-29]",
+        "tests/test_overdue.py::test_real_calendar_dates_are_accepted[2026-11-30]",
+        "tests/test_overdue.py::test_real_calendar_dates_are_accepted[0001-01-01]",
+        "tests/test_overdue.py::test_real_calendar_dates_are_accepted[9999-12-31]"
+      ],
+      "status": "met",
+      "e2e": [
+        "python tests/e2e_overdue.py local-all (malformed)",
+        "python tests/e2e_overdue.py malformed \"$BASE_URL\""
+      ]
+    },
+    {
+      "ac_id": "AC-10",
+      "verification": "automated_test",
+      "tests": [
+        "tests/test_overdue.py::test_overdue_flips_when_the_date_advances_without_a_write"
+      ],
+      "status": "met",
+      "e2e": [
+        "PYTHONPATH=. python tests/e2e_overdue.py rollover-local",
+        "python tests/e2e_overdue.py listing \"$BASE_URL\" (per-request invariant only)"
+      ]
+    },
+    {
+      "ac_id": "AC-11",
+      "verification": "automated_test",
+      "tests": [
+        "tests/test_todos.py::test_health",
+        "tests/test_todos.py::test_create_list_complete_delete",
+        "tests/test_todos.py::test_validation_and_missing",
+        "tests/test_overdue.py::test_overdue_list_is_empty_list_when_nothing_is_overdue",
+        "tests/test_overdue.py::test_overdue_flips_when_the_date_advances_without_a_write",
+        "tests/test_overdue.py::test_title_only_and_unknown_field_keep_existing_behaviour",
+        "tests/test_overdue.py::test_future_and_null_due_dates_are_echoed_and_not_overdue",
+        "tests/test_overdue.py::test_past_due_date_is_accepted_and_overdue",
+        "tests/test_overdue.py::test_post_response_stays_consistent_when_completed_while_it_is_built",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[month-13]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[feb-30]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[year-0]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[not-a-date]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[empty-string]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[basic-format]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[datetime-utc]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[datetime-midnight]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[trailing-space]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[trailing-newline]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[int-yyyymmdd]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[int-zero]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[int-timestamp]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[float]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[bool]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[list]",
+        "tests/test_overdue.py::test_malformed_due_date_is_rejected_and_not_stored[non-leap-feb-29]",
+        "tests/test_overdue.py::test_real_calendar_dates_are_accepted[2028-02-29]",
+        "tests/test_overdue.py::test_real_calendar_dates_are_accepted[2026-11-30]",
+        "tests/test_overdue.py::test_real_calendar_dates_are_accepted[0001-01-01]",
+        "tests/test_overdue.py::test_real_calendar_dates_are_accepted[9999-12-31]",
+        "tests/test_overdue.py::test_overdue_is_strictly_before_today[day]",
+        "tests/test_overdue.py::test_overdue_is_strictly_before_today[month-edge]",
+        "tests/test_overdue.py::test_overdue_is_strictly_before_today[year-edge]",
+        "tests/test_overdue.py::test_today_utc_is_the_utc_date_not_the_host_date",
+        "tests/test_overdue.py::test_listing_obeys_rule_for_every_element",
+        "tests/test_overdue.py::test_overdue_list_is_exactly_open_past_due_todos_in_id_order",
+        "tests/test_overdue.py::test_completing_clears_overdue_and_removes_from_list",
+        "tests/test_overdue.py::test_list_endpoints_read_the_clock_once_per_request[list]",
+        "tests/test_overdue.py::test_list_endpoints_read_the_clock_once_per_request[overdue]"
+      ],
+      "status": "met"
+    },
+    {
+      "ac_id": "AC-12",
+      "verification": "static_check",
+      "tests": [],
+      "status": "met",
+      "static_checks": [
+        "test -f tests/test_overdue.py && test -f tests/e2e_overdue.py",
+        "git diff --exit-code main -- tests/test_todos.py pyproject.toml service_manifest.json .github",
+        "test -z \"$( (git diff --name-only main; git ls-files -o --exclude-standard) | grep -vxE 'app/storage\\.py|app/main\\.py|README\\.md|tests/test_overdue\\.py|tests/e2e_overdue\\.py' )\"",
+        "python -c \"import ast,glob,sys; ok=set(sys.stdlib_module_names)|{'app','fastapi','pydantic','uvicorn','pytest','httpx','starlette'}; fs=glob.glob('app/**/*.py',recursive=True)+glob.glob('tests/**/*.py',recursive=True); bad=[(f,m) for f in fs for n in ast.walk(ast.parse(open(f).read())) for m in ([a.name.split('.')[0] for a in n.names] if isinstance(n,ast.Import) else [n.module.split('.')[0]] if isinstance(n,ast.ImportFrom) and n.level==0 else []) if m not in ok]; print('disallowed imports:',bad); sys.exit(bool(bad))\"",
+        "! grep -nE \"extra *=|model_config|ConfigDict\" app/main.py"
+      ]
+    },
+    {
+      "ac_id": "AC-13",
+      "verification": "static_check",
+      "tests": [],
+      "status": "met",
+      "static_checks": [
+        "python -c \"import ast; d=ast.get_docstring(ast.parse(open('app/main.py').read())); r=open('README.md').read(); assert 'GET /todos/overdue' in d and 'due_date' in d, 'docstring'; assert all(s in r for s in ['GET /todos/overdue','due_date','overdue','YYYY-MM-DD','strictly before','UTC']), 'README'\""
+      ]
+    }
+  ],
+  "commands_run": [
+    {
+      "command": "python -m pytest -q",
+      "exit_code": 0,
+      "result": "pass",
+      "summary": "39 passed (3 in tests/test_todos.py, 36 in tests/test_overdue.py)"
+    },
+    {
+      "command": "python -m pytest -q tests/test_todos.py tests/test_overdue.py",
+      "exit_code": 0,
+      "result": "pass",
+      "summary": "39 passed"
+    },
+    {
+      "command": "test -f tests/test_overdue.py && test -f tests/e2e_overdue.py",
+      "exit_code": 0,
+      "result": "pass",
+      "summary": "both files exist"
+    },
+    {
+      "command": "git diff --exit-code main -- tests/test_todos.py pyproject.toml service_manifest.json .github",
+      "exit_code": 0,
+      "result": "pass",
+      "summary": "no diff against main for tests/test_todos.py, pyproject.toml, service_manifest.json, .github"
+    },
+    {
+      "command": "test -z \"$( (git diff --name-only main; git ls-files -o --exclude-standard) | grep -vxE 'app/storage\\.py|app/main\\.py|README\\.md|tests/test_overdue\\.py|tests/e2e_overdue\\.py' )\"",
+      "exit_code": 0,
+      "result": "pass",
+      "summary": "only allowed paths changed; no untracked files"
+    },
+    {
+      "command": "python -c \"import ast,glob,sys; ok=set(sys.stdlib_module_names)|{'app','fastapi','pydantic','uvicorn','pytest','httpx','starlette'}; fs=glob.glob('app/**/*.py',recursive=True)+glob.glob('tests/**/*.py',recursive=True); bad=[(f,m) for f in fs for n in ast.walk(ast.parse(open(f).read())) for m in ([a.name.split('.')[0] for a in n.names] if isinstance(n,ast.Import) else [n.module.split('.')[0]] if isinstance(n,ast.ImportFrom) and n.level==0 else []) if m not in ok]; print('disallowed imports:',bad); sys.exit(bool(bad))\"",
+      "exit_code": 0,
+      "result": "pass",
+      "summary": "disallowed imports: []"
+    },
+    {
+      "command": "python -c \"import ast; d=ast.get_docstring(ast.parse(open('app/main.py').read())); r=open('README.md').read(); assert 'GET /todos/overdue' in d and 'due_date' in d, 'docstring'; assert all(s in r for s in ['GET /todos/overdue','due_date','overdue','YYYY-MM-DD','strictly before','UTC']), 'README'\"",
+      "exit_code": 0,
+      "result": "pass",
+      "summary": "docstring and README strings present"
+    },
+    {
+      "command": "! grep -nE \"sleep|datetime\\.now|date\\.today\" tests/test_overdue.py",
+      "exit_code": 0,
+      "result": "pass",
+      "summary": "no sleep/datetime.now/date.today in tests/test_overdue.py"
+    },
+    {
+      "command": "! grep -nE \"extra *=|model_config|ConfigDict\" app/main.py",
+      "exit_code": 0,
+      "result": "pass",
+      "summary": "no extra=/model_config/ConfigDict in app/main.py"
+    },
+    {
+      "command": "python tests/e2e_overdue.py local-all",
+      "exit_code": 0,
+      "result": "pass",
+      "summary": "local-all: PASS empty-overdue --strict, compat, create-future, create-past, boundary, listing, overdue-list, empty-overdue, complete, malformed (10 passed, 0 failed); server started with TZ=<+14>-14"
+    },
+    {
+      "command": "PYTHONPATH=. python tests/e2e_overdue.py rollover-local",
+      "exit_code": 0,
+      "result": "pass",
+      "summary": "rollover-local: PASS (1 passed, 0 failed)"
+    }
+  ],
+  "commands_environment": "Fresh clone of the branch at HEAD with local main = origin/main (6dec694); every test_plan.commands entry run verbatim by evidence/run_test_plan.sh. python 3.12.3 (manifest runtime python-3.12) with fastapi 0.143.0, pydantic 2.14.0, starlette 1.7.0, uvicorn 0.54.0, httpx 0.28.1, pytest 9.1.1: 11/11 exit 0 (evidence/test_plan_py312.out). Same result on python 3.11.16 (evidence/test_plan_py311.out).",
+  "tests_all_passed": true,
+  "e2e_results": [
+    {
+      "command": "python tests/e2e_overdue.py compat \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-1"
+      ],
+      "status": "not_run",
+      "exit_code": null,
+      "output_tail": null,
+      "reason": "No preview environment is reachable from this sandbox (preview.json status \"unavailable\", url null). The orchestrator runs preview entries itself against an instance started from the service manifest entrypoint.",
+      "supplementary_local_run": "exit 0 against the manifest entrypoint (uvicorn app.main:app --host 0.0.0.0 --port 8000) started locally from a clean clone at HEAD; see evidence/preview_commands_against_local_manifest_instance.out. Not the preview."
+    },
+    {
+      "command": "python tests/e2e_overdue.py create-future \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-2"
+      ],
+      "status": "not_run",
+      "exit_code": null,
+      "output_tail": null,
+      "reason": "No preview environment is reachable from this sandbox (preview.json status \"unavailable\", url null). The orchestrator runs preview entries itself against an instance started from the service manifest entrypoint.",
+      "supplementary_local_run": "exit 0 against the manifest entrypoint (uvicorn app.main:app --host 0.0.0.0 --port 8000) started locally from a clean clone at HEAD; see evidence/preview_commands_against_local_manifest_instance.out. Not the preview."
+    },
+    {
+      "command": "python tests/e2e_overdue.py create-past \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-3"
+      ],
+      "status": "not_run",
+      "exit_code": null,
+      "output_tail": null,
+      "reason": "No preview environment is reachable from this sandbox (preview.json status \"unavailable\", url null). The orchestrator runs preview entries itself against an instance started from the service manifest entrypoint.",
+      "supplementary_local_run": "exit 0 against the manifest entrypoint (uvicorn app.main:app --host 0.0.0.0 --port 8000) started locally from a clean clone at HEAD; see evidence/preview_commands_against_local_manifest_instance.out. Not the preview."
+    },
+    {
+      "command": "python tests/e2e_overdue.py boundary \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-4"
+      ],
+      "status": "not_run",
+      "exit_code": null,
+      "output_tail": null,
+      "reason": "No preview environment is reachable from this sandbox (preview.json status \"unavailable\", url null). The orchestrator runs preview entries itself against an instance started from the service manifest entrypoint.",
+      "supplementary_local_run": "exit 0 against the manifest entrypoint (uvicorn app.main:app --host 0.0.0.0 --port 8000) started locally from a clean clone at HEAD; see evidence/preview_commands_against_local_manifest_instance.out. Not the preview."
+    },
+    {
+      "command": "python tests/e2e_overdue.py listing \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-5",
+        "AC-10"
+      ],
+      "status": "not_run",
+      "exit_code": null,
+      "output_tail": null,
+      "reason": "No preview environment is reachable from this sandbox (preview.json status \"unavailable\", url null). The orchestrator runs preview entries itself against an instance started from the service manifest entrypoint.",
+      "supplementary_local_run": "exit 0 against the manifest entrypoint (uvicorn app.main:app --host 0.0.0.0 --port 8000) started locally from a clean clone at HEAD; see evidence/preview_commands_against_local_manifest_instance.out. Not the preview."
+    },
+    {
+      "command": "python tests/e2e_overdue.py overdue-list \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-6"
+      ],
+      "status": "not_run",
+      "exit_code": null,
+      "output_tail": null,
+      "reason": "No preview environment is reachable from this sandbox (preview.json status \"unavailable\", url null). The orchestrator runs preview entries itself against an instance started from the service manifest entrypoint.",
+      "supplementary_local_run": "exit 0 against the manifest entrypoint (uvicorn app.main:app --host 0.0.0.0 --port 8000) started locally from a clean clone at HEAD; see evidence/preview_commands_against_local_manifest_instance.out. Not the preview."
+    },
+    {
+      "command": "python tests/e2e_overdue.py empty-overdue \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-7"
+      ],
+      "status": "not_run",
+      "exit_code": null,
+      "output_tail": null,
+      "reason": "No preview environment is reachable from this sandbox (preview.json status \"unavailable\", url null). The orchestrator runs preview entries itself against an instance started from the service manifest entrypoint.",
+      "supplementary_local_run": "exit 0 against the manifest entrypoint (uvicorn app.main:app --host 0.0.0.0 --port 8000) started locally from a clean clone at HEAD; see evidence/preview_commands_against_local_manifest_instance.out. Not the preview."
+    },
+    {
+      "command": "python tests/e2e_overdue.py complete \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-8"
+      ],
+      "status": "not_run",
+      "exit_code": null,
+      "output_tail": null,
+      "reason": "No preview environment is reachable from this sandbox (preview.json status \"unavailable\", url null). The orchestrator runs preview entries itself against an instance started from the service manifest entrypoint.",
+      "supplementary_local_run": "exit 0 against the manifest entrypoint (uvicorn app.main:app --host 0.0.0.0 --port 8000) started locally from a clean clone at HEAD; see evidence/preview_commands_against_local_manifest_instance.out. Not the preview."
+    },
+    {
+      "command": "python tests/e2e_overdue.py malformed \"$BASE_URL\"",
+      "target": "preview",
+      "covers_ac": [
+        "AC-9"
+      ],
+      "status": "not_run",
+      "exit_code": null,
+      "output_tail": null,
+      "reason": "No preview environment is reachable from this sandbox (preview.json status \"unavailable\", url null). The orchestrator runs preview entries itself against an instance started from the service manifest entrypoint.",
+      "supplementary_local_run": "exit 0 against the manifest entrypoint (uvicorn app.main:app --host 0.0.0.0 --port 8000) started locally from a clean clone at HEAD; see evidence/preview_commands_against_local_manifest_instance.out. Not the preview."
+    },
+    {
+      "command": "python tests/e2e_overdue.py local-all",
+      "target": "local",
+      "covers_ac": [
+        "AC-1",
+        "AC-2",
+        "AC-3",
+        "AC-4",
+        "AC-5",
+        "AC-6",
+        "AC-7",
+        "AC-8",
+        "AC-9"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "output_tail": "starting TZ=<+14>-14 .../python -m uvicorn app.main:app --host 127.0.0.1 --port 41445 --log-level warning\nPASS empty-overdue --strict\nPASS compat\nPASS create-future\nPASS create-past\nPASS boundary\nPASS listing\nPASS overdue-list\nPASS empty-overdue\nPASS complete\nPASS malformed\n10 passed, 0 failed",
+      "ran_against": "server started by the command itself (local-all) / in-process TestClient (rollover-local); clean clone at HEAD, python 3.12.3; also passed on python 3.11.16"
+    },
+    {
+      "command": "PYTHONPATH=. python tests/e2e_overdue.py rollover-local",
+      "target": "local",
+      "covers_ac": [
+        "AC-10"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "output_tail": "PASS rollover-local\n1 passed, 0 failed",
+      "ran_against": "server started by the command itself (local-all) / in-process TestClient (rollover-local); clean clone at HEAD, python 3.12.3; also passed on python 3.11.16"
+    }
+  ],
+  "files_changed": [
+    "README.md             |  17 ++",
+    " app/main.py           |  26 ++-",
+    " app/storage.py        |  29 +++-",
+    " tests/e2e_overdue.py  | 429 ++++++++++++++++++++++++++++++++++++++++++++++++++",
+    " tests/test_overdue.py | 268 +++++++++++++++++++++++++++++++",
+    " 5 files changed, 759 insertions(+), 10 deletions(-)"
+  ],
+  "commits": [
+    {
+      "sha": "5fd55334d69cdc5b5864a4559dea64d6fce770d3",
+      "subject": "AC-1, AC-2, AC-3, AC-7, AC-9, AC-10, AC-13: optional due_date on POST /todos (null or a real YYYY-MM-DD date, else 422), overdue derived per response, GET /todos/overdue, docs and e2e runner"
+    },
+    {
+      "sha": "7a5bfd4ccdb3c852942d8c0386dca32a180ccbe6",
+      "subject": "AC-4, AC-5, AC-6, AC-8: list endpoints judge every todo against one clock reading; boundary, listing, overdue-list and complete checks"
+    },
+    {
+      "sha": "e563e954beb1997d44a180bf4c5e7212da064774",
+      "subject": "AC-3, AC-5: single-object responses derive overdue from one snapshot of the todo (review F-1)"
+    },
+    {
+      "sha": "93ced45f6f75c244414e70df150301f72e81f147",
+      "subject": "AC-4: pin the UTC half of the overdue rule (review F-2)"
+    }
+  ],
+  "test_concerns": [],
+  "residual_uncertainty": [
+    "Preview entries were not run here; the orchestrator's run against the preview is the one that counts. The same nine commands pass against the manifest entrypoint started locally (supplementary only).",
+    "local-all picks the server zone by the current UTC hour: UTC+14 from 12:00 UTC (exercised live in this session, which ran at about 12:30 UTC), UTC-12 before 12:00 UTC (checked arithmetically for every minute of a UTC day, evidence/f2_zone_choice_check.out, but not run live). POSIX TZ strings are used so no tzdata is needed. Correct code ignores TZ entirely, so the choice cannot make a correct server fail.",
+    "The F-1 regression test makes the interleaving deterministic by wrapping app.storage.asdict (the spec defines to_dict as asdict(self) plus overdue). The probabilistic in-process probe (evidence/probe_race_post_response.py) independently shows 0 torn responses in 120000 rounds at HEAD against 18-67 per run at the round-1 head.",
+    "F-3 was fixed by rewriting the branch history (force-push with lease from 1ad4332). The commits the reviewer cited no longer sit on the branch: d33b244 + 23128cd became 5fd5533 (tree identical to 23128cd), 1ad4332 became 7a5bfd4 (tree identical to 1ad4332).",
+    "Whether the orchestrator's ac_test_mapping check reads criteria[*].tests can only be confirmed by its next run on this head; every listed id is a collected pytest node id that passes (39 distinct ids).",
+    "Carried over from review, not caused by this change: at the pyproject dependency floor (fastapi 0.115.0) test collection fails on the existing DELETE route (204 with a body) at base and head alike."
+  ],
+  "evidence_dir": "/mnt/session/outputs/evidence"
+}

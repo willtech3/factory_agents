@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from .. import checks
+from .. import checks, security
 from ..budget import reserve_budget
 from ..state import WorkItemStage
 from . import RunContext
@@ -69,6 +69,18 @@ NO_PREVIEW_CLAUSE = """No preview environment exists for this branch yet (see "s
 Push your branch early; the platform's pipeline deploys it. Run the test_plan.e2e entries with target "local" now and
 record the "preview" ones as not run. The orchestrator runs the preview entries against the deployed branch once the
 pipeline for your pushed head finishes; any later round of yours receives preview.json with the URL."""
+
+SECURITY_REVIEW_DESCRIPTION = """Security review of the change for specification {spec_id}. The diff is at /mnt/session/uploads/diff.patch
+(base {base_sha}, head {head_sha}); the repository is cloned at /workspace/repo on branch {branch}.
+{git}
+This is review round {round}. Two general adversarial reviewers run beside you on the same diff; you cover what they
+do not: trust boundaries, attacker-controlled input, authorisation, secrets, dependencies, and the attack paths the
+diff opens. The orchestrator's deterministic pre-checks are at /mnt/session/uploads/security_prechecks.json (a secret
+scan over the added lines and, when the host has the tools, a dependency audit and a SAST run): inputs to judge, not
+verdicts.{second_round}
+{preview_clause}
+Write findings.json to /mnt/session/outputs/ (category security, or concurrency / data_integrity when that is what the
+defect is; one cwe per finding) and validate it. You never edit source files."""
 
 MERGE_JUDGE_DESCRIPTION = """Decide merge readiness for specification {spec_id}, round {round}.
 Inputs are under /mnt/session/uploads/: spec.json, diff.patch, findings.json, review_response.json,
@@ -390,14 +402,21 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         if round_no > ctx.policy.review_max_rounds:
             break  # last implementer response done; go straight to the merge judge
 
-        # ---- fresh-context adversarial review (N independent passes, merged)
+        # ---- fresh-context adversarial review (N independent passes plus one security pass, merged)
         pass_ids = list(range(1, ctx.policy.reviewer_passes + 1))
+        with_security = bool(ctx.policy.security_review and "security_reviewer" in ctx.cfg.agents)
         # Passes persisted before the orchestrator died or paused are reused, not paid for again.
         reused = {i: artifact_json_or_none(ctx, "review", f"{sid}-r{round_no}-p{i}-findings.json") for i in pass_ids} if resumed_round else {}
+        reused_sec = artifact_json_or_none(ctx, "review", f"{sid}-r{round_no}-sec-findings.json") if resumed_round and with_security else None
         to_run = [i for i in pass_ids if reused.get(i) is None]
-        if to_run:
+        run_sec = with_security and reused_sec is None
+        if to_run or run_sec:
             enter_item_stage(ctx, wid, sid, WorkItemStage.REVIEWING, review_round=round_no)
-            reserve_budget(ctx, "review", len(to_run))      # every pass of the round, before the first one starts
+            # every session of the round, before the first one starts: the general passes and the security pass together
+            if to_run:
+                reserve_budget(ctx, "review", len(to_run), extra={"security_review": 1} if run_sec else None)
+            else:
+                reserve_budget(ctx, "security_review", 1)
         rev_uploads = {"spec.json": uploads["spec.json"], "spec.md": uploads["spec.md"],
                        "diff.patch": diff["patch"].encode(),
                        "implementation_report.json": json.dumps(report, indent=2).encode(),
@@ -414,7 +433,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
 
         def one_pass(i: int) -> dict[str, Any]:
             if reused.get(i) is not None:
-                return reused[i]      # this pass finished before the orchestrator died or paused
+                return tag_pass(reused[i], str(i))      # this pass finished before the orchestrator died or paused
             r = ctx.driver.run(
                 agent_key="reviewer", title=f"{ctx.run_id} review {sid} r{round_no} p{i}", run_id=ctx.run_id,
                 stage="review", uploads=rev_uploads, work_item_id=wid,
@@ -426,11 +445,34 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             )
             f = require_json(r, "findings.json")
             persist_outputs(ctx, "review", r, prefix=f"{sid}-r{round_no}-p{i}-")
-            return f
+            return tag_pass(f, str(i))
 
-        with ThreadPoolExecutor(max_workers=ctx.policy.reviewer_passes) as pool:
+        def security_pass() -> dict[str, Any] | None:
+            """One security reviewer beside the general passes; skipped when the policy or the deployment lacks it."""
+            if not with_security:
+                return None
+            if reused_sec is not None:
+                return tag_pass(reused_sec, "security")      # finished before the orchestrator died or paused
+            pre = security.prechecks(repo, diff["changed"], diff["added_lines"])
+            ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-security_prechecks.json", json.dumps(pre, indent=2).encode())
+            r = ctx.driver.run(
+                agent_key="security_reviewer", title=f"{ctx.run_id} security-review {sid} r{round_no}", run_id=ctx.run_id,
+                stage="review", uploads={**rev_uploads, "security_prechecks.json": json.dumps(pre, indent=2).encode()}, work_item_id=wid,
+                description=SECURITY_REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
+                                                               git=git, round=round_no, second_round=second,
+                                                               preview_clause=rev_preview_clause),
+                rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["security_review"],
+                metadata={"pass": "security"}, repository=mount(branch),
+            )
+            f = require_json(r, "findings.json")
+            persist_outputs(ctx, "review", r, prefix=f"{sid}-r{round_no}-sec-")
+            return tag_pass(f, "security")
+
+        with ThreadPoolExecutor(max_workers=ctx.policy.reviewer_passes + 1) as pool:
+            sec_future = pool.submit(security_pass)
             passes = list(pool.map(one_pass, pass_ids))
-        findings = merge_findings(passes, sid, round_no, base_sha, head_sha, branch)
+            sec = sec_future.result()
+        findings = merge_findings(passes + ([sec] if sec else []), sid, round_no, base_sha, head_sha, branch)
         # A failed deterministic check is a finding the implementer must answer; nobody else can clear it.
         findings["findings"].extend(deterministic_findings(det, cmd_results))
         ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-findings.merged.json",
@@ -438,7 +480,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         ctx.event("review.findings", {"round": round_no, "count": len(findings["findings"]),
                                       "blocking": sum(f["severity"] == "blocking" for f in findings["findings"])},
                   work_item_id=wid, spec_id=sid, actor="agent")
-        standing = [f for f in findings["findings"] if f["status"] in ("open", "upheld") and f["severity"] in ("blocking", "major")]
+        standing = standing_findings(findings["findings"])
         if not standing and all(d.passed for d in det):
             break  # nothing standing; skip the implementer round and go to the judge
         enter_item_stage(ctx, wid, sid, WorkItemStage.RESPONDING)
@@ -509,7 +551,7 @@ def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]]
             repro = "; ".join(f"{r['command']} -> exit {r.get('exit_code')}: {(r.get('stderr_tail') or r.get('stdout_tail') or '')[-300:]}" for r in failed)
         out.append({
             "finding_id": f"DET-{name}", "severity": "blocking",
-            "category": "test_quality" if name in ("ac_test_mapping", "test_plan_commands", "test_weakening", "protected_tests", "e2e_coverage", "e2e_preview") else "spec_deviation",
+            "category": "security" if name == "secret_scan" else ("test_quality" if name in ("ac_test_mapping", "test_plan_commands", "test_weakening", "protected_tests", "e2e_coverage", "e2e_preview") else "spec_deviation"),
             "claim": f"Deterministic check `{name}` failed: {d.detail}",
             "evidence": {"locations": ["deterministic_checks.json:1"], **({"reproduction": repro} if repro else {}), "observed": d.detail},
             "violates": f"orchestrator check {name} (cannot be overridden by any judge)",
@@ -549,6 +591,27 @@ def merge_findings(passes: list[dict[str, Any]], spec_id: str, round_no: int, ba
         "spec_conformance": list(conformance.values()),
         "produced_by": passes[0].get("produced_by", {}),
     }
+
+
+def tag_pass(findings: dict[str, Any], label: str) -> dict[str, Any]:
+    """Mark every finding of a reviewer pass with the pass that produced it (kept through merging)."""
+    for f in findings.get("findings", []):
+        f.setdefault("pass", label)
+    return findings
+
+
+def standing_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Findings the implementer must answer before the merge judge: open or upheld, and either blocking/major or a
+    reproduced security, concurrency or data-integrity defect whatever label the reviewer put on it (reviewers
+    under-rate rare races; see docs/postmortems/2026-10-10-first-live-runs.md issue 8)."""
+    out = []
+    for f in findings:
+        if f["status"] not in ("open", "upheld"):
+            continue
+        reproduced = bool((f.get("evidence") or {}).get("reproduction"))
+        if f["severity"] in ("blocking", "major") or (f["category"] in ("security", "concurrency", "data_integrity") and reproduced):
+            out.append(f)
+    return out
 
 
 def _sev(f: dict[str, Any]) -> int:

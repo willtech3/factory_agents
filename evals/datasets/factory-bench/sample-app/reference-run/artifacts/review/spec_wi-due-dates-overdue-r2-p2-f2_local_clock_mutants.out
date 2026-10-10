@@ -1,0 +1,56 @@
+UTC now 2026-10-10T13:05:32; TZ=UTC
+=== mutant head: storage.py:11 ->     return datetime.now(timezone.utc).date()
+  pytest: 39 passed in 1.12s
+  pytest exit 0
+  local-all: starting TZ=<+14>-14 /tmp/rv2_venv312/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 41831 --log-level warning
+  local-all: 10 passed, 0 failed
+  local-all exit 0
+  rollover-local: 1 passed, 0 failed
+=== mutant date_today: storage.py:11 ->     return date.today()
+  pytest: FAILED tests/test_overdue.py::test_today_utc_is_the_utc_date_not_the_host_date
+  pytest: 1 failed, 38 passed in 1.27s
+  pytest exit 1
+  local-all: starting TZ=<+14>-14 /tmp/rv2_venv312/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 51551 --log-level warning
+  local-all: FAIL boundary: boundary: due 2026-10-10 with UTC today 2026-10-10: POST overdue True, want False
+  local-all: FAIL listing: listing: {'id': 10, 'title': 'e2e-boundary-2026-10-10', 'done': False, 'created_at': '2026-10-10T13:05:38.873275+00:00', 'due_date': '2026-10-10', 'overdue': True} has overdue True but the rule gives False for UTC today 2026-10-10
+  local-all: FAIL overdue-list: overdue-list: own todos in GET /todos/overdue are ['e2e-overdue-a', 'e2e-overdue-e', 'e2e-overdue-f'], want ['e2e-overdue-a', 'e2e-overdue-f'] (UTC today 2026-10-10)
+  local-all: 7 passed, 3 failed
+  local-all exit 1
+  rollover-local: 1 passed, 0 failed
+=== mutant naive_now: storage.py:11 ->     return datetime.now().date()
+  pytest: FAILED tests/test_overdue.py::test_today_utc_is_the_utc_date_not_the_host_date
+  pytest: 1 failed, 38 passed in 1.13s
+  pytest exit 1
+  local-all: starting TZ=<+14>-14 /tmp/rv2_venv312/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 59917 --log-level warning
+  local-all: FAIL boundary: boundary: due 2026-10-10 with UTC today 2026-10-10: POST overdue True, want False
+  local-all: FAIL listing: listing: {'id': 10, 'title': 'e2e-boundary-2026-10-10', 'done': False, 'created_at': '2026-10-10T13:05:42.409720+00:00', 'due_date': '2026-10-10', 'overdue': True} has overdue True but the rule gives False for UTC today 2026-10-10
+  local-all: FAIL overdue-list: overdue-list: own todos in GET /todos/overdue are ['e2e-overdue-a', 'e2e-overdue-e', 'e2e-overdue-f'], want ['e2e-overdue-a', 'e2e-overdue-f'] (UTC today 2026-10-10)
+  local-all: 7 passed, 3 failed
+  local-all exit 1
+  rollover-local: 1 passed, 0 failed
+=== mutant astimezone_local: storage.py:11 ->     return datetime.now(timezone.utc).astimezone().date()
+  pytest: 39 passed in 1.08s
+  pytest exit 0
+  local-all: starting TZ=<+14>-14 /tmp/rv2_venv312/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 54193 --log-level warning
+  local-all: FAIL boundary: boundary: due 2026-10-10 with UTC today 2026-10-10: POST overdue True, want False
+  local-all: FAIL listing: listing: {'id': 10, 'title': 'e2e-boundary-2026-10-10', 'done': False, 'created_at': '2026-10-10T13:05:45.657616+00:00', 'due_date': '2026-10-10', 'overdue': True} has overdue True but the rule gives False for UTC today 2026-10-10
+  local-all: FAIL overdue-list: overdue-list: own todos in GET /todos/overdue are ['e2e-overdue-a', 'e2e-overdue-e', 'e2e-overdue-f'], want ['e2e-overdue-a', 'e2e-overdue-f'] (UTC today 2026-10-10)
+  local-all: 7 passed, 3 failed
+  local-all exit 1
+  rollover-local: 1 passed, 0 failed
+=== mutant utcnow_correct: storage.py:11 ->     return datetime.utcnow().date()
+  pytest: FAILED tests/test_overdue.py::test_today_utc_is_the_utc_date_not_the_host_date
+  pytest: 1 failed, 38 passed in 1.38s
+  pytest exit 1
+  local-all: starting TZ=<+14>-14 /tmp/rv2_venv312/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 52475 --log-level warning
+  local-all: 10 passed, 0 failed
+  local-all exit 0
+  rollover-local: 1 passed, 0 failed
+=== mutant fromtimestamp_utc_correct: storage.py:11 ->     import time; return datetime.fromtimestamp(time.time(), timezone.utc).date()
+  pytest: FAILED tests/test_overdue.py::test_today_utc_is_the_utc_date_not_the_host_date
+  pytest: 1 failed, 38 passed in 1.37s
+  pytest exit 1
+  local-all: starting TZ=<+14>-14 /tmp/rv2_venv312/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 44293 --log-level warning
+  local-all: 10 passed, 0 failed
+  local-all exit 0
+  rollover-local: 1 passed, 0 failed

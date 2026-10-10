@@ -1,0 +1,2 @@
+minutes of the UTC day whose chosen zone shares the UTC date: 0 of 1440
+the property is lost only if one local-all run spans 12:00 UTC (chosen UTC-12 before, local date becomes the UTC date at 12:00) or 00:00 UTC (chosen UTC+14 before, local date becomes the UTC date at 00:00)

@@ -282,6 +282,7 @@
       [el("a", { href: "#/runs" }, "Runs"), " / ", el("span", { class: "mono" }, r.run_id)]));
     frag.append(card("Where it is", el("div", null, stepper(r.stage, r.design_only), el("p", { class: "explain", style: "margin-top:10px" },
       r.stage === "completed" && r.design_only ? "Done: this was a design run. The approved specs are in the files below; nothing was built. Start a full run from the outcome to implement them."
+      : r.stage === "completed" && r.watch && r.watch.pending.length ? "Done building. Review and merge happen on the code host; the watcher below records each merge and follows the deploy to dev."
       : r.stage === "completed" ? "Done. Every approved item has a pull request; review and merge happen on the code host."
       : b.paused ? "Paused at its budget. The next agent session would take the run past the cap, so nothing started; the work so far is kept. Raise the budget below to continue, or close the run."
       : r.resumable ? "Failed during implementation. The work so far is kept: resume below and the run continues from the last finished step."
@@ -319,12 +320,16 @@
       frag.append(card("Resume", box));
     }
 
+    if (r.watch && (r.watch.pending.length || r.watch.heartbeat)) frag.append(watchCard(r, runId));
+
     const items = el("table", null, el("tr", null, el("th", null, "Work item"), el("th", null, "Stage"), el("th", null, "Depends on"), el("th", null, "Pull request")));
     for (const w of r.work_items) items.append(el("tr", null,
       el("td", null, el("div", null, w.title || w.work_item_id), el("div", { class: "explain mono" }, w.work_item_id)),
       el("td", null, el("span", { class: "tag" }, ITEM_STAGE[w.stage] || words(w.stage))),
       el("td", { class: "explain" }, (w.depends_on || []).join(", ") || "none"),
-      el("td", null, w.cr_url ? el("a", { href: w.cr_url, target: "_blank", rel: "noopener" }, `#${w.cr_id}`) : (w.branch ? el("span", { class: "explain mono" }, w.branch) : el("span", { class: "explain" }, "not yet")))));
+      el("td", null, w.cr_url ? el("a", { href: w.cr_url, target: "_blank", rel: "noopener" }, `#${w.cr_id}`) : (w.branch ? el("span", { class: "explain mono" }, w.branch) : el("span", { class: "explain" }, "not yet")),
+        w.stage === "deployed_dev" && w.dev_environment_url ? [" · ", el("a", { href: w.dev_environment_url, target: "_blank", rel: "noopener" }, "dev")] : null,
+        w.merge_sha ? [" ", el("span", { class: "explain mono" }, `merged as ${w.merge_sha.slice(0, 10)}`)] : null)));
     frag.append(card("Work items", r.work_items.length ? items : el("p", { class: "explain" }, "Work items appear once the decomposition exists."), r.work_items.length ? plural(r.work_items.length, "item") : null));
 
     const tl = el("ol", { class: "timeline" });
@@ -347,7 +352,46 @@
     else stopPoll();
   }
   function runKey(r) {
-    return JSON.stringify([r.updated_at, r.stage, r.gates.map(g => [g.gate_id, !!g.recorded]), r.questions.map(q => q.question_id)]);
+    const hb = r.watch && r.watch.heartbeat;
+    return JSON.stringify([r.updated_at, r.stage, r.gates.map(g => [g.gate_id, !!g.recorded]), r.questions.map(q => q.question_id),
+      hb ? [hb.alive, hb.last_poll_at] : null]);
+  }
+
+  function watchCard(r, runId) {
+    const w = r.watch, hb = w.heartbeat;
+    const box = el("div", { class: "stack" });
+    const names = Object.fromEntries(r.work_items.map(x => [x.work_item_id, x]));
+    const stageText = { cr_open: "pull request open, waiting for a human to review and merge", merged: "merged; the dev deploy will be observed",
+      deploying_dev: "merged; watching the dev pipeline and the end-to-end checks" };
+    if (w.pending.length) {
+      const list = el("ul", { class: "list" });
+      for (const wid of w.pending) {
+        const x = names[wid] || { work_item_id: wid };
+        list.append(el("li", null, el("span", { class: "tag" }, ITEM_STAGE[x.stage] || words(x.stage || "")),
+          el("div", { class: "main" }, el("div", { class: "title" }, x.title || wid), el("div", { class: "desc" }, stageText[x.stage] || "")),
+          x.cr_url ? el("a", { class: "btn", href: x.cr_url, target: "_blank", rel: "noopener" }, `Open #${x.cr_id}`) : null));
+      }
+      box.append(list);
+    }
+    box.append(el("p", { class: "explain" }, "The factory never merges. Once you merge on the code host, the watcher records the merge, follows the platform's pipeline for the merge commit, ",
+      "runs the spec's end-to-end checks against the dev URL, and marks the item verified in dev or opens a deploy-failure gate in the Inbox."));
+    if (hb && hb.alive) {
+      box.append(el("div", { class: "notice ok" }, el("b", null, "Watching. "), `Last checked ${ago(hb.last_poll_at)} (pid ${hb.pid}).`,
+        hb.last_tick && hb.last_tick.errors && hb.last_tick.errors.length ? ` Last error: ${hb.last_tick.errors[0].error}` : ""));
+    } else if (hb && !w.pending.length) {
+      box.append(el("div", { class: "notice info" }, el("b", null, "Watcher finished. "), `Last checked ${ago(hb.last_poll_at)}; nothing is left to watch.`));
+    } else {
+      if (hb) box.append(el("div", { class: "notice info" }, el("b", null, "Not watching. "), `The last watcher checked ${ago(hb.last_poll_at)} and is no longer running. Starting it again is safe: nothing is recorded twice.`));
+      if (w.watchable) box.append(el("div", { class: "actions" }, el("button", { class: "btn primary", type: "button", onclick: async (ev) => {
+        const b = ev.currentTarget; b.disabled = true; b.textContent = "Starting…";
+        try {
+          const res = await api(`/api/runs/${runId}/watch`, { body: {} });
+          box.append(el("div", { class: "notice ok" }, el("b", null, "Watching. "), `The watcher runs in the background (log ${res.log}); this page follows it.`));
+          setTimeout(() => viewRun(runId), 2500);
+        } catch (e) { b.disabled = false; b.textContent = "Watch for merges"; box.append(el("div", { class: "notice bad" }, String(e.message || e))); }
+      } }, "Watch for merges"), el("span", { class: "explain" }, " or run ", el("code", null, `factory watch ${runId}`), " in a terminal")));
+    }
+    return card("Pull requests and the dev deploy", box, w.pending.length ? plural(w.pending.length, "item") + " in flight" : null);
   }
 
   // The run is parked at its budget: the numbers, and the decision (raise and continue, or close) in one place.
@@ -431,12 +475,14 @@
         return [who, { main: `Implementer answered review round ${p.round}`, detail: Object.entries(n).map(([d, c]) => `${c} ${d.replace("_", " ")}`).join(", ") }]; }
       case "merge.verdict": return [who, { main: `Merge judge: ${p.result}`, detail: item }];
       case "cr.opened": return [who, { main: p.design ? "Design pull request opened" : `Pull request opened for ${item}`, detail: p.url }];
-      case "cr.merged": return ["human", { main: `Merged ${item}` }];
-      case "deploy.started": return [who, { main: `Dev deploy started for ${item}` }];
+      case "cr.merged": return ["human", { main: `Merged ${item}${p.id ? ` (#${p.id})` : ""}`, detail: [p.merge_commit_sha ? `as ${String(p.merge_commit_sha).slice(0, 10)}` : "", p.approved === false ? "without an approving review" : ""].filter(Boolean).join(", ") }];
+      case "cr.closed": return ["human", { main: `Pull request closed without merging for ${item}${p.id ? ` (#${p.id})` : ""}` }];
+      case "deploy.started": return [who, { main: `Dev deploy started for ${item}${p.attempt ? ` (observation ${p.attempt + 1})` : ""}`, detail: p.pipeline_url || (p.pipeline_id ? `pipeline ${p.pipeline_id}` : "no pipeline yet") }];
       case "deploy.succeeded": return [who, { main: `Dev deploy succeeded for ${item}`, detail: p.environment_url }];
-      case "deploy.failed": return [who, { main: `Dev deploy failed for ${item}` }];
-      case "e2e.dev_passed": return [who, { main: `Dev checks passed for ${item}` }];
-      case "e2e.dev_failed": return [who, { main: `Dev checks failed for ${item}` }];
+      case "deploy.failed": return [who, { main: `Dev deploy failed for ${item}`, detail: p.status ? words(p.status) : "" }];
+      case "e2e.dev_passed": return [who, { main: `Dev checks passed for ${item}`, detail: p.results ? `${p.results.length} of ${p.results.length} passed on ${p.environment_url || "dev"}` : "" }];
+      case "e2e.dev_failed": { const n = (p.results || []).length, bad = (p.results || []).filter(x => x.exit_code !== 0).length;
+        return [who, { main: `Dev checks failed for ${item}`, detail: n ? `${bad} of ${n} failed on ${p.environment_url || "dev"}` : "" }]; }
       case "session.started": return [who, { main: `Agent session started: ${p.agent_key || p.agent_id || "agent"}`, detail: p.title || "", session_id: p.session_id }];
       case "session.finished": return [who, { main: `Agent session finished: ${p.agent_id || "agent"}`, detail: p.list_cost_usd != null ? money(p.list_cost_usd) : "", session_id: p.session_id }];
       case "work_item.stage": return [who, { main: `${ev.work_item_id}: ${ITEM_STAGE[p.stage] || words(p.stage)}` }];

@@ -26,7 +26,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from .stages import RunContext
 
 STAGE_LABEL = {"decompose": "decomposer", "specify": "spec writer", "judge": "spec judge", "implement": "implementer",
-               "review": "reviewer", "merge_judge": "merge judge", "integrate": "integrator"}
+               "review": "reviewer", "security_review": "security reviewer", "merge_judge": "merge judge", "integrate": "integrator"}
 
 
 @dataclass
@@ -51,19 +51,23 @@ def spent_usd(ctx: RunContext) -> float:
     return ctx.store.state(ctx.run_id).list_cost_usd
 
 
-def reserve_budget(ctx: RunContext, stage_key: str, sessions: int = 1) -> None:
+def reserve_budget(ctx: RunContext, stage_key: str, sessions: int = 1, *, extra: dict[str, int] | None = None) -> None:
     """Call right before starting `sessions` sessions of stage `stage_key` (before the batch when they run in
-    parallel, so that a refusal never leaves a sibling in flight). Returns when the run can afford them; otherwise
+    parallel, so that a refusal never leaves a sibling in flight). `extra` names sessions of other caps that start in
+    the same batch (a review round's security pass: `{"security_review": 1}`); their caps count toward the check and
+    the pause is recorded against `stage_key` with the batch's total. Returns when the run can afford them; otherwise
     pauses the run and raises `BudgetPaused`."""
-    if sessions <= 0:
+    parts = {stage_key: sessions, **{k: n for k, n in (extra or {}).items() if n > 0}}
+    total = sum(parts.values())
+    if total <= 0:
         return
-    cap = round(float(ctx.policy.stage_budget_usd[stage_key]) * sessions, 2)
+    cap = round(sum(float(ctx.policy.stage_budget_usd[k]) * n for k, n in parts.items()), 2)
     budget = float(ctx.policy.run_budget_usd)
     st = ctx.store.state(ctx.run_id)
     spent = round(st.list_cost_usd, 2)
     if spent + cap <= budget + 1e-9:
         return
-    raise pause_for_budget(ctx, stage_key, sessions, cap, spent, budget, st.stage, st.sessions_finished)
+    raise pause_for_budget(ctx, stage_key, total, cap, spent, budget, st.stage, st.sessions_finished)
 
 
 def pause_for_budget(ctx: RunContext, stage_key: str, sessions: int, cap: float, spent: float, budget: float,

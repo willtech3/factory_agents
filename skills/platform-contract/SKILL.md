@@ -1,38 +1,33 @@
 ---
 name: platform-contract
-description: The contract between an application repository and the deployment platform (GCP project, CI templates on GitLab CI or GitHub Actions, per-branch preview environments, dev target). Loaded by the decomposer, spec writer, spec judge, implementer, and reviewer so that every work item is deployable through the existing platform without any agent authoring infrastructure.
+description: The contract between an application repository and the deployment platform. This version describes the personal-GitHub setup the factory runs against today (docs/07); a platform team replaces it with theirs. Loaded by the decomposer, spec writer, spec judge, implementer, and reviewer so that every work item is deployable through the existing platform without any agent authoring infrastructure.
 ---
 
-<!-- PLACEHOLDER. The platform team already maintains the real version of this skill.
-     Replace this whole file with it. Nothing below is contract content; it only lists the
-     headings the factory's agents, rubrics, and checks expect the real skill to answer. -->
+# Platform contract (personal GitHub setup)
 
-# Platform contract (placeholder)
-
-The factory expects the real skill to answer, under headings of roughly this shape:
+This repository is built and verified by the software factory's orchestrator on a developer machine. There is no container platform, no cloud project and no dev environment behind it yet. What follows is exactly what the orchestrator does, so a work item that respects it is deployable as far as this platform goes.
 
 ## What the platform provides
-- The CI pipeline every branch gets (build, test, deploy stages) and what triggers a deploy.
-- Per-branch preview environments: how the URL is derived, how long they live, how they are torn down.
-- The `dev` target that the default branch deploys to, and how promotion beyond `dev` happens (by a human).
-- Identity: the Workload Identity Federation (WIF) binding and service account GitLab CI runs as.
-- Runtimes, base images, databases, secrets delivery, logging and metrics endpoints the app may rely on.
+
+- **Source control**: GitHub, this repository. The factory works on branches named `factory/<run_id>/<spec_id>` cut from `main` (or from a dependency's branch when that dependency is still an open pull request) and opens one pull request per work item.
+- **Preview environment**: the orchestrator starts the service itself from `service_manifest.json` (`runtime.entrypoint`, with the manifest's `runtime.port` replaced by a free port that is also exported as `PORT`), waits up to 60 seconds for `health.path` to answer `health.expect_status` (default 200), and runs every `test_plan.e2e` entry whose target is `preview` with `$BASE_URL` set to that instance. No agent can reach that instance; the implementer runs the `local` entries against a server it starts itself.
+- **CI**: `.github/workflows/preview.yml`, when present, runs on pushes to `factory/**` and `main` and records a placeholder deployment. The platform owns that file.
+- **Dev deployment**: none. Nothing happens after a pull request merges.
+- **Interpreter and packages for verification**: the orchestrator runs the spec's `test_plan.commands` and the service entrypoint from a clean clone with its own Python ({sys_version}) first on `PATH` and **no install step**. Importable there: fastapi, starlette, uvicorn, pydantic, pytest, httpx, anyio, jsonschema, typer, and the standard library. Anything else fails at import time in verification even if it works in the sandbox.
 
 ## What the application must define
-- A **service manifest at a fixed path in the repository** (the factory validates it against
-  `schemas/service_manifest.schema.json`; the platform team's schema replaces that file).
-- The health endpoint the platform probes, and what "healthy" means.
-- Declared environment variables (with secret flag) and the command that runs migrations.
-- Any CI template includes or variables the repository must set.
+
+- `service_manifest.json` at the repository root, valid against the platform's service manifest schema. Required: `service` (string), `runtime` with `kind` (a short name for the runtime family; `python` is right for a process started by a command on this platform), `version`, `entrypoint` (the command the platform runs, for example `uvicorn app.main:app --host 0.0.0.0 --port 8000`) and `port`; `health` with `path` (and optionally `expect_status`, `timeout_seconds`); `env` listing every environment variable the service reads (an empty list when there are none). `migrations` and `resources` are optional.
+- A health endpoint at `health.path` that answers 200 as soon as the process is up.
+- Tests runnable as the spec's `test_plan.commands` say, from the repository root, with the packages above and nothing installed: set pytest's `pythonpath` to the repository root in `pyproject.toml` so the application package imports.
+- A `pyproject.toml` naming the runtime and test dependencies, for humans and for a future platform that does install them.
 
 ## What agents must never touch
-- IAM, service accounts, WIF bindings, and any permission grant.
-- Networking: VPCs, firewall rules, DNS, load balancers, ingress.
-- The platform repository, shared CI templates, and cluster or project configuration.
-- Anything that promotes a build beyond `dev`.
+
+- `.github/workflows/` (the platform's), IAM, networking, DNS, containers, cloud projects, secrets. If an item seems to need any of that, it is an open question for the owner, not a work item.
+- Ports other than the manifest's `runtime.port`; hard-coded hosts or URLs for the preview.
+- Dependencies outside the importable set above, unless the outcome explicitly provides for an install step.
 
 ## How the factory uses this skill
-- The decomposer sizes and orders work so each item is deployable to a preview environment on its own.
-- The spec writer declares the manifest changes a spec needs and writes `test_plan.e2e` entries that run against the preview URL.
-- The spec judge scores S11 (deployability) and S12 (end-to-end coverage) against this contract.
-- The implementer and reviewer run `test_plan.e2e` against the preview environment; neither edits anything listed under "must never touch".
+
+The decomposer checks every work item is deployable through the above and turns platform work into open questions. The spec writer fills `test_plan.commands` and `test_plan.e2e` (targets `local` and `preview`) against this contract. The spec judge rejects specs that assume a platform feature this contract does not provide. The implementer writes the manifest and the health endpoint in the first item that lands in a new repository. The reviewer checks the branch starts from the manifest entrypoint and answers the health path.

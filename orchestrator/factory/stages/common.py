@@ -107,21 +107,39 @@ def make_ask_human(ctx: RunContext, role: str, poll_seconds: float = 5.0, timeou
     return handler
 
 
-def open_gate_and_wait(ctx: RunContext, kind: GateKind, artifacts: dict[str, str], summary: str,
-                       assignees: list[str], options: tuple[Decision, ...], poll_seconds: float = 10.0,
-                       urls: dict[str, str] | None = None, work_item_id: str | None = None) -> GateDecision:
+def open_gate(ctx: RunContext, kind: GateKind, artifacts: dict[str, str], summary: str, assignees: list[str],
+              options: tuple[Decision, ...], urls: dict[str, str] | None = None, work_item_id: str | None = None) -> Gate:
+    """Open a gate on every surface and record `gate.opened`. Does not wait: `gate_decision` polls for the answer, so a
+    process that must keep doing other work (the change-request watcher) can open a gate without blocking on it."""
     refs = tuple(ArtifactRef(name=n, sha256=s, url=(urls or {}).get(n)) for n, s in sorted(artifacts.items()))
     gate = Gate(run_id=ctx.run_id, kind=kind, artifacts=refs, assignees=tuple(assignees), summary=summary, options=options,
                 work_item_id=work_item_id)
     ctx.queue.open(gate)
     ctx.notifier.gate_opened(gate)
     ctx.event("gate.opened", {"gate_id": gate.gate_id, "kind": kind.value, "artifacts": [r.__dict__ for r in refs],
-                              "assignees": assignees, "summary": summary}, stage=kind.value)
+                              "assignees": assignees, "summary": summary, "work_item_id": work_item_id},
+              stage=kind.value, work_item_id=work_item_id)
+    return gate
+
+
+def gate_decision(ctx: RunContext, gate_id: str, kind: GateKind, work_item_id: str | None = None) -> GateDecision | None:
+    """The human's decision on an open gate if one has been recorded on any surface, else None. Records `gate.decided`
+    the first time it is seen; a caller that polls must act on the decision it gets back rather than ask again."""
+    d = ctx.queue.decision(gate_id)
+    if d is not None:
+        ctx.event("gate.decided", {"gate_id": gate_id, "kind": kind.value, "decision": d.decision.value,
+                                   "comments": d.comments, "approved_subset": list(d.approved_subset),
+                                   "artifact_shas": list(d.artifact_shas)}, stage=kind.value, actor="human",
+                  work_item_id=work_item_id)
+    return d
+
+
+def open_gate_and_wait(ctx: RunContext, kind: GateKind, artifacts: dict[str, str], summary: str,
+                       assignees: list[str], options: tuple[Decision, ...], poll_seconds: float = 10.0,
+                       urls: dict[str, str] | None = None, work_item_id: str | None = None) -> GateDecision:
+    gate = open_gate(ctx, kind, artifacts, summary, assignees, options, urls, work_item_id)
     while True:
-        d = ctx.queue.decision(gate.gate_id)
+        d = gate_decision(ctx, gate.gate_id, kind, work_item_id)
         if d is not None:
-            ctx.event("gate.decided", {"gate_id": gate.gate_id, "kind": kind.value, "decision": d.decision.value,
-                                       "comments": d.comments, "approved_subset": list(d.approved_subset),
-                                       "artifact_shas": list(d.artifact_shas)}, stage=kind.value, actor="human")
             return d
         time.sleep(poll_seconds)

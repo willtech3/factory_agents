@@ -114,6 +114,31 @@ def test_reserve_budget_counts_spent_plus_the_caps_about_to_be_committed(tmp_pat
         ctx.queue.decide(GateDecision(gate_id=e.gate_id, decision=Decision.APPROVE, decided_by="x", artifact_shas=(gate.artifacts[0].sha256,)))
 
 
+def test_reserve_budget_counts_a_review_round_with_its_security_pass_as_one_batch(tmp_path, root):
+    """The review round starts its general passes and the security pass together, so the check covers all of them:
+    two reviewer caps plus the security reviewer's, recorded as one step of three sessions."""
+    ctx = _ctx(tmp_path, root, None, InMemoryQueue(), budget=60.0)
+    ctx.event("run.created", {"outcome_id": "o", "title": "t", "budget_usd": 60.0})
+    ctx.event("stage.entered", {"stage": "decomposing"})
+    ctx.event("session.finished", {"session_id": "s1", "list_cost_usd": 25.0}, actor="platform")
+    reserve_budget(ctx, "review", 2)                                        # 25 + 30 fits
+    reserve_budget(ctx, "review", 2, extra={"security_review": 0})          # nothing extra to commit
+    with pytest.raises(BudgetPaused) as info:                               # 25 + 30 + 10 does not
+        reserve_budget(ctx, "review", 2, extra={"security_review": 1})
+    e = info.value
+    assert (e.stage, e.sessions, e.cap_usd, e.spent_usd) == ("review", 3, 40.0, 25.0)
+    assert _payload(ctx, "budget.reached")["next"] == {"stage": "review", "label": "reviewer", "sessions": 3, "cap_usd": 40.0}
+    # only the security pass left to run (the general passes were reused on resume): its own cap, under its own name
+    ctx2 = _ctx(tmp_path, root, None, InMemoryQueue(), budget=30.0, run_id="run_budget00002")
+    ctx2.event("run.created", {"outcome_id": "o", "title": "t", "budget_usd": 30.0})
+    ctx2.event("stage.entered", {"stage": "decomposing"})
+    ctx2.event("session.finished", {"session_id": "s1", "list_cost_usd": 25.0}, actor="platform")
+    with pytest.raises(BudgetPaused) as info:                               # 25 + 10 does not fit in 30
+        reserve_budget(ctx2, "security_review", 1)
+    assert (info.value.stage, info.value.sessions, info.value.cap_usd) == ("security_review", 1, 10.0)
+    assert _payload(ctx2, "budget.reached")["next"]["label"] == "security reviewer"
+
+
 def test_run_pauses_before_a_session_it_cannot_afford_and_resumes_when_the_budget_is_raised(tmp_path, root, examples, schemas_dir):
     """Budget $10, decompose cap $15: the run parks before its first session. Raised to $30 from the CLI flag, the
     decomposer runs ($6) and Gate 1 is approved, but four spec writers ($40 of caps) do not fit: it parks again in

@@ -1,0 +1,12 @@
+# Supplementary, NOT the preview: manifest entrypoint 'uvicorn app.main:app --host 0.0.0.0 --port 8000' started from a clean clone at 93ced45 (python 3.12.3); BASE_URL=http://127.0.0.1:8000
+GET /health -> {"status":"ok"} 200
+GET /todos/overdue -> [] 200
+python tests/e2e_overdue.py compat "$BASE_URL" -> exit 0 :: PASS compat 1 passed, 0 failed 
+python tests/e2e_overdue.py create-future "$BASE_URL" -> exit 0 :: PASS create-future 1 passed, 0 failed 
+python tests/e2e_overdue.py create-past "$BASE_URL" -> exit 0 :: PASS create-past 1 passed, 0 failed 
+python tests/e2e_overdue.py boundary "$BASE_URL" -> exit 0 :: PASS boundary 1 passed, 0 failed 
+python tests/e2e_overdue.py listing "$BASE_URL" -> exit 0 :: PASS listing 1 passed, 0 failed 
+python tests/e2e_overdue.py overdue-list "$BASE_URL" -> exit 0 :: PASS overdue-list 1 passed, 0 failed 
+python tests/e2e_overdue.py empty-overdue "$BASE_URL" -> exit 0 :: PASS empty-overdue 1 passed, 0 failed 
+python tests/e2e_overdue.py complete "$BASE_URL" -> exit 0 :: PASS complete 1 passed, 0 failed 
+python tests/e2e_overdue.py malformed "$BASE_URL" -> exit 0 :: PASS malformed 1 passed, 0 failed 
