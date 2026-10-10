@@ -11,6 +11,7 @@
     factory resume <run_id> --budget 80 # ... raising the run budget (or --outcome file.json to read it from there)
     factory watch <run_id> [--once]     # Gate 3 and Stage 5: follow the run's pull requests to the merge and the dev deploy
     factory web [--port 8765] [--demo]  # the Factory Console: outcomes, runs board, inbox, gate review
+    factory run outcome.json --preview managed --app-id app_x --test-profile-sha256 <sha> --test-vault vlt_a   # hosted verification
     factory browser list|claim|submit|block|doctor|smoke   # attach a Claude in Chrome session to browser checks
 
 Local mode uses a file-backed queue under the runs directory so two processes can talk. With
@@ -210,14 +211,33 @@ def _drive(ctx, pipeline):
         raise
 
 
+def apply_preview_choice(cfg, preview: str | None = None, app_id: str | None = None, test_profile_sha256: str | None = None,
+                         test_vaults: list[str] | None = None, verify_budget: float | None = None):
+    """Command-line preview choice over the environment's (FACTORY_PREVIEW, FACTORY_APP_ID, FACTORY_TEST_PROFILE_SHA256,
+    FACTORY_TEST_VAULT_IDS, FACTORY_MANAGED_VERIFY_BUDGET_USD). Validation is `config.missing`'s, as for the environment."""
+    import dataclasses
+    changes = {k: v for k, v in {
+        "preview_mode": preview.lower() if preview else None, "app_id": app_id,
+        "test_profile_sha256": test_profile_sha256.strip().lower() if test_profile_sha256 else None,
+        "test_vault_ids": tuple(v.strip() for v in test_vaults if v.strip()) if test_vaults else None,
+        "managed_verify_budget_usd": verify_budget}.items() if v is not None}
+    return dataclasses.replace(cfg, **changes) if changes else cfg
+
+
 @app.command()
 def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the forge (change requests, pipelines)"),
         design_only: bool = typer.Option(False, "--design-only", help="Real agents through Gate 2 (decompose, specs, judge); "
-                                                                      "no implementation, no forge needed")):
+                                                                      "no implementation, no forge needed"),
+        preview: str | None = typer.Option(None, "--preview", help="platform | local | managed (verify every candidate in a hosted "
+                                                                  "sandbox from the app's approved test recipe); default FACTORY_PREVIEW"),
+        app_id: str | None = typer.Option(None, "--app-id", help="managed: the onboarded app this run changes"),
+        test_profile_sha256: str | None = typer.Option(None, "--test-profile-sha256", help="managed: fingerprint of the approved test recipe"),
+        test_vault: list[str] = typer.Option([], "--test-vault", help="managed: an explicit test-only vault id (repeatable); never the forge's"),
+        verify_budget: float | None = typer.Option(None, "--verify-budget", help="managed: USD cap per hosted verification session (default 4)")):
     """Start a run from an outcome.json. Blocks at human gates; decide from another terminal, the Console, or the tracker."""
     from .runner import new_run_id, run as run_pipeline
 
-    cfg = cfgmod.load()
+    cfg = apply_preview_choice(cfgmod.load(), preview, app_id, test_profile_sha256, test_vault, verify_budget)
     gaps = cfgmod.missing(cfg, design_only=design_only)
     if gaps:
         typer.echo("cannot run; missing: " + ", ".join(gaps))

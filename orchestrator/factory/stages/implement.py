@@ -21,6 +21,11 @@ host, in a per-run virtual environment it builds from the target repository (`Lo
 and starts the service itself from the manifest entrypoint for the preview entries (`LocalPreview`). No sandbox
 can reach that instance, and `preview.json` says so (`unreachable_from_sandbox`): reviewers start their own
 instance from the same entrypoint and judge the preview entries against it (post-mortem 2026-10-10, issues 7, 13).
+
+`FACTORY_PREVIEW=managed` (an onboarded app): nothing of the target repository executes on the orchestrator host. Each
+pushed head is verified in a fresh Anthropic-hosted sandbox built from the app's approved test recipe
+(`hosted_verifier.HostedVerifier`): the recipe's own lifecycle, the test_plan commands, pytest collection and the
+"preview" e2e entries with their browser evidence, all bound to the exact head and recipe. The host only reads git.
 """
 from __future__ import annotations
 
@@ -44,6 +49,7 @@ from typing import Any
 
 from .. import visual
 from .. import checks, security
+from ..hosted_verifier import ENVIRONMENT_CHECK, HostedVerifier, preview_record
 from ..budget import reserve_budget
 from ..checks import CheckResult
 from ..state import WorkItemStage
@@ -169,10 +175,35 @@ CRITERIA_CLAUSE = """Fill `criteria` with your own status per acceptance criteri
 e2e rows in test_results.json (each names the criteria it covers in covers_ac, and its target and exit code) are the
 authoritative preview evidence; the reviewer's spec_conformance is an input, not the answer."""
 
+MANAGED_CRITERIA_CLAUSE = CRITERIA_CLAUSE + """ This run used preview mode "managed": test_results.json `environment` names the
+hosted sandbox session, the exact head and the approved recipe fingerprint every row is bound to. A row with exit_code null
+was not run and proves nothing. A criterion is met only through rows that name it in covers_ac (UI criteria also need that
+row's passing visual evidence); the recipe's baseline check (`hosted_environment`) shows the app runs, never that a criterion
+is met. Inspect the uploaded visual_evidence.json and screenshots; if you cannot view an image, say so and do not claim visual
+review."""
+
 LOCAL_CRITERIA_CLAUSE = CRITERIA_CLAUSE + """ This run used preview mode "local": the orchestrator started the service from the
 manifest entrypoint on its own host and ran the "preview" entries there (test_results.json `preview.orchestrator_instance`
 and the e2e rows); reviewers could not reach that instance and ran the entries against one they started themselves. A
 service criterion whose e2e rows exit 0 is met on that evidence. UI criteria additionally require passing visual evidence. Inspect the uploaded visual_evidence.json and screenshots; if you cannot view an image, explicitly report that limitation and do not claim visual review."""
+
+
+MANAGED_PREVIEW_CLAUSE = """There is no preview URL for this branch and none is reachable from this sandbox:
+/mnt/session/uploads/preview.json says status "hosted_sandbox" with a null url. After you push, the orchestrator verifies
+your pushed head in a separate Anthropic-hosted test sandbox built from the app's approved test recipe (the service
+manifest's test_environment.profile, default test_environment.json): the recipe's prepare/start/seed and baseline check,
+every test_plan command, pytest collection, and every test_plan.e2e entry with target "preview" against the app inside that
+sandbox ($BASE_URL). Only that run counts. Do not change the recipe: its approved fingerprint is pinned and a changed recipe
+blocks verification. An e2e entry with a visual contract must be a command that drives a browser inside that sandbox and
+writes result.json (with viewport_observed) and its screenshots to $FACTORY_EVIDENCE_DIR for the request at
+$FACTORY_VISUAL_REQUEST; `factory:browser` cannot run there. Run what you can in this sandbox and record the results."""
+
+MANAGED_PREVIEW_REVIEW_CLAUSE = """No preview URL is reachable from this sandbox (/mnt/session/uploads/preview.json: status
+"hosted_sandbox", url null). The orchestrator verified this head in a separate Anthropic-hosted sandbox built from the app's
+approved test recipe; deterministic_checks.json carries those results, and visual_evidence.json with the screenshots carries
+the browser evidence. Never claim to have exercised a deployed preview. To probe behaviour, start the app in your own sandbox
+from the recipe's commands; your sandbox may lack the recipe's network allowlist and test credentials, so mark what you could
+not exercise not_assessed with that reason, never met."""
 
 
 def _git(repo_dir: Path, *args: str) -> str:
@@ -664,6 +695,8 @@ def preview_info(ctx: RunContext, branch: str, head_sha: str | None = None) -> d
     """
     info: dict[str, Any] = {"branch": branch, "status": "unavailable", "url": None, "pipeline": None,
                             "head_sha": head_sha}
+    if ctx.cfg.preview_mode == "managed":
+        return preview_record(branch, head_sha)
     if ctx.cfg.preview_mode == "local":
         info.update(status="unreachable_from_sandbox", mode="local",
                     note=("no platform preview exists in local mode: the orchestrator starts the service from the manifest "
@@ -700,6 +733,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     orchestrator (see `ResumePoint`); the work item then already sits in implementing or responding, so no stage
     event is emitted for the restart."""
     sid, wid = spec["spec_id"], spec["work_item_id"]
+    _require_recorded_preview_mode(ctx)
     spec_md = (spec_md or spec.get("_markdown") or "").strip()
     branch = _branch_for(ctx.run_id, sid)
     git, git_ro = git_clauses(ctx, repo_url, base_branch, branch)     # the implementer pushes; everyone else only reads
@@ -732,7 +766,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         review_clause, response_clause = "", ""
         preview = preview_info(ctx, branch)
         uploads["preview.json"] = json.dumps(preview, indent=2).encode()
-        preview_clause = PREVIEW_CLAUSE if preview["status"] == "ready" else (LOCAL_PREVIEW_CLAUSE if preview.get("mode") == "local" else NO_PREVIEW_CLAUSE)
+        preview_clause = (MANAGED_PREVIEW_CLAUSE if preview.get("mode") == "managed" else PREVIEW_CLAUSE if preview["status"] == "ready"
+                          else LOCAL_PREVIEW_CLAUSE if preview.get("mode") == "local" else NO_PREVIEW_CLAUSE)
         if findings:
             uploads["findings.json"] = json.dumps(findings, indent=2).encode()
             review_clause = ("Reviewer findings are at /mnt/session/uploads/findings.json. Respond to every finding "
@@ -784,32 +819,46 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         diff = verifier.analyse(repo, base_sha, head_sha)
         manifest_path = repo / ctx.cfg.service_manifest_path
         manifest = _manifest_or_none(manifest_path)
-        setup = verifier.prepare_environment(repo, manifest)       # the per-run environment, rebuilt from this head's pyproject
-        cmd_results = verifier.run_commands(repo, spec["test_plan"]["commands"])
-        # End-to-end against the preview the platform deployed for head_sha. The URL comes from the forge's
-        # deployment record, not from the implementer's report; "not run" counts as failed.
-        if ctx.cfg.preview_mode == "local":
-            preview, e2e_results = _local_preview_e2e(ctx, repo, branch, head_sha, verifier, spec, manifest)
+        managed = ctx.cfg.preview_mode == "managed"
+        extra_det: list[CheckResult] = []
+        if managed:
+            # Every execution happens in the hosted sandbox; this host only read git above. Missing, unbound or
+            # unsupported evidence comes back as not-run rows, which the checks below fail.
+            hosted = HostedVerifier(ctx, verifier.workdir).verify(repo, base_sha, head_sha, spec, branch=branch,
+                                                                  round_no=round_no, work_item_id=wid)
+            setup, cmd_results, e2e_results, preview, collected = hosted.setup, hosted.commands, hosted.e2e, hosted.preview, hosted.collected
+            extra_det = [hosted.environment]
+            environment = {**hosted.record, "detail": hosted.setup.detail}
         else:
-            preview = wait_for_preview(ctx, branch, head_sha)
-            e2e_results = verifier.run_e2e(preview["url"] if preview["status"] == "ready" else None,
-                                           spec["test_plan"].get("e2e", []), repo=repo)
+            setup = verifier.prepare_environment(repo, manifest)       # the per-run environment, rebuilt from this head's pyproject
+            cmd_results = verifier.run_commands(repo, spec["test_plan"]["commands"])
+            # End-to-end against the preview the platform deployed for head_sha. The URL comes from the forge's
+            # deployment record, not from the implementer's report; "not run" counts as failed.
+            if ctx.cfg.preview_mode == "local":
+                preview, e2e_results = _local_preview_e2e(ctx, repo, branch, head_sha, verifier, spec, manifest)
+            else:
+                preview = wait_for_preview(ctx, branch, head_sha)
+                e2e_results = verifier.run_e2e(preview["url"] if preview["status"] == "ready" else None,
+                                               spec["test_plan"].get("e2e", []), repo=repo)
+            collected = None
+            environment = {"mode": ctx.cfg.preview_mode, "host": "orchestrator" if ctx.cfg.preview_mode == "local" else "platform",
+                           **setup.data, "ready": setup.passed, "detail": setup.detail}
         # The passing set is the orchestrator's own: node ids pytest reported passed in the test_plan run, checked against
         # what pytest collects in the checkout. A repository pytest cannot collect leaves the mapping unverified (said so
         # in the check's detail), never silently verified.
         visual_uploads = visual.persist(ctx, sid, round_no, head_sha, e2e_results)
-        collected = verifier.collect_test_ids(repo)
+        if not managed:
+            collected = verifier.collect_test_ids(repo)
         pytest_runs = passed_test_ids(cmd_results)
         passing_tests = (pytest_runs[0] if pytest_runs else []) if collected is not None else None
-        det = [setup] + checks.run_all_for_merge(
+        det = [setup] + extra_det + checks.run_all_for_merge(
             spec=spec, changed_files=diff["changed"], deleted_files=diff["deleted"], existing_test_files=diff["existing_tests"],
             added_lines_by_file=diff["added_lines"], implementation_report=report, passing_tests=passing_tests,
             tests_that_exist=collected, command_results=cmd_results, manifest_path=manifest_path,
             schema_dir=ctx.cfg.schemas_dir, e2e_results=e2e_results,
         )
-        test_results = {"commands": cmd_results, "e2e": e2e_results, "preview": preview,
-                        "environment": {"mode": ctx.cfg.preview_mode, "host": "orchestrator" if ctx.cfg.preview_mode == "local" else "platform",
-                                        **setup.data, "ready": setup.passed, "detail": setup.detail}}
+        test_results = {"commands": cmd_results, "e2e": e2e_results, "preview": preview, "environment": environment,
+                        **({"collected_tests": collected} if managed else {})}
         ctx.store.put_artifact(ctx.run_id, "implement", f"{sid}-r{round_no}-deterministic_checks.json",
                                json.dumps([d.to_dict() for d in det], indent=2).encode())
         ctx.store.put_artifact(ctx.run_id, "implement", f"{sid}-r{round_no}-test_results.json",
@@ -847,8 +896,9 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                        "implementation_report.json": json.dumps(report, indent=2).encode(),
                        "preview.json": json.dumps(preview, indent=2).encode(),
                        "deterministic_checks.json": json.dumps([d.to_dict() for d in det], indent=2).encode()}
-        rev_preview_clause = PREVIEW_CLAUSE if preview["status"] == "ready" and preview.get("mode") != "local" else (
-            LOCAL_PREVIEW_REVIEW_CLAUSE if preview.get("mode") == "local" else NO_PREVIEW_CLAUSE)
+        rev_preview_clause = (MANAGED_PREVIEW_REVIEW_CLAUSE if preview.get("mode") == "managed" else
+                              PREVIEW_CLAUSE if preview["status"] == "ready" and preview.get("mode") != "local" else
+                              LOCAL_PREVIEW_REVIEW_CLAUSE if preview.get("mode") == "local" else NO_PREVIEW_CLAUSE)
         second = ""
         if findings and response:
             rev_uploads["previous_findings.json"] = json.dumps(findings, indent=2).encode()
@@ -881,7 +931,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 return None
             if reused_sec is not None:
                 return tag_pass(reused_sec, "security")      # finished before the orchestrator died or paused
-            pre = security.prechecks(repo, diff["changed"], diff["added_lines"])
+            pre = managed_prechecks(diff["added_lines"]) if managed else security.prechecks(repo, diff["changed"], diff["added_lines"])
             ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-security_prechecks.json", json.dumps(pre, indent=2).encode())
             r = run_session(
                 ctx, prefix=f"{sid}-r{round_no}-sec-", spec_id=sid,
@@ -906,7 +956,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         findings = merge_findings(passes + ([sec] if sec else []), sid, round_no, base_sha, head_sha, branch,
                                   previous=findings, response=response)
         # A failed deterministic check is a finding the implementer must answer; nobody else can clear it.
-        findings["findings"] = apply_deterministic(findings["findings"], deterministic_findings(det, cmd_results, e2e_results))
+        findings["findings"] = apply_deterministic(findings["findings"], deterministic_findings(det, cmd_results, e2e_results, managed=managed))
         ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-findings.merged.json",
                                json.dumps(findings, indent=2).encode())
         ctx.event("review.findings", {"round": round_no, "count": len(findings["findings"]),
@@ -943,7 +993,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         agent_key="merge_judge", title=f"{ctx.run_id} merge-judge {sid}", run_id=ctx.run_id, stage="merge_judge",
         uploads=mj_uploads, work_item_id=wid,
         description=MERGE_JUDGE_DESCRIPTION.format(spec_id=sid, round=round_no, git=git_ro, skill_clause=skill_clause,
-                                                   criteria_clause=LOCAL_CRITERIA_CLAUSE if ctx.cfg.preview_mode == "local" else CRITERIA_CLAUSE),
+                                                   criteria_clause=MANAGED_CRITERIA_CLAUSE if ctx.cfg.preview_mode == "managed" else
+                                                   LOCAL_CRITERIA_CLAUSE if ctx.cfg.preview_mode == "local" else CRITERIA_CLAUSE),
         rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["merge_judge"],
         repository=mount(branch),
     )
@@ -960,6 +1011,16 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     persist_outputs(ctx, "merge_judge", res, prefix=f"{sid}-r{round_no}-", work_item_id=wid, spec_id=sid)
     ctx.event("merge.verdict", {"result": verdict["result"], "round": round_no}, work_item_id=wid, spec_id=sid, actor="agent")
     return verdict
+
+
+def _require_recorded_preview_mode(ctx: RunContext) -> None:
+    """A run started in managed mode never continues with controller-side execution: a resume without the managed
+    configuration would otherwise build a local environment and run the repository on this host."""
+    recorded = next((((ev.payload or {}).get("policy") or {}).get("preview_mode") for ev in ctx.store.events(ctx.run_id)
+                     if ev.kind == "run.created"), None)
+    if recorded == "managed" and ctx.cfg.preview_mode != "managed":
+        raise RuntimeError("this run verifies candidates in a hosted sandbox (preview mode managed); continue it with "
+                           "FACTORY_PREVIEW=managed and the same app binding, never with local or platform execution")
 
 
 def _manifest_or_none(path: Path) -> dict[str, Any] | None:
@@ -1015,8 +1076,17 @@ def is_environmental(results: list[dict[str, Any]]) -> bool:
     return False
 
 
+def managed_prechecks(added_lines_by_file: dict[str, list[str]]) -> dict[str, Any]:
+    """Security pre-checks without executing anything on this host: the secret scan reads the diff text; the dependency
+    audit and SAST would run repository tooling, which managed mode only does in a hosted sandbox."""
+    reason = "not run on the orchestrator host in managed preview mode; the security reviewer audits dependencies and code in its own sandbox"
+    return {"secret_scan": security.secret_scan(added_lines_by_file),
+            "dependency_audit": {"tool": None, "status": "skipped", "reason": reason},
+            "sast": {"tool": None, "status": "skipped", "reason": reason}}
+
+
 def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]] | None = None,
-                           e2e_results: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+                           e2e_results: list[dict[str, Any]] | None = None, *, managed: bool = False) -> list[dict[str, Any]]:
     """Findings (review_findings schema shape) for every failed deterministic check, so the implementer sees
     exactly what blocks the merge and can fix or refute it like any other finding.
 
@@ -1029,7 +1099,7 @@ def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]]
     out = []
     for d in failed:
         name = d.check.split(":")[0]
-        if setup_failed and name in ("test_plan_commands", "e2e_preview", "ac_test_mapping"):
+        if setup_failed and (name in ("test_plan_commands", "e2e_preview", "ac_test_mapping") or (managed and name in (ENVIRONMENT_CHECK, "visual_e2e"))):
             continue
         repro, environmental = "", False
         if name == "test_plan_commands":
@@ -1042,14 +1112,18 @@ def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]]
             environmental = is_environmental(rows)
         fix = {"ac_test_mapping": "Map every automated acceptance criterion to a test in implementation_report.json `criteria` ([{ac_id, tests: [...]}]) using pytest node ids exactly as `pytest --collect-only -q` prints them; the orchestrator only counts tests it collected and saw pass in its own run of the test plan.",
                "test_plan_commands": "Make every test_plan command exit 0 from a clean checkout; if a command depends on a port or host, make it robust or pick a free port.",
-               SETUP_CHECK: "Make the repository installable into a fresh virtual environment: a pyproject.toml whose dependencies resolve (runtime plus a dev/test extra for the test plan), or a `runtime.setup` command in the service manifest that installs what the tests and the entrypoint need."}.get(name, "Fix the cause named in the detail.")
+               SETUP_CHECK: ("The hosted verification could not run on this head; the detail says why. A failed recipe prepare phase is "
+                             "fixed in the change. A changed or missing recipe, or test credentials that are not attached, needs a person "
+                             "to re-approve the app's recipe: do not edit the recipe to get past it.") if managed else
+                            "Make the repository installable into a fresh virtual environment: a pyproject.toml whose dependencies resolve (runtime plus a dev/test extra for the test plan), or a `runtime.setup` command in the service manifest that installs what the tests and the entrypoint need.",
+               ENVIRONMENT_CHECK: "The app did not start, its services did not answer their health paths, or the recipe's baseline check failed in the hosted sandbox (hosted_verification.json has the phases). Make the change keep the app starting and the baseline journey working under the approved recipe; do not edit the recipe."}.get(name, "Fix the cause named in the detail.")
         if environmental:
             fix = ("The failure reads as environmental (a port already in use on the verification host), not as a defect in the "
                    "change: make the command bind a free port or reuse $BASE_URL instead of a fixed port, then push; the "
                    "orchestrator re-runs the check. ") + fix
         out.append({
             "finding_id": f"DET-{name}", "severity": "blocking",
-            "category": "security" if name == "secret_scan" else ("test_quality" if name in ("ac_test_mapping", "test_plan_commands", "test_weakening", "protected_tests", "e2e_coverage", "e2e_preview", SETUP_CHECK) else "spec_deviation"),
+            "category": "security" if name == "secret_scan" else ("test_quality" if name in ("ac_test_mapping", "test_plan_commands", "test_weakening", "protected_tests", "e2e_coverage", "e2e_preview", SETUP_CHECK, ENVIRONMENT_CHECK) else "spec_deviation"),
             "claim": f"Deterministic check `{name}` failed: {d.detail}",
             "evidence": {"locations": ["deterministic_checks.json:1"], **({"reproduction": repro} if repro else {}), "observed": d.detail},
             "violates": f"orchestrator check {name} (cannot be overridden by any judge)",

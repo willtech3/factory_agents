@@ -92,6 +92,33 @@ def read_snapshot_profile(source: bytes, relative_path: str, schema_dir: Path) -
     return profile
 
 
+def recipe_relative(manifest: dict | None) -> str:
+    """Where the recipe lives: the service manifest's test_environment.profile, else test_environment.json."""
+    rel = ((manifest or {}).get("test_environment") or {}).get("profile") or PROFILE_PATH
+    path = PurePosixPath(rel) if isinstance(rel, str) else None
+    if path is None or path.is_absolute() or ".." in path.parts or not path.parts:
+        raise ValueError("test_environment.profile must be a path inside the repository")
+    return str(path)
+
+
+def read_snapshot_json(source: bytes, relative_path: str, limit: int = 256 * 1024) -> dict | None:
+    """A committed JSON object from the snapshot, or None when the file is not committed at this revision."""
+    path = PurePosixPath(relative_path)
+    if path.is_absolute() or ".." in path.parts:
+        raise ValueError("path must be relative to the repository")
+    with tarfile.open(fileobj=io.BytesIO(source)) as archive:
+        try:
+            member = archive.getmember(str(path))
+        except KeyError:
+            return None
+        if not member.isfile() or member.size > limit:
+            raise ValueError(f"{relative_path} is not a regular file below {limit // 1024} KiB")
+        value = json.load(archive.extractfile(member))
+    if not isinstance(value, dict):
+        raise ValueError(f"{relative_path} is not a JSON object")
+    return value
+
+
 def environment_config(profile: dict) -> dict:
     return {"type": "cloud", "networking": {"type": "limited", **profile["network"]}}
 

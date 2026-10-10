@@ -4,6 +4,14 @@
 No provider calls or host paths. The controller uploads an immutable Git archive,
 profile, and this harness. Raw process logs stay in the sandbox; the downloadable
 report contains statuses and media, not command output or environment values.
+
+A request with a `change` section verifies one candidate head of a Factory run
+(preview mode "managed"): after the recipe's prepare/start/seed and its baseline
+verify, it runs the spec's test_plan commands (each pytest run summarised from its
+JUnit report as node ids by outcome), pytest collection, and the spec's e2e entries
+against the app inside this sandbox, each visual entry with the controller-issued
+browser request and a fresh evidence directory. The baseline check shows the app
+runs; it is reported separately and is never evidence for a spec criterion.
 """
 from __future__ import annotations
 
@@ -11,6 +19,8 @@ import hashlib
 import json
 import os
 import platform
+import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -18,10 +28,15 @@ import sys
 import tarfile
 import time
 import urllib.request
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 UPLOADS = Path("/mnt/session/uploads")
 OUTPUTS = Path("/mnt/session/outputs")
+SHELL = ["/bin/bash", "-lc"]          # a login shell, as the recipe author tested it in the sandbox
+NODE_ID_RE = re.compile(r"^[^\s:]+::\S+$")
+MEDIA_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".webm", ".mp4", ".gif"}
+MAX_NODE_IDS = 20000
 
 
 def digest(value: dict) -> str:
@@ -31,7 +46,7 @@ def digest(value: dict) -> str:
 def command(text: str, cwd: Path, env: dict, timeout: float, log: Path) -> dict:
     started = time.monotonic()
     with log.open("wb") as output:
-        proc = subprocess.Popen(["/bin/bash", "-lc", text], cwd=cwd, env=env,
+        proc = subprocess.Popen([*SHELL, text], cwd=cwd, env=env,
                                 stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             code = proc.wait(timeout=max(1, timeout))
@@ -115,6 +130,122 @@ def check_evidence(profile: dict, evidence: Path) -> tuple[bool, str]:
         return False, "Missing or malformed functional evidence"
 
 
+def parse_junit(xml: bytes) -> dict:
+    """Node ids by outcome from a pytest JUnit report (junit_family=xunit1); never failure text or output."""
+    out = {"passed": [], "failed": [], "skipped": []}
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return out
+    for tc in root.iter("testcase"):
+        node_id = node_id_of(tc.get("file"), tc.get("classname", ""), tc.get("name", ""))
+        tags = {child.tag for child in tc}
+        key = "failed" if tags & {"failure", "error"} else "skipped" if "skipped" in tags else "passed"
+        if len(out[key]) < MAX_NODE_IDS:
+            out[key].append(node_id)
+    return out
+
+
+def node_id_of(file, classname: str, name: str) -> str:
+    if not file:
+        parts = [p for p in classname.split(".") if p]
+        return f"{'/'.join(parts)}.py::{name}" if parts else name
+    module = Path(file).with_suffix("").as_posix().replace("/", ".")
+    if classname == module or not classname:
+        chain = []
+    elif classname.startswith(module + "."):
+        chain = classname[len(module) + 1:].split(".")
+    else:
+        parts = classname.split(".")
+        stem = Path(file).stem
+        chain = parts[len(parts) - parts[::-1].index(stem):] if stem in parts else []
+    return "::".join([file, *chain, name])
+
+
+def copy_entry_evidence(index: int, directory: Path, outputs: Path, report: dict) -> list[str]:
+    """A visual entry's result.json and media, as e2e-<index>-<name>; links, odd names and oversize files stay behind."""
+    names = []
+    for p in sorted(directory.iterdir()):
+        if p.name == "request.json" or p.is_symlink() or not p.is_file():
+            continue
+        if p.name != "result.json" and (p.suffix.lower() not in MEDIA_SUFFIXES or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,120}", p.name)):
+            continue
+        size = p.stat().st_size
+        total = report.get("_uploaded_bytes", 0)
+        if size > 30 * 1024 * 1024 or total + size > 64 * 1024 * 1024:
+            continue
+        report["_uploaded_bytes"] = total + size
+        shutil.copyfile(p, outputs / f"e2e-{index}-{p.name}")
+        names.append(p.name)
+    return names
+
+
+def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: float, logs: Path, evidence: Path,
+               work: Path, outputs: Path, report: dict) -> None:
+    phases = report["phases"]
+    out = {"commands": [], "collected_tests": None, "e2e": [], "baseline": None, "app_ready": False}
+    report["change"] = {**change, "results": out}
+    commands, entries = change.get("commands", []), change.get("e2e", [])
+    per_command = float(change.get("command_timeout_seconds", 900))
+    prepared = command(profile["commands"]["prepare"], repo, env, deadline - time.monotonic(), logs / "prepare.log")
+    phases.append({"phase": "prepare", **prepared})
+    if prepared["status"] != "passed":
+        out["commands"] = [{"index": i, "command": c, "status": "not_run", "reason": "the recipe's prepare phase did not pass"} for i, c in enumerate(commands)]
+        out["e2e"] = [{"index": e["index"], "status": "not_run", "reason": "the recipe's prepare phase did not pass"} for e in entries]
+        report.update(status="failed", reason="prepare did not pass")
+        return
+    started = command(profile["commands"]["start"], repo, env, deadline - time.monotonic(), logs / "start.log")
+    phases.append({"phase": "start", **started})
+    ready = started["status"] == "passed"
+    if ready:
+        report["services"] = health(profile["services"], min(deadline, time.monotonic() + 90))
+        ready = all(s["status"] == "passed" for s in report["services"])
+    if ready:
+        seeded = command(profile["commands"]["seed"], repo, env, deadline - time.monotonic(), logs / "seed.log")
+        phases.append({"phase": "seed", **seeded})
+        ready = seeded["status"] == "passed"
+    out["app_ready"] = ready
+    if ready:
+        verified = command(profile["commands"]["verify"], repo, env, deadline - time.monotonic(), logs / "verify.log")
+        phases.append({"phase": "verify", **verified})
+        ok, detail = check_evidence(profile, evidence) if verified["status"] == "passed" else (False, "baseline verify command did not pass")
+        out["baseline"] = {"status": "passed" if ok else "failed", "detail": detail}
+    else:
+        out["baseline"] = {"status": "blocked", "detail": "the app did not start or its services did not become ready"}
+    junit_dir = work / "junit"
+    junit_dir.mkdir(exist_ok=True)
+    for i, text in enumerate(commands):
+        junit = junit_dir / f"cmd-{i}.xml"
+        addopts = f"{env.get('PYTEST_ADDOPTS', '')} --junitxml={shlex.quote(str(junit))} -o junit_family=xunit1".strip()
+        result = command(text, repo, {**env, "PYTEST_ADDOPTS": addopts}, per_command, logs / f"change-cmd-{i}.log")
+        row = {"index": i, "command": text, **result}
+        if junit.is_file():
+            row["pytest"] = parse_junit(junit.read_bytes())
+        out["commands"].append(row)
+    if change.get("collect_tests"):
+        log = logs / "collect.log"
+        result = command('PY="$(command -v python || command -v python3)"; "$PY" -m pytest --collect-only -q', repo, env, per_command, log)
+        ids = [ln.strip() for ln in log.read_text(errors="replace").splitlines() if NODE_ID_RE.match(ln.strip())][:MAX_NODE_IDS]
+        out["collected_tests"] = {"exit_code": result.get("exit_code"), "status": result["status"], "node_ids": ids}
+    for entry in entries:
+        index = int(entry["index"])
+        if not ready:
+            out["e2e"].append({"index": index, "status": "not_run", "reason": "the app did not start or its services did not become ready"})
+            continue
+        directory = work / f"e2e-{index}"
+        directory.mkdir()
+        entry_env = {**env, "FACTORY_EVIDENCE_DIR": str(directory)}      # never the baseline's evidence directory
+        if entry.get("visual_request"):
+            (directory / "request.json").write_text(json.dumps(entry["visual_request"]))
+            entry_env["FACTORY_VISUAL_REQUEST"] = str(directory / "request.json")
+        result = command(entry["command"], repo, entry_env, per_command, logs / f"e2e-{index}.log")
+        row = {"index": index, **result}
+        if entry.get("visual_request"):
+            row["files"] = copy_entry_evidence(index, directory, outputs, report)
+        out["e2e"].append(row)
+    report.update(status="completed", reason="change verification ran; the controller judges each row")
+
+
 def run(uploads: Path = UPLOADS, outputs: Path = OUTPUTS) -> dict:
     if platform.system() != "Linux" or uploads != UPLOADS:
         raise RuntimeError("this harness runs only in the hosted sandbox")
@@ -150,6 +281,9 @@ def run(uploads: Path = UPLOADS, outputs: Path = OUTPUTS) -> dict:
             report["reason"] = "required test credentials are not attached"
             report["missing_secrets"] = missing
             return report
+        if request.get("change"):
+            run_change(profile, request["change"], repo, env, deadline, logs, evidence, work, outputs, report)
+            return report
         for phase in ("prepare", "start", "seed", "verify"):
             if phase == "seed":
                 report["services"] = health(profile["services"], min(deadline, time.monotonic() + 90))
@@ -169,8 +303,11 @@ def run(uploads: Path = UPLOADS, outputs: Path = OUTPUTS) -> dict:
         phases.append({"phase": "stop", **stopped})
         if stopped["status"] != "passed":
             report.update(status="blocked", reason="environment teardown failed")
-        total = 0
+        total = report.get("_uploaded_bytes", 0)
+        report.pop("_uploaded_bytes", None)
         for p in sorted(evidence.iterdir()):
+            if request.get("change") and p.name not in {"browser-result.json", "verification-result.json"}:
+                continue        # change runs: baseline media is not per-change evidence; keep only its result files
             # Never upload raw runtime logs, secret files, links, or arbitrary output.
             if p.is_symlink() or not p.is_file() or p.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".webm", ".mp4"} and p.name not in {"browser-result.json", "verification-result.json"}:
                 continue
