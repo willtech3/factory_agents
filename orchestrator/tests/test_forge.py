@@ -306,15 +306,19 @@ def test_github_seed_retries_while_the_new_repository_is_not_ready_and_reseeds_a
     rec = Recorder(routes)
     f = GitHubForge("https://github.com", "ghp_test", "will/newapp", transport=httpx.MockTransport(rec))
     slept = []
-    created = ensure_repository(f, {"url": "https://github.com/will/newapp", "create": True}, tmpl, sleep=slept.append)
+    skill = root / "skills" / "platform-contract" / "SKILL.md"
+    created = ensure_repository(f, {"url": "https://github.com/will/newapp", "create": True}, tmpl, skill_file=skill, sleep=slept.append)
     assert created["default_branch"] == "main" and created["workflow_seeded"] is True and slept == [2.0, 4.0]
+    trees = [b for m, p, _, b in rec.calls if p.endswith("/git/trees")]
+    assert trees[0]["tree"][0]["path"] == ".claude/skills/platform-contract/SKILL.md"      # the skill lands first, on its own
+    assert trees[-1]["tree"][0]["path"] == ".github/workflows/preview.yml"
     # a forge that keeps refusing (a token without the workflow scope: GitHub answers 404 for ever): a warning, not a crash
     routes4 = {**routes, "POST /repos/will/newapp/git/trees": (404, {"message": "Not Found"})}
     rec4 = Recorder(routes4)
     f4 = GitHubForge("https://github.com", "ghp_test", "will/newapp", transport=httpx.MockTransport(rec4))
     logged = []
-    created4 = ensure_repository(f4, {"url": "https://github.com/will/newapp", "create": True}, tmpl, sleep=lambda s: None, log=logged.append)
-    assert created4["workflow_seeded"] is False and "workflow" in logged[0] and "gh auth refresh -s workflow" in logged[0]
+    created4 = ensure_repository(f4, {"url": "https://github.com/will/newapp", "create": True}, tmpl, skill_file=skill, sleep=lambda s: None, log=logged.append)
+    assert created4["workflow_seeded"] is False and "workflow" in logged[-1] and "gh auth refresh -s workflow" in logged[-1]
     assert sum(1 for m, p, _, _ in rec.calls if p.endswith("/git/trees")) == 3
     assert sum(1 for m, p, _, _ in rec.calls if p.endswith("/git/refs/heads/main") and m == "PATCH") == 1
     # a repository that exists but has no workflow (the earlier run died after creating it): seeded, not created

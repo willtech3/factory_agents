@@ -140,8 +140,11 @@ WORKFLOW_SCOPE_HINT = ("the forge refused to write {path}: on GitHub, writing un
                        "Add it by hand or re-run with a token that has the scope.")
 
 
+SKILL_PATH = ".claude/skills/platform-contract/SKILL.md"
+
+
 def ensure_repository(forge: Forge, repo: dict[str, Any], workflow_template: Path | None = None, *,
-                      sleep=None, attempts: int = 4, log=print) -> dict[str, Any] | None:
+                      skill_file: Path | None = None, sleep=None, attempts: int = 4, log=print) -> dict[str, Any] | None:
     """Create the outcome's repository when it asks for one (`create: true`) and it does not exist yet, and try to
     give it the preview workflow.
 
@@ -162,30 +165,42 @@ def ensure_repository(forge: Forge, repo: dict[str, Any], workflow_template: Pat
         created = forge.create_repository(private=repo.get("visibility", "private") != "public",
                                           description=repo.get("description", "Created by the software factory"))
     branch = (created or {}).get("default_branch") or repo.get("default_branch", "main")
+    # The platform-contract skill is seeded first and on its own: the agents read it from the repository's
+    # .claude/skills/ and its path needs no special token scope. The workflow follows, with its own retries.
+    if skill_file and skill_file.is_file() and forge.kind == "github":
+        if created is not None or not forge.file_exists(branch, SKILL_PATH):
+            _seed(forge, branch, "factory: platform contract skill", {SKILL_PATH: skill_file.read_bytes()},
+                  sleep=sleep, attempts=attempts, log=log, hint="the forge refused to write {path}")
     path = ".github/workflows/preview.yml"
     if workflow_template and workflow_template.is_file() and forge.kind == "github":
-        files = {path: workflow_template.read_bytes()}
-        delay, seeded = 2.0, False
-        for attempt in range(attempts):
-            try:
-                if created is None and forge.file_exists(branch, path):
-                    seeded = True
-                    break                               # existing repository, already seeded
-                forge.commit_files(branch, "factory: preview workflow for factory branches", files)
-                seeded = True
-                break
-            except Exception as e:  # noqa: BLE001  (httpx status errors)
-                status = getattr(getattr(e, "response", None), "status_code", None)
-                if status not in (403, 404, 409, 422, 500, 502, 503):
-                    raise
-                if attempt == attempts - 1:
-                    log("[forge] " + WORKFLOW_SCOPE_HINT.format(path=path) + f" (last response: {status})")
-                    break
-                sleep(delay)
-                delay = min(delay * 2, 20.0)
+        seeded = True if (created is None and forge.file_exists(branch, path)) else _seed(
+            forge, branch, "factory: preview workflow for factory branches", {path: workflow_template.read_bytes()},
+            sleep=sleep, attempts=attempts, log=log, hint=WORKFLOW_SCOPE_HINT)
         if created is not None:
             created["workflow_seeded"] = seeded
     return created
+
+
+def _seed(forge: Forge, branch: str, message: str, files: dict[str, bytes], *, sleep, attempts: int, log, hint: str) -> bool:
+    """One commit with `files`, retried with backoff while the forge answers a transient or refusing status.
+    Returns whether it landed; a refusal that outlasts the retries is logged with `hint` and swallowed."""
+    import time
+    sleep = sleep or time.sleep
+    delay = 2.0
+    for attempt in range(attempts):
+        try:
+            forge.commit_files(branch, message, files)
+            return True
+        except Exception as e:  # noqa: BLE001  (httpx status errors)
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status not in (403, 404, 409, 422, 500, 502, 503):
+                raise
+            if attempt == attempts - 1:
+                log("[forge] " + hint.format(path=", ".join(files)) + f" (last response: {status})")
+                return False
+            sleep(delay)
+            delay = min(delay * 2, 20.0)
+    return False
 
 
 def ref_slug(ref: str) -> str:

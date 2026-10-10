@@ -51,7 +51,8 @@ def _bind_forge(cfg, outcome: dict, want_forge: bool):
     forge_obj = make_forge(cfg)
     created = None
     if forge_obj is not None and repo.get("create"):
-        created = ensure_repository(forge_obj, repo, cfg.templates_dir / "github-actions-preview.yml")
+        created = ensure_repository(forge_obj, repo, cfg.templates_dir / "github-actions-preview.yml",
+                                    skill_file=cfg.templates_dir.parent / "skills" / "platform-contract" / "SKILL.md")
         if created:
             typer.echo(f"created repository {created['url']} (default branch {created.get('default_branch')})")
     return cfg, forge_obj, created
