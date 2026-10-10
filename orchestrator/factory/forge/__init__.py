@@ -71,7 +71,8 @@ class Forge(Protocol):
 
     # ---- sessions: how a sandbox gets the repository
     def session_repository_resource(self, repo_url: str, branch: str) -> dict[str, Any] | None: ...
-    def sandbox_git_instructions(self, repo_url: str, base_branch: str, branch: str) -> str: ...
+    def sandbox_git_instructions(self, repo_url: str, base_branch: str, branch: str, read_only: bool = False) -> str: ...
+    # read_only: the clause for reviewers, the merge judge and the integrator, who read the branch and never commit or push
     def authenticated_url(self, repo_url: str) -> str: ...   # for the orchestrator's own clone (LocalVerifier)
 
     # ---- feedback rendering

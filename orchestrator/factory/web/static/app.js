@@ -51,8 +51,8 @@
     deployed_dev: "Verified in dev", closed: "Closed", escalated: "Escalated", blocked: "Blocked",
   };
   const GATE_NAME = { gate_1_decomposition: "Gate 1: approve the plan", gate_2_spec_readiness: "Gate 2: approve the specs",
-    escalation: "Escalation: the judge could not pass the specs", deploy_failure: "Deploy failure" };
-  const GATE_SHORT = { gate_1_decomposition: "Gate 1", gate_2_spec_readiness: "Gate 2", escalation: "Escalation", deploy_failure: "Deploy failure" };
+    escalation: "Escalation: the judge could not pass the specs", budget: "Budget: a session stopped before finishing", deploy_failure: "Deploy failure" };
+  const GATE_SHORT = { gate_1_decomposition: "Gate 1", gate_2_spec_readiness: "Gate 2", escalation: "Escalation", budget: "Budget", deploy_failure: "Deploy failure" };
   const DECISION_LABEL = { approve: "Approve", approve_subset: "Approve selected", request_changes: "Request changes", reject: "Reject" };
 
   function ago(iso) {
@@ -420,7 +420,8 @@
       case "run.completed": return [who, { main: p.design_only ? "Design stages completed" : "Run completed", detail: (p.specs_with_change_requests || p.approved_specs || []).join(", ") }];
       case "run.failed": return [who, { main: "Run failed", detail: p.reason }];
       case "run.resumed": return [who, { main: "Run resumed", detail: Object.entries(p.points || {}).map(([s, x]) => `${s}: round ${x.round}${x.implementer_done ? " (implementer done)" : ""}`).join("; ") }];
-      case "budget.reached": return [who, { main: "Budget reached" }];
+      case "budget.reached": return [who, { main: `Budget reached: ${p.title || p.agent_key || "a session"} hit its ${p.budget_usd != null ? money(p.budget_usd) : ""} cap`, detail: p.list_cost_usd != null ? `spent ${money(p.list_cost_usd)}; waiting for the owner` : "waiting for the owner", session_id: p.session_id }];
+      case "session.truncated": return [who, { main: `Session cut short: ${p.title || p.agent_key || "a session"} (${p.reason || "unfinished"})`, detail: p.outcome_iterations != null ? `${p.outcome_iterations} grader iterations; waiting for the owner` : "waiting for the owner", session_id: p.session_id }];
       default: return [who, { main: ev.kind }];
     }
   }
@@ -650,6 +651,7 @@
       gate_1_decomposition: { approve: "Agents start writing a spec for every work item, with your notes as guidance. You get Gate 2 before any code.", approve_subset: "", request_changes: "The decomposer revises the plan using your notes and asks you again.", reject: "The run closes. Nothing else happens." },
       gate_2_spec_readiness: { approve: "Agents start implementing all specs on separate branches; pull requests follow.", approve_subset: "Selected specs are implemented; the others go back to the writer with your notes.", request_changes: "The spec writers revise using your notes; the judge re-checks; you decide again.", reject: "The run closes. Nothing is built." },
       escalation: { approve: "Proceed with the specs as they are.", approve_subset: "Selected specs proceed; the rest go back.", request_changes: "The writers revise using your notes.", reject: "The run closes." },
+      budget: { approve: "The session runs again with its cap raised by half (or, after an iteration cap, its last output is accepted and checked downstream).", reject: "The run closes." },
       deploy_failure: { approve: "The failure was the platform's; the next deploy is watched.", request_changes: "An agent fixes it on a new branch; a follow-up pull request follows.", reject: "This work item is closed." },
     }[rec.kind] || {};
     const buttons = rec.options.map(opt => el("button", { class: `btn block ${opt === "approve" || opt === "approve_subset" ? "approve" : opt === "request_changes" ? "changes" : "danger"}`,

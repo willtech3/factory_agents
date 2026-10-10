@@ -62,14 +62,16 @@ def _bind_forge(cfg, outcome: dict, want_forge: bool):
 
 
 def _policy(outcome: dict, design_only: bool):
-    """Loop limits and budgets; FACTORY_BUDGET_SCALE (e.g. 0.4) scales every per-stage cap for cheap first runs."""
+    """Loop limits and budgets; FACTORY_BUDGET_SCALE (e.g. 0.4) scales every per-stage cap for cheap first runs, never
+    below the stage's observed median session (`Policy.stage_budget_floor_usd`)."""
     import os
     from .state import Policy
     scale = float(os.environ.get("FACTORY_BUDGET_SCALE", "1") or 1)
     base = Policy()
     knob = lambda name, default: int(os.environ.get(name) or default)  # noqa: E731
     return Policy(run_budget_usd=outcome.get("constraints", {}).get("budget_usd") or 150.0, design_only=design_only,
-                  stage_budget_usd={k: round(v * scale, 2) for k, v in base.stage_budget_usd.items()},
+                  stage_budget_usd={k: max(round(v * scale, 2), base.stage_budget_floor_usd.get(k, 0.0))
+                                    for k, v in base.stage_budget_usd.items()},
                   reviewer_passes=knob("FACTORY_REVIEWER_PASSES", base.reviewer_passes),
                   security_review=os.environ.get("FACTORY_SECURITY_REVIEW", "1").lower() not in ("0", "false", "no", "off"),
                   review_max_rounds=knob("FACTORY_REVIEW_MAX_ROUNDS", base.review_max_rounds),
@@ -137,6 +139,10 @@ def _context(cfg, outcome: dict, run_id: str, *, forge: bool, design_only: bool,
         ctx.driver.on_session_started = lambda info: ctx.event(
             "session.started", {k: v for k, v in info.items() if k not in ("run_id", "work_item_id")},
             stage=info["stage"], actor="platform", work_item_id=info.get("work_item_id"))
+        # A session interrupted by a stop or a crash still finished, and its spend still counts.
+        ctx.driver.on_session_finished = lambda info: ctx.event(
+            "session.finished", {k: v for k, v in info.items() if k not in ("run_id", "work_item_id", "stage")},
+            stage=info.get("stage"), actor="platform", work_item_id=info.get("work_item_id"))
     return ctx
 
 

@@ -29,6 +29,7 @@ class GateKind(str, Enum):
     DECOMPOSITION_REVIEW = "gate_1_decomposition"
     SPEC_READINESS = "gate_2_spec_readiness"
     ESCALATION = "escalation"             # judge or loop could not converge
+    BUDGET = "budget"                     # a session hit its dollar cap (or the grader's iteration cap); approve = raise and retry / accept, reject = close
     DEPLOY_FAILURE = "deploy_failure"     # Stage 5: dev pipeline failed or dev e2e failed; carries the log excerpt
     # Gate 3 (code review) is the forge's own change-request approval; see forge/
 

@@ -5,7 +5,7 @@ Used in two places. The in-session outcome grader (Managed Agents `user.define_o
 **Scored by the grader.**
 
 ## I1. Every acceptance criterion has a test that fails without the change **[partly deterministic]**
-`implementation_report.json` maps each `automated_test` criterion to a test; the grader scores the mapping and the red/green evidence in the report, and the orchestrator confirms afterwards that each named test exists and passed on `head_sha`.
+`implementation_report.json` maps each `automated_test` criterion to a test (pytest node ids as `pytest --collect-only -q` prints them); the grader scores the mapping and the red/green evidence in the report, and the orchestrator confirms afterwards that each named test was collected and passed on `head_sha`, never trusting the report's own list.
 - 0: a criterion with no test, or a named test that does not exist.
 - 2: all mapped and passing.
 - 3: as 2, and the mapping shows the test failing on `base_sha` (red/green evidence).

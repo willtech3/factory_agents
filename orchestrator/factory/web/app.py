@@ -47,7 +47,7 @@ OUTCOME_ID = re.compile(r"^out_[a-z0-9]{8,}$")
 EXAMPLES = {p.parent.name: p for p in sorted((REPO_ROOT / "examples").glob("*/outcome.json"))}
 TIMELINE_KINDS = {"run.created", "repository.created", "stage.entered", "session.started", "gate.opened", "gate.decided", "question.asked", "question.answered",
                   "judge.verdict", "review.findings", "review.response", "merge.verdict", "cr.opened", "cr.merged", "cr.closed",
-                  "deploy.started", "deploy.succeeded", "deploy.failed", "e2e.dev_passed", "e2e.dev_failed", "budget.reached",
+                  "deploy.started", "deploy.succeeded", "deploy.failed", "e2e.dev_passed", "e2e.dev_failed", "budget.reached", "session.truncated",
                   "run.escalated", "run.failed", "run.resumed", "run.completed", "session.finished", "work_item.stage"}
 
 
@@ -243,7 +243,9 @@ class Console:
                     s = load(name)
                     if s:
                         specs[s["spec_id"]] = s
-                        md = self._latest(run_id, "specify", f"{s['work_item_id']}-", "-spec.md")
+                        # the runner stores the gate's own spec.md as final-<spec_id>.md; older runs only have the rounds
+                        final = self.cfg.runs_dir / run_id / "artifacts" / "specify" / f"final-{s['spec_id']}.md"
+                        md = final if final.is_file() else self._latest(run_id, "specify", f"{s['work_item_id']}-r", "-spec.md")
                         spec_md[s["spec_id"]] = md.read_text(errors="replace") if md else ""
             titles = {}
             for ev in events:
@@ -259,9 +261,14 @@ class Console:
         return {"kind": "other", "outcome": outcome}
 
     def _latest(self, run_id: str, stage: str, prefix: str, suffix: str) -> Path | None:
+        """The highest-numbered `<prefix><n>...<suffix>` artefact (numeric: round 10 after round 9)."""
         d = self.cfg.runs_dir / run_id / "artifacts" / stage
-        cands = sorted(p for p in d.glob(f"{prefix}*{suffix}") if not p.name.endswith(".sha256")) if d.exists() else []
-        return cands[-1] if cands else None
+        cands = [p for p in d.glob(f"{prefix}*{suffix}") if not p.name.endswith(".sha256")] if d.exists() else []
+
+        def round_of(p: Path) -> int:
+            digits = p.name[len(prefix):-len(suffix)].split("-")[0]
+            return int(digits) if digits.isdigit() else -1
+        return max(cands, key=lambda p: (round_of(p), p.name)) if cands else None
 
     def gate_page(self, gate_id: str) -> str:
         g = self.gate(gate_id)
