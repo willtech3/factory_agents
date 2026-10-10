@@ -793,7 +793,8 @@
     if (appNotice) frag.append(appNotice);
 
     // 1. what
-    let outcomeId = params.get("outcome") || (outs.outcomes[0] || {}).outcome_id || null;
+    const appOutcomes = app ? outs.outcomes.filter(o => (o.target_repositories || []).some(r => normRepo(r.url) === normRepo(app.repository_url))) : outs.outcomes;
+    let outcomeId = appOutcomes.find(o => o.outcome_id === params.get("outcome"))?.outcome_id || (appOutcomes[0] || {}).outcome_id || null;
     let outcome = null;
     const choices = el("div", { class: "choices" });
     const choiceNodes = [];
@@ -802,14 +803,14 @@
       try { outcome = (await api(`/api/outcomes/${id}`)).outcome; } catch (e) { outcome = null; }
       syncRepo(); syncWho(); syncSummary();
     };
-    for (const o of outs.outcomes) {
+    for (const o of appOutcomes) {
       const radio = el("input", { type: "radio", name: "outcome", checked: o.outcome_id === outcomeId, onchange: () => pickOutcome(o.outcome_id) });
       const n = el("label", { class: `choice ${o.outcome_id === outcomeId ? "on" : ""}`, dataset: { id: o.outcome_id } }, radio,
         el("span", { class: "txt" }, el("b", null, o.title || o.outcome_id), el("span", null, `${o.runs.length ? plural(o.runs.length, "run") + " so far." : "No runs yet."}${o.owner ? " Owner " + o.owner + "." : ""}`)));
       choiceNodes.push(n); choices.append(n);
     }
-    const exampleLinks = el("div", { class: "actions", style: "margin-top:10px" }, examples.examples.map(e => el("a", { class: "btn sm", href: `#/outcomes/new?example=${encodeURIComponent(e.name)}`, title: e.title }, `Load the ${e.name} example`)), el("a", { class: "btn sm", href: "#/outcomes/new" }, "Write a new outcome"));
-    const whatCard = card("1. What should be built", el("div", null, outs.outcomes.length ? choices : el("p", { class: "explain" }, "No saved outcomes yet. Load an example or write one."), exampleLinks));
+    const exampleLinks = el("div", { class: "actions", style: "margin-top:10px" }, app ? null : examples.examples.map(e => el("a", { class: "btn sm", href: `#/outcomes/new?example=${encodeURIComponent(e.name)}`, title: e.title }, `Load the ${e.name} example`)), el("a", { class: "btn sm", href: `#/outcomes/new${app ? '?app=' + encodeURIComponent(app.app_id) : ''}` }, "Write a new outcome"));
+    const whatCard = card("1. What should be built", el("div", null, appOutcomes.length ? choices : el("p", { class: "explain" }, app ? "No saved outcomes for this app yet. Describe the change you want." : "No saved outcomes yet. Load an example or write one."), exampleLinks));
 
     // 2. where: browse the repositories visible to the configured GitHub account.
     let repositories = [], nextRepoPage = 1, selectedRepo = null;
@@ -868,7 +869,10 @@
       repoDetails.textContent = repo.url ? `Selected: ${repo.url} · ${selectedRepo ? selectedRepo.default_branch : repo.default_branch || "main"}` : "";
       renderRepos(); syncRepoChoice();
     };
-    const whereCard = card("2. Where it is built", el("div", { class: "stack" }, existingChoice, newChoice,
+    const whereCard = app ? card("2. Where it is built", el("div", {class:"stack"},
+      el("a", {href:app.repository_url, target:"_blank", rel:"noopener"}, repoName(app.repository_url)),
+      el("p", {class:"explain"}, `Base branch: ${app.default_branch || 'main'}. Uses this app's verified hosted setup.`)))
+      : card("2. Where it is built", el("div", { class: "stack" }, existingChoice, newChoice,
       el("p", { class: "explain", style: "margin:0;font-size:13px" }, "Only repositories this GitHub connection can access are shown. Archived and read-only repositories cannot be selected. The run works on a separate branch and opens a pull request.")));
 
     // 3. guardrails
@@ -953,9 +957,9 @@
     frag.append(el("div", { class: "start" }, el("main", null, whatCard, whereCard, guardsCard), aside));
     $main.replaceChildren(frag);
     stopPoll();
-    if (outcomeId) await pickOutcome(outcomeId); else { syncWho(); syncSummary(); }
+    if (outcomeId) await pickOutcome(outcomeId); else { syncRepo(); syncWho(); syncSummary(); }
     syncWho();
-    if (cfg.forge === "github") await loadRepos();
+    if (cfg.forge === "github" && !app) await loadRepos();
     else { browser.replaceChildren(el("label", null, "Repository URL", repoUrl)); }
     if (app) {
       const match = repositories.find(r => normRepo(r.url) === normRepo(app.repository_url));
@@ -1294,6 +1298,12 @@
     if (which) o = JSON.parse(JSON.stringify(example));
     if (params.get("outcome")) { try { o = (await api(`/api/outcomes/${params.get("outcome")}`)).outcome; } catch (e) { /* fall through */ } }
     let savedId = params.get("outcome") && o.outcome_id ? o.outcome_id : null;
+    const app = params.get("app") ? await api(appPath(params.get("app"))) : null;
+    const appQuery = app ? `&app=${encodeURIComponent(app.app_id)}` : "";
+    if (app && !savedId) {
+      o.target_repositories = [{url:app.repository_url, default_branch:app.default_branch || "main", paths_in_scope:[]}];
+      o.constraints = {...(o.constraints || {}), budget_usd:60};
+    }
 
     const frag = document.createDocumentFragment();
     frag.append(pageHead(savedId ? o.title : "New outcome", "Describe the result you want in your own words. The factory decomposes it into work items; you approve the plan before anything is specified or built.", null,
@@ -1367,11 +1377,11 @@
       const r = await api("/api/outcomes", { body: { outcome: collect() } });
       if (!r.ok) { notice.replaceChildren(el("div", { class: "notice bad" }, el("b", null, "Not saved yet. "), ...r.errors.map(e => el("div", null, e)))); return null; }
       savedId = r.outcome_id;
-      notice.replaceChildren(el("div", { class: "notice ok" }, el("b", null, "Saved. "), el("a", { href: `#/start?outcome=${savedId}` }, "Start a run from it.")));
+      notice.replaceChildren(el("div", { class: "notice ok" }, el("b", null, "Saved. "), el("a", { href: `#/start?outcome=${savedId}${appQuery}` }, "Start a run from it.")));
       return r;
     }
     const saveBtn = el("button", { class: "btn primary", type: "button", onclick: save }, "Save");
-    const startLink = el("button", { class: "btn call", type: "button", onclick: async () => { const r = await save(); if (r) location.hash = `#/start?outcome=${savedId}`; } }, "Save and start a run");
+    const startLink = el("button", { class: "btn call", type: "button", onclick: async () => { const r = await save(); if (r) location.hash = `#/start?outcome=${savedId}${appQuery}`; } }, "Save and start a run");
     form.append(card("Save", el("div", null, notice, el("div", { class: "startbar" }, saveBtn, el("span", { class: "spacer" }), startLink))));
     frag.append(form);
     $main.replaceChildren(frag);

@@ -481,6 +481,7 @@ class Console:
                 continue
             out.append({"outcome_id": o.get("outcome_id"), "title": o.get("title"), "created_at": o.get("created_at"),
                         "owner": (o.get("owner") or {}).get("handle"), "runs": runs_by_outcome.get(o.get("outcome_id"), []),
+                        "target_repositories": o.get("target_repositories", []),
                         "path": str(p)})
         out.sort(key=lambda o: o.get("created_at") or "", reverse=True)
         return out
