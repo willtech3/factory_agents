@@ -251,6 +251,14 @@ def ac_test_mapping(spec: dict[str, Any], implementation_report: dict[str, Any],
                        if not problems else "; ".join(problems), {"problems": problems})
 
 
+def secret_scan(added_lines_by_file: dict[str, list[str]]) -> CheckResult:
+    """No high-confidence credential in the added lines. A hit is blocking whatever a reviewer thinks."""
+    from .security import secret_scan as scan
+    hits = scan(added_lines_by_file)["hits"]
+    detail = "no credential shapes in the added lines" if not hits else "; ".join(f"{h['file']} (+{h['added_line_index']}): {h['kind']}" for h in hits)
+    return CheckResult("secret_scan", not hits, detail, {"hits": hits})
+
+
 def commands_passed(results: list[dict[str, Any]]) -> CheckResult:
     failed = [r["command"] for r in results if r.get("exit_code", 1) != 0]
     return CheckResult("test_plan_commands", not failed,
@@ -326,6 +334,7 @@ def run_all_for_merge(
         ac_test_mapping(spec, implementation_report, passing_tests),
         commands_passed(command_results),
         e2e_coverage(spec),
+        secret_scan(added_lines_by_file),
     ]
     if manifest_path is not None and schema_dir is not None:
         out.append(manifest_valid(manifest_path, schema_dir))
