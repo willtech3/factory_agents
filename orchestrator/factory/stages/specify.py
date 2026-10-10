@@ -85,8 +85,12 @@ def _judge(ctx: RunContext, outcome, decomposition, specs: dict[str, dict], roun
         "rubric.md": rubric_text(ctx, "spec", repo_available).encode(),
     }
     for sid, s in specs.items():
-        # Normalise: the judge sees only the JSON contract, not the writer's prose rendering.
+        # The JSON is the contract and is normalised so formatting cannot bias the judge; the writer's spec.md is
+        # uploaded beside it because the rubric scores its readability (S10) and the judge's prompt names it.
         uploads[f"specs/{sid}.json"] = json.dumps(s, indent=2, sort_keys=True).encode()
+        md = s.get("_markdown") or _latest_spec_md(ctx, s["work_item_id"])
+        if md:
+            uploads[f"specs/{sid}.md"] = md.encode() if isinstance(md, str) else md
     if previous_verdict:
         uploads["previous_verdict.json"] = json.dumps(previous_verdict, indent=2).encode()
     res = ctx.driver.run(
@@ -165,6 +169,13 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
 
     assert verdict is not None
     return specs, verdict
+
+
+def _latest_spec_md(ctx: RunContext, work_item_id: str) -> str:
+    """The writer's most recent spec.md for a work item, from the artifact store ('' when none)."""
+    d = ctx.cfg.runs_dir / ctx.run_id / "artifacts" / "specify"
+    cands = sorted(p for p in d.glob(f"{work_item_id}-r*-spec.md") if not p.name.endswith(".sha256")) if d.exists() else []
+    return cands[-1].read_text(errors="replace") if cands else ""
 
 
 def _topological_waves(items: dict[str, dict]) -> list[list[str]]:

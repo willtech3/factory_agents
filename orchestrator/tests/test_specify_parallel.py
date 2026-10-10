@@ -37,6 +37,7 @@ class Driver:
             return SimpleNamespace(session_id="s", agent_id="w", agent_version=1, outcome_result="satisfied", outcome_iterations=1,
                                    list_cost_usd=0.1, stop_reason="end_turn", events_seen=1, custom_tool_calls=[],
                                    outputs={"spec.json": json.dumps(spec).encode(), "spec.md": b"# s"})
+        self.judge_uploads = sorted(kw["uploads"])
         verdict = dict(self.examples["verdict_round2"])
         return SimpleNamespace(session_id="j", agent_id="j", agent_version=1, outcome_result=None, outcome_iterations=0,
                                list_cost_usd=0.1, stop_reason="end_turn", events_seen=1, custom_tool_calls=[],
@@ -58,6 +59,8 @@ def test_all_specs_are_written_at_once_by_default(tmp_path, root, examples):
     specs, verdict = specify.run_specify(ctx, examples["outcome"], examples["decomposition"])
     assert len(specs) == 4 and ctx.driver.peak == 4            # the chain of dependencies did not serialise the writers
     assert verdict["overall"]["result"] == "pass"
+    # the judge gets both the normalised JSON and the writer's spec.md for every spec (rubric S10 reads the prose)
+    assert "specs/spec_smart-retries.json" in ctx.driver.judge_uploads and "specs/spec_smart-retries.md" in ctx.driver.judge_uploads
 
 
 def test_waves_policy_serialises_dependent_items(tmp_path, root, examples):
