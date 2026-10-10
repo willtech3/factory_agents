@@ -120,3 +120,12 @@ def test_old_visual_evidence_becomes_stale_when_new_head_verification_starts(tmp
     assert app.state.console.run_detail(run_id)['visual_evidence'][0]['current']
     store.append(run_id, 'verification.started', {'type': 'orchestrator'}, {'head_sha': 'new'}, spec_id='spec_test')
     assert not app.state.console.run_detail(run_id)['visual_evidence'][0]['current']
+
+
+def test_omitted_visual_results_cannot_pass():
+    spec = {'test_plan': {'e2e': [entry()]}}
+    assert not checks.visual_passed(spec, []).passed
+    row = {**entry(), 'exit_code': 0}
+    assert not checks.visual_passed(spec, [row]).passed
+    row['visual'] = {'status': 'passed'}
+    assert checks.visual_passed(spec, [row]).passed

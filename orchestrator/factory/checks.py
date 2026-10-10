@@ -350,6 +350,19 @@ def e2e_passed(results: list[dict[str, Any]], target: str = "preview") -> CheckR
     return CheckResult(f"e2e_{target}", not failed and not skipped, detail, {"failed": failed, "skipped": skipped})
 
 
+def visual_passed(spec: dict[str, Any], results: list[dict[str, Any]]) -> CheckResult:
+    missing = []
+    for entry in spec.get("test_plan", {}).get("e2e", []):
+        if not entry.get("visual"):
+            continue
+        matching = [r for r in results if r.get("command") == entry["command"] and r.get("target") == entry["target"]
+                    and set(r.get("covers_ac", [])) == set(entry.get("covers_ac", []))]
+        if not matching or not all(r.get("exit_code") == 0 and r.get("visual", {}).get("status") == "passed" for r in matching):
+            missing.append(entry.get("description") or entry["command"])
+    return CheckResult("visual_e2e", not missing, "All required browser checks have current visual evidence" if not missing
+                       else "Browser verification missing or blocked: " + "; ".join(missing))
+
+
 def run_all_for_merge(
     *, spec: dict[str, Any], changed_files: list[str], deleted_files: list[str],
     existing_test_files: list[str], added_lines_by_file: dict[str, list[str]],
@@ -372,6 +385,7 @@ def run_all_for_merge(
         ac_test_mapping(spec, implementation_report, passing_tests, tests_that_exist),
         commands_passed(command_results),
         e2e_coverage(spec),
+        visual_passed(spec, e2e_results or []),
         secret_scan(added_lines_by_file),
     ]
     if manifest_path is not None and schema_dir is not None:
