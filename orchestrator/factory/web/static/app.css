@@ -445,3 +445,5 @@ pre.log { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; 
 .repo-choice > .stack > label { display: grid; gap: 6px; font-size: 13px; color: var(--text-2); }
 .repo-choice input:not([type=radio]), .repo-choice select { width: 100%; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; box-sizing: border-box; }
 .repo-choice input[hidden] { display: none; }
+
+@media (max-width: 600px) { .visual-evidence-card .card-head { flex-direction: column; align-items: flex-start; gap: 6px; } }

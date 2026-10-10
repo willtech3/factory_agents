@@ -550,7 +550,7 @@
       for (const m of media) details.append(el("p", null, el("a", { href: url(m.artifact), target: "_blank", rel: "noopener" }, m.caption || m.name)));
       box.append(details); body.append(box);
     }
-    return card("See the change", body, "Browser evidence is separate from code tests. Earlier recordings do not verify a new commit.");
+    return card("See the change", body, "Browser evidence is separate from code tests. Earlier recordings do not verify a new commit.", "visual-evidence-card");
   }
   function tunePair(k, v) { return el("div", null, el("dt", null, k), el("dd", null, String(v))); }
   function crewAsleepText(role, r) {
