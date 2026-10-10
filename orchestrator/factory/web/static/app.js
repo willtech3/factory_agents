@@ -744,7 +744,7 @@
     const pickOutcome = async (id) => {
       outcomeId = id; choiceNodes.forEach(n => n.classList.toggle("on", n.dataset.id === id));
       try { outcome = (await api(`/api/outcomes/${id}`)).outcome; } catch (e) { outcome = null; }
-      syncRepo(); syncSummary();
+      syncRepo(); syncWho(); syncSummary();
     };
     for (const o of outs.outcomes) {
       const radio = el("input", { type: "radio", name: "outcome", checked: o.outcome_id === outcomeId, onchange: () => pickOutcome(o.outcome_id) });
@@ -755,21 +755,65 @@
     const exampleLinks = el("div", { class: "actions", style: "margin-top:10px" }, examples.examples.map(e => el("a", { class: "btn sm", href: `#/outcomes/new?example=${encodeURIComponent(e.name)}`, title: e.title }, `Load the ${e.name} example`)), el("a", { class: "btn sm", href: "#/outcomes/new" }, "Write a new outcome"));
     const whatCard = card("1. What should be built", el("div", null, outs.outcomes.length ? choices : el("p", { class: "explain" }, "No saved outcomes yet. Load an example or write one."), exampleLinks));
 
-    // 2. where
-    const repoUrl = el("input", { type: "text", placeholder: "https://github.com/you/app" });
+    // 2. where: browse the repositories visible to the configured GitHub account.
+    let repositories = [], nextRepoPage = 1, selectedRepo = null;
+    const repoUrl = el("input", { type: "url", placeholder: "https://github.com/you/app", "aria-label": "Repository URL" });
     const repoNew = el("input", { type: "radio", name: "repo" }), repoExisting = el("input", { type: "radio", name: "repo", checked: true });
-    const newName = el("input", { type: "text", placeholder: "https://github.com/you/factory-new-app", style: "max-width:380px" });
-    const existingChoice = el("label", { class: "choice on" }, repoExisting, el("span", { class: "txt" }, el("b", null, "An existing repository"), repoUrl));
-    const newChoice = el("label", { class: "choice" }, repoNew, el("span", { class: "txt" }, el("b", null, "A new private repository the factory creates and seeds"), newName));
-    const syncRepoChoice = () => { existingChoice.classList.toggle("on", repoExisting.checked); newChoice.classList.toggle("on", repoNew.checked); syncSummary(); };
+    const newName = el("input", { type: "url", placeholder: "https://github.com/you/factory-new-app", "aria-label": "New repository URL" });
+    const searchRepos = el("input", { type: "search", placeholder: "Filter by owner or repository name", "aria-label": "Filter repositories" });
+    const repoSelect = el("select", { "aria-label": "GitHub repository" }, el("option", { value: "" }, "Choose a repository"));
+    const repoStatus = el("p", { class: "explain", role: "status", "aria-live": "polite", style: "margin:0" });
+    const repoDetails = el("p", { class: "explain", style: "margin:0" });
+    const renderRepos = () => {
+      const query = searchRepos.value.trim().toLowerCase();
+      const rows = repositories.filter(r => r.full_name.toLowerCase().includes(query) || r.url === repoUrl.value);
+      repoSelect.replaceChildren(el("option", { value: "" }, "Choose a repository"), ...rows.map(r => el("option", {
+        value: r.url, disabled: !r.selectable, selected: r.url === repoUrl.value,
+      }, `${r.full_name} · ${r.private ? "private" : "public"}${r.unavailable_reason ? " · " + r.unavailable_reason : ""}`)));
+      repoStatus.textContent = `${rows.length} shown of ${repositories.length} loaded.${nextRepoPage ? " Load more to include older repositories." : ""}`;
+      if (!rows.length) repoStatus.textContent = repositories.length ? "No matching repositories in the loaded results." : "No repositories are visible to this GitHub connection.";
+    };
+    searchRepos.oninput = renderRepos;
+    const loadRepos = async () => {
+      loadMore.disabled = true; repoStatus.textContent = "Loading GitHub repositories…";
+      try {
+        const result = await api(`/api/repositories?page=${nextRepoPage || 1}`);
+        const byUrl = new Map(repositories.map(r => [r.url, r]));
+        result.repositories.forEach(r => byUrl.set(r.url, r));
+        repositories = [...byUrl.values()]; nextRepoPage = result.next_page;
+        loadMore.hidden = !nextRepoPage; loadMore.textContent = "Load more repositories";
+        renderRepos();
+      } catch (e) { repoStatus.textContent = e.message; loadMore.hidden = false; loadMore.textContent = "Retry loading repositories"; }
+      finally { loadMore.disabled = false; }
+    };
+    const loadMore = el("button", { class: "btn sm", type: "button", onclick: loadRepos }, "Load repositories");
+    repoSelect.onchange = () => {
+      selectedRepo = repositories.find(r => r.url === repoSelect.value) || null;
+      repoUrl.value = selectedRepo ? selectedRepo.url : "";
+      repoDetails.textContent = selectedRepo ? `Default branch: ${selectedRepo.default_branch}. ${selectedRepo.private ? "Private" : "Public"} repository.` : "";
+      syncSummary();
+    };
+    repoUrl.oninput = () => { selectedRepo = null; repoSelect.value = ""; repoDetails.textContent = ""; };
+    const manual = el("details", null, el("summary", null, "Enter a repository URL instead"), repoUrl);
+    const browser = el("div", { class: "stack" }, el("label", null, "Find a repository", searchRepos),
+      el("label", null, "GitHub repository", repoSelect), repoDetails, repoStatus, loadMore, manual);
+    const existingChoice = el("div", { class: "choice on repo-choice" }, el("label", null, repoExisting, " An existing repository"), browser);
+    const newChoice = el("div", { class: "choice repo-choice" }, el("label", null, repoNew, " A new private repository the factory creates and seeds"), newName);
+    const syncRepoChoice = () => {
+      existingChoice.classList.toggle("on", repoExisting.checked); newChoice.classList.toggle("on", repoNew.checked);
+      browser.hidden = !repoExisting.checked; newName.hidden = !repoNew.checked; syncSummary();
+    };
     repoExisting.onchange = repoNew.onchange = syncRepoChoice;
     const syncRepo = () => {
       const repo = ((outcome || {}).target_repositories || [{}])[0] || {};
-      if (repo.create) { repoNew.checked = true; newName.value = repo.url || ""; } else { repoExisting.checked = true; repoUrl.value = repo.url || ""; }
-      syncRepoChoice();
+      if (repo.create) { repoNew.checked = true; newName.value = repo.url || ""; }
+      else { repoExisting.checked = true; repoUrl.value = repo.url || ""; }
+      selectedRepo = repositories.find(r => r.url === repoUrl.value) || null;
+      repoDetails.textContent = repo.url ? `Selected: ${repo.url} · ${selectedRepo ? selectedRepo.default_branch : repo.default_branch || "main"}` : "";
+      renderRepos(); syncRepoChoice();
     };
-    const whereCard = card("2. Where it is built", el("div", { class: "stack" }, el("div", { style: "display:flex;flex-direction:column;gap:10px" }, existingChoice, newChoice),
-      el("p", { class: "explain", style: "margin:0;font-size:13px" }, "Branches are named factory/<run>/<spec>; one pull request per work item into the default branch. Changing the repository here updates the outcome before the run starts.")));
+    const whereCard = card("2. Where it is built", el("div", { class: "stack" }, existingChoice, newChoice,
+      el("p", { class: "explain", style: "margin:0;font-size:13px" }, "Only repositories this GitHub connection can access are shown. Archived and read-only repositories cannot be selected. The run works on a separate branch and opens a pull request.")));
 
     // 3. guardrails
     const budget = el("input", { type: "number", min: "5", step: "5", value: 60 });
@@ -819,9 +863,10 @@
       if (!outcome) return;
       const repo = (outcome.target_repositories || [{}])[0] || {};
       const url = repoNew.checked ? newName.value.trim() : repoUrl.value.trim();
-      const changed = url !== (repo.url || "") || !!repo.create !== repoNew.checked;
+      const branch = selectedRepo && !repoNew.checked ? selectedRepo.default_branch : repo.default_branch || "main";
+      const changed = url !== (repo.url || "") || !!repo.create !== repoNew.checked || branch !== repo.default_branch;
       if (!changed) return;
-      const next = { ...outcome, target_repositories: [{ ...repo, url, create: repoNew.checked || undefined, visibility: repoNew.checked ? (repo.visibility || "private") : undefined, paths_in_scope: repo.paths_in_scope || [] }] };
+      const next = { ...outcome, target_repositories: [{ ...repo, url, default_branch: branch, create: repoNew.checked || undefined, visibility: repoNew.checked ? (repo.visibility || "private") : undefined, paths_in_scope: repo.paths_in_scope || [] }] };
       const r = await api("/api/outcomes", { body: { outcome: next } });
       if (!r.ok) throw new Error((r.errors || ["The outcome did not save"]).join("; "));
       outcome = next;
@@ -852,6 +897,8 @@
     stopPoll();
     if (outcomeId) await pickOutcome(outcomeId); else { syncWho(); syncSummary(); }
     syncWho();
+    if (cfg.forge === "github") await loadRepos();
+    else { browser.replaceChildren(el("label", null, "Repository URL", repoUrl)); }
   }
 
   // ------------------------------------------------------------------ gate review

@@ -429,3 +429,7 @@ pre.log { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; 
 @keyframes pop { from { transform: translateY(2px); opacity: 0; } to { transform: none; opacity: 1; } }
 .decide .recorded { animation: pop 160ms ease-out; }
 @media (prefers-reduced-motion: reduce) { .decide .recorded { animation: none; } }
+
+.repo-choice { display: grid; cursor: default; min-width: 0; }
+.repo-choice > label { font-weight: 700; cursor: pointer; }
+.repo-choice select, .repo-choice input { max-width: 100%; }

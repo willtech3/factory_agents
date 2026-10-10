@@ -53,10 +53,10 @@ def _bind_forge(cfg, outcome: dict, want_forge: bool):
     forge_obj = make_forge(cfg)
     created = None
     if forge_obj is not None and url:
-        # Creates the repository when the outcome asks for it; seeds the platform-contract skill into any repository
-        # whose default branch lacks it, created or not.
+        # Only repositories explicitly marked for creation are seeded. Existing repositories may require
+        # every change through a PR; every session already receives the platform skill as an upload.
         created = ensure_repository(forge_obj, repo, cfg.templates_dir / "github-actions-preview.yml",
-                                    skill_file=cfg.skills_dir / "platform-contract" / "SKILL.md")
+                                    skill_file=(cfg.skills_dir / "platform-contract" / "SKILL.md") if repo.get("create") else None)
         if created:
             typer.echo(f"created repository {created['url']} (default branch {created.get('default_branch')})")
     return cfg, forge_obj, created
