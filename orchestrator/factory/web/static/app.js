@@ -354,6 +354,7 @@
       case "run.escalated": return [who, { main: "Escalated", detail: p.reason }];
       case "run.completed": return [who, { main: p.design_only ? "Design stages completed" : "Run completed", detail: (p.specs_with_change_requests || p.approved_specs || []).join(", ") }];
       case "run.failed": return [who, { main: "Run failed", detail: p.reason }];
+      case "run.resumed": return [who, { main: "Run resumed", detail: Object.entries(p.points || {}).map(([s, x]) => `${s}: round ${x.round}${x.implementer_done ? " (implementer done)" : ""}`).join("; ") }];
       case "budget.reached": return [who, { main: "Budget reached" }];
       default: return [who, { main: ev.kind }];
     }

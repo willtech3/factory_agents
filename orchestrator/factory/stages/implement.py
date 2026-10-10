@@ -18,6 +18,8 @@ vault/bearer-header clone instructions of ADR-0003. Both come from `Forge.sandbo
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import json
 import os
 import socket
@@ -32,7 +34,7 @@ from typing import Any
 from .. import checks
 from ..state import WorkItemStage
 from . import RunContext
-from .common import persist_outputs, provenance, require_json
+from .common import persist_outputs, provenance, require_json, artifact_json_or_none
 
 NO_FORGE_GIT_SETUP = """Git access: no forge is configured for this run. The repository at {repo_url} is not reachable
 from the sandbox; work on branch {branch} from {base_branch} only if it was mounted for you, otherwise record the
@@ -224,6 +226,20 @@ def _branch_for(run_id: str, spec_id: str) -> str:
     return f"factory/{run_id}/{spec_id}"
 
 
+@dataclass
+class ResumePoint:
+    """Where `run_implement_one` picks a spec up again after the orchestrator died mid-loop (`factory resume`).
+
+    `round_no` is the implementer round to continue at. `report` (and `response`, from round 2 on) are that round's
+    outputs when its session finished and they were persisted: the implementer is then not run again and the loop
+    goes straight to the orchestrator's verification. `findings` is the merged review of the previous round, which
+    that round answers. Reviewer passes and the merge verdict already persisted for the round are reused too."""
+    round_no: int = 1
+    findings: dict[str, Any] | None = None
+    report: dict[str, Any] | None = None
+    response: dict[str, Any] | None = None
+
+
 def wait_for_preview(ctx: RunContext, branch: str, head_sha: str, *, poll_seconds: float = 20.0,
                      sleep=None, clock=None) -> dict[str, Any]:
     """Give the platform's pipeline time to deploy `head_sha` before running e2e against the preview.
@@ -277,8 +293,12 @@ def preview_info(ctx: RunContext, branch: str, head_sha: str | None = None) -> d
 
 
 def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base_branch: str,
-                      verifier: LocalVerifier, dependency_specs: dict[str, dict]) -> dict[str, Any]:
-    """Drive one spec through implement/review/judge. Returns the final merge_readiness verdict."""
+                      verifier: LocalVerifier, dependency_specs: dict[str, dict], *,
+                      resume_from: ResumePoint | None = None) -> dict[str, Any]:
+    """Drive one spec through implement/review/judge. Returns the final merge_readiness verdict.
+
+    `resume_from` continues the loop after a dead orchestrator (see `ResumePoint`); the work item then already
+    sits in implementing or responding, so no stage event is emitted for the restart."""
     sid, wid = spec["spec_id"], spec["work_item_id"]
     branch = _branch_for(ctx.run_id, sid)
     git = (ctx.forge.sandbox_git_instructions(repo_url, base_branch, branch) if ctx.forge is not None
@@ -286,14 +306,16 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
 
     def mount(checkout: str) -> dict[str, Any] | None:
         return ctx.forge.session_repository_resource(repo_url, checkout) if ctx.forge is not None else None
-    ctx.event("work_item.stage", {"stage": WorkItemStage.IMPLEMENTING.value, "branch": branch}, work_item_id=wid, spec_id=sid)
+    if resume_from is None:
+        ctx.event("work_item.stage", {"stage": WorkItemStage.IMPLEMENTING.value, "branch": branch}, work_item_id=wid, spec_id=sid)
 
-    findings: dict[str, Any] | None = None
+    findings: dict[str, Any] | None = resume_from.findings if resume_from else None
     response: dict[str, Any] | None = None
     verdict: dict[str, Any] | None = None
     base_sha = _git(verifier.checkout(base_branch), "rev-parse", "HEAD").strip()
 
-    for round_no in range(1, ctx.policy.review_max_rounds + 2):
+    for round_no in range(resume_from.round_no if resume_from else 1, ctx.policy.review_max_rounds + 2):
+        resumed_round = resume_from is not None and round_no == resume_from.round_no
         # ---- implementer (round 1 implements; later rounds respond to findings)
         uploads = {"spec.json": json.dumps(spec, indent=2).encode(), "spec.md": spec.get("_markdown", "").encode()}
         for dsid, ds in dependency_specs.items():
@@ -307,26 +329,33 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             review_clause = ("Reviewer findings are at /mnt/session/uploads/findings.json. Respond to every finding "
                              "(fixed / refuted with evidence / accepted_risk) and push the updated branch.")
             response_clause = " and review_response.json"
-        res = ctx.driver.run(
-            agent_key="implementer", title=f"{ctx.run_id} implement {sid} r{round_no}", run_id=ctx.run_id,
-            stage="implement", uploads=uploads, work_item_id=wid,
-            description=IMPLEMENT_DESCRIPTION.format(spec_id=sid, git=git, review_clause=review_clause,
-                                                     response_clause=response_clause, preview_clause=preview_clause),
-            rubric_md=ctx.rubric("implementation"), max_iterations=ctx.policy.outcome_max_iterations,
-            budget_usd=ctx.policy.stage_budget_usd["implement"],
-            repository=mount(base_branch if round_no == 1 else branch),
-        )
-        if "blocked.md" in res.outputs:
+        if resumed_round and resume_from.report is not None:
+            # This round's implementer finished before the orchestrator died; its outputs are in the store.
+            report, response = resume_from.report, resume_from.response
+            if findings and response is None:
+                raise RuntimeError(f"cannot resume {sid} at round {round_no}: no review_response for round {round_no - 1}'s findings")
+        else:
+            res = ctx.driver.run(
+                agent_key="implementer", title=f"{ctx.run_id} implement {sid} r{round_no}", run_id=ctx.run_id,
+                stage="implement", uploads=uploads, work_item_id=wid,
+                description=IMPLEMENT_DESCRIPTION.format(spec_id=sid, git=git, review_clause=review_clause,
+                                                         response_clause=response_clause, preview_clause=preview_clause),
+                rubric_md=ctx.rubric("implementation"), max_iterations=ctx.policy.outcome_max_iterations,
+                budget_usd=ctx.policy.stage_budget_usd["implement"],
+                repository=mount(base_branch if round_no == 1 else branch),
+            )
+            if "blocked.md" in res.outputs:
+                persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-")
+                ctx.event("work_item.stage", {"stage": WorkItemStage.BLOCKED.value}, work_item_id=wid, spec_id=sid)
+                return {"result": "escalate", "reason": res.outputs["blocked.md"].decode(errors="replace")}
+            report = require_json(res, "implementation_report.json")
+            if findings:
+                response = require_json(res, "review_response.json")
             persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-")
-            ctx.event("work_item.stage", {"stage": WorkItemStage.BLOCKED.value}, work_item_id=wid, spec_id=sid)
-            return {"result": "escalate", "reason": res.outputs["blocked.md"].decode(errors="replace")}
-        report = require_json(res, "implementation_report.json")
-        if findings:
-            response = require_json(res, "review_response.json")
+        if findings and response is not None:
             response["round"] = round_no - 1
             ctx.event("review.response", {"round": round_no - 1, "dispositions": [r["disposition"] for r in response["responses"]]},
                       work_item_id=wid, spec_id=sid, actor="agent")
-        persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-")
 
         # ---- authoritative verification (orchestrator side)
         repo = verifier.checkout(branch)
@@ -373,6 +402,10 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                       "(upheld/withdrawn), then review the new hunks.")
 
         def one_pass(i: int) -> dict[str, Any]:
+            if resumed_round:
+                prior = artifact_json_or_none(ctx, "review", f"{sid}-r{round_no}-p{i}-findings.json")
+                if prior is not None:
+                    return prior      # this pass finished before the orchestrator died
             r = ctx.driver.run(
                 agent_key="reviewer", title=f"{ctx.run_id} review {sid} r{round_no} p{i}", run_id=ctx.run_id,
                 stage="review", uploads=rev_uploads, work_item_id=wid,
@@ -410,6 +443,10 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         "test_results.json": json.dumps({"commands": cmd_results, "e2e": e2e_results, "preview": preview}, indent=2).encode(),
         "deterministic_checks.json": json.dumps([d.to_dict() for d in det], indent=2).encode(),
     }
+    prior_verdict = artifact_json_or_none(ctx, "merge_judge", f"{sid}-merge_readiness.json") if resume_from else None
+    if prior_verdict is not None and prior_verdict.get("_head_sha") == head_sha:
+        ctx.event("merge.verdict", {"result": prior_verdict["result"], "reused": True}, work_item_id=wid, spec_id=sid, actor="agent")
+        return prior_verdict      # judged this very head before the orchestrator died
     res = ctx.driver.run(
         agent_key="merge_judge", title=f"{ctx.run_id} merge-judge {sid}", run_id=ctx.run_id, stage="merge_judge",
         uploads=mj_uploads, work_item_id=wid,

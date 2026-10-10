@@ -40,7 +40,7 @@
         "e2e.dev_failed",
         "budget.reached",
         "run.escalated",
-        "run.failed",
+        "run.failed", "run.resumed",
         "run.completed"
       ]
     },

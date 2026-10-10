@@ -7,6 +7,7 @@
     factory answer <question_id> "text"
     factory status <run_id>             # derived state + timeline
     factory replay <run_id>             # re-derive state from the event log (sanity check)
+    factory resume <run_id>             # continue a run that died during implementation
     factory web [--port 8765] [--demo]  # the Factory Console: outcomes, runs board, inbox, gate review
 
 Local mode uses a file-backed queue under the runs directory so two processes can talk. With
@@ -103,26 +104,14 @@ def doctor():
     typer.echo("ok")
 
 
-@app.command()
-def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the forge (change requests, pipelines)"),
-        design_only: bool = typer.Option(False, "--design-only", help="Real agents through Gate 2 (decompose, specs, judge); "
-                                                                      "no implementation, no forge needed")):
-    """Start a run from an outcome.json. Blocks at human gates; decide from another terminal, the Console, or the tracker."""
-    from .forge import make_forge
-    from .runner import new_run_id, run as run_pipeline
+def _context(cfg, outcome: dict, run_id: str, *, forge: bool, design_only: bool):
+    """The RunContext `run` and `resume` share: forge bound to the outcome's repository, the gate surfaces composed,
+    and session starts recorded as events so the Console can link to them."""
     from .sessions import SessionDriver
     from .stages import RunContext
-    from .state import Policy
     from .surfaces.artifact_pages import make_publisher
     from .surfaces.tracker import make_tracker_queue
 
-    cfg = cfgmod.load()
-    gaps = cfgmod.missing(cfg, design_only=design_only)
-    if gaps:
-        typer.echo("cannot run; missing: " + ", ".join(gaps))
-        raise typer.Exit(1)
-    outcome = json.loads(outcome_path.read_text())
-    run_id = new_run_id()
     cfg, forge_obj, created = _bind_forge(cfg, outcome, forge and not (design_only and cfg.gate_surface != "forge"))
     queue, notifier = _queue(cfg), LogNotifier()
     tracker = make_tracker_queue(cfg)
@@ -140,12 +129,15 @@ def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the f
     ctx.driver.on_session_started = lambda info: ctx.event(
         "session.started", {k: v for k, v in info.items() if k not in ("run_id", "work_item_id")},
         stage=info["stage"], actor="platform", work_item_id=info.get("work_item_id"))
-    typer.echo(f"run {run_id} started (forge={cfg.forge if ctx.forge else 'none'}, gate surface={cfg.gate_surface}"
-               f"{', design only' if design_only else ''})")
+    return ctx
+
+
+def _drive(ctx, pipeline):
+    """Run `pipeline(ctx)` with the stop and crash handling every run gets: a signal or an exception interrupts the
+    sessions still in flight and records run.failed, so a dead orchestrator never looks like a run in progress."""
     import signal
 
     def _stop(signum, frame):
-        # Stopped from outside (Ctrl-C, kill, the Console): leave no session spending for nobody, then record it.
         stopped = ctx.driver.interrupt_active()
         try:
             ctx.event("run.failed", {"reason": f"stopped by signal {signum}", "interrupted_sessions": stopped})
@@ -156,17 +148,60 @@ def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the f
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, _stop)
     try:
-        final = run_pipeline(ctx, outcome)
+        return pipeline(ctx)
     except SystemExit:
         raise
     except Exception as e:  # noqa: BLE001
-        # Record the failure so the Console shows it; a crashed orchestrator must not look like a run in progress.
         stopped = ctx.driver.interrupt_active()
         try:
             ctx.event("run.failed", {"reason": f"{type(e).__name__}: {str(e)[:500]}", "interrupted_sessions": stopped})
         except Exception:  # noqa: BLE001
             pass
         raise
+
+
+@app.command()
+def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the forge (change requests, pipelines)"),
+        design_only: bool = typer.Option(False, "--design-only", help="Real agents through Gate 2 (decompose, specs, judge); "
+                                                                      "no implementation, no forge needed")):
+    """Start a run from an outcome.json. Blocks at human gates; decide from another terminal, the Console, or the tracker."""
+    from .runner import new_run_id, run as run_pipeline
+
+    cfg = cfgmod.load()
+    gaps = cfgmod.missing(cfg, design_only=design_only)
+    if gaps:
+        typer.echo("cannot run; missing: " + ", ".join(gaps))
+        raise typer.Exit(1)
+    outcome = json.loads(outcome_path.read_text())
+    run_id = new_run_id()
+    ctx = _context(cfg, outcome, run_id, forge=forge, design_only=design_only)
+    typer.echo(f"run {run_id} started (forge={cfg.forge if ctx.forge else 'none'}, gate surface={cfg.gate_surface}"
+               f"{', design only' if design_only else ''})")
+    final = _drive(ctx, lambda c: run_pipeline(c, outcome))
+    typer.echo(f"run {run_id} finished in state {final.value}")
+
+
+@app.command()
+def resume(run_id: str, forge: bool = typer.Option(True, help="Talk to the forge (change requests, pipelines)")):
+    """Continue a run that failed or was stopped during implementation. Nothing before Gate 2 is re-run: the approved
+    specs come from the store, and each one picks up at the round whose work was persisted (a finished implementer
+    session is not repeated; the orchestrator's own verification of its head is)."""
+    from .runner import resume as resume_pipeline
+
+    cfg = cfgmod.load()
+    gaps = cfgmod.missing(cfg)
+    if gaps:
+        typer.echo("cannot resume; missing: " + ", ".join(gaps))
+        raise typer.Exit(1)
+    store = RunStore(cfg.runs_dir)
+    try:
+        outcome = json.loads(store.get_artifact(run_id, "intake", "outcome.json"))
+    except FileNotFoundError:
+        typer.echo(f"no run {run_id} under {cfg.runs_dir}")
+        raise typer.Exit(1)
+    ctx = _context(cfg, outcome, run_id, forge=forge, design_only=False)
+    typer.echo(f"run {run_id} resuming from {store.state(run_id).stage.value} (forge={cfg.forge if ctx.forge else 'none'})")
+    final = _drive(ctx, resume_pipeline)
     typer.echo(f"run {run_id} finished in state {final.value}")
 
 

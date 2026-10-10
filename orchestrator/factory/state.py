@@ -61,7 +61,7 @@ RUN_TRANSITIONS: dict[RunStage, set[RunStage]] = {
     RunStage.ESCALATED: {RunStage.DECOMPOSING, RunStage.SPECIFYING, RunStage.IMPLEMENTING, RunStage.CLOSED, RunStage.FAILED},
     RunStage.PAUSED_BUDGET: {RunStage.DECOMPOSING, RunStage.SPECIFYING, RunStage.IMPLEMENTING, RunStage.CLOSED},
     RunStage.COMPLETED: set(),
-    RunStage.FAILED: set(),
+    RunStage.FAILED: {RunStage.IMPLEMENTING},   # `run.resumed` only: a run that died during implementation picks up where its artefacts stop
     RunStage.CLOSED: set(),
 }
 
@@ -241,6 +241,11 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
         _move_run(state, RunStage.ESCALATED)
     elif k == "run.failed":
         _move_run(state, RunStage.FAILED)
+    elif k == "run.resumed":
+        # `factory resume`: back into the stage the run died in (no-op when the process was killed before run.failed).
+        to = RunStage(p["stage"])
+        if state.stage != to:
+            _move_run(state, to)
     elif k == "run.completed":
         _move_run(state, RunStage.COMPLETED)
     elif k in ("deploy.started", "deploy.succeeded") and ev.work_item_id in state.work_items:

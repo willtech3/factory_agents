@@ -49,6 +49,14 @@ def persist_outputs(ctx: RunContext, stage: str, res: StageResult, prefix: str =
     return shas
 
 
+def artifact_json_or_none(ctx: RunContext, stage: str, name: str) -> Any:
+    """A persisted artefact parsed as JSON, or None when the store does not hold it (used by `factory resume`)."""
+    try:
+        return json.loads(ctx.store.get_artifact(ctx.run_id, stage, name))
+    except FileNotFoundError:
+        return None
+
+
 def require_json(res: StageResult, name: str) -> dict[str, Any]:
     if name not in res.outputs:
         raise RuntimeError(f"session {res.session_id} did not produce {name}; outputs: {sorted(res.outputs)}")

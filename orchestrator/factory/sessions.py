@@ -251,10 +251,11 @@ class SessionDriver:
         """Download what the session wrote to /mnt/session/outputs/ (brief indexing lag; retry a few times).
 
         The session scope lists the uploads too (schemas, tools, inputs) with `downloadable: false`; only files the
-        session produced are downloadable, so filter on that flag and never fail the whole fetch on one file."""
+        session produced are downloadable, so filter on that flag and never fail the whole fetch on one file.
+        The listing is paginated (20 per page) and uploads and outputs are interleaved, so every page is read:
+        live run 2 lost review_response.json to page 2 and the run died on a "missing" output."""
         for attempt in range(4):
-            files = self.client.beta.files.list(scope_id=session_id, betas=["managed-agents-2026-04-01"])
-            data = [f for f in files.data if getattr(f, "downloadable", True)]
+            data = [f for f in self._list_session_files(session_id) if getattr(f, "downloadable", True)]
             if data or attempt == 3:
                 out: dict[str, bytes] = {}
                 for f in data:
@@ -267,3 +268,12 @@ class SessionDriver:
                 return out
             time.sleep(1.5)
         return {}
+
+    def _list_session_files(self, session_id: str) -> list[Any]:
+        """Every file in the session's scope, across all pages of the listing."""
+        page = self.client.beta.files.list(scope_id=session_id, betas=["managed-agents-2026-04-01"])
+        files: list[Any] = list(page.data)
+        while getattr(page, "has_more", False) and hasattr(page, "get_next_page"):
+            page = page.get_next_page()
+            files.extend(page.data)
+        return files
