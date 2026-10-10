@@ -406,4 +406,6 @@ def run(uploads: Path = UPLOADS, outputs: Path = OUTPUTS) -> dict:
 if __name__ == "__main__":
     result = run()
     print(json.dumps({"status": result["status"], "reason": result.get("reason"), "phases": result["phases"]}))
-    sys.exit(0 if result["status"] == "passed" else 1)
+    # A change run completes evidence collection; the controller then judges each command and visual row.
+    # Returning a failure merely for "completed" sends the supervising agent into unnecessary diagnosis.
+    sys.exit(0 if result["status"] in {"passed", "completed"} else 1)
