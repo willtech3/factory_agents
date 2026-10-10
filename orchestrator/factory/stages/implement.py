@@ -339,7 +339,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             preview = wait_for_preview(ctx, branch, head_sha)
             e2e_results = verifier.run_e2e(preview["url"] if preview["status"] == "ready" else None,
                                            spec["test_plan"].get("e2e", []), repo=repo)
-        passing_tests = [t for m in report.get("criteria_to_tests", []) for t in m.get("tests", [])]  # refined by CI parser
+        passing_tests = [t for ts in checks.criteria_mapping(report).values() for t in ts]  # refined by a CI parser later
         det = checks.run_all_for_merge(
             spec=spec, changed_files=diff["changed"], deleted_files=diff["deleted"], existing_test_files=diff["existing_tests"],
             added_lines_by_file=diff["added_lines"], implementation_report=report, passing_tests=passing_tests,
@@ -359,7 +359,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         rev_uploads = {"spec.json": uploads["spec.json"], "spec.md": uploads["spec.md"],
                        "diff.patch": diff["patch"].encode(),
                        "implementation_report.json": json.dumps(report, indent=2).encode(),
-                       "preview.json": json.dumps(preview, indent=2).encode()}
+                       "preview.json": json.dumps(preview, indent=2).encode(),
+                       "deterministic_checks.json": json.dumps([d.to_dict() for d in det], indent=2).encode()}
         rev_preview_clause = PREVIEW_CLAUSE if preview["status"] == "ready" and preview.get("mode") != "local" else (
             LOCAL_PREVIEW_CLAUSE if preview.get("mode") == "local" else NO_PREVIEW_CLAUSE)
         second = ""
@@ -386,6 +387,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         with ThreadPoolExecutor(max_workers=ctx.policy.reviewer_passes) as pool:
             passes = list(pool.map(one_pass, range(1, ctx.policy.reviewer_passes + 1)))
         findings = merge_findings(passes, sid, round_no, base_sha, head_sha, branch)
+        # A failed deterministic check is a finding the implementer must answer; nobody else can clear it.
+        findings["findings"].extend(deterministic_findings(det, cmd_results))
         ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-findings.merged.json",
                                json.dumps(findings, indent=2).encode())
         ctx.event("review.findings", {"round": round_no, "count": len(findings["findings"]),
@@ -441,6 +444,32 @@ def _local_preview_e2e(ctx: RunContext, repo: Path, branch: str, head_sha: str, 
     except Exception as e:  # noqa: BLE001
         preview["error"] = str(e)[:500]
         return preview, verifier.run_e2e(None, spec["test_plan"].get("e2e", []), repo=repo)
+
+
+def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Findings (review_findings schema shape) for every failed deterministic check, so the implementer sees
+    exactly what blocks the merge and can fix or refute it like any other finding."""
+    out = []
+    for d in det:
+        if d.passed:
+            continue
+        name = d.check.split(":")[0]
+        repro = ""
+        if name == "test_plan_commands":
+            failed = [r for r in (command_results or []) if r.get("exit_code", 1) != 0]
+            repro = "; ".join(f"{r['command']} -> exit {r.get('exit_code')}: {(r.get('stderr_tail') or r.get('stdout_tail') or '')[-300:]}" for r in failed)
+        out.append({
+            "finding_id": f"DET-{name}", "severity": "blocking",
+            "category": "test_quality" if name in ("ac_test_mapping", "test_plan_commands", "test_weakening", "protected_tests", "e2e_coverage", "e2e_preview") else "spec_deviation",
+            "claim": f"Deterministic check `{name}` failed: {d.detail}",
+            "evidence": {"locations": ["deterministic_checks.json:1"], **({"reproduction": repro} if repro else {}), "observed": d.detail},
+            "violates": f"orchestrator check {name} (cannot be overridden by any judge)",
+            "refutation_condition": f"`{name}` passes on the orchestrator's next verification of the pushed head",
+            "status": "open",
+            "suggested_fix": {"ac_test_mapping": "Map every automated acceptance criterion to a test in implementation_report.json `criteria` ([{ac_id, tests: [...]}]) and make sure those tests exist and pass.",
+                              "test_plan_commands": "Make every test_plan command exit 0 from a clean checkout; if a command depends on a port or host, make it robust or pick a free port."}.get(name, "Fix the cause named in the detail."),
+        })
+    return out
 
 
 def merge_findings(passes: list[dict[str, Any]], spec_id: str, round_no: int, base_sha: str, head_sha: str,

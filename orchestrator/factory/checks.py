@@ -198,11 +198,27 @@ def spec_traceability(spec: dict[str, Any], decomposition: dict[str, Any]) -> Ch
     return CheckResult("spec_traceability", not problems, "traceable" if not problems else "; ".join(problems))
 
 
+def criteria_mapping(implementation_report: dict[str, Any]) -> dict[str, list[str]]:
+    """ac_id -> test ids from the implementation report. The implementer writes `criteria`
+    ([{ac_id, tests: [...]}] or {ac_id, test: "..."}); `criteria_to_tests` is accepted too."""
+    out: dict[str, list[str]] = {}
+    for entry in list(implementation_report.get("criteria") or []) + list(implementation_report.get("criteria_to_tests") or []):
+        if not isinstance(entry, dict) or not entry.get("ac_id"):
+            continue
+        tests = entry.get("tests")
+        if tests is None and entry.get("test"):
+            tests = [entry["test"]]
+        if isinstance(tests, str):
+            tests = [tests]
+        out.setdefault(entry["ac_id"], []).extend(t for t in (tests or []) if isinstance(t, str) and t)
+    return out
+
+
 def ac_test_mapping(spec: dict[str, Any], implementation_report: dict[str, Any],
                     tests_that_passed: Iterable[str]) -> CheckResult:
     """Every automated acceptance criterion names a test that exists in the passing set."""
     passed = set(tests_that_passed)
-    mapping = {m["ac_id"]: m.get("tests", []) for m in implementation_report.get("criteria_to_tests", [])}
+    mapping = criteria_mapping(implementation_report)
     problems = []
     for ac in spec["acceptance_criteria"]:
         if ac["verification"] != "automated_test":
