@@ -27,6 +27,13 @@ from .config import Config
 # long before the retry succeeded, which held the whole review round. Streams keep the client default.
 SHORT_CALL_TIMEOUT = 120.0
 
+# A dropped event stream is reopened, not fatal. These are the transport errors httpx and the SDK raise for it.
+import httpx  # noqa: E402
+
+STREAM_RETRYABLE: tuple[type[BaseException], ...] = (httpx.RemoteProtocolError, httpx.ReadError, httpx.ReadTimeout, httpx.ConnectError,
+                                                    httpx.WriteError, anthropic.APIConnectionError, anthropic.APITimeoutError)
+STREAM_MAX_RECONNECTS = 40           # with the 2..30 s backoff: well over an hour of retrying before giving up
+
 CustomToolHandler = Callable[[dict[str, Any], "SessionContext"], str]
 
 
@@ -212,19 +219,41 @@ class SessionDriver:
             return False
 
         # Stream-first, consolidated with history on (re)connect; dedupe by event id.
-        with self.client.beta.sessions.events.stream(session_id=session.id) as stream:
-            for ev in self.client.beta.sessions.events.list(session_id=session.id, timeout=SHORT_CALL_TIMEOUT).data:
-                seen.add(ev.id)
-                if handle(ev):
-                    break
-            else:
-                for ev in stream:
-                    if getattr(ev, "id", None) in seen:
-                        continue
-                    if getattr(ev, "id", None):
+        # Drain the session: catch up on what already happened, then follow the stream. A stream that drops (the
+        # platform closing a long-lived connection, a network blip) is reopened after a short wait; the catch-up listing
+        # on reopen and the `seen` set keep every event handled exactly once. Live greenfield run: one
+        # RemoteProtocolError on the implementer's stream failed a 2.5 h run and interrupted the session.
+        done = False
+        reconnects = 0
+        delay = 2.0
+        while not done:
+            try:
+                with self.client.beta.sessions.events.stream(session_id=session.id) as stream:
+                    for ev in self.client.beta.sessions.events.list(session_id=session.id, timeout=SHORT_CALL_TIMEOUT).data:
+                        if ev.id in seen:
+                            continue
                         seen.add(ev.id)
-                    if handle(ev):
-                        break
+                        if handle(ev):
+                            done = True
+                            break
+                    if not done:
+                        for ev in stream:
+                            if getattr(ev, "id", None) in seen:
+                                continue
+                            if getattr(ev, "id", None):
+                                seen.add(ev.id)
+                            if handle(ev):
+                                done = True
+                                break
+                if not done:
+                    done = True         # the stream ended cleanly without an idle event: nothing more will come
+            except STREAM_RETRYABLE as e:
+                reconnects += 1
+                if reconnects > STREAM_MAX_RECONNECTS:
+                    raise
+                print(f"[session] {session.id}: event stream dropped ({type(e).__name__}); reconnecting in {delay:.0f}s ({reconnects}/{STREAM_MAX_RECONNECTS})")
+                time.sleep(delay)
+                delay = min(delay * 2, 30.0)
 
         # Post-idle status write race: wait for the session object to settle before reading usage.
         final = None
