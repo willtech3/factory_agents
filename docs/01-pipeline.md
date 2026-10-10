@@ -81,8 +81,8 @@ Work items have their own state (`pending → spec_drafting → spec_judging →
 
 | Knob | Default | Why |
 |---|---|---|
-| Run budget | `outcome.constraints.budget_usd`, else $150 | Every session carries a hard dollar cap (platform-enforced); the run total is the sum of stage caps. |
-| Stage caps | decompose 15, specify 10, judge 8, implement 40, review 15, merge judge 8, integrate 2 (USD, list price) | A session that hits its cap pauses with `budget_reached`; the orchestrator escalates rather than silently raising it. |
+| Run budget | `outcome.constraints.budget_usd`, else $150 | Enforced by the orchestrator before every session (`budget.py`): spent so far (the sum of `session.finished` list costs) plus the caps of the sessions about to start must fit under it, or the run pauses (below). Raised only by a human, from the budget gate or `factory resume --budget`. |
+| Stage caps | decompose 15, specify 10, judge 8, implement 40, review 15, merge judge 8, integrate 2 (USD, list price) | Every session carries its own hard cap (platform-enforced); `FACTORY_BUDGET_SCALE` scales them all. A session that hits its cap stops with `budget_reached` and the stage treats it like any session that did not finish its job. |
 | Outcome iterations | 4 | Platform grader loop inside writing sessions. |
 | Spec judge rounds | 3 | Then escalate. |
 | Review rounds | 2 | One fresh review per round. |
@@ -97,7 +97,7 @@ Work items have their own state (`pending → spec_drafting → spec_judging →
 - **Schema-invalid artifact:** the sandbox validator catches most; the orchestrator re-validates with full `jsonschema` and treats failure like a deterministic check failure.
 - **`blocked.md`:** implementer could not proceed without changing scope or resolving a spec conflict. Escalation gate with the file's content; the human can send the spec back to the writer.
 - **Non-convergence:** same finding across two rounds, or judge `escalate`. Escalation gate with the exchange summarised.
-- **Budget:** `budget_reached` on any session pauses the run; a human raises the cap or closes.
+- **Budget:** before a stage starts a session (or a batch of parallel sessions: the spec writers, the reviewer passes), it checks spent plus the caps it is about to commit against the run budget. When the next step would not fit, nothing starts: the run moves to `paused_budget` (`budget.reached`, with the numbers in `artifacts/budget/paused-N.json`), a **budget gate** opens on the gate surface bound to that file, and the orchestrator exits cleanly with nothing in flight. The owner approves the gate with the new cap (`budget_usd: 80` in the comment; a number input in the Console) or rejects it to close the run; `factory resume <run_id>` (or `--budget N` / `--outcome file.json`, which is the decision by itself) records `gate.decided` and `budget.raised` and re-enters the stage the check interrupted: implementation continues from its artefacts (`resume_points`), decomposition and specification re-run from the start of the stage with the owner's last gate feedback. The check is cap-based on purpose: a session may spend up to its cap, so this is the only arithmetic that guarantees the run never exceeds the budget; it is conservative, and a step usually costs less than its cap.
 - **No preview for the branch:** `preview.json` reports `pending` or `failed`; agents run `local` e2e entries meanwhile, and the orchestrator's `e2e_preview` check fails closed until the platform's pipeline has deployed `head_sha`. A persistent platform failure is a `blocked.md` from the implementer, not something it works around.
 - **Dev deploy or dev e2e failure after merge:** `DEPLOY_FAILURE` gate (Stage 5) with the log excerpt; back to `IMPLEMENTING` on a fresh branch, re-observe, or close.
 

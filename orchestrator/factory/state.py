@@ -101,7 +101,7 @@ class Policy:
     spec_judge_max_rounds: int = 3
     review_max_rounds: int = 2           # one fresh review per round; see docs/research (Song 2603.16244)
     outcome_max_iterations: int = 4      # platform grader iterations inside a writing session
-    run_budget_usd: float = 150.0
+    run_budget_usd: float = 150.0        # the outcome's constraints.budget_usd: enforced before every session (budget.py)
     stage_budget_usd: dict[str, float] = field(default_factory=lambda: {
         "decompose": 15.0, "specify": 10.0, "judge": 8.0,
         "implement": 40.0, "review": 15.0, "merge_judge": 8.0, "integrate": 2.0,
@@ -159,7 +159,9 @@ class RunState:
     work_items: dict[str, WorkItemState] = field(default_factory=dict)
     open_gates: dict[str, dict[str, Any]] = field(default_factory=dict)
     open_questions: dict[str, dict[str, Any]] = field(default_factory=dict)
-    list_cost_usd: float = 0.0
+    list_cost_usd: float = 0.0           # sum of session.finished list_cost_usd: what the run has spent so far
+    sessions_finished: int = 0
+    budget_usd: float | None = None      # the run's cap (run.created), raised by budget.raised; None on logs older than the cap
     last_seq: int = -1
 
     def ready_work_items(self) -> list[WorkItemState]:
@@ -196,6 +198,8 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
 
     if k == "run.created":
         state.outcome_id = p["outcome_id"]
+        if p.get("budget_usd") is not None:
+            state.budget_usd = float(p["budget_usd"])
     elif k == "stage.entered":
         _move_run(state, RunStage(p["stage"]))
     elif k == "artifact.produced" and p.get("artifact_type") == "decomposition" and "work_items" in p:
@@ -219,6 +223,7 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
         state.open_questions.pop(p["question_id"], None)
     elif k == "session.finished":
         state.list_cost_usd += float(p.get("list_cost_usd") or 0.0)
+        state.sessions_finished += 1
     elif k == "work_item.stage":
         _move_item(state, ev.work_item_id, WorkItemStage(p["stage"]))
         wi = state.work_items[ev.work_item_id]
@@ -237,13 +242,20 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
         if "environment_url" in p:
             wi.dev_environment_url = p["environment_url"]
     elif k == "budget.reached":
+        # The next session would take the run past its cap: nothing is in flight, the run parks until a human
+        # raises the budget (budget.raised, then run.resumed) or closes it.
+        if p.get("budget_usd") is not None:
+            state.budget_usd = float(p["budget_usd"])
         _move_run(state, RunStage.PAUSED_BUDGET)
+    elif k == "budget.raised":
+        state.budget_usd = float(p["budget_usd"])
     elif k == "run.escalated":
         _move_run(state, RunStage.ESCALATED)
     elif k == "run.failed":
         _move_run(state, RunStage.FAILED)
     elif k == "run.resumed":
-        # `factory resume`: back into the stage the run died in (no-op when the process was killed before run.failed).
+        # `factory resume`: back into the stage the run died or paused in (no-op when the process was killed before
+        # run.failed). From PAUSED_BUDGET the stage is the one the budget check interrupted.
         to = RunStage(p["stage"])
         if state.stage != to:
             _move_run(state, to)

@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from .. import checks
+from ..budget import reserve_budget
 from ..gates import Decision, GateKind
 from ..state import RunStage, WorkItemStage
 from . import RunContext
@@ -100,6 +101,7 @@ def _judge(ctx: RunContext, outcome, decomposition, specs: dict[str, dict], roun
         uploads["previous_verdict.json"] = json.dumps(previous_verdict, indent=2).encode()
     if owner_comments:
         uploads["human_comments.md"] = owner_comments.encode()
+    reserve_budget(ctx, "judge")
     res = ctx.driver.run(
         agent_key="spec_judge", title=f"{ctx.run_id} spec-judge r{round_no}", run_id=ctx.run_id, stage="judge",
         uploads=uploads, description=JUDGE_DESCRIPTION.format(round=round_no, repo_clause=JUDGE_REPO_MOUNTED if repo_available else JUDGE_REPO_ABSENT,
@@ -121,7 +123,8 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
     """`human_comments_by_item` are the owner's gate notes per work item (also shown to the judge as settled
     decisions); `prior_specs` are the specs the owner commented on, keyed by work item, so a writer revises
     rather than restarts after a request-changes at Gate 2."""
-    ctx.event("stage.entered", {"stage": RunStage.SPECIFYING.value}, stage="specify")
+    if ctx.store.state(ctx.run_id).stage != RunStage.SPECIFYING:   # `factory resume` re-enters the stage it paused in
+        ctx.event("stage.entered", {"stage": RunStage.SPECIFYING.value}, stage="specify")
     items = {w["work_item_id"]: w for w in decomposition["work_items"]}
     specs: dict[str, dict] = {}
     issues_by_item: dict[str, list[dict]] = {}
@@ -135,6 +138,7 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
             batch = [w for w in wave if w in to_write]
             if not batch:
                 continue
+            reserve_budget(ctx, "specify", len(batch))      # the whole batch, before any writer starts
             with ThreadPoolExecutor(max_workers=min(ctx.policy.parallel_spec_writers, len(batch))) as pool:
                 futures = {pool.submit(_write_one, ctx, outcome, decomposition, items[w],
                                        {s: specs[s] for s in specs if s != w},

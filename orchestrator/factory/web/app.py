@@ -31,8 +31,10 @@ from pydantic import BaseModel
 
 from .. import checks
 from .. import config as cfgmod
+from ..budget import last_pause
 from ..config import REPO_ROOT, Config
-from ..gates import Decision, GateKind
+from ..gates import Decision, GateKind, parse_budget
+from ..state import RunStage
 from ..store import RunStore
 from ..surfaces.artifact_pages import render_gate1_page, render_gate2_page
 from ..surfaces.filequeue import FileQueue
@@ -46,7 +48,7 @@ EXAMPLES = {"sample-app": REPO_ROOT / "examples" / "sample-app" / "outcome.json"
 TIMELINE_KINDS = {"run.created", "repository.created", "stage.entered", "session.started", "gate.opened", "gate.decided", "question.asked", "question.answered",
                   "judge.verdict", "review.findings", "review.response", "merge.verdict", "cr.opened", "cr.merged", "cr.closed",
                   "deploy.started", "deploy.succeeded", "deploy.failed", "e2e.dev_passed", "e2e.dev_failed", "budget.reached",
-                  "run.escalated", "run.failed", "run.resumed", "run.completed", "session.finished", "work_item.stage"}
+                  "budget.raised", "run.escalated", "run.failed", "run.resumed", "run.completed", "session.finished", "work_item.stage"}
 
 
 class DecisionBody(BaseModel):
@@ -68,6 +70,10 @@ class OutcomeBody(BaseModel):
 class StartRunBody(BaseModel):
     outcome_id: str
     mode: str = "demo"          # demo | design | live
+
+
+class ResumeBody(BaseModel):
+    budget_usd: float | None = None     # a run paused at its budget: the new cap (records the gate decision too)
 
 
 class Console:
@@ -104,7 +110,7 @@ class Console:
                 by_stage[wi.stage.value] = by_stage.get(wi.stage.value, 0) + 1
             out.append({
                 "run_id": run_id, "title": self._title(run_id, events), "stage": st.stage.value,
-                "cost": round(st.list_cost_usd, 2), "updated_at": events[-1].at if events else None,
+                "cost": round(st.list_cost_usd, 2), "budget_usd": st.budget_usd, "updated_at": events[-1].at if events else None,
                 "created_at": events[0].at if events else None,
                 "waiting": {"gates": sum(1 for g in gates.values() if g["run_id"] == run_id and g["gate_id"] in st.open_gates and not g["recorded"]),
                             "questions": sum(1 for q in questions.values() if q["run_id"] == run_id and not q["answered"]
@@ -147,14 +153,25 @@ class Console:
                     for ev in events if ev.kind in TIMELINE_KINDS]
         design_only = any(ev.kind == "run.completed" and ev.payload.get("design_only") for ev in events) or \
             any(ev.kind == "run.created" and ev.payload.get("design_only") for ev in events)
-        # A run that died in the implementation stage can continue from its artefacts (`factory resume`).
-        resumable = (st.stage.value == "failed" and not self.demo.is_demo(run_id)
-                     and any(ev.kind == "stage.entered" and ev.payload.get("stage") == "implementing" for ev in events))
+        # A run that died in the implementation stage, or paused at its budget, continues from its artefacts
+        # (`factory resume`); a budget pause first needs the owner's decision on the budget gate.
+        paused = st.stage == RunStage.PAUSED_BUDGET
+        resumable = not self.demo.is_demo(run_id) and (paused or (
+            st.stage == RunStage.FAILED
+            and any(ev.kind == "stage.entered" and ev.payload.get("stage") == "implementing" for ev in events)))
         return {"run_id": run_id, "title": self._title(run_id, events), "outcome": outcome, "stage": st.stage.value,
                 "cost": round(st.list_cost_usd, 2), "demo": self.demo.is_demo(run_id), "design_only": design_only, "work_items": items,
-                "resumable": resumable,
+                "resumable": resumable, "budget": self._budget(st, events, gates),
                 "gates": gates, "questions": questions, "events": timeline, "artifacts": self._artifacts(run_id),
                 "created_at": events[0].at, "updated_at": events[-1].at}
+
+    def _budget(self, st, events, open_gates: list[dict[str, Any]]) -> dict[str, Any]:
+        """The run's cap and spend, and when it is paused at the cap, what the pause needs and the gate deciding it."""
+        pause = last_pause(events) if st.stage == RunStage.PAUSED_BUDGET else None
+        gate = next((g for g in open_gates if g["kind"] == GateKind.BUDGET.value), None) if pause else None
+        return {"budget_usd": st.budget_usd, "spent_usd": round(st.list_cost_usd, 2), "sessions": st.sessions_finished,
+                "paused": pause is not None, "pause": pause, "gate_id": gate["gate_id"] if gate else None,
+                "decision": (gate or {}).get("recorded")}
 
     def _artifacts(self, run_id: str) -> list[dict[str, Any]]:
         root = self.cfg.runs_dir / run_id / "artifacts"
@@ -250,7 +267,19 @@ class Console:
         if kind == GateKind.DEPLOY_FAILURE.value:
             report = next((load(n) for n in by_name if n.endswith("deploy_report.json")), None)
             return {"kind": "deploy", "outcome": outcome, "report": report}
+        if kind == GateKind.BUDGET.value:
+            st = self.store.state(run_id)
+            return {"kind": "budget", "outcome": outcome, "budget": self._budget_record(rec),
+                    "run_stage": st.stage.value, "spent_now_usd": round(st.list_cost_usd, 2), "budget_now_usd": st.budget_usd}
         return {"kind": "other", "outcome": outcome}
+
+    def _budget_record(self, rec: dict[str, Any]) -> dict[str, Any] | None:
+        """The paused-N.json the budget gate presented (spent, cap, what the next step needs)."""
+        for a in rec["artifacts"]:
+            p = self.artifact_by_sha(rec["run_id"], a["sha256"])
+            if p is not None and p.name.startswith("paused-"):
+                return json.loads(p.read_text())
+        return None
 
     def _latest(self, run_id: str, stage: str, prefix: str, suffix: str) -> Path | None:
         d = self.cfg.runs_dir / run_id / "artifacts" / stage
@@ -283,8 +312,19 @@ class Console:
             raise HTTPException(400, "request_changes needs a comment; it becomes the agent's feedback")
         if decision == Decision.APPROVE_SUBSET and not body.approved_subset:
             raise HTTPException(400, "approve_subset needs at least one spec")
+        if rec["kind"] == GateKind.BUDGET.value and decision == Decision.APPROVE:
+            self._check_new_budget(rec, parse_budget(body.comments))
         entry = self.queue.record_decision(gate_id, decision.value, body.by or "console", body.comments, body.approved_subset)
         return {"ok": True, "recorded": entry}
+
+    def _check_new_budget(self, rec: dict[str, Any], new: float | None) -> float:
+        record = self._budget_record(rec) or {}
+        needed = float(record.get("needed_usd") or 0)
+        if new is None:
+            raise HTTPException(400, "approving a budget gate needs the new budget, e.g. `budget_usd: 80`")
+        if new < needed:
+            raise HTTPException(400, f"the next step needs at least ${needed:.2f}; ${new:.2f} would pause the run again at once")
+        return new
 
     def answer(self, question_id: str, body: AnswerBody) -> dict[str, Any]:
         if not body.answer.strip():
@@ -381,18 +421,33 @@ class Console:
                                     env={**os.environ, "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}, start_new_session=True)
         return {"ok": True, "mode": body.mode, "pid": proc.pid, "log": log.name}
 
-    def resume_run(self, run_id: str) -> dict[str, Any]:
-        """Continue a run that failed during implementation: spawns `factory resume <run_id>` the way start_run spawns
-        `factory run`, so the Console never holds the orchestrator's state itself."""
+    def resume_run(self, run_id: str, body: ResumeBody | None = None) -> dict[str, Any]:
+        """Continue a run that failed during implementation or paused at its budget: spawns `factory resume <run_id>`
+        the way start_run spawns `factory run`, so the Console never holds the orchestrator's state itself. For a
+        budget pause the owner's decision must exist first; `budget_usd` in the body records an approve with that
+        cap on the budget gate before spawning, so one click raises and continues."""
         detail = self.run_detail(run_id)
         if not detail["resumable"]:
-            raise HTTPException(409, f"run {run_id} is {detail['stage']}; only a failed run that reached implementation can be resumed")
-        gaps = cfgmod.missing(self.cfg)
+            raise HTTPException(409, f"run {run_id} is {detail['stage']}; only a failed run that reached implementation, "
+                                     f"or a run paused at its budget, can be resumed")
+        budget = detail["budget"]
+        new_budget = body.budget_usd if body is not None else None
+        if budget["paused"]:
+            gate_id, recorded = budget["gate_id"], budget["decision"]
+            if recorded is None and new_budget is None:
+                raise HTTPException(409, "the run is paused at its budget: decide the budget gate first (raise it or close the run)")
+            if recorded is None:
+                rec = self.queue.open_gates().get(gate_id) or {}
+                self._check_new_budget(rec, new_budget)
+                self.queue.record_decision(gate_id, Decision.APPROVE.value, "console", f"budget_usd: {new_budget:g}")
+            elif new_budget is not None and parse_budget(recorded.get("comments")) != new_budget:
+                raise HTTPException(409, "a different decision is already recorded on the budget gate; resume without a new budget to apply it")
+        gaps = cfgmod.missing(self.cfg, design_only=detail["design_only"])
         if gaps:
             raise HTTPException(409, f"the orchestrator is not configured for a live run: {', '.join(gaps)}")
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         log = self.logs_dir / f"resume-{run_id}-{int(time.time())}.log"
-        args = [sys.executable, "-u", "-m", "factory.cli", "resume", run_id]
+        args = [sys.executable, "-u", "-m", "factory.cli", "resume", run_id] + ([f"--budget={new_budget:g}"] if new_budget is not None else [])
         with log.open("w") as fh:
             proc = subprocess.Popen(args, cwd=str(Path(__file__).resolve().parents[2]), stdout=fh, stderr=subprocess.STDOUT,
                                     env={**os.environ, "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}, start_new_session=True)
@@ -550,8 +605,8 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
         return console.start_run(body)
 
     @app.post("/api/runs/{run_id}/resume")
-    def api_resume_run(run_id: str):
-        return console.resume_run(run_id)
+    def api_resume_run(run_id: str, body: ResumeBody | None = None):
+        return console.resume_run(run_id, body)
 
     @app.get("/api/platform")
     def api_platform():

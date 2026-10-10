@@ -19,11 +19,12 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from ..budget import reserve_budget
 from ..forge import Forge
 from ..sessions import SessionContext
 from ..state import WorkItemStage
 from . import RunContext
-from .common import persist_outputs, require_json
+from .common import enter_item_stage, persist_outputs, require_json
 
 INTEGRATE_DESCRIPTION = """Open the change request (pull request or merge request) for specification {spec_id}.
 Inputs are under /mnt/session/uploads/ (spec.json, merge_readiness.json, findings.json, review_response.json,
@@ -95,7 +96,7 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
     assert ctx.forge is not None, "a forge is required to open change requests"
     sid, wid = spec["spec_id"], spec["work_item_id"]
     branch, judged_sha = verdict["_branch"], verdict["_head_sha"]
-    ctx.event("work_item.stage", {"stage": WorkItemStage.INTEGRATING.value}, work_item_id=wid, spec_id=sid)
+    enter_item_stage(ctx, wid, sid, WorkItemStage.INTEGRATING)
 
     head_sha = judged_sha
     if verifier is not None:
@@ -117,6 +118,7 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
                                         "run_record_paths": run_record_paths(ctx.run_id, sid)}, indent=2).encode(),
         "cr_template.md": (ctx.cfg.templates_dir / "cr_template.md").read_bytes(),
     }
+    reserve_budget(ctx, "integrate")
     res = ctx.driver.run(
         agent_key="integrator", title=f"{ctx.run_id} integrate {sid}", run_id=ctx.run_id, stage="integrate",
         uploads=uploads, work_item_id=wid,

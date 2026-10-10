@@ -8,7 +8,18 @@ from typing import Any
 
 from ..gates import Answer, ArtifactRef, Decision, Gate, GateDecision, GateKind, Question
 from ..sessions import SessionContext, StageResult
+from ..state import WorkItemStage
 from . import RunContext
+
+
+def enter_item_stage(ctx: RunContext, work_item_id: str, spec_id: str | None, stage: WorkItemStage, **payload: Any) -> None:
+    """Emit `work_item.stage` unless the item is already there. A resumed loop (`factory resume`, after a crash or
+    a budget pause) re-walks steps whose outputs it reuses; re-emitting their stage would be an illegal
+    self-transition on replay."""
+    current = ctx.store.state(ctx.run_id).work_items.get(work_item_id)
+    if current is not None and current.stage == stage:
+        return
+    ctx.event("work_item.stage", {"stage": stage.value, **payload}, work_item_id=work_item_id, spec_id=spec_id)
 
 
 def provenance(ctx: RunContext, res: StageResult, agent_name: str, model: str, inputs: dict[str, str]) -> dict[str, Any]:

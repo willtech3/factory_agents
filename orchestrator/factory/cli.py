@@ -7,7 +7,8 @@
     factory answer <question_id> "text"
     factory status <run_id>             # derived state + timeline
     factory replay <run_id>             # re-derive state from the event log (sanity check)
-    factory resume <run_id>             # continue a run that died during implementation
+    factory resume <run_id>             # continue a run that died during implementation or paused at its budget
+    factory resume <run_id> --budget 80 # ... raising the run budget (or --outcome file.json to read it from there)
     factory web [--port 8765] [--demo]  # the Factory Console: outcomes, runs board, inbox, gate review
 
 Local mode uses a file-backed queue under the runs directory so two processes can talk. With
@@ -57,14 +58,17 @@ def _bind_forge(cfg, outcome: dict, want_forge: bool):
     return cfg, forge_obj, created
 
 
-def _policy(outcome: dict, design_only: bool):
-    """Loop limits and budgets; FACTORY_BUDGET_SCALE (e.g. 0.4) scales every per-stage cap for cheap first runs."""
+def _policy(outcome: dict, design_only: bool, budget_usd: float | None = None):
+    """Loop limits and budgets. The run budget is the outcome's `constraints.budget_usd` (default $150) and is
+    enforced before every session (`budget.py`); `budget_usd` replaces it on a resume whose log carries a raised cap.
+    FACTORY_BUDGET_SCALE (e.g. 0.4) scales every per-stage cap for cheap first runs."""
     import os
     from .state import Policy
     scale = float(os.environ.get("FACTORY_BUDGET_SCALE", "1") or 1)
     base = Policy()
     knob = lambda name, default: int(os.environ.get(name) or default)  # noqa: E731
-    return Policy(run_budget_usd=outcome.get("constraints", {}).get("budget_usd") or 150.0, design_only=design_only,
+    run_budget = budget_usd if budget_usd is not None else (outcome.get("constraints", {}).get("budget_usd") or 150.0)
+    return Policy(run_budget_usd=float(run_budget), design_only=design_only,
                   stage_budget_usd={k: round(v * scale, 2) for k, v in base.stage_budget_usd.items()},
                   reviewer_passes=knob("FACTORY_REVIEWER_PASSES", base.reviewer_passes),
                   review_max_rounds=knob("FACTORY_REVIEW_MAX_ROUNDS", base.review_max_rounds),
@@ -104,7 +108,7 @@ def doctor():
     typer.echo("ok")
 
 
-def _context(cfg, outcome: dict, run_id: str, *, forge: bool, design_only: bool):
+def _context(cfg, outcome: dict, run_id: str, *, forge: bool, design_only: bool, budget_usd: float | None = None):
     """The RunContext `run` and `resume` share: forge bound to the outcome's repository, the gate surfaces composed,
     and session starts recorded as events so the Console can link to them."""
     from .sessions import SessionDriver
@@ -120,7 +124,7 @@ def _context(cfg, outcome: dict, run_id: str, *, forge: bool, design_only: bool)
     ctx = RunContext(
         cfg=cfg, store=RunStore(cfg.runs_dir), driver=SessionDriver(cfg), queue=queue, notifier=notifier,
         forge=forge_obj,
-        policy=_policy(outcome, design_only),
+        policy=_policy(outcome, design_only, budget_usd),
         run_id=run_id, tracker=tracker, pages=make_publisher(cfg),
     )
     if created:
@@ -176,33 +180,69 @@ def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the f
     run_id = new_run_id()
     ctx = _context(cfg, outcome, run_id, forge=forge, design_only=design_only)
     typer.echo(f"run {run_id} started (forge={cfg.forge if ctx.forge else 'none'}, gate surface={cfg.gate_surface}"
-               f"{', design only' if design_only else ''})")
+               f"{', design only' if design_only else ''}, budget ${ctx.policy.run_budget_usd:.2f})")
     final = _drive(ctx, lambda c: run_pipeline(c, outcome))
+    _report_final(run_id, final)
+
+
+def _report_final(run_id: str, final) -> None:
+    from .state import RunStage
     typer.echo(f"run {run_id} finished in state {final.value}")
+    if final == RunStage.PAUSED_BUDGET:
+        typer.echo(f"the next session would take the run past its budget; nothing is running. Decide the budget gate "
+                   f"(Console, `factory decide <gate_id> approve --comment 'budget_usd: N'`, or reject), then `factory resume {run_id}`.")
 
 
 @app.command()
-def resume(run_id: str, forge: bool = typer.Option(True, help="Talk to the forge (change requests, pipelines)")):
-    """Continue a run that failed or was stopped during implementation. Nothing before Gate 2 is re-run: the approved
-    specs come from the store, and each one picks up at the round whose work was persisted (a finished implementer
-    session is not repeated; the orchestrator's own verification of its head is)."""
-    from .runner import resume as resume_pipeline
+def resume(run_id: str, forge: bool = typer.Option(True, help="Talk to the forge (change requests, pipelines)"),
+           budget: float | None = typer.Option(None, "--budget", help="New run budget in USD. For a run paused at its budget "
+                                                                   "this is the decision (no gate decision needed); for a "
+                                                                   "failed run it replaces the cap for the rest of the run."),
+           outcome_file: Path | None = typer.Option(None, "--outcome", help="Read the new budget from this outcome file's "
+                                                                         "constraints.budget_usd instead of --budget")):
+    """Continue a run that failed or was stopped during implementation, or that paused at its budget. Nothing before
+    Gate 2 is re-run for a failed run: the approved specs come from the store, and each one picks up at the round
+    whose work was persisted (a finished implementer session is not repeated; the orchestrator's own verification of
+    its head is). A budget pause applies the owner's decision on the budget gate (approve with `budget_usd: N`, or
+    reject to close) or --budget / --outcome, records the raised cap, and re-enters the stage it interrupted."""
+    from .runner import budget_decision, resume as resume_pipeline
+    from .state import RunStage
 
     cfg = cfgmod.load()
-    gaps = cfgmod.missing(cfg)
-    if gaps:
-        typer.echo("cannot resume; missing: " + ", ".join(gaps))
-        raise typer.Exit(1)
     store = RunStore(cfg.runs_dir)
     try:
         outcome = json.loads(store.get_artifact(run_id, "intake", "outcome.json"))
     except FileNotFoundError:
         typer.echo(f"no run {run_id} under {cfg.runs_dir}")
         raise typer.Exit(1)
-    ctx = _context(cfg, outcome, run_id, forge=forge, design_only=False)
-    typer.echo(f"run {run_id} resuming from {store.state(run_id).stage.value} (forge={cfg.forge if ctx.forge else 'none'})")
-    final = _drive(ctx, resume_pipeline)
-    typer.echo(f"run {run_id} finished in state {final.value}")
+    events = store.events(run_id)
+    st = store.state(run_id)
+    design_only = any(ev.kind == "run.created" and ev.payload.get("design_only") for ev in events)
+    gaps = cfgmod.missing(cfg, design_only=design_only)
+    if gaps:
+        typer.echo("cannot resume; missing: " + ", ".join(gaps))
+        raise typer.Exit(1)
+    new_budget = budget
+    if new_budget is None and outcome_file is not None:
+        new_budget = (json.loads(outcome_file.read_text()).get("constraints") or {}).get("budget_usd")
+        if new_budget is None:
+            typer.echo(f"{outcome_file} has no constraints.budget_usd")
+            raise typer.Exit(1)
+    current = st.budget_usd if st.budget_usd is not None else (outcome.get("constraints") or {}).get("budget_usd")
+    ctx = _context(cfg, outcome, run_id, forge=forge, design_only=design_only, budget_usd=current)
+    if st.stage == RunStage.PAUSED_BUDGET:
+        try:                      # refuse here, before any event is written, when nothing has decided the pause yet
+            action, raised_to, _ = budget_decision(ctx, st, events, new_budget)
+        except RuntimeError as e:
+            typer.echo(str(e))
+            raise typer.Exit(1)
+        typer.echo(f"run {run_id} paused at its budget (${st.list_cost_usd:.2f} spent of ${current or 0:.2f}): "
+                   + ("closing it as the owner decided" if action == "close" else f"raising the budget to ${raised_to:.2f} and continuing"))
+    else:
+        typer.echo(f"run {run_id} resuming from {st.stage.value} (forge={cfg.forge if ctx.forge else 'none'}"
+                   + (f", budget raised to ${new_budget:.2f}" if new_budget is not None else "") + ")")
+    final = _drive(ctx, lambda c: resume_pipeline(c, budget_usd=new_budget))
+    _report_final(run_id, final)
 
 
 @app.command()
@@ -230,14 +270,24 @@ def gates():
 def decide(gate_id: str, decision: str, comment: str = "", spec: list[str] = typer.Option([], help="approve_subset spec ids"),
            by: str = "cli-user"):
     """Record a gate decision. The artifact hashes shown at the gate are bound to the decision automatically."""
+    from .gates import parse_budget
+
     cfg = cfgmod.load()
     q = _queue(cfg)
     g = q._load("gates.json").get(gate_id)
     if g is None:
         typer.echo("unknown gate")
         raise typer.Exit(1)
+    if decision not in g["options"]:
+        typer.echo(f"{decision} is not an option for this gate; options: {', '.join(g['options'])}")
+        raise typer.Exit(1)
+    if g["kind"] == "budget" and decision == "approve" and parse_budget(comment) is None:
+        typer.echo("approving a budget gate needs the new run budget in the comment, e.g. --comment 'budget_usd: 80'")
+        raise typer.Exit(1)
     q.record_decision(gate_id, decision, by, comment, spec)
     typer.echo(f"recorded {decision} on {gate_id}")
+    if g["kind"] == "budget":
+        typer.echo(f"the run is parked: `factory resume {g['run_id']}` applies this decision")
 
 
 @app.command()

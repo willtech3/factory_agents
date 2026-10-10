@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -22,6 +23,9 @@ class RunStore:
     def __init__(self, root: Path):
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
+        # Parallel stage sessions (spec writers, reviewer passes) append from several threads; the next seq is
+        # read-then-written, so without this two events could share a seq and the log would not replay.
+        self._append_lock = threading.Lock()
 
     # ----- events -----
     def _events_path(self, run_id: str) -> Path:
@@ -42,11 +46,12 @@ class RunStore:
 
     def append(self, run_id: str, kind: str, actor: dict[str, Any], payload: dict[str, Any] | None = None,
                **extra: Any) -> RunEvent:
-        existing = self.events(run_id)
-        seq = existing[-1].seq + 1 if existing else 0
-        ev = RunEvent(run_id=run_id, seq=seq, kind=kind, actor=actor, payload=payload or {}, **extra)
-        with self._events_path(run_id).open("a") as f:
-            f.write(json.dumps(ev.to_dict()) + "\n")
+        with self._append_lock:
+            existing = self.events(run_id)
+            seq = existing[-1].seq + 1 if existing else 0
+            ev = RunEvent(run_id=run_id, seq=seq, kind=kind, actor=actor, payload=payload or {}, **extra)
+            with self._events_path(run_id).open("a") as f:
+                f.write(json.dumps(ev.to_dict()) + "\n")
         return ev
 
     def state(self, run_id: str) -> RunState:

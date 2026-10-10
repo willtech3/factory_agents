@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from .. import checks
+from ..budget import reserve_budget
 from ..gates import Decision, GateKind
 from ..state import RunStage
 from . import RunContext
@@ -55,6 +56,7 @@ def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | N
                            "and address every comment explicitly in decomposition.md. Increment `revision`.")
 
     mount, repo_clause, repo_available = repository_access(ctx, outcome)
+    reserve_budget(ctx, "decompose")
     res = ctx.driver.run(
         agent_key="decomposer", title=f"{ctx.run_id} decompose", run_id=ctx.run_id, stage="decompose",
         uploads=uploads, description=DESCRIPTION.format(feedback_clause=feedback_clause, repo_clause=repo_clause),

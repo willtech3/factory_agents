@@ -29,7 +29,8 @@ class GateKind(str, Enum):
     DECOMPOSITION_REVIEW = "gate_1_decomposition"
     SPEC_READINESS = "gate_2_spec_readiness"
     ESCALATION = "escalation"             # judge or loop could not converge
-    DEPLOY_FAILURE = "deploy_failure"     # Stage 5: dev pipeline failed or dev e2e failed; carries the log excerpt
+    DEPLOY_FAILURE = "deploy_failure"     # Stage 3/5: dev pipeline failed or dev e2e failed; carries the log excerpt
+    BUDGET = "budget"                     # the next session would take the run past constraints.budget_usd (budget.py)
     # Gate 3 (code review) is the forge's own change-request approval; see forge/
 
 
@@ -40,6 +41,21 @@ class Decision(str, Enum):
     APPROVE_SUBSET = "approve_subset"     # Gate 2 only: approve some specs, send others back
     # DEPLOY_FAILURE gates use: REQUEST_CHANGES (back to IMPLEMENTING with the comments as findings),
     # APPROVE (the failure was the platform's, not the change's: re-observe the next pipeline), REJECT (close the item).
+    # BUDGET gates use: APPROVE with the new cap in the comments (`budget_usd: 80`), REJECT (close the run).
+
+
+def parse_budget(text: str | None) -> float | None:
+    """The new run budget a human wrote in a decision or answer: `budget_usd: 80`, `budget: $80`, `$80`, or a bare
+    number on its own line. None when there is none."""
+    import re
+
+    for line in (text or "").splitlines():
+        s = line.strip()
+        m = (re.fullmatch(r"(?:budget(?:_usd)?\s*[:=]\s*)?\$?\s*(\d+(?:\.\d+)?)\s*(?:usd)?", s, re.IGNORECASE)
+             or re.search(r"budget(?:_usd)?\s*[:=]?\s*(?:to\s*)?\$?\s*(\d+(?:\.\d+)?)", s, re.IGNORECASE))
+        if m:
+            return float(m.group(1))
+    return None
 
 
 @dataclass(frozen=True)
@@ -90,6 +106,8 @@ def validate_decision(gate: Gate, decision: GateDecision) -> None:
         raise ValueError("request_changes requires comments; they become the agent's feedback")
     if decision.decision == Decision.APPROVE_SUBSET and not decision.approved_subset:
         raise ValueError("approve_subset requires at least one approved spec_id")
+    if gate.kind == GateKind.BUDGET and decision.decision == Decision.APPROVE and parse_budget(decision.comments) is None:
+        raise ValueError("approving a budget gate needs the new run budget in the comments, e.g. `budget_usd: 80`")
 
 
 @dataclass
