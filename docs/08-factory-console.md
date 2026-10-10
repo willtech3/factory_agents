@@ -14,7 +14,7 @@ Configuration is read from the environment and from `.env` at the repository roo
 
 **Inbox.** What is waiting on a person: gates to decide and questions from agents, with the run title, a one-line summary, and one button each. Below it, the pipeline as a numbered strip, because the stages really are a sequence: outcome, decomposing, Gate 1 (you), specifying, Gate 2 (you), building, done.
 
-**Runs.** One row per run with its stage, work-item count, spend, and last activity. A run page shows the same strip with the current stage, what needs you (questions answered inline, gates linked), the work items with their stage and pull request, the timeline from the event log with links to each agent session in the Anthropic Console, and every file produced with its fingerprint.
+**Runs.** One row per run with its stage, work-item count, spend, and last activity. A run page shows the same strip with the current stage, what needs you (questions answered inline, gates linked), the work items with their stage and pull request (and the dev URL once verified there), the timeline from the event log with links to each agent session in the Anthropic Console, and every file produced with its fingerprint. Once pull requests exist, a **Pull requests and the dev deploy** card lists the items still waiting on a merge or a deploy, starts the change-request watcher (`factory watch <run_id>` as a background process, like Resume), and shows when it last checked; the watcher records the merge, follows the dev pipeline, and either marks the item verified in dev or opens a deploy-failure gate that appears in the Inbox like any other.
 
 **Outcomes.** Saved outcomes and a form in the owner's vocabulary: what should be true when this is done, metrics with baseline and target, constraints, the repository, the owner. Saving validates against `schemas/outcome.schema.json` and names what is missing. From a saved outcome you start a **full run** (real agents through pull requests; needs the code host), a **design run** (real decomposer, spec writers, and judge through Gate 2; no code; needs only the platform), or a **demo** (simulated agents, real gates, nothing leaves the machine).
 
@@ -34,6 +34,6 @@ Configuration is read from the environment and from `.env` at the repository roo
 ## What it does not do yet
 
 - No streaming of agent progress: the timeline is the event log, and session links go to the Anthropic Console for the trace.
-- No Gate 3: code review is the code host's.
+- Gate 3 stays on the code host: the Console starts the watcher and shows what it recorded, it does not review or merge.
 - No authentication: it binds to localhost and records decisions as `console`. Put it behind something before sharing it.
 - The standalone page at `/gates/<id>/page` (the renderer in `surfaces/artifact_pages.py`) is the same content without the decision panel, for pasting into a tracker.

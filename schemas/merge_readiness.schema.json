@@ -5,7 +5,7 @@
   "description": "Output of the Merge Judge: an independent decision, after the reviewer/implementer exchange has settled, on whether the change is ready for a human to review in GitLab. Consumes the spec, findings, responses, test results, and the deterministic checks. Never edits code.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["verdict_id", "spec_id", "round", "result", "unresolved_findings", "deterministic_checks", "residual_risks", "summary_for_human", "produced_by"],
+  "required": ["verdict_id", "spec_id", "round", "result", "unresolved_findings", "criteria", "deterministic_checks", "residual_risks", "summary_for_human", "produced_by"],
   "properties": {
     "verdict_id": { "type": "string", "pattern": "^mrv_[a-z0-9]{8,}$" },
     "spec_id": { "type": "string" },
@@ -24,6 +24,19 @@
           "finding_id": { "type": "string" },
           "reviewer_status": { "type": "string" },
           "judge_assessment": { "type": "string", "description": "The judge's own view of who is right, with reasoning. Judges the exchange, not just the code." }
+        }
+      }
+    },
+    "criteria": {
+      "type": "array",
+      "description": "One row per acceptance criterion in the spec: the judge's own verdict on it, from evidence the judge located (a test in test_results.json or the diff, an orchestrator e2e row whose covers_ac names the criterion, a reproduction the judge ran). This table, not the reviewer's spec_conformance, is what the change request renders. not_assessed is reserved for a criterion nobody could exercise (the service would not start from its manifest entrypoint, or the only evidence needs a platform this run lacks); where the orchestrator's e2e rows exist for it, the criterion is met or not_met.",
+      "items": {
+        "type": "object",
+        "required": ["ac_id", "status", "evidence"],
+        "properties": {
+          "ac_id": { "type": "string" },
+          "status": { "type": "string", "enum": ["met", "not_met", "not_assessed"] },
+          "evidence": { "type": "string", "maxLength": 600, "description": "Where the proof is: test id and result, test_results.json e2e row (command, exit code, target), or the probe the judge ran." }
         }
       }
     },

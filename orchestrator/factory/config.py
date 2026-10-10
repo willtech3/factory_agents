@@ -75,6 +75,7 @@ class Config:
     rubrics_dir: Path
     templates_dir: Path
     pin_agent_versions: bool
+    skills_dir: Path = REPO_ROOT / "skills"   # platform-contract skill, uploaded into every session and seeded into repositories
 
     def console_session_url(self, session_id: str) -> str:
         return f"https://platform.claude.com/workspaces/{self.console_workspace}/sessions/{session_id}"
@@ -174,6 +175,7 @@ def load(lock_path: Path | None = None, dotenv_path: Path | None = None) -> Conf
         schemas_dir=REPO_ROOT / "schemas",
         rubrics_dir=REPO_ROOT / "rubrics",
         templates_dir=REPO_ROOT / "templates",
+        skills_dir=REPO_ROOT / "skills",
         pin_agent_versions=os.environ.get("FACTORY_PIN_VERSIONS", "1") == "1",
     )
 
@@ -231,6 +233,17 @@ def missing(cfg: Config, design_only: bool = False) -> list[str]:
         gaps.append("FORGE_TOKEN (orchestrator-side; GITHUB_TOKEN or GITLAB_TOKEN also accepted)")
     if cfg.forge == "gitlab" and not cfg.vault_id:
         gaps.append("FACTORY_VAULT_ID (sandbox git access for the gitlab forge, ADR-0003)")
+    return gaps + _surface_gaps(cfg)
+
+
+def missing_for_watch(cfg: Config) -> list[str]:
+    """What `factory watch` needs: the forge (to read change requests, pipelines, and deployments) and the gate surface
+    (to open a DEPLOY_FAILURE gate). No agent runs, so the platform key and the agent ids are not required."""
+    gaps = []
+    if cfg.forge not in FORGES:
+        gaps.append(f"FACTORY_FORGE={cfg.forge!r} (expected github|gitlab)")
+    if not cfg.forge_token:
+        gaps.append("FORGE_TOKEN (orchestrator-side; GITHUB_TOKEN or GITLAB_TOKEN also accepted)")
     return gaps + _surface_gaps(cfg)
 
 

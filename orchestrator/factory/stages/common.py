@@ -22,6 +22,26 @@ def provenance(ctx: RunContext, res: StageResult, agent_name: str, model: str, i
     }
 
 
+SKILL_UPLOAD_PATH = "skills/platform-contract/SKILL.md"
+SKILL_CLAUSE = ("The platform-contract skill is at /mnt/session/uploads/skills/platform-contract/SKILL.md (a repository that "
+                "carries it also has it at /workspace/repo/.claude/skills/platform-contract/SKILL.md). Read it first; do not "
+                "search the filesystem for it.")
+NO_SKILL_CLAUSE = ("No platform-contract skill is available for this run (the orchestrator has none to upload). Say so once "
+                   "in your assumptions and do not search the filesystem for one.")
+
+
+def platform_skill(ctx: RunContext) -> tuple[dict[str, bytes], str]:
+    """The upload (`skills/platform-contract/SKILL.md`) and the kickoff sentence that names it, for every stage.
+
+    Sessions on an existing repository have no other copy of the skill until the forge seeds it, and a brief that
+    says "read the skill first" without a path sends agents hunting the filesystem (post-mortem 2026-10-10, issue 12).
+    An absent skill file yields no upload and a sentence saying so."""
+    f = ctx.cfg.skills_dir / "platform-contract" / "SKILL.md"
+    if not f.is_file():
+        return {}, NO_SKILL_CLAUSE
+    return {SKILL_UPLOAD_PATH: f.read_bytes()}, SKILL_CLAUSE
+
+
 NO_REPO_RUBRIC_NOTE = """> **No repository is mounted in this session.** Criteria that require inspecting the code (paths or commands
 > exist, grounding in the codebase, questions the repository would answer) cannot be verified here: score them on
 > internal consistency and plausibility instead of 0, and say so in the evidence. Everything else applies in full.
@@ -96,21 +116,39 @@ def make_ask_human(ctx: RunContext, role: str, poll_seconds: float = 5.0, timeou
     return handler
 
 
-def open_gate_and_wait(ctx: RunContext, kind: GateKind, artifacts: dict[str, str], summary: str,
-                       assignees: list[str], options: tuple[Decision, ...], poll_seconds: float = 10.0,
-                       urls: dict[str, str] | None = None, work_item_id: str | None = None) -> GateDecision:
+def open_gate(ctx: RunContext, kind: GateKind, artifacts: dict[str, str], summary: str, assignees: list[str],
+              options: tuple[Decision, ...], urls: dict[str, str] | None = None, work_item_id: str | None = None) -> Gate:
+    """Open a gate on every surface and record `gate.opened`. Does not wait: `gate_decision` polls for the answer, so a
+    process that must keep doing other work (the change-request watcher) can open a gate without blocking on it."""
     refs = tuple(ArtifactRef(name=n, sha256=s, url=(urls or {}).get(n)) for n, s in sorted(artifacts.items()))
     gate = Gate(run_id=ctx.run_id, kind=kind, artifacts=refs, assignees=tuple(assignees), summary=summary, options=options,
                 work_item_id=work_item_id)
     ctx.queue.open(gate)
     ctx.notifier.gate_opened(gate)
     ctx.event("gate.opened", {"gate_id": gate.gate_id, "kind": kind.value, "artifacts": [r.__dict__ for r in refs],
-                              "assignees": assignees, "summary": summary}, stage=kind.value)
+                              "assignees": assignees, "summary": summary, "work_item_id": work_item_id},
+              stage=kind.value, work_item_id=work_item_id)
+    return gate
+
+
+def gate_decision(ctx: RunContext, gate_id: str, kind: GateKind, work_item_id: str | None = None) -> GateDecision | None:
+    """The human's decision on an open gate if one has been recorded on any surface, else None. Records `gate.decided`
+    the first time it is seen; a caller that polls must act on the decision it gets back rather than ask again."""
+    d = ctx.queue.decision(gate_id)
+    if d is not None:
+        ctx.event("gate.decided", {"gate_id": gate_id, "kind": kind.value, "decision": d.decision.value,
+                                   "comments": d.comments, "approved_subset": list(d.approved_subset),
+                                   "artifact_shas": list(d.artifact_shas)}, stage=kind.value, actor="human",
+                  work_item_id=work_item_id)
+    return d
+
+
+def open_gate_and_wait(ctx: RunContext, kind: GateKind, artifacts: dict[str, str], summary: str,
+                       assignees: list[str], options: tuple[Decision, ...], poll_seconds: float = 10.0,
+                       urls: dict[str, str] | None = None, work_item_id: str | None = None) -> GateDecision:
+    gate = open_gate(ctx, kind, artifacts, summary, assignees, options, urls, work_item_id)
     while True:
-        d = ctx.queue.decision(gate.gate_id)
+        d = gate_decision(ctx, gate.gate_id, kind, work_item_id)
         if d is not None:
-            ctx.event("gate.decided", {"gate_id": gate.gate_id, "kind": kind.value, "decision": d.decision.value,
-                                       "comments": d.comments, "approved_subset": list(d.approved_subset),
-                                       "artifact_shas": list(d.artifact_shas)}, stage=kind.value, actor="human")
             return d
         time.sleep(poll_seconds)

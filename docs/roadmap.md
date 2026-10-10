@@ -34,7 +34,7 @@ Goal: confirm the read-only calls Stage 5 and the preview lookup depend on, agai
 - Implement one spec on the fork. Replace `LocalVerifier` with a CI job on the factory branch (same interface: commands, exit codes, diff).
 - Watch the reviewer: are findings falsifiable, do refutation conditions make sense, how many are withdrawn? Tune `reviewer.md` from what you see, one rule per observed failure.
 - Watch the preview loop: does `preview.json` become `ready` before the implementer finishes, do the `preview` e2e entries run in the sandbox, does `e2e_preview` agree with what the implementer reported?
-- Open the pull request; confirm the run record (`.factory/runs/<run_id>/`) is on the branch with a reproducible commit sha. Have a real engineer review it and time them. Merge it, feed `cr.merged` to `deploy_observe.on_change_request_merged` by hand (the watcher does not exist yet), and watch Stage 5 end at `DEPLOYED_DEV`; break the next one deliberately and confirm the `DEPLOY_FAILURE` gate carries a useful log excerpt.
+- Open the pull request; confirm the run record (`.factory/runs/<run_id>/`) is on the branch with a reproducible commit sha. Have a real engineer review it and time them. Merge it with `factory watch <run_id>` running (or started from the Console's run page) and watch Stage 5 end at `DEPLOYED_DEV`; break the next one deliberately and confirm the `DEPLOY_FAILURE` gate carries a useful log excerpt.
 
 ## Milestone A: unattended end-to-end on factory-bench `lintr` (week 3)
 - Build the smallest `factory-bench` repo (the Python CLI) with two outcomes and hidden suites.
@@ -45,7 +45,7 @@ Goal: confirm the read-only calls Stage 5 and the preview lookup depend on, agai
 - A low-risk internal outcome, owner and engineer briefed, L3 telemetry on.
 - Factory Console v0 exists (`factory web`: outcomes, board, inbox, Gate 1 and 2 review; [08-factory-console.md](08-factory-console.md)). Add what a production run needs: authentication, Gate 3 and Stage 5 views, agent versions.
 - Slack notifications for gates and questions (deep links to the page and the tracker issue).
-- A change-request watcher (forge webhook or polling) that records `cr.merged` / `cr.closed` and calls Stage 5.
+- The change-request watcher exists as a polling process (`factory watch`, started from the Console too). Add a forge webhook endpoint to shorten the poll, and the follow-up implementer round that a deploy-failure `request_changes` asks for (today the item sits at `implementing` with its feedback file).
 - `ClaudeArtifactPublisher`: publish gate pages as claude.ai artifacts once there is a way to do it from the orchestrator.
 
 ## Milestone C: evals that gate changes (week 8)
@@ -67,7 +67,7 @@ Goal: confirm the read-only calls Stage 5 and the preview lookup depend on, agai
 - The Factory Console is v0: local, unauthenticated, Gates 1 and 2 only. Session progress is the event log, not a live stream.
 - `LocalVerifier` runs test commands and e2e entries on the orchestrator host; production must move this to CI.
 - Both forges' pipeline, job, environment, and deployment reads and the webhook parsers are unverified (spikes 2a and 2b). `preview_info` fails closed when they misbehave, which blocks merges until fixed.
-- Stage 5 is driven by `deploy_observe.on_change_request_merged`, which the change-request watcher must call; the watcher and the webhook HTTP endpoint belong to the Factory Console and are not in this repository.
+- Stage 5 is driven by the polling change-request watcher (`factory watch`, `watcher.py`); the forge webhook endpoint that would shorten the poll is not in this repository, and a deploy-failure `request_changes` leaves the item at `implementing` with its feedback file without starting the follow-up round. The watcher's GitHub reads (`merge_commit_sha`, workflow runs, deployments) are as unverified live as the rest of `forge/github.py`.
 - `surfaces/jira.py` is a stub; `ClaudeArtifactPublisher` writes local files.
 - `skills/platform-contract/SKILL.md` and `schemas/service_manifest.schema.json` are placeholders; the platform team's versions replace them.
 - `merge_findings` de-duplicates by file and the first three characters of the line number, which is crude; good enough until real findings show what collides.

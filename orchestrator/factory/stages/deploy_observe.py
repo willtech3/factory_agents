@@ -13,6 +13,12 @@ gitlab forge) deploys the default branch to `dev` through its existing templates
    can send the work item back to `IMPLEMENTING` (a follow-up branch), re-observe (platform
    flake), or close it.
 
+The stage is driven by the change-request watcher (`factory watch <run_id>`, `watcher.py`), which
+polls the forge for the merge and then calls the pieces below one tick at a time: `ensure_deploying`,
+`observe_once`, `open_deploy_failure_gate`, `apply_deploy_decision`. `observe_deploy` composes the
+same pieces into one blocking call for callers that can wait. Every piece is safe to call again
+after a restart: it reads what the event log already holds before it appends.
+
 Why observe rather than drive: boundary-crossing actions belong to humans or to the platform's
 own automation, not to a factory agent (12-Factor Agents Factor 7; OpenAI auto-review, both in
 docs/research/practitioners.md). Why observe at all: agents and pipelines alike declare victory
@@ -28,10 +34,10 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
 from ..forge import PIPELINE_TERMINAL, parse_pipeline_webhook
-from ..gates import Decision, GateKind
-from ..state import WorkItemStage
+from ..gates import Decision, Gate, GateKind
+from ..state import RunEvent, WorkItemStage
 from . import RunContext
-from .common import open_gate_and_wait
+from .common import gate_decision, open_gate
 
 
 class PipelineSource(Protocol):
@@ -57,6 +63,17 @@ class DeployObservation:
     def to_dict(self) -> dict[str, Any]:
         return {"status": self.status, "pipeline": self.pipeline, "environment_url": self.environment_url,
                 "log_excerpt": self.log_excerpt, "e2e_results": self.e2e_results}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> DeployObservation:
+        """The observation a `DEPLOY_FAILURE` gate was opened on, read back from `<spec_id>-deploy_report.json` when a
+        restarted watcher finds the gate still open."""
+        return cls(status=d.get("status", "failed"), pipeline=d.get("pipeline"), environment_url=d.get("environment_url"),
+                   log_excerpt=d.get("log_excerpt") or "", e2e_results=list(d.get("e2e_results") or []))
+
+    @property
+    def passed(self) -> bool:
+        return self.status == "succeeded" and all(r.get("exit_code") == 0 for r in self.e2e_results)
 
 
 def wait_for_pipeline(source: PipelineSource, ref: str, sha: str, *, poll_seconds: float = 15.0,
@@ -104,49 +121,91 @@ def handle_pipeline_webhook(ctx: RunContext, payload: dict[str, Any], sha_to_ite
     return pipe
 
 
+def ensure_deploying(ctx: RunContext, spec: dict[str, Any]) -> None:
+    """`MERGED -> DEPLOYING_DEV`, once. A watcher that restarts while the item is already deploying appends nothing."""
+    wid = spec["work_item_id"]
+    wi = ctx.store.state(ctx.run_id).work_items.get(wid)
+    if wi is not None and wi.stage == WorkItemStage.DEPLOYING_DEV:
+        return
+    ctx.event("work_item.stage", {"stage": WorkItemStage.DEPLOYING_DEV.value}, work_item_id=wid, spec_id=spec["spec_id"], stage="deploy")
+
+
+def deploy_attempts(events: list[RunEvent], work_item_id: str) -> int:
+    """How many `DEPLOY_FAILURE` gates have been opened for this item since its latest merge: the number of observations
+    that have already failed. Decides whether an `approve` (platform flake) may re-observe or has to escalate."""
+    n = 0
+    for ev in events:
+        if ev.work_item_id != work_item_id:
+            continue
+        if ev.kind == "cr.merged":
+            n = 0
+        elif ev.kind == "gate.opened" and ev.payload.get("kind") == GateKind.DEPLOY_FAILURE.value:
+            n += 1
+    return n
+
+
 def observe_deploy(ctx: RunContext, spec: dict[str, Any], merge_sha: str, default_branch: str,
                    source: PipelineSource, run_e2e: E2ERunner, *, smoke_commands: tuple[str, ...] = (),
                    assignees: list[str] | None = None, poll_seconds: float = 15.0, timeout_seconds: float = 3600.0,
                    max_reobserve: int = 1, sleep: Callable[[float], None] = time.sleep,
-                   clock: Callable[[], float] = time.monotonic) -> WorkItemStage:
-    """Drive one merged work item through Stage 5. Returns the work item's resulting stage."""
-    sid, wid = spec["spec_id"], spec["work_item_id"]
-    ctx.event("work_item.stage", {"stage": WorkItemStage.DEPLOYING_DEV.value}, work_item_id=wid, spec_id=sid, stage="deploy")
+                   clock: Callable[[], float] = time.monotonic, gate_poll_seconds: float = 10.0) -> WorkItemStage:
+    """Drive one merged work item through Stage 5 in one blocking call. Returns the work item's resulting stage.
+    The watcher uses the same pieces without blocking on the gate (`watcher.Watcher`)."""
+    ensure_deploying(ctx, spec)
     for attempt in range(max_reobserve + 1):
-        obs = _observe_once(ctx, spec, merge_sha, default_branch, source, run_e2e, smoke_commands,
-                            poll_seconds, timeout_seconds, sleep, clock)
-        if obs.status == "succeeded" and all(r.get("exit_code") == 0 for r in obs.e2e_results):
-            ctx.event("work_item.stage", {"stage": WorkItemStage.DEPLOYED_DEV.value, "environment_url": obs.environment_url},
-                      work_item_id=wid, spec_id=sid, stage="deploy")
-            return WorkItemStage.DEPLOYED_DEV
-        decision = _deploy_failure_gate(ctx, spec, obs, assignees or [])
-        if decision.decision == Decision.APPROVE and attempt < max_reobserve:
-            continue                                    # human says platform flake: watch the next pipeline
-        ctx.event("work_item.stage", {"stage": WorkItemStage.ESCALATED.value, "reason": f"deploy:{obs.status}"},
-                  work_item_id=wid, spec_id=sid, stage="deploy")
-        if decision.decision == Decision.REQUEST_CHANGES:
-            # The comments become the next implementer round's findings; a new branch and change request follow.
-            ctx.store.put_artifact(ctx.run_id, "deploy", f"{sid}-deploy_feedback.md",
-                                   _feedback_md(obs, decision.comments).encode())
-            ctx.event("work_item.stage", {"stage": WorkItemStage.IMPLEMENTING.value, "from": "deploy_failure"},
-                      work_item_id=wid, spec_id=sid, stage="deploy", actor="human")
-            return WorkItemStage.IMPLEMENTING
-        if decision.decision == Decision.REJECT:
-            ctx.event("work_item.stage", {"stage": WorkItemStage.CLOSED.value}, work_item_id=wid, spec_id=sid,
-                      stage="deploy", actor="human")
-            return WorkItemStage.CLOSED
-        return WorkItemStage.ESCALATED                 # APPROVE with re-observations exhausted: a human takes over
+        obs = observe_once(ctx, spec, merge_sha, default_branch, source, run_e2e, smoke_commands=smoke_commands,
+                           poll_seconds=poll_seconds, timeout_seconds=timeout_seconds, sleep=sleep, clock=clock, attempt=attempt)
+        if obs.passed:
+            return record_deployed(ctx, spec, obs)
+        gate = open_deploy_failure_gate(ctx, spec, obs, assignees or [])
+        while (d := gate_decision(ctx, gate.gate_id, GateKind.DEPLOY_FAILURE, spec["work_item_id"])) is None:
+            time.sleep(gate_poll_seconds)
+        result = apply_deploy_decision(ctx, spec, obs, d.decision, d.comments, reobserve_allowed=attempt < max_reobserve)
+        if result is not None:
+            return result
     return WorkItemStage.ESCALATED  # pragma: no cover
 
 
-def _observe_once(ctx: RunContext, spec: dict[str, Any], merge_sha: str, default_branch: str, source: PipelineSource,
-                  run_e2e: E2ERunner, smoke_commands: tuple[str, ...], poll_seconds: float, timeout_seconds: float,
-                  sleep: Callable[[float], None], clock: Callable[[], float]) -> DeployObservation:
+def record_deployed(ctx: RunContext, spec: dict[str, Any], obs: DeployObservation) -> WorkItemStage:
+    ctx.event("work_item.stage", {"stage": WorkItemStage.DEPLOYED_DEV.value, "environment_url": obs.environment_url},
+              work_item_id=spec["work_item_id"], spec_id=spec["spec_id"], stage="deploy")
+    return WorkItemStage.DEPLOYED_DEV
+
+
+def apply_deploy_decision(ctx: RunContext, spec: dict[str, Any], obs: DeployObservation, decision: Decision, comments: str,
+                          *, reobserve_allowed: bool) -> WorkItemStage | None:
+    """Act on the human's answer to a `DEPLOY_FAILURE` gate. Returns the item's new stage, or None when the human said
+    the failure was the platform's (`approve`) and another observation is allowed: the caller watches the next pipeline."""
+    sid, wid = spec["spec_id"], spec["work_item_id"]
+    if decision == Decision.APPROVE and reobserve_allowed:
+        return None
+    ctx.event("work_item.stage", {"stage": WorkItemStage.ESCALATED.value, "reason": f"deploy:{obs.status}"},
+              work_item_id=wid, spec_id=sid, stage="deploy")
+    if decision == Decision.REQUEST_CHANGES:
+        # The comments become the next implementer round's findings; a new branch and change request follow.
+        ctx.store.put_artifact(ctx.run_id, "deploy", f"{sid}-deploy_feedback.md", _feedback_md(obs, comments).encode())
+        ctx.event("work_item.stage", {"stage": WorkItemStage.IMPLEMENTING.value, "from": "deploy_failure"},
+                  work_item_id=wid, spec_id=sid, stage="deploy", actor="human")
+        return WorkItemStage.IMPLEMENTING
+    if decision == Decision.REJECT:
+        ctx.event("work_item.stage", {"stage": WorkItemStage.CLOSED.value}, work_item_id=wid, spec_id=sid,
+                  stage="deploy", actor="human")
+        return WorkItemStage.CLOSED
+    return WorkItemStage.ESCALATED                 # APPROVE with re-observations exhausted: a human takes over
+
+
+def observe_once(ctx: RunContext, spec: dict[str, Any], merge_sha: str, default_branch: str, source: PipelineSource,
+                 run_e2e: E2ERunner, *, smoke_commands: tuple[str, ...] = (), poll_seconds: float = 15.0,
+                 timeout_seconds: float = 3600.0, sleep: Callable[[float], None] = time.sleep,
+                 clock: Callable[[], float] = time.monotonic, attempt: int = 0) -> DeployObservation:
+    """One observation: `deploy.started`, the pipeline to a terminal status, `deploy.succeeded` or `deploy.failed`, and
+    on success the e2e entries against the dev URL with `e2e.dev_passed` or `e2e.dev_failed`. Blocks for at most
+    `timeout_seconds`. `attempt` counts observations of the same merge (0 first, 1 after an approved re-observe)."""
     sid, wid = spec["spec_id"], spec["work_item_id"]
     dev = ctx.cfg.dev_environment_name
     first = source.latest_pipeline(default_branch, merge_sha)
     ctx.event("deploy.started", {"pipeline_id": (first or {}).get("id"), "pipeline_url": (first or {}).get("web_url"),
-                                 "sha": merge_sha, "environment": dev, "via": "poll"},
+                                 "sha": merge_sha, "environment": dev, "via": "poll", "attempt": attempt},
               work_item_id=wid, spec_id=sid, stage="deploy", actor="platform")
     obs = wait_for_pipeline(source, default_branch, merge_sha, poll_seconds=poll_seconds, timeout_seconds=timeout_seconds,
                             sleep=sleep, clock=clock, dev_environment=dev)
@@ -174,7 +233,8 @@ def _observe_once(ctx: RunContext, spec: dict[str, Any], merge_sha: str, default
     return obs
 
 
-def _deploy_failure_gate(ctx: RunContext, spec: dict[str, Any], obs: DeployObservation, assignees: list[str]):
+def open_deploy_failure_gate(ctx: RunContext, spec: dict[str, Any], obs: DeployObservation, assignees: list[str]) -> Gate:
+    """Persist the observation as `<spec_id>-deploy_report.json` and open the gate on it. Returns without waiting."""
     sid = spec["spec_id"]
     report = json.dumps(obs.to_dict(), indent=2).encode()
     sha = ctx.store.put_artifact(ctx.run_id, "deploy", f"{sid}-deploy_report.json", report)
@@ -184,9 +244,12 @@ def _deploy_failure_gate(ctx: RunContext, spec: dict[str, Any], obs: DeployObser
     summary = (f"{sid}: {what}. Options: request_changes sends the item back to an implementer on a new branch with "
                f"your comments; approve means the failure was the platform's and the next pipeline should be watched; "
                f"reject closes the item. Log excerpt:\n{obs.log_excerpt[-1500:]}")
-    return open_gate_and_wait(ctx, GateKind.DEPLOY_FAILURE, {f"{sid}-deploy_report.json": sha}, summary, assignees,
-                              options=(Decision.REQUEST_CHANGES, Decision.APPROVE, Decision.REJECT),
-                              work_item_id=spec["work_item_id"])
+    return open_gate(ctx, GateKind.DEPLOY_FAILURE, {f"{sid}-deploy_report.json": sha}, summary, assignees,
+                     options=(Decision.REQUEST_CHANGES, Decision.APPROVE, Decision.REJECT), work_item_id=spec["work_item_id"])
+
+
+def deploy_report_name(spec_id: str) -> str:
+    return f"{spec_id}-deploy_report.json"
 
 
 def _feedback_md(obs: DeployObservation, comments: str) -> str:
@@ -217,3 +280,4 @@ def on_change_request_merged(ctx: RunContext, spec: dict[str, Any], merge_sha: s
 
 
 on_mr_merged = on_change_request_merged   # pre-ADR-0008 name
+_observe_once = observe_once               # name before the watcher split the stage into ticks
