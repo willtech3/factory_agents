@@ -1090,7 +1090,8 @@
   function renderSpecs(doc, rv, notes, picks, subsetAllowed) {
     const v = rv.verdict, specs = rv.specs, ov = v.overall || {};
     const issuesBy = Object.fromEntries((v.per_spec || []).map(ps => [ps.spec_id, ps]));
-    const allIssues = (v.per_spec || []).flatMap(ps => ps.issues || []);
+    const setIssues = Object.values(v.coherence || {}).flatMap(items => items || []).filter(it => typeof it === "object");
+    const allIssues = [...(v.per_spec || []).flatMap(ps => ps.issues || []), ...setIssues];
     const sev = s => allIssues.filter(i => i.severity === s).length;
     const userVisible = Object.values(specs).flatMap(s => s.acceptance_criteria || []).filter(a => a.user_visible).length;
     const totalAC = Object.values(specs).flatMap(s => s.acceptance_criteria || []).length;
@@ -1105,7 +1106,7 @@
         [`${(v.goal_coverage || []).length - notCovered.length}/${(v.goal_coverage || []).length}`, "metrics covered by criteria", notCovered.length ? "warn" : "ok"]]))));
 
     doc.append(card("What to check", checklist([
-      ["The judge's verdict and anything it flagged", allIssues.length ? `${allIssues.length} issues, listed under each contract. Blocking ones should be resolved before you approve.` : "The judge found nothing outstanding."],
+      ["The judge's verdict and anything it flagged", allIssues.length ? `${allIssues.length} issues, listed across the set and under each contract. Blocking ones should be resolved before you approve.` : "The judge found nothing outstanding."],
       ["User-visible acceptance criteria", `${userVisible} criteria describe behaviour a user or operator will see. Read those as if they were the feature description.`],
       ["Product decisions hiding in the criteria", "Customer-facing wording, limits, timings, and defaults in a criterion are decisions you are making by approving."],
       ["Where each agent may change code", "Each contract lists allowed paths. If one reaches into something it should not, request changes."],
@@ -1116,7 +1117,11 @@
     for (const g of v.goal_coverage || []) gc.append(el("tr", null, el("td", null, el("b", null, g.metric)), el("td", { class: g.assessment === "covered" ? "ok" : "gap" }, words(g.assessment)), el("td", { class: "mono explain" }, (g.covering_acs || []).join(", ")), el("td", null, g.note || "")));
     const coh = Object.entries(v.coherence || {}).flatMap(([bucket, items]) => (items || []).map(it => ({ bucket, it })));
     doc.append(card("Metrics and how the contracts fit together", el("div", { class: "stack" }, gc,
-      coh.length ? el("div", null, el("h3", null, "Across the set"), el("ul", { class: "reading" }, coh.map(({ bucket, it }) => el("li", null, el("span", { class: "tag" }, words(bucket)), " ", typeof it === "string" ? it : (it.description || JSON.stringify(it)), it.related_spec_ids ? el("span", { class: "explain" }, ` (${it.related_spec_ids.join(", ")})`) : null)))) : null)));
+      coh.length ? el("div", null, el("h3", null, "Across the set"), el("ul", { class: "reading" }, coh.map(({ bucket, it }) => el("li", null,
+        el("span", { class: "tag" }, words(bucket)), " ", it.severity ? el("span", { class: `sev ${it.severity}` }, it.severity) : null, " ",
+        typeof it === "string" ? it : (it.description || JSON.stringify(it)),
+        it.related_spec_ids ? el("span", { class: "explain" }, ` (${it.related_spec_ids.join(", ")})`) : null,
+        it.suggested_resolution ? el("div", { class: "fix" }, "Suggested: " + it.suggested_resolution) : null)))) : null)));
 
     const wrap = el("div");
     Object.entries(specs).forEach(([sid, s], i) => {
