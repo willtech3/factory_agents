@@ -56,6 +56,20 @@ class SessionDriver:
         self.client = client or anthropic_client(cfg)
         self.unattended = unattended
         self.on_session_started = on_session_started   # the orchestrator records `session.started` so the Console can link to it
+        self.active: set[str] = set()                   # sessions started by this process that have not finished
+
+    def interrupt_active(self) -> list[str]:
+        """Send `user.interrupt` to every session this driver still has in flight. Called when the orchestrator is
+        stopped or crashes, so a session does not keep spending up to its cap for nobody. Returns the ids reached."""
+        done = []
+        for sid in sorted(self.active):
+            try:
+                self.client.beta.sessions.events.send(session_id=sid, events=[{"type": "user.interrupt"}])
+                done.append(sid)
+            except Exception as e:  # noqa: BLE001
+                print(f"[session] could not interrupt {sid}: {str(e)[:120]}")
+        self.active.clear()
+        return done
 
     # ------------------------------------------------------------ uploads
 
@@ -135,6 +149,7 @@ class SessionDriver:
             initial_events=kickoff,
         )
         print(f"[session] {stage} {title}: {self.cfg.console_session_url(session.id)}")
+        self.active.add(session.id)
         if self.on_session_started:
             self.on_session_started({"session_id": session.id, "agent_id": agent_ref.id, "agent_version": agent_ref.version,
                                      "agent_key": agent_key, "stage": stage, "run_id": run_id, "work_item_id": work_item_id,
@@ -218,6 +233,7 @@ class SessionDriver:
             pass
 
         outputs = self._fetch_outputs(session.id)
+        self.active.discard(session.id)
         return StageResult(
             session_id=session.id,
             agent_id=agent_ref.id,

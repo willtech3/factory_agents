@@ -58,3 +58,22 @@ def test_decompose_retry_does_not_reenter_the_stage(tmp_path, root, examples):
     assert decomposition["coverage"]
     kinds = [e.kind for e in ctx.store.events(ctx.run_id)]
     assert kinds.count("stage.entered") == 1 and ctx.store.state(ctx.run_id).stage == RunStage.DECOMPOSING
+
+
+def test_driver_interrupts_sessions_still_in_flight(tmp_path, root):
+    """A session the driver started and has not finished gets user.interrupt when the orchestrator is stopped."""
+    from factory.sessions import SessionDriver
+
+    sent = []
+
+    class Events:
+        def send(self, session_id, events):
+            sent.append((session_id, events[0]["type"]))
+
+    class Client:
+        beta = type("B", (), {"sessions": type("S", (), {"events": Events()})()})()
+
+    d = SessionDriver(make_config(root, tmp_path), client=Client())
+    d.active.update({"sesn_a", "sesn_b"})
+    assert d.interrupt_active() == ["sesn_a", "sesn_b"]
+    assert sent == [("sesn_a", "user.interrupt"), ("sesn_b", "user.interrupt")] and d.active == set()

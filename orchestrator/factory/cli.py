@@ -137,12 +137,28 @@ def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the f
         stage=info["stage"], actor="platform", work_item_id=info.get("work_item_id"))
     typer.echo(f"run {run_id} started (forge={cfg.forge if ctx.forge else 'none'}, gate surface={cfg.gate_surface}"
                f"{', design only' if design_only else ''})")
+    import signal
+
+    def _stop(signum, frame):
+        # Stopped from outside (Ctrl-C, kill, the Console): leave no session spending for nobody, then record it.
+        stopped = ctx.driver.interrupt_active()
+        try:
+            ctx.event("run.failed", {"reason": f"stopped by signal {signum}", "interrupted_sessions": stopped})
+        except Exception:  # noqa: BLE001
+            pass
+        raise SystemExit(128 + signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, _stop)
     try:
         final = run_pipeline(ctx, outcome)
+    except SystemExit:
+        raise
     except Exception as e:  # noqa: BLE001
         # Record the failure so the Console shows it; a crashed orchestrator must not look like a run in progress.
+        stopped = ctx.driver.interrupt_active()
         try:
-            ctx.event("run.failed", {"reason": f"{type(e).__name__}: {str(e)[:500]}"})
+            ctx.event("run.failed", {"reason": f"{type(e).__name__}: {str(e)[:500]}", "interrupted_sessions": stopped})
         except Exception:  # noqa: BLE001
             pass
         raise
