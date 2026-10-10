@@ -15,7 +15,7 @@ Review the plan, then re-run with `--yes` once you agree with it. `claude-lock.j
 | `codebase_researcher` | all | Sonnet 5.5, medium | no | the goal (it is told what to document, not why) | Goal-blind factual research; keeps reading out of the lead agents' context |
 | `decomposer` | 1 | Opus 5.5, high | no | - | Turns an outcome into a DAG of work items for Gate 1 |
 | `spec_writer` | 2 | Sonnet 5.5, high | no | - | Writes one spec per work item |
-| `spec_judge` | 2 | Opus 5.5, xhigh | no | spec_writer (different model tier, never sees the writer's reasoning) | Grades specs per rubric and judges whether the set achieves the outcome |
+| `spec_judge` | 2 | Opus 5.5, high | no | spec_writer (different model tier, never sees the writer's reasoning) | Grades specs per rubric and judges whether the set achieves the outcome |
 | `implementer` | 3 | Opus 5.5, xhigh | yes | - | Implements one spec in vertical slices with tests |
 | `reviewer` | 3 | Opus 5.5, xhigh | no | implementer (fresh session per round, sees only diff + spec) | Adversarial review with falsifiable findings |
 | `security_reviewer` | 3 | Fable 5.1, high | no | implementer (fresh session per round, sees only diff + spec + the orchestrator's pre-checks) | Security review: trust boundaries, attacker-controlled input, authorisation, secrets, dependencies; one CWE per finding; reproduced findings stand whatever their label |

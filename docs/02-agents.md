@@ -23,7 +23,7 @@ The roster, what each agent reads and writes, and why the boundaries sit where t
 | Codebase researcher | Sonnet 5.5 | medium | Reading-heavy, little judgement; keeps the leads' context small. Haiku 5.5 is a cost option once its reports are calibrated. |
 | Decomposer | Opus 5.5 | high | Highest leverage per token in the run: a bad work item becomes several bad specs. |
 | Spec writer | Sonnet 5.5 | high | Specs are structured and rubric-graded; the judge above it is stronger, which is the point. |
-| Spec judge | Opus 5.5 | xhigh | Different tier from the writer (self-preference mitigation); set-level coherence is genuinely hard. |
+| Spec judge | Opus 5.5 | high | Different tier from the writer (self-preference mitigation). At xhigh about 80% of its output was hidden reasoning that changed no verdict (post-mortem 2026-10-10, issue 9); the orchestrator can override to xhigh per session for round 2 or sets over three specs. |
 | Implementer | Opus 5.5 | xhigh | Long-horizon agentic coding; xhigh is the recommended setting for this class of work. |
 | Reviewer | Opus 5.5 | xhigh | Same tier as the implementer. Mitigation is independence plus execution grounding, not model choice. For high-stakes repos, pin a different model per session with `agent_with_overrides` (Claude Fable 5.1 is the natural upgrade). |
 | Merge judge | Opus 5.5 | high | Judges an exchange with authoritative test results in hand; xhigh rarely changes the verdict. |
