@@ -127,5 +127,15 @@ def test_omitted_visual_results_cannot_pass():
     assert not checks.visual_passed(spec, []).passed
     row = {**entry(), 'exit_code': 0}
     assert not checks.visual_passed(spec, [row]).passed
-    row['visual'] = {'status': 'passed'}
+    row['visual'] = {**entry()['visual'], 'status': 'passed'}
     assert checks.visual_passed(spec, [row]).passed
+
+
+def test_desktop_evidence_cannot_satisfy_a_missing_mobile_check():
+    desktop = entry(); mobile = entry()
+    mobile['visual']['viewport'] = {'width': 390, 'height': 844}
+    spec = {'test_plan': {'e2e': [desktop, mobile]}}
+    row = {**desktop, 'exit_code': 0, 'visual': {**desktop['visual'], 'status': 'passed'}}
+    assert not checks.visual_passed(spec, [row]).passed
+    mobile_row = {**mobile, 'exit_code': 0, 'visual': {**mobile['visual'], 'status': 'passed'}}
+    assert checks.visual_passed(spec, [row, mobile_row]).passed

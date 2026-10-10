@@ -356,7 +356,9 @@ def visual_passed(spec: dict[str, Any], results: list[dict[str, Any]]) -> CheckR
         if not entry.get("visual"):
             continue
         matching = [r for r in results if r.get("command") == entry["command"] and r.get("target") == entry["target"]
-                    and set(r.get("covers_ac", [])) == set(entry.get("covers_ac", []))]
+                    and set(r.get("covers_ac", [])) == set(entry.get("covers_ac", []))
+                    and all(r.get("visual", {}).get(k) == entry["visual"].get(k)
+                            for k in ("persona", "viewport", "steps", "environment"))]
         if not matching or not all(r.get("exit_code") == 0 and r.get("visual", {}).get("status") == "passed" for r in matching):
             missing.append(entry.get("description") or entry["command"])
     return CheckResult("visual_e2e", not missing, "All required browser checks have current visual evidence" if not missing
