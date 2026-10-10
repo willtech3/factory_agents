@@ -43,10 +43,11 @@ from pathlib import Path
 from typing import Any
 
 from .. import checks, security
+from ..budget import reserve_budget
 from ..checks import CheckResult
 from ..state import WorkItemStage
 from . import RunContext
-from .common import persist_outputs, platform_skill, public, require_json, run_session, stamp_provenance, artifact_json_or_none
+from .common import enter_item_stage, persist_outputs, platform_skill, public, require_json, run_session, stamp_provenance, artifact_json_or_none
 
 NO_FORGE_GIT_SETUP = """Git access: no forge is configured for this run. The repository at {repo_url} is not reachable
 from the sandbox; work on branch {branch} from {base_branch} only if it was mounted for you, otherwise record the
@@ -622,7 +623,10 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
 
     def mount(checkout: str) -> dict[str, Any] | None:
         return ctx.forge.session_repository_resource(repo_url, checkout) if ctx.forge is not None else None
-    if resume_from is None:
+    current = ctx.store.state(ctx.run_id).work_items.get(wid)
+    if resume_from is None or (current is not None and current.stage == WorkItemStage.SPEC_APPROVED):
+        # A resumed item that never started (the orchestrator died, or the budget paused the run, before its first
+        # implementer) still has to leave SPEC_APPROVED; one that did start is already past it.
         ctx.event("work_item.stage", {"stage": WorkItemStage.IMPLEMENTING.value, "branch": branch}, work_item_id=wid, spec_id=sid)
 
     findings: dict[str, Any] | None = resume_from.findings if resume_from else None
@@ -661,6 +665,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             if findings and response is None:
                 raise RuntimeError(f"cannot resume {sid} at round {round_no}: no review_response for round {round_no - 1}'s findings")
         else:
+            reserve_budget(ctx, "implement")
             res = run_session(
                 ctx, prefix=f"{sid}-r{round_no}-", spec_id=sid,
                 agent_key="implementer", title=f"{ctx.run_id} implement {sid} r{round_no}", run_id=ctx.run_id,
@@ -737,8 +742,21 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             break
         det_only_response = False
 
-        # ---- fresh-context adversarial review (N independent passes, merged)
-        ctx.event("work_item.stage", {"stage": WorkItemStage.REVIEWING.value, "review_round": round_no}, work_item_id=wid, spec_id=sid)
+        # ---- fresh-context adversarial review (N independent passes plus one security pass, merged)
+        pass_ids = list(range(1, ctx.policy.reviewer_passes + 1))
+        with_security = bool(ctx.policy.security_review and "security_reviewer" in ctx.cfg.agents)
+        # Passes persisted before the orchestrator died or paused are reused, not paid for again.
+        reused = {i: artifact_json_or_none(ctx, "review", f"{sid}-r{round_no}-p{i}-findings.json") for i in pass_ids} if resumed_round else {}
+        reused_sec = artifact_json_or_none(ctx, "review", f"{sid}-r{round_no}-sec-findings.json") if resumed_round and with_security else None
+        to_run = [i for i in pass_ids if reused.get(i) is None]
+        run_sec = with_security and reused_sec is None
+        if to_run or run_sec:
+            enter_item_stage(ctx, wid, sid, WorkItemStage.REVIEWING, review_round=round_no)
+            # every session of the round, before the first one starts: the general passes and the security pass together
+            if to_run:
+                reserve_budget(ctx, "review", len(to_run), extra={"security_review": 1} if run_sec else None)
+            else:
+                reserve_budget(ctx, "security_review", 1)
         rev_uploads = {"spec.json": uploads["spec.json"], **({"spec.md": uploads["spec.md"]} if "spec.md" in uploads else {}), **skill_uploads,
                        "diff.patch": diff["patch"].encode(),
                        "implementation_report.json": json.dumps(report, indent=2).encode(),
@@ -754,10 +772,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                       "(upheld/withdrawn), then review the new hunks.")
 
         def one_pass(i: int) -> dict[str, Any]:
-            if resumed_round:
-                prior = artifact_json_or_none(ctx, "review", f"{sid}-r{round_no}-p{i}-findings.json")
-                if prior is not None:
-                    return tag_pass(prior, str(i))      # this pass finished before the orchestrator died
+            if reused.get(i) is not None:
+                return tag_pass(reused[i], str(i))      # this pass finished before the orchestrator died or paused
             r = run_session(
                 ctx, prefix=f"{sid}-r{round_no}-p{i}-", spec_id=sid,
                 agent_key="reviewer", title=f"{ctx.run_id} review {sid} r{round_no} p{i}", run_id=ctx.run_id,
@@ -776,12 +792,10 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
 
         def security_pass() -> dict[str, Any] | None:
             """One security reviewer beside the general passes; skipped when the policy or the deployment lacks it."""
-            if not ctx.policy.security_review or "security_reviewer" not in ctx.cfg.agents:
+            if not with_security:
                 return None
-            if resumed_round:
-                prior = artifact_json_or_none(ctx, "review", f"{sid}-r{round_no}-sec-findings.json")
-                if prior is not None:
-                    return tag_pass(prior, "security")
+            if reused_sec is not None:
+                return tag_pass(reused_sec, "security")      # finished before the orchestrator died or paused
             pre = security.prechecks(repo, diff["changed"], diff["added_lines"])
             ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-security_prechecks.json", json.dumps(pre, indent=2).encode())
             r = run_session(
@@ -802,7 +816,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
 
         with ThreadPoolExecutor(max_workers=ctx.policy.reviewer_passes + 1) as pool:
             sec_future = pool.submit(security_pass)
-            passes = list(pool.map(one_pass, range(1, ctx.policy.reviewer_passes + 1)))
+            passes = list(pool.map(one_pass, pass_ids))
             sec = sec_future.result()
         findings = merge_findings(passes + ([sec] if sec else []), sid, round_no, base_sha, head_sha, branch,
                                   previous=findings, response=response)
@@ -819,11 +833,16 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         # Only the orchestrator's own checks stand (no agent finding is blocking or major): the next round is an
         # implementer response re-verified by the checks, not a fresh review of the whole diff.
         det_only_response = _deterministic_only(standing)
-        ctx.event("work_item.stage", {"stage": WorkItemStage.RESPONDING.value, "deterministic_only": det_only_response},
-                  work_item_id=wid, spec_id=sid)
+        enter_item_stage(ctx, wid, sid, WorkItemStage.RESPONDING, deterministic_only=det_only_response)
 
     # ---- merge judge (independent)
-    ctx.event("work_item.stage", {"stage": WorkItemStage.MERGE_JUDGING.value}, work_item_id=wid, spec_id=sid)
+    # The judge sees the real round (the implementer round whose head it judges; the kickoff and merge_readiness.json
+    # used to say "round 1" whatever happened), and its verdict is kept per round.
+    prior_verdict = artifact_json_or_none(ctx, "merge_judge", f"{sid}-r{round_no}-merge_readiness.json") if resume_from else None
+    if prior_verdict is not None and prior_verdict.get("_head_sha") == head_sha:
+        ctx.event("merge.verdict", {"result": prior_verdict["result"], "round": round_no, "reused": True}, work_item_id=wid, spec_id=sid, actor="agent")
+        return prior_verdict      # judged this very head before the orchestrator died or paused
+    enter_item_stage(ctx, wid, sid, WorkItemStage.MERGE_JUDGING)
     mj_uploads = {
         "spec.json": json.dumps(public(spec), indent=2).encode(), "diff.patch": diff["patch"].encode(),
         **({"spec.md": spec_md.encode()} if spec_md else {}),
@@ -833,12 +852,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         "deterministic_checks.json": json.dumps([d.to_dict() for d in det], indent=2).encode(),
         **skill_uploads,
     }
-    # The judge sees the real round (the implementer round whose head it judges; the kickoff and merge_readiness.json
-    # used to say "round 1" whatever happened), and its verdict is kept per round.
-    prior_verdict = artifact_json_or_none(ctx, "merge_judge", f"{sid}-r{round_no}-merge_readiness.json") if resume_from else None
-    if prior_verdict is not None and prior_verdict.get("_head_sha") == head_sha:
-        ctx.event("merge.verdict", {"result": prior_verdict["result"], "round": round_no, "reused": True}, work_item_id=wid, spec_id=sid, actor="agent")
-        return prior_verdict      # judged this very head before the orchestrator died
+    reserve_budget(ctx, "merge_judge")
     res = run_session(
         ctx, prefix=f"{sid}-r{round_no}-", spec_id=sid,
         agent_key="merge_judge", title=f"{ctx.run_id} merge-judge {sid}", run_id=ctx.run_id, stage="merge_judge",

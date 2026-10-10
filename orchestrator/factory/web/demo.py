@@ -51,7 +51,8 @@ class DemoRunner:
         """Create a demo run: intake, decomposing, and a blocking question from the decomposer."""
         run_id = f"run_{uuid.uuid4().hex[:10]}"
         self._event(run_id, "run.created", {"outcome_id": outcome["outcome_id"], "title": outcome["title"],
-                                            "forge": "demo", "gate_surface": "web"}, stage="intake")
+                                            "forge": "demo", "gate_surface": "web",
+                                            "budget_usd": (outcome.get("constraints") or {}).get("budget_usd")}, stage="intake")
         self.store.put_artifact(run_id, "intake", "outcome.json", json.dumps(outcome, indent=2).encode())
         self._event(run_id, "stage.entered", {"stage": RunStage.DECOMPOSING.value}, stage="decompose")
         q = Question(run_id=run_id, asked_by="decomposer", question=QUESTION["question"], why_it_matters=QUESTION["why"],

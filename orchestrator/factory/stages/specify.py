@@ -27,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from .. import checks
+from ..budget import reserve_budget
 from ..gates import Decision, GateKind
 from ..state import RunStage, WorkItemStage
 from . import RunContext
@@ -118,6 +119,7 @@ def _judge(ctx: RunContext, outcome, decomposition, specs: dict[str, dict], roun
     if owner_comments:
         uploads["human_comments.md"] = owner_comments.encode()
     skill_uploads, skill_clause = platform_skill(ctx)
+    reserve_budget(ctx, "judge")
     res = run_session(
         ctx, prefix=f"r{round_no}-",
         agent_key="spec_judge", title=f"{ctx.run_id} spec-judge r{round_no}", run_id=ctx.run_id, stage="judge",
@@ -144,7 +146,8 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
     rather than restarts after a request-changes at Gate 2. On that re-entry `previous_verdict` is the verdict the
     owner saw and `round_offset` its round number: rounds continue from there (the first judge of the new cycle
     gets previous_verdict.json together with human_comments.md) and no artefact name is reused."""
-    ctx.event("stage.entered", {"stage": RunStage.SPECIFYING.value}, stage="specify")
+    if ctx.store.state(ctx.run_id).stage != RunStage.SPECIFYING:   # `factory resume` re-enters the stage it paused in
+        ctx.event("stage.entered", {"stage": RunStage.SPECIFYING.value}, stage="specify")
     items = {w["work_item_id"]: w for w in decomposition["work_items"]}
     specs: dict[str, dict] = {}
     by_item: dict[str, dict] = {}                 # work_item_id -> its current spec (the writer's own prior draft next round)
@@ -160,6 +163,7 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
             batch = [w for w in wave if w in to_write]
             if not batch:
                 continue
+            reserve_budget(ctx, "specify", len(batch))      # the whole batch, before any writer starts
             with ThreadPoolExecutor(max_workers=min(ctx.policy.parallel_spec_writers, len(batch))) as pool:
                 futures = {pool.submit(_write_one, ctx, outcome, decomposition, items[w],
                                        sibling_specs(items, w, specs),

@@ -65,6 +65,38 @@ def _ctx(tmp_path, root, examples, driver, queue):
     return ctx
 
 
+class SessionGateQueue(AutoQueue):
+    """The owner approves a session's cap gate at once; a run-cap gate (it presents paused-N.json) waits for a human."""
+
+    def open(self, gate):
+        if gate.artifacts:
+            return InMemoryQueue.open(self, gate)
+        super().open(gate)
+
+
+def test_a_cap_raise_the_run_budget_cannot_cover_pauses_the_run_before_the_re_run(tmp_path, root, examples):
+    """The owner raised the judge's cap, but spent plus the raised cap passes `constraints.budget_usd`: the run pauses
+    at its budget (budget.py) before the re-run starts, with the raised cap as the step that did not fit. Writers 4 x
+    $0.50 plus the cut-off judge's $6.00 are spent; the re-run would commit $9.00 against a $15.00 run budget."""
+    from factory.budget import BudgetPaused
+
+    ctx = _ctx(tmp_path, root, examples, Driver(examples), SessionGateQueue(Decision.APPROVE))
+    ctx.policy = Policy(spec_judge_max_rounds=2, run_budget_usd=15.0)
+    with pytest.raises(BudgetPaused) as info:
+        specify.run_specify(ctx, examples["outcome"], examples["decomposition"])
+    e = info.value
+    assert (e.stage, e.sessions, e.cap_usd, e.spent_usd, e.budget_usd) == ("judge", 1, 9.0, 8.0, 15.0)
+    assert [c["agent_key"] for c in ctx.driver.calls].count("spec_judge") == 1          # the re-run never started
+    events = ctx.store.events(ctx.run_id)
+    kinds = [ev.kind for ev in events]
+    pauses = [ev.payload for ev in events if ev.kind == "budget.reached"]
+    assert len(pauses) == 2 and pauses[0]["session_id"] == "sesn_j_cut1" and pauses[1]["next"]["cap_usd"] == 9.0
+    i = kinds.index("budget.reached")
+    assert kinds[i + 1:i + 4] == ["gate.opened", "gate.decided", "stage.entered"]        # the session's gate, approved, back to specifying
+    assert kinds[-2:] == ["budget.reached", "gate.opened"]                               # then the run cap: paused, its gate open
+    assert ctx.store.state(ctx.run_id).stage == RunStage.PAUSED_BUDGET
+
+
 def test_budget_reached_pauses_the_run_and_the_owner_raises_the_cap(tmp_path, root, examples):
     ctx = _ctx(tmp_path, root, examples, Driver(examples), AutoQueue(Decision.APPROVE))
     specs, verdict = specify.run_specify(ctx, examples["outcome"], examples["decomposition"])

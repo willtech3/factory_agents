@@ -7,9 +7,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..budget import reserve_budget
 from ..gates import Answer, ArtifactRef, Decision, Gate, GateDecision, GateKind, Question
 from ..sessions import SessionContext, StageResult
-from ..state import RunStage
+from ..state import RunStage, WorkItemStage
 from . import RunContext
 
 BUDGET_RAISE = 1.5      # the cap a session is re-run with after the owner approves a budget gate, relative to the one it hit
@@ -95,6 +96,9 @@ def run_session(ctx: RunContext, *, stage: str, prefix: str = "", spec_id: str |
         raise SessionTruncated(f"{stage} session {res.session_id}: {reason}; the owner closed the run")
     if reason != "budget_reached":
         return res
+    # The re-run commits a cap the first reservation did not cover: check it against the run budget like any session
+    # (budget.py); when it does not fit, the run pauses at its budget instead of starting the session.
+    reserve_budget(ctx, stage, 1, cap_usd=raised)
     return run_session(ctx, stage=stage, prefix=prefix, spec_id=spec_id, attempt=attempt + 1, **{**kw, "budget_usd": raised})
 
 
@@ -111,6 +115,16 @@ def public(artifact: dict[str, Any]) -> dict[str, Any]:
     Private keys travel with the object in memory between stages; what is persisted, uploaded to a session, validated
     against a schema or committed to the repository is always the public form."""
     return {k: v for k, v in artifact.items() if not k.startswith("_")}
+
+
+def enter_item_stage(ctx: RunContext, work_item_id: str, spec_id: str | None, stage: WorkItemStage, **payload: Any) -> None:
+    """Emit `work_item.stage` unless the item is already there. A resumed loop (`factory resume`, after a crash or
+    a budget pause) re-walks steps whose outputs it reuses; re-emitting their stage would be an illegal
+    self-transition on replay."""
+    current = ctx.store.state(ctx.run_id).work_items.get(work_item_id)
+    if current is not None and current.stage == stage:
+        return
+    ctx.event("work_item.stage", {"stage": stage.value, **payload}, work_item_id=work_item_id, spec_id=spec_id)
 
 
 def provenance(ctx: RunContext, res: StageResult, agent_name: str, model: str, inputs: dict[str, str]) -> dict[str, Any]:

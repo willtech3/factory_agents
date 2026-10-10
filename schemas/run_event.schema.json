@@ -39,7 +39,7 @@
         "deploy.failed",
         "e2e.dev_passed",
         "e2e.dev_failed",
-        "budget.reached",
+        "budget.reached", "budget.raised",
         "run.escalated",
         "run.failed", "run.resumed",
         "run.completed"

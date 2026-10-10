@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Protocol
+from typing import Any, Protocol
 import uuid
 
 
@@ -29,7 +29,8 @@ class GateKind(str, Enum):
     DECOMPOSITION_REVIEW = "gate_1_decomposition"
     SPEC_READINESS = "gate_2_spec_readiness"
     ESCALATION = "escalation"             # judge or loop could not converge
-    BUDGET = "budget"                     # a session hit its dollar cap (or the grader's iteration cap); approve = raise and retry / accept, reject = close
+    BUDGET = "budget"                     # the run budget (budget.py: the next session would pass constraints.budget_usd), or one
+                                          # session's dollar or iteration cap (stages/common.run_session); approve = raise / accept, reject = close
     DEPLOY_FAILURE = "deploy_failure"     # Stage 5: dev pipeline failed or dev e2e failed; carries the log excerpt
     # Gate 3 (code review) is the forge's own change-request approval; see forge/
 
@@ -41,6 +42,21 @@ class Decision(str, Enum):
     APPROVE_SUBSET = "approve_subset"     # Gate 2 only: approve some specs, send others back
     # DEPLOY_FAILURE gates use: REQUEST_CHANGES (back to IMPLEMENTING with the comments as findings),
     # APPROVE (the failure was the platform's, not the change's: re-observe the next pipeline), REJECT (close the item).
+    # BUDGET gates use: APPROVE with the new cap in the comments (`budget_usd: 80`), REJECT (close the run).
+
+
+def parse_budget(text: str | None) -> float | None:
+    """The new run budget a human wrote in a decision or answer: `budget_usd: 80`, `budget: $80`, `$80`, or a bare
+    number on its own line. None when there is none."""
+    import re
+
+    for line in (text or "").splitlines():
+        s = line.strip()
+        m = (re.fullmatch(r"(?:budget(?:_usd)?\s*[:=]\s*)?\$?\s*(\d+(?:\.\d+)?)\s*(?:usd)?", s, re.IGNORECASE)
+             or re.search(r"budget(?:_usd)?\s*[:=]?\s*(?:to\s*)?\$?\s*(\d+(?:\.\d+)?)", s, re.IGNORECASE))
+        if m:
+            return float(m.group(1))
+    return None
 
 
 @dataclass(frozen=True)
@@ -79,6 +95,17 @@ class StaleDecision(Exception):
     """The decision references artifacts that differ from what the gate presented."""
 
 
+def run_cap_gate(kind: Any, artifacts: Any) -> bool:
+    """A budget gate opened by the run cap (budget.py) presents the pause record `paused-N.json`; one opened for a
+    single session's cap or iteration cap (stages/common.run_session) presents nothing. Only the former is approved
+    with a new run budget. Accepts a Gate's fields or a queue record's (`kind` string, artifact dicts)."""
+    kind = kind.value if isinstance(kind, GateKind) else kind
+    if kind != GateKind.BUDGET.value:
+        return False
+    names = [a.name if isinstance(a, ArtifactRef) else (a.get("name") if isinstance(a, dict) else None) for a in (artifacts or ())]
+    return any(str(n or "").startswith("paused-") for n in names)
+
+
 def validate_decision(gate: Gate, decision: GateDecision) -> None:
     if decision.gate_id != gate.gate_id:
         raise ValueError("decision is for a different gate")
@@ -91,6 +118,8 @@ def validate_decision(gate: Gate, decision: GateDecision) -> None:
         raise ValueError("request_changes requires comments; they become the agent's feedback")
     if decision.decision == Decision.APPROVE_SUBSET and not decision.approved_subset:
         raise ValueError("approve_subset requires at least one approved spec_id")
+    if run_cap_gate(gate.kind, gate.artifacts) and decision.decision == Decision.APPROVE and parse_budget(decision.comments) is None:
+        raise ValueError("approving a budget gate needs the new run budget in the comments, e.g. `budget_usd: 80`")
 
 
 @dataclass

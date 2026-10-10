@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from .. import checks
+from ..budget import reserve_budget
 from ..gates import Decision, GateKind
 from ..state import RunStage
 from . import RunContext
@@ -56,6 +57,7 @@ def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | N
 
     mount, repo_clause, repo_available = repository_access(ctx, outcome)
     skill_uploads, skill_clause = platform_skill(ctx)
+    reserve_budget(ctx, "decompose")
     res = run_session(
         ctx, agent_key="decomposer", title=f"{ctx.run_id} decompose", run_id=ctx.run_id, stage="decompose",
         uploads={**uploads, **skill_uploads},
