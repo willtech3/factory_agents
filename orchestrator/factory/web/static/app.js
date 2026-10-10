@@ -1670,7 +1670,8 @@
         injection: x.injection ? String(x.injection) : "", purpose: x.description ? String(x.description) : "" }));
   }
   function evidenceGallery(a) {
-    const grid = el("div", { class: "evidence-grid" });
+    const grid = el("div", {class:"stack"}), videos = el("div", {class:"evidence-grid"}), shots = el("div", {class:"evidence-grid"}), files = el("div", {class:"stack"});
+    let shotCount = 0, fileCount = 0;
     for (const e of a.evidence || []) {
       const url = typeof e.url === "string" && e.url.startsWith(`${appPath(a.app_id)}/evidence/`) ? e.url : null;
       const nm = String(e.name || (url || "").split("/").pop() || "evidence");
@@ -1681,8 +1682,14 @@
       else if (["mp4", "webm"].includes(ext)) media = el("video", { src: url, controls: true, preload: "metadata", playsinline: true, "aria-label": `Recording: ${nm}` });
       else if (ext === "gif") media = el("details", null, el("summary", null, "Play the recording (GIF)"), el("img", { src: url, alt: `Recording: ${nm}`, loading: "lazy" }));
       else media = null;
-      grid.append(el("figure", null, media, el("figcaption", null, el("a", { href: url, target: "_blank", rel: "noopener" }, nm))));
+      const figure = el("figure", null, media, el("figcaption", null, el("a", { href: url, target: "_blank", rel: "noopener" }, nm)));
+      if (["mp4","webm","gif"].includes(ext)) videos.append(figure);
+      else if (media) { shots.append(figure); shotCount++; }
+      else { files.append(figure); fileCount++; }
     }
+    if (videos.childElementCount) grid.append(videos);
+    if (shotCount) grid.append(el("details", null, el("summary", null, `Screenshots (${shotCount})`), shots));
+    if (fileCount) grid.append(el("details", null, el("summary", null, "Download verification records"), files));
     return grid;
   }
 
@@ -1729,6 +1736,24 @@
             ? "An agent proposes a scaffold, how to run it, and how to test it, from your description."
             : "An agent reads the repository's committed source and existing test setup, and proposes how to build, run and test it."),
           busy() ? el("p", { class: "explain" }, "The agent is working. This page follows it; you can leave and come back.") : el("div", null, btn, charged(`Starts a charged agent session (${appLeft(a)} left in this app's budget).`)), line)));
+      }
+      if (!busy() && (plan || a.status === "failed" || a.feedback)) {
+        const feedback = el("textarea", {id:"setup-feedback", placeholder:"Describe what should change. Never paste credentials here."});
+        feedback.value = drafts.feedback ?? a.feedback ?? "";
+        feedback.oninput = () => { drafts.feedback = feedback.value; };
+        const line = actionLine(), btn = el("button", {class:"btn call",type:"button"}, "Revise this setup");
+        btn.onclick = () => {
+          if (!feedback.value.trim()) { line.textContent = "Describe the change first."; return; }
+          act(btn,line,async () => {
+            await api(`${appPath(appId)}/feedback`, {body:{text:feedback.value.trim()}});
+            delete drafts.feedback;
+            return api(`${appPath(appId)}/discover`, {body:{}});
+          });
+        };
+        out.push(card("Improve or repair the setup", el("details", {open:a.status === "failed" || !!a.feedback},
+          el("summary", null, "Tell the onboarding agent what to change"),
+          el("label", {for:"setup-feedback"}, "Setup feedback"), feedback, btn,
+          charged(`Uses the previous proposal and failure evidence. Starts a charged discovery session (${appLeft(a)} available).`), line)));
       }
       if (!plan) { out.push(sourceDetails(a)); return out; }
 
@@ -1832,14 +1857,15 @@
         const v = a.verification;
         const uncovered = (plan.capabilities || []).filter(c => !c.available);
         const stale = (v.source_sha && a.source_sha !== v.source_sha) || (v.plan_sha256 && a.plan_sha256 !== v.plan_sha256);
-        out.push(card("Evidence from the last verification", el("div", { class: "stack" },
+        out.unshift(card("Evidence from the last verification", el("div", { class: "stack" },
           el("div", { class: "row-tags" }, el("span", { class: `tag ${v.status === "passed" ? "ok" : v.status === "failed" ? "bad" : "warn"}` }, words(v.status)),
             stale ? el("span", { class: "tag warn" }, "Earlier commit") : null, v.cost_usd != null ? el("span", { class: "tag" }, `${money(v.cost_usd)} charged`) : null),
           v.detail ? el("p", null, v.detail) : null,
+          v.phases ? el("ul", {class:"plain-list"}, v.phases.map(p => el("li", null, `${words(p.phase)}: ${words(p.status)}${p.seconds != null ? ` · ${p.seconds}s` : ""}${p.exit_code ? ` · exit ${p.exit_code}` : ""}`))) : null,
           uncovered.length ? el("div", { class: "notice info", style: "margin:0" }, el("b", null, "Not covered by this verification: "),
             uncovered.map(c => `${c.label || c.id}${c.limitation ? ` (${c.limitation})` : ""}`).join("; "), ". The app is ready only for what is listed as covered.") : null,
           (a.evidence || []).length ? evidenceGallery(a) : el("p", { class: "explain" }, "No media was accepted from this verification."),
-          el("dl", { class: "kv" }, el("dt", null, "Tested commit"), el("dd", { class: "mono" }, v.head_sha || "not given"), el("dt", null, "Profile fingerprint"), el("dd", { class: "mono" }, v.profile_sha256 || "not given"),
+          el("dl", { class: "kv" }, el("dt", null, "Source commit"), el("dd", { class: "mono" }, v.source_sha || a.source_sha || "new scaffold"), el("dt", null, "Tested snapshot"), el("dd", { class: "mono" }, v.head_sha || "not given"), el("dt", null, "Profile fingerprint"), el("dd", { class: "mono" }, v.profile_sha256 || "not given"),
             el("dt", null, "Session"), el("dd", { class: "mono" }, v.session_id || "not given"))), stale ? "a newer commit needs a new verification" : null));
       }
 

@@ -187,3 +187,12 @@ def test_run_binding_uses_only_verified_recipe_and_explicit_test_vaults(manager,
     profile['name']='changed'
     with pytest.raises(HTTPException) as exc: manager.run_settings(aid,target)
     assert exc.value.status_code==409 and 'base branch' in exc.value.detail
+
+
+def test_setup_feedback_invalidates_review_and_preserves_previous_proposal(manager,plan):
+    aid=create(manager)['app_id']
+    manager.update(aid,plan=plan,plan_sha256=fingerprint(plan),status='failed')
+    r=manager.feedback(aid,'Fix header lookup without removing the assertion')
+    assert r['plan_sha256'] is None and r['plan']==plan and r['status']=='needs_input'
+    manager.update(aid,status='verifying')
+    with pytest.raises(HTTPException): manager.feedback(aid,'Different instructions')

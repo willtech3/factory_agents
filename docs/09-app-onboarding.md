@@ -21,7 +21,7 @@ Factory stores the portable recipe in the repository. It creates or reuses a fin
 
 The controller uploads an immutable source archive and its own lifecycle harness. The agent runs that harness without editing it or the app. The harness checks readiness, seeds synthetic data, runs checks, captures results and stops services. The controller binds acceptance to source/profile hashes, expected phases and required evidence. Completed sessions are archived. There is no promise of an externally reachable live preview URL; screenshots and recordings are downloaded to the Console.
 
-The original `local` and `platform` verification modes predate this path. Do not use them when the requirement is hosted-only application execution. A passing onboarding baseline alone does not approve future changes or satisfy their acceptance criteria: each candidate still needs current command and visual evidence.
+The original `local` and `platform` verification modes predate this path. Do not use them when the requirement is hosted-only application execution. A passing onboarding baseline alone does not approve future changes or satisfy their acceptance criteria: each candidate still needs current command and visual evidence. Post-merge dev deployment verification is a separate capability: managed runs fail closed until a hosted dev-test adapter is configured, and never fall back to executing those checks on the Console host.
 
 ## Credentials
 

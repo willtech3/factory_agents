@@ -73,6 +73,10 @@ class AppAnswersBody(BaseModel):
     answers: dict[str, str]
 
 
+class AppFeedbackBody(BaseModel):
+    text: str
+
+
 class AppCredentialBody(BaseModel):
     name: str
     value: SecretStr
@@ -791,6 +795,10 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
     @app.post("/api/apps/{app_id}/publish")
     def api_app_publish(app_id: str, body: AppPlanBody):
         return onboarding.start(app_id, "publish", body.plan_sha256)
+
+    @app.post("/api/apps/{app_id}/feedback")
+    def api_app_feedback(app_id: str, body: AppFeedbackBody):
+        return onboarding.feedback(app_id, body.text)
 
     @app.post("/api/apps/{app_id}/recover")
     def api_app_recover(app_id: str):

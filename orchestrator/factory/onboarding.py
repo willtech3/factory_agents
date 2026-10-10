@@ -337,13 +337,14 @@ class AppOnboarding:
         _, source = snapshot(repo)
         request = {"kind": r["kind"], "name": r["name"], "description": r["description"], "answers": r["answers"],
                    "hosted_browser_automation": True, "execution_location": "Anthropic hosted Linux sandbox",
-                   "previous_attempt": previous_attempt,
+                   "previous_attempt": previous_attempt, "feedback": r.get("feedback", ""),
                    "instructions": "Inspect source only and propose a setup. No execution, external access or readiness claims."}
         driver = SessionDriver(self.cfg, client=self.client,
             on_session_started=lambda x: self._started(app_id, x), on_session_finished=lambda x: self._finished(app_id, x))
         # Discovery needs no outbound network or credentials; use a separate limited environment.
         env_profile = {"name": "app-discovery", "network": {"allowed_hosts": [], "allow_package_managers": False}}
         env_id = ensure_environment(self.client, env_profile, self.cfg.runs_dir / "_test_environments")
+        result = None
         try:
             result = driver.run(agent_key="app_onboarding", title="Onboard " + r["name"], run_id=app_id, stage="onboarding-discovery",
                 uploads={"source.tar": source, "onboarding-request.json": json.dumps(request).encode()},
@@ -363,12 +364,23 @@ class AppOnboarding:
             required = any(q["required"] and not r["answers"].get(q["id"]) for q in plan["questions"])
             self.update(app_id, plan=plan, plan_sha256=fingerprint(plan), status="needs_input" if required else "setup_ready",
                         phase="Answer the remaining setup questions" if required else "Review the setup, then verify it")
-            try:
-                self.client.beta.sessions.archive(result.session_id, timeout=60)
-            except Exception:
-                pass
         finally:
             driver.interrupt_active()
+            if result is not None:
+                try:
+                    self.client.beta.sessions.archive(result.session_id, timeout=60)
+                except Exception:
+                    self.update(app_id, cleanup_warning="Discovery session archival needs retry.")
+
+    def feedback(self, app_id, text):
+        if not isinstance(text, str) or not text.strip() or len(text) > 6000:
+            raise HTTPException(400, "Describe the setup change in 1–6000 characters; do not include credentials")
+        with self.locked(app_id) as r:
+            if r["status"] in BUSY:
+                raise HTTPException(409, "Wait for the current operation before changing its instructions")
+            r.update(feedback=text.strip(), status="needs_input", phase="Feedback saved; discover again to revise the setup", plan_sha256=None)
+            self.write(r)
+        return self.get(app_id)
 
     def answers(self, app_id, answers):
         with self.locked(app_id) as r:
@@ -415,6 +427,15 @@ class AppOnboarding:
                             vault_ids=vaults, client=self.client, on_started=lambda x: self._started(app_id, x),
                             on_finished=lambda x: self._finished(app_id, x))
         result.update(source_sha=r["source_sha"], plan_sha256=r["plan_sha256"])
+        try:
+            report = json.loads((out / "environment-result.json").read_text())
+            result["phases"] = [{k: phase[k] for k in ("phase", "status", "exit_code", "seconds") if k in phase}
+                                for phase in report.get("phases", []) if isinstance(phase, dict)]
+            failed = next((p for p in result["phases"] if p.get("status") != "passed"), None)
+            if failed and result["status"] != "passed":
+                result["detail"] = f"Hosted {failed.get('phase', 'setup')} did not pass (exit {failed.get('exit_code', 'unavailable')}). Review the session diagnosis, then revise the recipe and discover again."
+        except (OSError, ValueError, TypeError):
+            pass
         (out / "controller-result.json").write_text(json.dumps(result, indent=2))
         evidence = [{"name": n, "url": f"/api/apps/{app_id}/evidence/{quote(n)}"} for n in result["artifacts"]]
         limited = bool(r["plan"]["limitations"] or any(not c["available"] for c in r["plan"]["capabilities"]))
