@@ -75,6 +75,7 @@ class Config:
     rubrics_dir: Path
     templates_dir: Path
     pin_agent_versions: bool
+    skills_dir: Path = REPO_ROOT / "skills"   # platform-contract skill, uploaded into every session and seeded into repositories
 
     def console_session_url(self, session_id: str) -> str:
         return f"https://platform.claude.com/workspaces/{self.console_workspace}/sessions/{session_id}"
@@ -174,6 +175,7 @@ def load(lock_path: Path | None = None, dotenv_path: Path | None = None) -> Conf
         schemas_dir=REPO_ROOT / "schemas",
         rubrics_dir=REPO_ROOT / "rubrics",
         templates_dir=REPO_ROOT / "templates",
+        skills_dir=REPO_ROOT / "skills",
         pin_agent_versions=os.environ.get("FACTORY_PIN_VERSIONS", "1") == "1",
     )
 

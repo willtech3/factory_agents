@@ -18,7 +18,8 @@
         "kind": { "type": "string", "description": "Runtime family the platform supports (for example container, cloud-run, function). Enum left open on purpose; the real schema closes it." },
         "version": { "type": "string" },
         "entrypoint": { "type": "string", "description": "Command the platform runs to start the service." },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "setup": { "type": "string", "description": "Optional command that installs what the test plan and the entrypoint need, run once per verification from the repository root inside a fresh per-run virtual environment (its bin directory first on PATH, VIRTUAL_ENV set). Without it the orchestrator installs the repository's pyproject (`-e .[dev]`, or the declared dependency lists when the project is not installable). A setup that exits non-zero is a failed deterministic check." }
       }
     },
     "health": {

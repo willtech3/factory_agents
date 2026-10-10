@@ -30,23 +30,23 @@
     "./agents/integrator.md": {
       "kind": "agent",
       "id": "agent_01WDu19kHsS3Xyew5Jofp2Nr",
-      "version": "2",
-      "hash": "3aa4369b914898b002371e8e5241f7c1",
-      "remote_hash": "3e51970e6e2d8eb76967909f82692612"
+      "version": "3",
+      "hash": "fc2778541b9eed1636864e8cee56ecb5",
+      "remote_hash": "f686cb3bed21e548f17b297fdb1ab78c"
     },
     "./agents/merge_judge.md": {
       "kind": "agent",
       "id": "agent_01TW45FCcv8XSLJZkJ2tXVQU",
-      "version": "3",
-      "hash": "ed5aaa399bc4399a24874832ccf998b4",
-      "remote_hash": "3fe46c975b9ee477ba2561c0fb103752"
+      "version": "4",
+      "hash": "400a4254bd8308f23dd5d8cf851ad650",
+      "remote_hash": "90737098edce2947504ff4a001180354"
     },
     "./agents/reviewer.md": {
       "kind": "agent",
       "id": "agent_01HxQzdADN7Aomrt8hRsyTu8",
-      "version": "3",
-      "hash": "e48976913b7c8db2bcf70c88ea23fbf1",
-      "remote_hash": "40b8200e85be884670fa4f719c1d7721"
+      "version": "4",
+      "hash": "d6dfc859b30c56dcf9babe7dcf463125",
+      "remote_hash": "273beae359ce7fe08e84ed748392d854"
     },
     "./agents/spec_judge.md": {
       "kind": "agent",

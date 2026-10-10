@@ -106,3 +106,37 @@ def test_outcome_accepts_measured_metrics(schemas_dir, examples):
     outcome = copy.deepcopy(examples["outcome"])
     outcome["success_metrics"][0].update({"measured_at": "2026-12-20T09:00:00Z", "measured_value": "3.1%"})
     assert checks.schema_valid(outcome, schemas_dir / "outcome.schema.json", schemas_dir).passed
+
+
+def test_merge_readiness_requires_the_judges_criteria_table(schemas_dir, examples):
+    import copy
+
+    verdict = copy.deepcopy(examples["merge_readiness"])
+    del verdict["criteria"]
+    r = checks.schema_valid(verdict, schemas_dir / "merge_readiness.schema.json", schemas_dir)
+    assert not r.passed and "criteria" in r.detail
+    verdict = copy.deepcopy(examples["merge_readiness"])
+    verdict["criteria"][0]["status"] = "untestable_as_written"       # the reviewer's vocabulary, not the judge's
+    assert not checks.schema_valid(verdict, schemas_dir / "merge_readiness.schema.json", schemas_dir).passed
+    verdict["criteria"][0]["status"] = "not_assessed"
+    assert checks.schema_valid(verdict, schemas_dir / "merge_readiness.schema.json", schemas_dir).passed
+
+
+def test_service_manifest_accepts_a_runtime_setup_command(schemas_dir, examples):
+    import copy
+
+    manifest = copy.deepcopy(examples["service_manifest"])
+    manifest["runtime"]["setup"] = "bundle install --without production"
+    assert checks.schema_valid(manifest, schemas_dir / "service_manifest.schema.json", schemas_dir).passed
+    manifest["runtime"]["setup"] = ["not", "a", "string"]
+    assert not checks.schema_valid(manifest, schemas_dir / "service_manifest.schema.json", schemas_dir).passed
+
+
+def test_review_finding_may_carry_the_environmental_flag(schemas_dir, examples):
+    import copy
+
+    doc = copy.deepcopy(examples["findings_round1"])
+    doc["findings"][0]["environmental"] = True
+    assert checks.schema_valid(doc, schemas_dir / "review_findings.schema.json", schemas_dir).passed
+    doc["findings"][0]["environmental"] = "yes"
+    assert not checks.schema_valid(doc, schemas_dir / "review_findings.schema.json", schemas_dir).passed
