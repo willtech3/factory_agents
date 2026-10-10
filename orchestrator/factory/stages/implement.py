@@ -37,7 +37,7 @@ from typing import Any
 from .. import checks, security
 from ..state import WorkItemStage
 from . import RunContext
-from .common import persist_outputs, provenance, public, require_json, run_session, artifact_json_or_none
+from .common import persist_outputs, public, require_json, run_session, stamp_provenance, artifact_json_or_none
 
 NO_FORGE_GIT_SETUP = """Git access: no forge is configured for this run. The repository at {repo_url} is not reachable
 from the sandbox; work on branch {branch} from {base_branch} only if it was mounted for you, otherwise record the
@@ -465,13 +465,17 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 repository=mount(base_branch if round_no == 1 else branch),
             )
             if "blocked.md" in res.outputs:
-                persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-")
+                persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-", work_item_id=wid, spec_id=sid)
                 ctx.event("work_item.stage", {"stage": WorkItemStage.BLOCKED.value}, work_item_id=wid, spec_id=sid)
                 return {"result": "escalate", "reason": res.outputs["blocked.md"].decode(errors="replace")}
             report = require_json(res, "implementation_report.json")
+            stamp_provenance(report, ctx, res, "Implementer", "claude-opus-5-5")
+            res.outputs["implementation_report.json"] = json.dumps(report, indent=2).encode()
             if findings:
                 response = require_json(res, "review_response.json")
-            persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-")
+                stamp_provenance(response, ctx, res, "Implementer", "claude-opus-5-5")
+                res.outputs["review_response.json"] = json.dumps(response, indent=2).encode()
+            persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-", work_item_id=wid, spec_id=sid)
         if findings and response is not None:
             response["round"] = round_no - 1
             ctx.event("review.response", {"round": round_no - 1, "dispositions": [r["disposition"] for r in response["responses"]]},
@@ -542,7 +546,9 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 metadata={"pass": str(i)}, repository=mount(branch),
             )
             f = require_json(r, "findings.json")
-            persist_outputs(ctx, "review", r, prefix=f"{sid}-r{round_no}-p{i}-")
+            stamp_provenance(f, ctx, r, "Adversarial reviewer", "claude-opus-5-5")
+            r.outputs["findings.json"] = json.dumps(f, indent=2).encode()
+            persist_outputs(ctx, "review", r, prefix=f"{sid}-r{round_no}-p{i}-", work_item_id=wid, spec_id=sid)
             return tag_pass(f, str(i))
 
         def security_pass() -> dict[str, Any] | None:
@@ -566,7 +572,9 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 metadata={"pass": "security"}, repository=mount(branch),
             )
             f = require_json(r, "findings.json")
-            persist_outputs(ctx, "review", r, prefix=f"{sid}-r{round_no}-sec-")
+            stamp_provenance(f, ctx, r, "Security reviewer", "claude-opus-5-5")
+            r.outputs["findings.json"] = json.dumps(f, indent=2).encode()
+            persist_outputs(ctx, "review", r, prefix=f"{sid}-r{round_no}-sec-", work_item_id=wid, spec_id=sid)
             return tag_pass(f, "security")
 
         with ThreadPoolExecutor(max_workers=ctx.policy.reviewer_passes + 1) as pool:
@@ -596,29 +604,32 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         "test_results.json": json.dumps({"commands": cmd_results, "e2e": e2e_results, "preview": preview}, indent=2).encode(),
         "deterministic_checks.json": json.dumps([d.to_dict() for d in det], indent=2).encode(),
     }
-    prior_verdict = artifact_json_or_none(ctx, "merge_judge", f"{sid}-merge_readiness.json") if resume_from else None
+    # The judge sees the real round (the implementer round whose head it judges; the kickoff and merge_readiness.json
+    # used to say "round 1" whatever happened), and its verdict is kept per round.
+    prior_verdict = artifact_json_or_none(ctx, "merge_judge", f"{sid}-r{round_no}-merge_readiness.json") if resume_from else None
     if prior_verdict is not None and prior_verdict.get("_head_sha") == head_sha:
-        ctx.event("merge.verdict", {"result": prior_verdict["result"], "reused": True}, work_item_id=wid, spec_id=sid, actor="agent")
+        ctx.event("merge.verdict", {"result": prior_verdict["result"], "round": round_no, "reused": True}, work_item_id=wid, spec_id=sid, actor="agent")
         return prior_verdict      # judged this very head before the orchestrator died
     res = run_session(
-        ctx, prefix=f"{sid}-", spec_id=sid,
-        agent_key="merge_judge", title=f"{ctx.run_id} merge-judge {sid}", run_id=ctx.run_id, stage="merge_judge",
+        ctx, prefix=f"{sid}-r{round_no}-", spec_id=sid,
+        agent_key="merge_judge", title=f"{ctx.run_id} merge-judge {sid} r{round_no}", run_id=ctx.run_id, stage="merge_judge",
         uploads=mj_uploads, work_item_id=wid,
-        description=MERGE_JUDGE_DESCRIPTION.format(spec_id=sid, round=len([1 for _ in range(1)]), git=git_ro),
+        description=MERGE_JUDGE_DESCRIPTION.format(spec_id=sid, round=round_no, git=git_ro),
         rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["merge_judge"],
         repository=mount(branch),
     )
     verdict = require_json(res, "merge_readiness.json")
+    verdict["round"] = round_no
     # Deterministic checks are not negotiable: a failing check forces another_round or escalate.
     if any(not d.passed for d in det) and verdict["result"] == "ready":
         verdict["result"] = "another_round"
         verdict["summary_for_human"] = "Overridden: deterministic checks failed. " + verdict["summary_for_human"]
     verdict["deterministic_checks"] = [d.to_dict() for d in det]
-    verdict.setdefault("produced_by", provenance(ctx, res, "Merge judge", "claude-opus-5-5", {}))
+    stamp_provenance(verdict, ctx, res, "Merge judge", "claude-opus-5-5")
     verdict["_head_sha"], verdict["_branch"], verdict["_base_sha"] = head_sha, branch, base_sha
     res.outputs["merge_readiness.json"] = json.dumps(verdict, indent=2).encode()
-    persist_outputs(ctx, "merge_judge", res, prefix=f"{sid}-")
-    ctx.event("merge.verdict", {"result": verdict["result"]}, work_item_id=wid, spec_id=sid, actor="agent")
+    persist_outputs(ctx, "merge_judge", res, prefix=f"{sid}-r{round_no}-", work_item_id=wid, spec_id=sid)
+    ctx.event("merge.verdict", {"result": verdict["result"], "round": round_no}, work_item_id=wid, spec_id=sid, actor="agent")
     return verdict
 
 

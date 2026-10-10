@@ -30,7 +30,7 @@ from .. import checks
 from ..gates import Decision, GateKind
 from ..state import RunStage, WorkItemStage
 from . import RunContext
-from .common import make_ask_human, open_gate_and_wait, persist_outputs, provenance, public, require_json, rubric_text, run_session
+from .common import make_ask_human, open_gate_and_wait, persist_outputs, public, require_json, rubric_text, run_session, stamp_provenance
 
 WRITER_DESCRIPTION = """Write the specification for work item {work_item_id} ({title}).
 Inputs are under /mnt/session/uploads/ (outcome.json, decomposition.json, work_item.json, sibling_specs/,
@@ -82,7 +82,7 @@ def _write_one(ctx: RunContext, outcome, decomposition, work_item, sibling_specs
     )
     spec = require_json(res, "spec.json")
     spec["revision"] = round_no
-    spec.setdefault("produced_by", provenance(ctx, res, "Spec writer", "claude-sonnet-5-5", {}))
+    stamp_provenance(spec, ctx, res, "Spec writer", "claude-sonnet-5-5")
     # The writer's own spec.md travels with the spec object (private key, stripped from everything persisted or
     # uploaded as spec.json) so the judge, the implementer, the reviewers and the merge judge all read this round's
     # prose, never a lexicographic "latest" from the store that an earlier cycle can win.
@@ -91,7 +91,7 @@ def _write_one(ctx: RunContext, outcome, decomposition, work_item, sibling_specs
         raise RuntimeError(f"session {res.session_id} wrote spec.json for {wid} but no spec.md; outputs: {sorted(res.outputs)}")
     spec["_markdown"] = markdown
     res.outputs["spec.json"] = json.dumps(public(spec), indent=2).encode()
-    persist_outputs(ctx, "specify", res, prefix=f"{wid}-r{round_no}-")
+    persist_outputs(ctx, "specify", res, prefix=f"{wid}-r{round_no}-", work_item_id=wid)
     return spec
 
 
@@ -124,7 +124,7 @@ def _judge(ctx: RunContext, outcome, decomposition, specs: dict[str, dict], roun
     )
     verdict = require_json(res, "verdict.json")
     verdict["round"] = round_no
-    verdict.setdefault("produced_by", provenance(ctx, res, "Spec judge", "claude-opus-5-5", {}))
+    stamp_provenance(verdict, ctx, res, "Spec judge", "claude-opus-5-5")
     res.outputs["verdict.json"] = json.dumps(verdict, indent=2).encode()
     persist_outputs(ctx, "judge", res, prefix=f"r{round_no}-")
     ctx.event("judge.verdict", {"round": round_no, "result": verdict["overall"]["result"],

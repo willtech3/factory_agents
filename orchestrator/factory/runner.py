@@ -232,14 +232,46 @@ def _latest_json_or(ctx: RunContext, stage: str, prefix: str, suffix: str, defau
         return default
 
 
-def _sessions_for(ctx: RunContext, spec_id: str) -> list[dict[str, Any]]:
+def _sessions_for(ctx: RunContext, spec_id: str, work_item_id: str | None = None) -> list[dict[str, Any]]:
+    """Every session behind this spec's change request, for the provenance table: the decomposer and the spec judge
+    rounds (shared by every spec), and the writer, implementer, reviewer, merge-judge and integrator sessions of this
+    spec or its work item, each with its cost and its duration from session.started to session.finished. Live run 2's
+    table listed 5 of 17 sessions with no duration because session.finished carried no spec id (post-mortem issue 16)."""
+    events = ctx.store.events(ctx.run_id)
+    started = {ev.payload.get("session_id"): ev for ev in events if ev.kind == "session.started"}
     out = []
-    for ev in ctx.store.events(ctx.run_id):
-        if ev.kind == "session.finished" and (ev.spec_id == spec_id or ev.stage in ("decompose", "judge")):
-            out.append({"stage": ev.stage, "agent_name": ev.payload.get("agent_id"), "agent_version": ev.payload.get("agent_version"),
-                        "session_id": ev.payload["session_id"], "console_url": ctx.cfg.console_session_url(ev.payload["session_id"]),
-                        "list_cost_usd": ev.payload.get("list_cost_usd")})
+    for ev in events:
+        if ev.kind != "session.finished":
+            continue
+        mine = ev.spec_id == spec_id or (work_item_id is not None and ev.work_item_id == work_item_id)
+        if not (mine or ev.stage in ("decompose", "judge")):
+            continue
+        sid = ev.payload["session_id"]
+        s = started.get(sid)
+        seconds = _seconds_between(s.at, ev.at) if s is not None else None
+        out.append({"stage": ev.stage, "agent_name": ev.payload.get("agent_id"), "agent_version": ev.payload.get("agent_version"),
+                    "agent_key": s.payload.get("agent_key") if s is not None else None,
+                    "session_id": sid, "console_url": ctx.cfg.console_session_url(sid),
+                    "list_cost_usd": ev.payload.get("list_cost_usd"), "stop_reason": ev.payload.get("stop_reason"),
+                    "started_at": s.at if s is not None else None, "finished_at": ev.at,
+                    "duration_seconds": seconds, "duration": _hms(seconds)})
     return out
+
+
+def _seconds_between(start_iso: str, end_iso: str) -> int | None:
+    from datetime import datetime
+    try:
+        return max(0, int((datetime.fromisoformat(end_iso) - datetime.fromisoformat(start_iso)).total_seconds()))
+    except (TypeError, ValueError):
+        return None
+
+
+def _hms(seconds: int | None) -> str:
+    if seconds is None:
+        return "n/a"
+    h, rest = divmod(seconds, 3600)
+    m, s = divmod(rest, 60)
+    return f"{h}h {m:02d}m {s:02d}s" if h else f"{m}m {s:02d}s"
 
 
 def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dict[str, dict], spec_md: dict[str, str],
@@ -285,8 +317,12 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
             findings = json.loads(ctx.store.get_artifact(ctx.run_id, "review", _latest(ctx, "review", f"{sid}-", "-findings.merged.json")))
             response = _latest_json_or(ctx, "implement", f"{sid}-", "-review_response.json", {"responses": []})
             test_results = json.loads(ctx.store.get_artifact(ctx.run_id, "implement", _latest(ctx, "implement", f"{sid}-", "-test_results.json")))
+            sessions = _sessions_for(ctx, sid, spec["work_item_id"])
             summary = {"run_id": ctx.run_id, "outcome_title": outcome["title"], "reviewers": [outcome["owner"]["handle"]],
-                       "sessions": _sessions_for(ctx, sid), "list_cost_usd": ctx.store.state(ctx.run_id).list_cost_usd}
+                       "sessions": sessions, "list_cost_usd": ctx.store.state(ctx.run_id).list_cost_usd,
+                       "sessions_cost_usd": round(sum(s["list_cost_usd"] or 0.0 for s in sessions), 2),
+                       "sessions_duration_seconds": sum(s["duration_seconds"] or 0 for s in sessions),
+                       "sessions_duration": _hms(sum(s["duration_seconds"] or 0 for s in sessions))}
             cr = run_integrate(ctx, spec, verdict, findings, response, test_results, summary, base_branch,
                                verifier=verifier, spec_md=spec_md.get(sid, ""), spec_verdict=spec_verdict)
             cr_by_spec[sid] = int(cr.get("id", cr.get("iid")))

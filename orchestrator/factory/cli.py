@@ -134,6 +134,10 @@ def _context(cfg, outcome: dict, run_id: str, *, forge: bool, design_only: bool)
     ctx.driver.on_session_started = lambda info: ctx.event(
         "session.started", {k: v for k, v in info.items() if k not in ("run_id", "work_item_id")},
         stage=info["stage"], actor="platform", work_item_id=info.get("work_item_id"))
+    # A session interrupted by a stop or a crash still finished, and its spend still counts.
+    ctx.driver.on_session_finished = lambda info: ctx.event(
+        "session.finished", {k: v for k, v in info.items() if k not in ("run_id", "work_item_id", "stage")},
+        stage=info.get("stage"), actor="platform", work_item_id=info.get("work_item_id"))
     return ctx
 
 

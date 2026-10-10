@@ -128,7 +128,7 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
         repository=ctx.forge.session_repository_resource(ctx.cfg.repo_url, branch),
     )
     cr = require_json(res, "cr.json")
-    persist_outputs(ctx, "integrate", res, prefix=f"{sid}-")
+    persist_outputs(ctx, "integrate", res, prefix=f"{sid}-", work_item_id=wid, spec_id=sid)
     ctx.event("work_item.stage", {"stage": WorkItemStage.CR_OPEN.value, "cr_id": cr.get("id", cr.get("iid"))},
               work_item_id=wid, spec_id=sid)
     return cr

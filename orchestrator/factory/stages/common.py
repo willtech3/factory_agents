@@ -53,7 +53,7 @@ def run_session(ctx: RunContext, *, stage: str, prefix: str = "", spec_id: str |
         return res
     wid = kw.get("work_item_id")
     kept = f"{prefix}truncated{attempt}-"
-    persist_outputs(ctx, stage, res, prefix=kept)
+    persist_outputs(ctx, stage, res, prefix=kept, work_item_id=wid, spec_id=spec_id)
     cap = float(kw.get("budget_usd") or 0.0)
     spent = res.list_cost_usd or 0.0
     raised = round(cap * BUDGET_RAISE, 2)
@@ -137,18 +137,41 @@ def rubric_text(ctx: RunContext, name: str, repo_available: bool) -> str:
     return text if repo_available else NO_REPO_RUBRIC_NOTE + text
 
 
-def persist_outputs(ctx: RunContext, stage: str, res: StageResult, prefix: str = "") -> dict[str, str]:
-    """Store every file the session wrote; return name -> sha256."""
+def persist_outputs(ctx: RunContext, stage: str, res: StageResult, prefix: str = "", *, work_item_id: str | None = None,
+                    spec_id: str | None = None) -> dict[str, str]:
+    """Store every file the session wrote; return name -> sha256. The `artifact.produced` and `session.finished`
+    events carry the work item and spec the session served, so a change request's provenance table and the Console
+    can attribute sessions and cost per spec (post-mortem issue 16: every session.finished had spec_id null)."""
     shas = {}
     for name, content in res.outputs.items():
         shas[name] = ctx.store.put_artifact(ctx.run_id, stage, prefix + name, content)
         ctx.event("artifact.produced", {"artifact_type": Path(name).stem, "path": f"{stage}/{prefix}{name}",
-                                        "sha256": shas[name]}, stage=stage)
+                                        "sha256": shas[name]}, stage=stage, work_item_id=work_item_id, spec_id=spec_id)
     ctx.event("session.finished", {"session_id": res.session_id, "agent_id": res.agent_id,
                                    "agent_version": res.agent_version, "list_cost_usd": res.list_cost_usd,
-                                   "outcome_result": res.outcome_result, "stop_reason": res.stop_reason},
-              stage=stage, actor="platform")
+                                   "outcome_result": res.outcome_result, "stop_reason": res.stop_reason,
+                                   "outcome_iterations": res.outcome_iterations},
+              stage=stage, actor="platform", work_item_id=work_item_id, spec_id=spec_id)
     return shas
+
+
+def stamp_provenance(artifact: dict[str, Any], ctx: RunContext, res: StageResult, agent_name: str, model: str,
+                     inputs: dict[str, str] | None = None) -> dict[str, Any]:
+    """Set `produced_by` from what the orchestrator knows (agent id and version, session id, cost, iterations, time).
+
+    Agents cannot know their own session id or cost, so the schemas' required `produced_by` made them invent
+    placeholders ('sesn_unknown', model 'claude', a round timestamp) that `setdefault` then kept (post-mortem issue
+    16). The agent's `inputs` (when well-formed), `thread_id` and `effort` are kept; everything else is overwritten."""
+    theirs = artifact.get("produced_by") if isinstance(artifact.get("produced_by"), dict) else {}
+    ours = provenance(ctx, res, agent_name, model, inputs or {})
+    if not inputs:
+        ours["inputs"] = [i for i in (theirs.get("inputs") or []) if isinstance(i, dict) and isinstance(i.get("sha256"), str)
+                          and len(i["sha256"]) == 64 and isinstance(i.get("artifact"), str)]
+    for key in ("thread_id", "effort"):
+        if theirs.get(key) is not None:
+            ours[key] = theirs[key]
+    artifact["produced_by"] = ours
+    return artifact
 
 
 def artifact_json_or_none(ctx: RunContext, stage: str, name: str) -> Any:
