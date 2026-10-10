@@ -16,9 +16,9 @@
     "./agents/decomposer.md": {
       "kind": "agent",
       "id": "agent_01PsowtEChbuMJTdyvzzpyQn",
-      "version": "2",
-      "hash": "868eb99a298b96ffc842ef70b4bc9afb",
-      "remote_hash": "d5e9a23da80d4ea67869d26028325941"
+      "version": "3",
+      "hash": "9278438daa041569a4a7e2c6e006ac7d",
+      "remote_hash": "335fce72f503dbf056d8ff16c1ed3f1d"
     },
     "./agents/implementer.md": {
       "kind": "agent",

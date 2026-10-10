@@ -1,0 +1,69 @@
+{
+  "outcome_id": "out_switchboard01",
+  "title": "Switchboard release 1: boolean feature flags with deterministic rollout",
+  "statement": "Switchboard is an internal feature-flag service for our product teams: a small HTTP API that tells a caller whether a named flag is on for a given subject (a user id, an account id, a device id), so teams can ship code dark, roll it out to a percentage of subjects, and switch it off instantly without a deploy. Today each team hard-codes flags in config and redeploys to change them. This is release 1 of a longer roadmap: release 2 adds persistence to a local file, release 3 adds API keys and an audit log, release 4 adds multivariate flags and SDK snapshots. None of that is in scope here. Release 1 has to be a service a team can run today and trust. The repository is brand new and contains only the platform's .github/workflows/preview.yml and a README stub; the app package, pyproject.toml, service_manifest.json, the README and the tests are all created by this release. I expect release 1 to land as a single pull request: a skeleton with only a health endpoint has no value to anyone and the flag API cannot be reviewed without it, so do not split the skeleton and the flag API into dependent work items.\n\nWhat release 1 does. Flags are created, read, updated, listed and deleted under /v1/flags. A flag has a key (lowercase, starts with a letter, then letters, digits, hyphens or underscores, at most 64 characters, unique, never changed after creation), a description (default empty), an enabled switch (default false), an integer rollout_percentage from 0 to 100 (default 0), and allow and deny lists of subject ids (default empty). Evaluation is GET /v1/flags/{key}/evaluate?subject=<id>, answering with the flag key, the subject, the integer bucket, the boolean value and a reason. The rules are strict and in this order: a disabled flag is false for every subject (reason \"disabled\"); a subject on the deny list is false (reason \"deny\"); a subject on the allow list is true (reason \"allow\"); otherwise the value is true exactly when the subject's bucket is below rollout_percentage (reason \"rollout\"), so 0 is off for everyone and 100 is on for everyone not on a list. The bucket is a pure function of the flag key and the subject, the same in every process and after every restart, so one subject sees one answer forever and two flags at the same percentage do not light up for the same subjects. The function is fixed: take the UTF-8 bytes of the string formed by the flag key, a single colon and the subject (for example \"new-checkout:user-123\"), compute its SHA-256, interpret the full 32-byte digest as a big-endian unsigned integer, and take it modulo 100. Worked examples that the README must show and the tests must assert: flag new-checkout with subject user-123 is bucket 66; new-checkout with user-456 is 35; dark-mode with user-123 is 14; new-checkout with acct-789 is 58. Never use Python's hash() or any random source. Unknown flags are 404, a duplicate key on create is 409, and an invalid key, an out-of-range percentage, a body that tries to change the key, or a missing or empty subject is 422.\n\nStorage is an in-memory dictionary behind a lock for this release, there is no authentication yet, and there is no UI. Follow the conventions of our other Python services so the platform can run it unattended: FastAPI on uvicorn, entrypoint `uvicorn app.main:app --host 0.0.0.0 --port 8000`, GET /health returning 200 and {\"status\": \"ok\"}, a service_manifest.json at the repository root that names the service switchboard and declares the runtime (kind, version, entrypoint, port), the health path and an env list (empty is fine), a pyproject.toml with fastapi, uvicorn and pydantic as the only runtime dependencies and pytest and httpx as the only test dependencies, and a pytest suite under tests/ that passes with `python -m pytest -q` from the repository root on Python 3.11 through 3.14 with those five packages installed and no install step (set pytest's pythonpath to the repository root so the app package imports). The README explains how to run the service and the tests, lists every endpoint with an example request and response, and documents the bucketing function with the worked examples above.",
+  "success_metrics": [
+    {
+      "metric": "Rule precedence correctness",
+      "baseline": "No service exists; flags are hard-coded per team and changed by redeploying",
+      "target": "For every flag and subject, GET /v1/flags/{key}/evaluate?subject=<id> returns the value and reason the ordered rules dictate: a disabled flag is false with reason \"disabled\" even for a subject on the allow list; a subject on both lists is false with reason \"deny\"; a subject only on the allow list is true with reason \"allow\" even at rollout_percentage 0; a subject on neither list gets reason \"rollout\", false for every subject at rollout_percentage 0 and true for every subject at 100; enabling, disabling or editing a flag changes the next evaluation with no restart",
+      "measurement": "pytest tests in tests/ covering each rule and each boundary (0, 100, subject on both lists, disabled flag with an allow entry), plus an HTTP end-to-end sequence against $BASE_URL that creates a flag, sets the allow and deny lists, evaluates one subject from each list and one from neither, then disables the flag and sees every subject go false"
+    },
+    {
+      "metric": "Deterministic bucketing",
+      "baseline": null,
+      "target": "The bucket in every evaluate response equals SHA-256 of \"<flag key>:<subject>\" as a big-endian integer modulo 100: new-checkout/user-123 is 66, new-checkout/user-456 is 35, dark-mode/user-123 is 14, new-checkout/acct-789 is 58, and the README shows these four examples; for flag new-checkout at rollout_percentage 20 with empty lists, exactly 1999 of the 10,000 subjects subject-00000 through subject-09999 evaluate true; evaluating those 10,000 subjects a second time returns byte-identical bodies",
+      "measurement": "pytest tests that assert the four pinned buckets, the exact count 1999, and the repeat-run equality; end-to-end against $BASE_URL, an evaluate call for new-checkout and user-123 returns bucket 66 and a second identical call returns an identical JSON body"
+    },
+    {
+      "metric": "API contract",
+      "baseline": null,
+      "target": "POST /v1/flags returns 201 with the stored flag and fills the defaults (description \"\", enabled false, rollout_percentage 0, allow [], deny []); GET /v1/flags lists every flag sorted by key; GET /v1/flags/{key} returns one; PATCH /v1/flags/{key} with any subset of description, enabled, rollout_percentage, allow and deny changes only the fields sent and returns 200 with the full flag; DELETE /v1/flags/{key} returns 204 and a later GET returns 404; a duplicate key on create returns 409; a key that does not match ^[a-z][a-z0-9_-]{0,63}$, a rollout_percentage outside 0..100 or not an integer, a PATCH body containing key, or an evaluate call with a missing or empty subject returns 422; every error response is a JSON body",
+      "measurement": "pytest tests through FastAPI's TestClient for each status code and the PATCH partial-update rule, plus curl status-code checks against $BASE_URL for 201, 200, 204, 404, 409 and 422"
+    },
+    {
+      "metric": "Runs on the platform from a fresh clone",
+      "baseline": "Empty repository: no code, no tests, no manifest",
+      "target": "service_manifest.json at the repository root validates against the platform's service manifest schema and names service switchboard, the uvicorn entrypoint, port 8000, health path /health and an env list; the service started from that entrypoint answers GET /health with 200 and {\"status\": \"ok\"} within 5 seconds; `python -m pytest -q` passes from a fresh clone in under 10 seconds with only fastapi, uvicorn, pydantic, pytest and httpx installed, no install step and no network access; README.md documents how to run the service and the tests, every endpoint with an example request and response, and the bucketing function with its worked examples",
+      "measurement": "The orchestrator's manifest check, its local preview started from service_manifest.json with a /health probe, and `python -m pytest -q` run by the orchestrator in authoritative verification; the README is checked by review"
+    }
+  ],
+  "constraints": {
+    "deadline": "2026-11-14",
+    "budget_usd": 60,
+    "must_not": [
+      "Do not add a database server, an external service, a message queue or any API key; storage is an in-memory dictionary behind a lock for this release (persistence is release 2)",
+      "Do not add runtime dependencies beyond fastapi, uvicorn and pydantic, or test dependencies beyond pytest and httpx; everything else comes from the Python standard library, and the tests must run with `python -m pytest -q` from the repository root with no install step",
+      "Do not use Python's built-in hash() or any random source for bucketing; the bucket is SHA-256 of \"<flag key>:<subject>\" as a big-endian integer modulo 100 and nothing else",
+      "Do not add authentication, a UI, multivariate or non-boolean flags, persistence or an audit log; those are later releases",
+      "Do not edit or remove .github/workflows/preview.yml; the platform owns it",
+      "Do not split release 1 into dependent pull requests; the project skeleton and the flag API land together as one change",
+      "End-to-end checks must need nothing beyond curl and the Python standard library on the machine that runs them"
+    ],
+    "compliance": []
+  },
+  "context_links": [],
+  "target_repositories": [
+    {
+      "url": "https://github.com/willtech3/factory-switchboard",
+      "default_branch": "main",
+      "paths_in_scope": [
+        "app/",
+        "tests/",
+        "README.md",
+        "pyproject.toml",
+        "service_manifest.json",
+        ".gitignore"
+      ],
+      "create": true,
+      "visibility": "private"
+    }
+  ],
+  "owner": {
+    "name": "Will",
+    "handle": "willtech3",
+    "role": "Owner"
+  },
+  "clarifications": [],
+  "created_at": "2026-10-10T15:50:00Z"
+}
