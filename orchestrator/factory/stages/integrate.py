@@ -28,8 +28,9 @@ from .common import persist_outputs, public, require_json, run_session
 INTEGRATE_DESCRIPTION = """Open the change request (pull request or merge request) for specification {spec_id}.
 Inputs are under /mnt/session/uploads/ (spec.json, merge_readiness.json, findings.json, review_response.json,
 test_results.json, run_summary.json, cr_template.md). The branch {branch} is already pushed; its head must equal
-{head_sha} (the orchestrator's run-record commit on top of the judged head {judged_sha}). Render the template, call
-open_change_request, and write cr.json to /mnt/session/outputs/."""
+{head_sha} (the orchestrator's run-record commit on top of the judged head {judged_sha}).
+{git}
+Render the template, call open_change_request, and write cr.json to /mnt/session/outputs/."""
 
 RECORD_AUTHOR = ("factory", "factory@localhost")
 
@@ -120,7 +121,8 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
         ctx, prefix=f"{sid}-", spec_id=sid,
         agent_key="integrator", title=f"{ctx.run_id} integrate {sid}", run_id=ctx.run_id, stage="integrate",
         uploads=uploads, work_item_id=wid,
-        description=INTEGRATE_DESCRIPTION.format(spec_id=sid, branch=branch, head_sha=head_sha, judged_sha=judged_sha),
+        description=INTEGRATE_DESCRIPTION.format(spec_id=sid, branch=branch, head_sha=head_sha, judged_sha=judged_sha,
+                                                 git=ctx.forge.sandbox_git_instructions(ctx.cfg.repo_url, base_branch, branch, read_only=True)),
         rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["integrate"],
         custom_tools={"open_change_request": make_open_change_request(ctx, ctx.forge, sid, wid, branch)},
         repository=ctx.forge.session_repository_resource(ctx.cfg.repo_url, branch),

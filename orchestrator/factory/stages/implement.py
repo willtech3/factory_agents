@@ -43,6 +43,10 @@ NO_FORGE_GIT_SETUP = """Git access: no forge is configured for this run. The rep
 from the sandbox; work on branch {branch} from {base_branch} only if it was mounted for you, otherwise record the
 blocker in blocked.md."""
 
+NO_FORGE_GIT_READ_ONLY = """Git access: no forge is configured for this run. If the repository at {repo_url} was mounted for
+you, read branch {branch} there; this session is read-only on it: never commit, never push, and write everything you
+produce under /mnt/session/outputs/."""
+
 IMPLEMENT_DESCRIPTION = """Implement specification {spec_id} from /mnt/session/uploads/spec.json{spec_md_clause}.
 {git}
 {review_clause}
@@ -323,6 +327,19 @@ def _branch_for(run_id: str, spec_id: str) -> str:
     return f"factory/{run_id}/{spec_id}"
 
 
+def git_clauses(ctx: RunContext, repo_url: str, base_branch: str, branch: str) -> tuple[str, str]:
+    """(write clause for the implementer, read-only clause for reviewers, the merge judge and the integrator).
+
+    One clause used to serve every role, so reviewers were told to "commit as you go and push" right before "you
+    never edit source files"; a less careful pass would have pushed its probes and tripped diff_scope on the next
+    verification (post-mortem issue 18)."""
+    if ctx.forge is None:
+        return (NO_FORGE_GIT_SETUP.format(repo_url=repo_url, base_branch=base_branch, branch=branch),
+                NO_FORGE_GIT_READ_ONLY.format(repo_url=repo_url, branch=branch))
+    return (ctx.forge.sandbox_git_instructions(repo_url, base_branch, branch),
+            ctx.forge.sandbox_git_instructions(repo_url, base_branch, branch, read_only=True))
+
+
 @dataclass
 class ResumePoint:
     """Where `run_implement_one` picks a spec up again after the orchestrator died mid-loop (`factory resume`).
@@ -401,8 +418,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     sid, wid = spec["spec_id"], spec["work_item_id"]
     spec_md = (spec_md or spec.get("_markdown") or "").strip()
     branch = _branch_for(ctx.run_id, sid)
-    git = (ctx.forge.sandbox_git_instructions(repo_url, base_branch, branch) if ctx.forge is not None
-           else NO_FORGE_GIT_SETUP.format(repo_url=repo_url, base_branch=base_branch, branch=branch))
+    git, git_ro = git_clauses(ctx, repo_url, base_branch, branch)     # the implementer pushes; everyone else only reads
 
     def mount(checkout: str) -> dict[str, Any] | None:
         return ctx.forge.session_repository_resource(repo_url, checkout) if ctx.forge is not None else None
@@ -520,7 +536,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 agent_key="reviewer", title=f"{ctx.run_id} review {sid} r{round_no} p{i}", run_id=ctx.run_id,
                 stage="review", uploads=rev_uploads, work_item_id=wid,
                 description=REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
-                                                      git=git, round=round_no, second_round=second,
+                                                      git=git_ro, round=round_no, second_round=second,
                                                       preview_clause=rev_preview_clause),
                 rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["review"],
                 metadata={"pass": str(i)}, repository=mount(branch),
@@ -544,7 +560,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 agent_key="security_reviewer", title=f"{ctx.run_id} security-review {sid} r{round_no}", run_id=ctx.run_id,
                 stage="review", uploads={**rev_uploads, "security_prechecks.json": json.dumps(pre, indent=2).encode()}, work_item_id=wid,
                 description=SECURITY_REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
-                                                               git=git, round=round_no, second_round=second,
+                                                               git=git_ro, round=round_no, second_round=second,
                                                                preview_clause=rev_preview_clause),
                 rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["security_review"],
                 metadata={"pass": "security"}, repository=mount(branch),
@@ -588,7 +604,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         ctx, prefix=f"{sid}-", spec_id=sid,
         agent_key="merge_judge", title=f"{ctx.run_id} merge-judge {sid}", run_id=ctx.run_id, stage="merge_judge",
         uploads=mj_uploads, work_item_id=wid,
-        description=MERGE_JUDGE_DESCRIPTION.format(spec_id=sid, round=len([1 for _ in range(1)]), git=git),
+        description=MERGE_JUDGE_DESCRIPTION.format(spec_id=sid, round=len([1 for _ in range(1)]), git=git_ro),
         rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["merge_judge"],
         repository=mount(branch),
     )

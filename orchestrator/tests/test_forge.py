@@ -206,6 +206,12 @@ def test_github_session_resource_and_git_instructions():
                    "authorization_token": "ghp_test", "checkout": {"type": "branch", "name": "factory/run_1/spec_x"}}
     text = f.sandbox_git_instructions("https://github.com/will/ledgerline", "main", "factory/run_1/spec_x")
     assert "/workspace/repo" in text and "git push -u origin factory/run_1/spec_x" in text and "GITLAB_TOKEN" not in text
+    # reviewers, the merge judge and the integrator get a read-only clause (post-mortem issue 18)
+    ro = f.sandbox_git_instructions("https://github.com/will/ledgerline", "main", "factory/run_1/spec_x", read_only=True)
+    assert "factory/run_1/spec_x" in ro and "never commit, never push" in ro and "push -u" not in ro and "Commit as you go" not in ro
+    gl_ro = GitLabForge("https://gitlab.example.internal", "glpat", "group/app").sandbox_git_instructions(
+        "https://gitlab.example.internal/group/app", "main", "b", read_only=True)
+    assert "Authorization: Bearer $GITLAB_TOKEN" in gl_ro and "never commit, never push" in gl_ro and "push it when done" not in gl_ro
     assert f.authenticated_url("https://github.com/will/ledgerline") == "https://x-access-token:ghp_test@github.com/will/ledgerline"
     gl = GitLabForge("https://gitlab.example.internal", "glpat", "group/app")
     assert gl.session_repository_resource("https://gitlab.example.internal/group/app", "b") is None
