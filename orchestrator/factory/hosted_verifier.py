@@ -2,7 +2,8 @@
 
 The controller only reads git here (the checkout, the diff, `git archive` of the exact head). Everything that executes
 the repository runs in one fresh hosted session per round: the recipe's prepare/start/seed and its baseline verify,
-the spec's `test_plan.commands` (pytest outcomes summarised from JUnit inside the sandbox), `pytest --collect-only`,
+the spec's `test_plan.commands` (pytest and direct `bun test` outcomes summarised from JUnit reports the harness itself
+asks for, inside the sandbox), `pytest --collect-only`,
 and the spec's `test_plan.e2e` entries for targets "local" and "preview" inside that sandbox, each visual entry
 answering a controller-issued browser request. Results come back bound to the head, the recipe fingerprint and the
 source archive fingerprint; anything missing, unbound or unsupported is recorded as not run, so the deterministic
@@ -30,6 +31,8 @@ SETUP_CHECK = "verification_setup"          # the same name LocalVerifier.prepar
 ENVIRONMENT_CHECK = "hosted_environment"
 VERIFY_STAGE = "verify"
 NODE_ID_RE = re.compile(r"^[^\s:]+::\S+$")
+BUN_ID_RE = re.compile(r"^[^\n]+?\.[cm]?[jt]sx?::[^\n]+$")    # file::outer describe > inner describe > test name
+TEST_ID_RE = {"pytest": NODE_ID_RE, "bun": BUN_ID_RE}
 UNSUPPORTED_COMMANDS = {"factory:browser": "the attached-browser worker (factory:browser) runs on a person's machine and cannot "
                                            "run in a hosted sandbox; name a command that drives a browser inside the sandbox"}
 
@@ -193,6 +196,11 @@ class HostedVerifier:
             outcome = _pytest(r.get("pytest"))
             if outcome is not None:
                 row["pytest"] = outcome
+            evidence = _test_evidence(r.get("tests"), outcome)
+            if evidence is not None:
+                row["tests"] = evidence
+                if evidence.get("status") != "reported":
+                    row["stderr_tail"] += f" No {evidence['framework']} test evidence: {evidence.get('reason', evidence['status'])}."
             commands.append(row)
         collected = None
         c = (results or {}).get("collected_tests") if ran else None
@@ -273,7 +281,8 @@ def _exit_code(r: dict[str, Any]) -> int | None:
 
 def _summary(r: dict[str, Any]) -> str:
     code = _exit_code(r)
-    failed = ((r.get("pytest") or {}).get("failed") or [])[:10] if isinstance(r.get("pytest"), dict) else []
+    tests = r.get("tests") if isinstance(r.get("tests"), dict) else r.get("pytest")
+    failed = ((tests or {}).get("failed") or [])[:10] if isinstance(tests, dict) else []
     text = "timed out in the hosted sandbox." if code == 124 else f"exit {code} in the hosted sandbox."
     return text + (f" Failed tests: {', '.join(map(str, failed))}." if failed else "")
 
@@ -283,6 +292,27 @@ def _pytest(value: Any) -> dict[str, list[str]] | None:
     if not isinstance(value, dict) or not all(isinstance(value.get(k), list) for k in ("passed", "failed", "skipped")):
         return None
     return {k: [x for x in value[k] if isinstance(x, str) and NODE_ID_RE.match(x)] for k in ("passed", "failed", "skipped")}
+
+
+def _test_evidence(value: Any, pytest_outcome: dict[str, list[str]] | None) -> dict[str, Any] | None:
+    """A command row's framework-neutral test evidence: `{framework, report, status: "reported", passed, failed,
+    skipped}` from a JUnit report the harness asked for, with every id checked against its framework's id shape; or
+    `{framework, status: missing|invalid|unsupported, reason}`, which proves nothing. An older harness's `pytest` lists
+    are read as pytest evidence. None when the command ran no test framework the harness knows."""
+    if isinstance(value, dict) and value.get("framework") in TEST_ID_RE:
+        framework = value["framework"]
+        lists_ok = all(isinstance(value.get(k), list) for k in ("passed", "failed", "skipped"))
+        if value.get("status") == "reported" and lists_ok:
+            shape = TEST_ID_RE[framework]
+            out = {k: [x for x in value[k] if isinstance(x, str) and shape.match(x)] for k in ("passed", "failed", "skipped")}
+            if sum(map(len, out.values())) != sum(len(value[k]) for k in out):
+                return {"framework": framework, "status": "invalid", "reason": "the report holds ids that are not this framework's"}
+            return {"framework": framework, "report": "junit", "status": "reported", **out}
+        status = value.get("status") if value.get("status") in ("missing", "invalid", "unsupported") else "invalid"
+        return {"framework": framework, "status": status, "reason": str(value.get("reason") or status)[:300]}
+    if pytest_outcome is not None:
+        return {"framework": "pytest", "report": "junit", "status": "reported", **pytest_outcome}
+    return None
 
 
 def _viewport_observed(directory: Path) -> dict[str, int] | None:

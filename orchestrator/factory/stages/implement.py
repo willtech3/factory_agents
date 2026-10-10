@@ -113,9 +113,11 @@ IMPLEMENT_DESCRIPTION = """Implement specification {spec_id} from /mnt/session/u
 Write implementation_report.json{response_clause} to /mnt/session/outputs/ and validate it with the validate.py tool
 (schema implementation_report.schema.json). The report must map every acceptance criterion to the tests that prove it, as
 `criteria: [{{"ac_id": "AC-1", "tests": ["tests/test_x.py::test_name", ...]}}, ...]` with pytest node ids exactly as
-`pytest --collect-only -q` prints them; the orchestrator runs the test plan itself, derives the passing set from its own
-pytest run, and fails any automated criterion whose tests it did not collect or did not see pass. Run every command in the
-spec's test_plan before finishing and record the results. {preview_clause}"""
+`pytest --collect-only -q` prints them, or for Bun tests `path/to/x.test.ts::outer describe > inner describe > test name`
+(the file relative to the repository root, describe blocks outermost first, the test name as Bun reports it); the
+orchestrator runs the test plan itself, derives the passing set from its own run's test reports, and fails any automated
+criterion whose tests it did not collect or did not see pass. Run every command in the spec's test_plan before finishing
+and record the results. {preview_clause}"""
 
 REVIEW_DESCRIPTION = """Review the change for specification {spec_id}. The diff is at /mnt/session/uploads/diff.patch
 (base {base_sha}, head {head_sha}); the repository is cloned at /workspace/repo on branch {branch}.
@@ -196,7 +198,9 @@ every test_plan command, pytest collection, and every test_plan.e2e entry with t
 sandbox ($BASE_URL). Only that run counts. Do not change the recipe: its approved fingerprint is pinned and a changed recipe
 blocks verification. An e2e entry with a visual contract must be a command that drives a browser inside that sandbox and
 writes result.json (with viewport_observed) and its screenshots to $FACTORY_EVIDENCE_DIR for the request at
-$FACTORY_VISUAL_REQUEST; `factory:browser` cannot run there. Run what you can in this sandbox and record the results."""
+$FACTORY_VISUAL_REQUEST; `factory:browser` cannot run there. Bun tests count only from a direct `bun test ...` test_plan
+command (no package script, pipeline, environment prefix or reporter of its own): the sandbox adds its own JUnit reporter to
+it. Run what you can in this sandbox and record the results."""
 
 MANAGED_PREVIEW_REVIEW_CLAUSE = """No preview URL is reachable from this sandbox (/mnt/session/uploads/preview.json: status
 "hosted_sandbox", url null). The orchestrator verified this head in a separate Anthropic-hosted sandbox built from the app's
@@ -624,14 +628,34 @@ def _node_id(file: str | None, classname: str, name: str) -> str:
     return "::".join([file, *chain, name])
 
 
+def _reported(row: dict[str, Any]) -> dict[str, Any] | None:
+    """A command row's test outcomes: its framework-neutral `tests` evidence when it is a report (hosted rows, pytest or
+    Bun), else its pytest lists (rows of the local verifier and of older hosted harnesses)."""
+    tests = row.get("tests")
+    if isinstance(tests, dict):
+        return tests if tests.get("status") == "reported" else None
+    return row.get("pytest") or None
+
+
 def passed_test_ids(command_results: list[dict[str, Any]]) -> tuple[list[str], list[str]] | None:
-    """(passed, failed) node ids across every command that ran pytest, or None when none did."""
-    runs = [r["pytest"] for r in command_results if r.get("pytest")]
+    """(passed, failed) test ids across every command that produced a test report, or None when none did."""
+    runs = [t for t in map(_reported, command_results) if t]
     if not runs:
         return None
     passed = sorted({t for r in runs for t in r.get("passed", [])})
     failed = sorted({t for r in runs for t in r.get("failed", [])})
     return [t for t in passed if t not in set(failed)], failed
+
+
+def managed_test_evidence(command_results: list[dict[str, Any]], collected: list[str] | None) -> tuple[list[str] | None, list[str] | None]:
+    """(passing ids, known ids) for a managed run. Known is pytest's collection plus every id any report listed (Bun has
+    no verified collect-only mode, so its inventory is the report of the run itself, skipped and filtered tests
+    included). (None, None) when the run produced neither, so the mapping check fails closed."""
+    runs = passed_test_ids(command_results)
+    if runs is None and collected is None:
+        return None, None
+    listed = {t for r in map(_reported, command_results) if r for k in ("passed", "failed", "skipped") for t in r.get(k, [])}
+    return (runs[0] if runs else []), sorted(set(collected or []) | listed)
 
 
 def _branch_for(run_id: str, spec_id: str) -> str:
@@ -847,15 +871,19 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         # what pytest collects in the checkout. A repository pytest cannot collect leaves the mapping unverified (said so
         # in the check's detail), never silently verified.
         visual_uploads = visual.persist(ctx, sid, round_no, head_sha, e2e_results)
-        if not managed:
+        if managed:
+            # Only reports the harness asked for count; an exit code alone, or an id only the implementer names, is no evidence.
+            passing_tests, tests_known = managed_test_evidence(cmd_results, collected)
+        else:
             collected = verifier.collect_test_ids(repo)
-        pytest_runs = passed_test_ids(cmd_results)
-        passing_tests = (pytest_runs[0] if pytest_runs else []) if collected is not None else None
+            pytest_runs = passed_test_ids(cmd_results)
+            passing_tests = (pytest_runs[0] if pytest_runs else []) if collected is not None else None
+            tests_known = collected
         det = [setup] + extra_det + checks.run_all_for_merge(
             spec=spec, changed_files=diff["changed"], deleted_files=diff["deleted"], existing_test_files=diff["existing_tests"],
             added_lines_by_file=diff["added_lines"], implementation_report=report, passing_tests=passing_tests,
-            tests_that_exist=collected, command_results=cmd_results, manifest_path=manifest_path,
-            schema_dir=ctx.cfg.schemas_dir, e2e_results=e2e_results,
+            tests_that_exist=tests_known, command_results=cmd_results, manifest_path=manifest_path,
+            schema_dir=ctx.cfg.schemas_dir, e2e_results=e2e_results, require_test_evidence=managed,
         )
         test_results = {"commands": cmd_results, "e2e": e2e_results, "preview": preview, "environment": environment,
                         **({"collected_tests": collected} if managed else {})}
@@ -1110,7 +1138,7 @@ def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]]
             rows = [r for r in (e2e_results or []) if r.get("exit_code", 1) != 0]
             repro = "; ".join(f"{r['command']} -> exit {r.get('exit_code')}: {(r.get('stderr_tail') or r.get('stdout_tail') or '')[-300:]}" for r in rows)
             environmental = is_environmental(rows)
-        fix = {"ac_test_mapping": "Map every automated acceptance criterion to a test in implementation_report.json `criteria` ([{ac_id, tests: [...]}]) using pytest node ids exactly as `pytest --collect-only -q` prints them; the orchestrator only counts tests it collected and saw pass in its own run of the test plan.",
+        fix = {"ac_test_mapping": "Map every automated acceptance criterion to a test in implementation_report.json `criteria` ([{ac_id, tests: [...]}]) using pytest node ids exactly as `pytest --collect-only -q` prints them, or Bun ids `path/x.test.ts::outer describe > test name`; the orchestrator only counts tests its own run of the test plan collected or reported and saw pass (Bun only from direct `bun test` commands).",
                "test_plan_commands": "Make every test_plan command exit 0 from a clean checkout; if a command depends on a port or host, make it robust or pick a free port.",
                SETUP_CHECK: ("The hosted verification could not run on this head; the detail says why. A failed recipe prepare phase is "
                              "fixed in the change. A changed or missing recipe, or test credentials that are not attached, needs a person "

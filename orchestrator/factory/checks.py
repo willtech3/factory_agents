@@ -232,14 +232,18 @@ def criteria_mapping(implementation_report: dict[str, Any]) -> dict[str, list[st
 
 
 def ac_test_mapping(spec: dict[str, Any], implementation_report: dict[str, Any],
-                    tests_that_passed: Iterable[str] | None, tests_that_exist: Iterable[str] | None = None) -> CheckResult:
+                    tests_that_passed: Iterable[str] | None, tests_that_exist: Iterable[str] | None = None,
+                    require_verified: bool = False) -> CheckResult:
     """Every automated acceptance criterion names a test the orchestrator collected and saw pass.
 
-    `tests_that_passed` are node ids from the orchestrator's own pytest run (never the implementer's report);
-    `tests_that_exist` is what `pytest --collect-only` lists in the checkout, so a mapped id that pytest does not know
-    is reported as not found rather than as not passing. A mapped id may name a file or a class: it counts when every
-    collected test under it passed. `tests_that_passed=None` means the orchestrator could not run pytest in this
-    repository; the mapping is then checked for presence only and the detail says it is unverified."""
+    `tests_that_passed` are test ids from the orchestrator's own run (never the implementer's report): pytest node ids
+    (`tests/test_x.py::Class::test_y`) or Bun ids (`src/x.test.ts::outer describe > inner describe > test name`), each
+    read from a JUnit report the orchestrator's harness asked for. `tests_that_exist` is what was collected or reported
+    in the checkout, so a mapped id nothing lists is reported as not found rather than as not passing. A mapped id may
+    name a file, a pytest class or a Bun describe block: it counts when every listed test under it passed (a skipped,
+    todo or filtered-out test is not a pass). `tests_that_passed=None` means the orchestrator has no machine-readable
+    test evidence for this repository: the mapping is then checked for presence only and the detail says it is
+    unverified, unless `require_verified` (managed preview mode), where missing evidence fails the check."""
     verified = tests_that_passed is not None
     passed = set(tests_that_passed or [])
     exist = set(tests_that_exist) if tests_that_exist is not None else None
@@ -253,10 +257,13 @@ def ac_test_mapping(spec: dict[str, Any], implementation_report: dict[str, Any],
             problems.append(f"{ac['ac_id']}: no test mapped")
             continue
         if not verified:
+            if require_verified:
+                problems.append(f"{ac['ac_id']}: no machine-readable test report from the orchestrator's run covers {tests} "
+                                "(only pytest and direct `bun test` commands in test_plan produce one)")
             continue
         unknown = [t for t in tests if exist is not None and not _test_known(t, exist)]
         if unknown:
-            problems.append(f"{ac['ac_id']}: tests not found (pytest did not collect them): {unknown}")
+            problems.append(f"{ac['ac_id']}: tests not found (no collection or test report in the orchestrator's run lists them): {unknown}")
         not_passed = [t for t in tests if t not in unknown and not _test_passed(t, passed, exist)]
         if not_passed:
             problems.append(f"{ac['ac_id']}: tests did not pass in the orchestrator's run: {not_passed}")
@@ -269,15 +276,24 @@ def ac_test_mapping(spec: dict[str, Any], implementation_report: dict[str, Any],
     return CheckResult("ac_test_mapping", not problems, detail, {"problems": problems, "verified": verified})
 
 
+JS_TEST_ID = re.compile(r"^[^\n]+?\.[cm]?[jt]sx?::")
+
+
+def _under(test_id: str, candidate: str) -> bool:
+    """`candidate` is a test inside `test_id`: below a file or pytest class (`::`), or, for a Bun id, inside a describe
+    block (` > `)."""
+    return candidate.startswith(test_id + "::") or (bool(JS_TEST_ID.match(test_id)) and candidate.startswith(test_id + " > "))
+
+
 def _test_known(test_id: str, collected: set[str]) -> bool:
-    return test_id in collected or any(c.startswith(test_id + "::") for c in collected)
+    return test_id in collected or any(_under(test_id, c) for c in collected)
 
 
 def _test_passed(test_id: str, passed: set[str], collected: set[str] | None) -> bool:
     if test_id in passed:
         return True
     pool = collected if collected is not None else passed
-    under = [c for c in pool if c.startswith(test_id + "::")]
+    under = [c for c in pool if _under(test_id, c)]
     return bool(under) and all(c in passed for c in under)
 
 
@@ -372,6 +388,7 @@ def run_all_for_merge(
     spec_touches_tests: bool = False,
     manifest_path: Path | None = None, schema_dir: Path | None = None,
     e2e_results: list[dict[str, Any]] | None = None, tests_that_exist: list[str] | None = None,
+    require_test_evidence: bool = False,
 ) -> list[CheckResult]:
     """The merge judge receives this list verbatim and may not override a failure.
 
@@ -384,7 +401,7 @@ def run_all_for_merge(
         diff_scope(changed_files + deleted_files, spec["allowed_paths"]),
         protected_tests(changed_files, deleted_files, existing_test_files, spec["allowed_paths"], spec_touches_tests),
         test_weakening(added_lines_by_file),
-        ac_test_mapping(spec, implementation_report, passing_tests, tests_that_exist),
+        ac_test_mapping(spec, implementation_report, passing_tests, tests_that_exist, require_verified=require_test_evidence),
         commands_passed(command_results),
         e2e_coverage(spec),
         visual_passed(spec, e2e_results or []),

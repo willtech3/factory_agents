@@ -23,7 +23,7 @@
           "tests": {
             "type": "array",
             "items": { "type": "string" },
-            "description": "pytest node ids exactly as `pytest --collect-only -q` prints them (tests/test_x.py::test_name, tests/test_x.py::TestClass::test_name, tests/test_x.py::test_name[param]). Empty only for a criterion whose verification is not automated_test."
+            "description": "Test ids exactly as the orchestrator's own run reports them. pytest: node ids as `pytest --collect-only -q` prints them (tests/test_x.py::test_name, tests/test_x.py::TestClass::test_name, tests/test_x.py::test_name[param]). Bun: `path/to/x.test.ts::outer describe > inner describe > test name` (file relative to the repository root, describe blocks outermost first, the test name as Bun reports it, test.each names expanded), counted only from a direct `bun test ...` test_plan command. A file, pytest class or Bun describe id covers every test under it. Empty only for a criterion whose verification is not automated_test."
           },
           "red_on_base": { "type": "boolean", "description": "Whether the named tests were seen failing on base_sha (rubric I1 level 3)." },
           "note": { "type": "string" }

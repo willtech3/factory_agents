@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="8" assertions="6" failures="1" skipped="2" time="0.104287">
+  <testsuite name="other.test.js" file="other.test.js" tests="1" assertions="1" failures="0" skipped="0" time="0.001" hostname="fixture-host">
+    <testcase name="name with &quot;quotes&quot; &amp; &lt;angle&gt; chars" classname="" time="0.001221" file="other.test.js" line="2" assertions="1" />
+  </testsuite>
+  <testsuite name="src/catalog/models.test.ts" file="src/catalog/models.test.ts" tests="7" assertions="5" failures="1" skipped="2" time="0" hostname="fixture-host">
+    <testcase name="top level passes" classname="" time="0.000011" file="src/catalog/models.test.ts" line="3" assertions="1" />
+    <testsuite name="model catalog" file="src/catalog/models.test.ts" line="5" tests="6" assertions="4" failures="1" skipped="2" time="0" hostname="fixture-host">
+      <testsuite name="frontier entries" file="src/catalog/models.test.ts" line="6" tests="4" assertions="2" failures="1" skipped="2" time="0.002" hostname="fixture-host">
+        <testcase name="lists the new model with a display name" classname="frontier entries &amp;gt; model catalog" time="0.000007" file="src/catalog/models.test.ts" line="7" assertions="1" />
+        <testcase name="fails on purpose" classname="frontier entries &amp;gt; model catalog" time="0.002733" file="src/catalog/models.test.ts" line="8" assertions="1">
+          <failure type="AssertionError" />
+        </testcase>
+        <testcase name="skipped case" classname="frontier entries &amp;gt; model catalog" time="0" file="src/catalog/models.test.ts" line="9" assertions="0">
+          <skipped />
+        </testcase>
+        <testcase name="todo case" classname="frontier entries &amp;gt; model catalog" time="0" file="src/catalog/models.test.ts" line="10" assertions="0">
+          <skipped message="TODO" />
+        </testcase>
+      </testsuite>
+      <testcase name="adds one to 1" classname="model catalog" time="0.000284" file="src/catalog/models.test.ts" line="12" assertions="1" />
+      <testcase name="adds one to 2" classname="model catalog" time="0.000006" file="src/catalog/models.test.ts" line="12" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

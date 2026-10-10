@@ -37,6 +37,8 @@ SHELL = ["/bin/bash", "-lc"]          # a login shell, as the recipe author test
 NODE_ID_RE = re.compile(r"^[^\s:]+::\S+$")
 MEDIA_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".webm", ".mp4", ".gif"}
 MAX_NODE_IDS = 20000
+BUN_ID_RE = re.compile(r"^[^\n]+?\.[cm]?[jt]sx?::[^\n]+$")   # file::describe > ... > test name
+SHELL_OPERATOR = re.compile(r"^[();<>|&]+$")
 
 
 def digest(value: dict) -> str:
@@ -149,6 +151,74 @@ def parse_junit(xml: bytes) -> dict:
     return out
 
 
+def bun_command(text: str, report: Path) -> tuple[str | None, str | None]:
+    """(command to execute, reason). A direct `bun test ...` command runs with the harness's own JUnit reporter
+    inserted right after `bun test`; the spec's command text is what the report records. Any other command that uses
+    bun (a package script, a pipeline, a wrapper, its own reporter) gives the reason it yields no Bun test evidence.
+    (None, None) for a command that does not use bun."""
+    try:
+        lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        tokens = text.split()
+    if not any(t == "bun" or t.endswith("/bun") for t in tokens):
+        return None, None
+    if tokens[:2] != ["bun", "test"] or any(SHELL_OPERATOR.match(t) for t in tokens) or "$(" in text or "`" in text or "\n" in text:
+        return None, ("only a direct `bun test ...` command (no shell operators, package scripts, environment prefixes or "
+                      "wrappers) yields Bun test evidence")
+    if any(t.startswith("--reporter") or t == "--dots" for t in tokens[2:]):
+        return None, "the command chooses its own Bun reporter, so the harness cannot attach its JUnit report"
+    head = re.match(r"\s*bun\s+test(?=\s|$)", text)
+    if head is None:       # quoted or escaped (`"bun" test`, `b\\un test`): the shell's words, not a literal prefix to extend
+        return None, "a Bun test command must begin with a literal, unquoted `bun test` to yield Bun test evidence"
+    return f"{text[:head.end()]} --reporter=junit --reporter-outfile={shlex.quote(str(report))}{text[head.end():]}", None
+
+
+def parse_bun_junit(xml: bytes, root_dir: str = "") -> dict | None:
+    """Outcomes from Bun's JUnit report, as observed on Bun 1.3.14 (`bun test --reporter=junit --reporter-outfile`):
+    <testsuites tests="N"> holds one <testsuite file="path"> per test file, describe blocks are nested
+    <testsuite name="...">, and each <testcase name file line> carries <failure>/<error>, <skipped> (skip, todo, and
+    tests a name filter left out), or nothing when it passed. Ids are `file::outer describe > inner describe > test name`
+    from that structure; the classname attribute (inner describe first, its `>` escaped twice) is not used. None when
+    the report is malformed or lists a different number of cases than it declares (a truncated report is no evidence)."""
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return None
+    if root.tag != "testsuites":
+        return None
+    out = {"passed": [], "failed": [], "skipped": []}
+    count = 0
+    prefix = root_dir.rstrip("/") + "/" if root_dir else None
+
+    def walk(node, file, path):
+        nonlocal count
+        for child in node:
+            if child.tag == "testsuite":
+                walk(child, child.get("file") or file, [*path, child.get("name", "")] if file is not None else [])
+            elif child.tag == "testcase":
+                count += 1
+                where = child.get("file") or file
+                if not where:
+                    raise ValueError("a test case without its file")
+                if prefix and where.startswith(prefix):
+                    where = where[len(prefix):]
+                test_id = f"{where}::{' > '.join([*path, child.get('name', '')])}"
+                tags = {c.tag for c in child}
+                key = "failed" if tags & {"failure", "error"} else "skipped" if "skipped" in tags else "passed"
+                if len(out[key]) < MAX_NODE_IDS and BUN_ID_RE.match(test_id):
+                    out[key].append(test_id)
+    try:
+        walk(root, None, [])
+        declared = int(root.get("tests", "-1"))
+    except ValueError:
+        return None
+    if declared != count or sum(map(len, out.values())) != count:
+        return None
+    return {**out, "total": count}
+
+
 def node_id_of(file, classname: str, name: str) -> str:
     if not file:
         parts = [p for p in classname.split(".") if p]
@@ -218,12 +288,22 @@ def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: flo
     junit_dir = work / "junit"
     junit_dir.mkdir(exist_ok=True)
     for i, text in enumerate(commands):
-        junit = junit_dir / f"cmd-{i}.xml"
+        junit, bun_report = junit_dir / f"cmd-{i}.xml", junit_dir / f"cmd-{i}-bun.xml"
         addopts = f"{env.get('PYTEST_ADDOPTS', '')} --junitxml={shlex.quote(str(junit))} -o junit_family=xunit1".strip()
-        result = command(text, repo, {**env, "PYTEST_ADDOPTS": addopts}, min(per_command, deadline - time.monotonic()), logs / f"change-cmd-{i}.log")
-        row = {"index": i, "command": text, **result}
+        executed, bun_reason = bun_command(text, bun_report)
+        result = command(executed or text, repo, {**env, "PYTEST_ADDOPTS": addopts}, min(per_command, deadline - time.monotonic()), logs / f"change-cmd-{i}.log")
+        row = {"index": i, "command": text, **result}      # the spec's text; the reporter flags are the harness's own
+        if executed:
+            row["instrumented"] = "bun-junit"
+            outcomes = parse_bun_junit(bun_report.read_bytes(), str(repo)) if bun_report.is_file() else None
+            row["tests"] = ({"framework": "bun", "report": "junit", "status": "reported", **outcomes} if outcomes else
+                            {"framework": "bun", "report": "junit", "status": "invalid" if bun_report.is_file() else "missing",
+                             "reason": "Bun's JUnit report is malformed or inconsistent" if bun_report.is_file() else "Bun wrote no JUnit report"})
+        elif bun_reason:
+            row["tests"] = {"framework": "bun", "status": "unsupported", "reason": bun_reason}
         if junit.is_file():
             row["pytest"] = parse_junit(junit.read_bytes())
+            row.setdefault("tests", {"framework": "pytest", "report": "junit", "status": "reported", **row["pytest"]})
         out["commands"].append(row)
     if change.get("collect_tests"):
         log = logs / "collect.log"
