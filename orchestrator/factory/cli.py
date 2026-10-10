@@ -62,8 +62,13 @@ def _policy(outcome: dict, design_only: bool):
     from .state import Policy
     scale = float(os.environ.get("FACTORY_BUDGET_SCALE", "1") or 1)
     base = Policy()
+    knob = lambda name, default: int(os.environ.get(name) or default)  # noqa: E731
     return Policy(run_budget_usd=outcome.get("constraints", {}).get("budget_usd") or 150.0, design_only=design_only,
-                  stage_budget_usd={k: round(v * scale, 2) for k, v in base.stage_budget_usd.items()})
+                  stage_budget_usd={k: round(v * scale, 2) for k, v in base.stage_budget_usd.items()},
+                  reviewer_passes=knob("FACTORY_REVIEWER_PASSES", base.reviewer_passes),
+                  review_max_rounds=knob("FACTORY_REVIEW_MAX_ROUNDS", base.review_max_rounds),
+                  parallel_implementations=knob("FACTORY_PARALLEL_IMPLEMENTATIONS", base.parallel_implementations),
+                  outcome_max_iterations=knob("FACTORY_OUTCOME_MAX_ITERATIONS", base.outcome_max_iterations))
 
 
 def _queue(cfg) -> FileQueue:

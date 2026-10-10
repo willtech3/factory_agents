@@ -20,7 +20,11 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
+import sys
+import time
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -51,6 +55,11 @@ PREVIEW_CLAUSE = """The platform has deployed this branch to a preview environme
 /mnt/session/uploads/preview.json. Run every test_plan.e2e entry with target "preview" against that URL (export
 BASE_URL from preview.json) and record each command's exit code and output. The orchestrator re-runs them itself."""
 
+LOCAL_PREVIEW_CLAUSE = """No preview environment is reachable from this sandbox (see /mnt/session/uploads/preview.json). Run the
+test_plan.e2e entries with target "local" now against an instance you start yourself and record the results; record the
+"preview" entries as not run. The orchestrator runs every "preview" entry itself against an instance it starts from the
+service manifest's entrypoint, so the service must start with that command and answer the manifest's health path."""
+
 NO_PREVIEW_CLAUSE = """No preview environment exists for this branch yet (see "status" in /mnt/session/uploads/preview.json).
 Push your branch early; the platform's pipeline deploys it. Run the test_plan.e2e entries with target "local" now and
 record the "preview" ones as not run. The orchestrator runs the preview entries against the deployed branch once the
@@ -65,6 +74,70 @@ Write merge_readiness.json to /mnt/session/outputs/ and validate it."""
 
 def _git(repo_dir: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=repo_dir, check=True, capture_output=True, text=True).stdout
+
+
+class LocalPreview:
+    """Start the service from its manifest on a free port, wait for its health path, serve as the preview.
+
+    The development stand-in for the platform's per-branch preview (`FACTORY_PREVIEW=local`): the manifest's
+    `runtime.entrypoint` runs from the checkout with the manifest's port replaced by a free one (also exported as
+    PORT), and `health.path` must answer 200 within `timeout`. Dependencies must be importable from the
+    orchestrator's interpreter (its bin directory is put first on PATH), which is true for the sample app."""
+
+    def __init__(self, repo: Path, manifest: dict[str, Any], timeout: float = 60.0):
+        self.repo, self.manifest, self.timeout = repo, manifest, timeout
+        self.proc: subprocess.Popen | None = None
+        self.url: str | None = None
+        self.log = repo.parent / "preview.log"
+
+    def start(self) -> str:
+        rt = self.manifest.get("runtime") or {}
+        entry = rt.get("entrypoint")
+        if not entry:
+            raise RuntimeError("service manifest has no runtime.entrypoint; cannot start a local preview")
+        port = _free_port()
+        cmd = entry.replace(str(rt.get("port") or ""), str(port)) if rt.get("port") else entry
+        env = {**os.environ, "PORT": str(port), "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ.get('PATH', '')}"}
+        self.proc = subprocess.Popen(cmd, shell=True, cwd=self.repo, env=env, stdout=self.log.open("w"), stderr=subprocess.STDOUT,
+                                     start_new_session=True)
+        self.url = f"http://127.0.0.1:{port}"
+        health = (self.manifest.get("health") or {}).get("path", "/health")
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            if self.proc.poll() is not None:
+                raise RuntimeError(f"local preview exited with {self.proc.returncode}; see {self.log}")
+            try:
+                with urllib.request.urlopen(self.url + health, timeout=2) as r:
+                    if r.status == (self.manifest.get("health") or {}).get("expect_status", 200):
+                        return self.url
+            except Exception:  # noqa: BLE001
+                time.sleep(0.5)
+        self.stop()
+        raise RuntimeError(f"local preview did not answer {health} within {self.timeout}s; see {self.log}")
+
+    def stop(self) -> None:
+        if self.proc and self.proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(self.proc.pid), 15)
+            except Exception:  # noqa: BLE001
+                self.proc.terminate()
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        self.proc = None
+
+    def __enter__(self) -> str:
+        return self.start()
+
+    def __exit__(self, *exc: Any) -> None:
+        self.stop()
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 class LocalVerifier:
@@ -107,8 +180,9 @@ class LocalVerifier:
 
     def run_commands(self, repo: Path, commands: list[str], timeout: int = 1800) -> list[dict[str, Any]]:
         results = []
+        env = {**os.environ, "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ.get('PATH', '')}"}
         for cmd in commands:
-            p = subprocess.run(cmd, shell=True, cwd=repo, capture_output=True, text=True, timeout=timeout)
+            p = subprocess.run(cmd, shell=True, cwd=repo, env=env, capture_output=True, text=True, timeout=timeout)
             results.append({"command": cmd, "exit_code": p.returncode,
                             "stdout_tail": p.stdout[-4000:], "stderr_tail": p.stderr[-4000:]})
         return results
@@ -176,6 +250,10 @@ def preview_info(ctx: RunContext, branch: str, head_sha: str | None = None) -> d
     """
     info: dict[str, Any] = {"branch": branch, "status": "unavailable", "url": None, "pipeline": None,
                             "head_sha": head_sha}
+    if ctx.cfg.preview_mode == "local":
+        info["mode"] = "local"
+        info["note"] = "the orchestrator starts the service itself from the manifest and runs the preview checks against it"
+        return info
     if ctx.forge is None:
         return info
     try:
@@ -221,7 +299,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         review_clause, response_clause = "", ""
         preview = preview_info(ctx, branch)
         uploads["preview.json"] = json.dumps(preview, indent=2).encode()
-        preview_clause = PREVIEW_CLAUSE if preview["status"] == "ready" else NO_PREVIEW_CLAUSE
+        preview_clause = PREVIEW_CLAUSE if preview["status"] == "ready" else (LOCAL_PREVIEW_CLAUSE if preview.get("mode") == "local" else NO_PREVIEW_CLAUSE)
         if findings:
             uploads["findings.json"] = json.dumps(findings, indent=2).encode()
             review_clause = ("Reviewer findings are at /mnt/session/uploads/findings.json. Respond to every finding "
@@ -255,9 +333,12 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         cmd_results = verifier.run_commands(repo, spec["test_plan"]["commands"])
         # End-to-end against the preview the platform deployed for head_sha. The URL comes from the forge's
         # deployment record, not from the implementer's report; "not run" counts as failed.
-        preview = wait_for_preview(ctx, branch, head_sha)
-        e2e_results = verifier.run_e2e(preview["url"] if preview["status"] == "ready" else None,
-                                       spec["test_plan"].get("e2e", []), repo=repo)
+        if ctx.cfg.preview_mode == "local":
+            preview, e2e_results = _local_preview_e2e(ctx, repo, branch, head_sha, verifier, spec)
+        else:
+            preview = wait_for_preview(ctx, branch, head_sha)
+            e2e_results = verifier.run_e2e(preview["url"] if preview["status"] == "ready" else None,
+                                           spec["test_plan"].get("e2e", []), repo=repo)
         passing_tests = [t for m in report.get("criteria_to_tests", []) for t in m.get("tests", [])]  # refined by CI parser
         det = checks.run_all_for_merge(
             spec=spec, changed_files=diff["changed"], deleted_files=diff["deleted"], existing_test_files=diff["existing_tests"],
@@ -279,7 +360,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                        "diff.patch": diff["patch"].encode(),
                        "implementation_report.json": json.dumps(report, indent=2).encode(),
                        "preview.json": json.dumps(preview, indent=2).encode()}
-        rev_preview_clause = PREVIEW_CLAUSE if preview["status"] == "ready" else NO_PREVIEW_CLAUSE
+        rev_preview_clause = PREVIEW_CLAUSE if preview["status"] == "ready" and preview.get("mode") != "local" else (
+            LOCAL_PREVIEW_CLAUSE if preview.get("mode") == "local" else NO_PREVIEW_CLAUSE)
         second = ""
         if findings and response:
             rev_uploads["previous_findings.json"] = json.dumps(findings, indent=2).encode()
@@ -342,6 +424,23 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     persist_outputs(ctx, "merge_judge", res, prefix=f"{sid}-")
     ctx.event("merge.verdict", {"result": verdict["result"]}, work_item_id=wid, spec_id=sid, actor="agent")
     return verdict
+
+
+def _local_preview_e2e(ctx: RunContext, repo: Path, branch: str, head_sha: str, verifier: "LocalVerifier",
+                       spec: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Start the checked-out service from its manifest and run the spec's preview entries against it."""
+    manifest_path = repo / ctx.cfg.service_manifest_path
+    preview: dict[str, Any] = {"branch": branch, "head_sha": head_sha, "mode": "local", "status": "failed", "url": None, "pipeline": None}
+    if not manifest_path.is_file():
+        preview["error"] = f"no service manifest at {ctx.cfg.service_manifest_path}; cannot start a local preview"
+        return preview, verifier.run_e2e(None, spec["test_plan"].get("e2e", []), repo=repo)
+    try:
+        with LocalPreview(repo, json.loads(manifest_path.read_text())) as url:
+            preview.update(status="ready", url=url)
+            return preview, verifier.run_e2e(url, spec["test_plan"].get("e2e", []), repo=repo)
+    except Exception as e:  # noqa: BLE001
+        preview["error"] = str(e)[:500]
+        return preview, verifier.run_e2e(None, spec["test_plan"].get("e2e", []), repo=repo)
 
 
 def merge_findings(passes: list[dict[str, Any]], spec_id: str, round_no: int, base_sha: str, head_sha: str,

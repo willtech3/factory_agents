@@ -63,6 +63,7 @@ class Config:
     service_manifest_path: str          # fixed path in the app repo, named by the platform contract
     dev_environment_name: str           # environment the default branch deploys to
     preview_environment_prefix: str     # environment name prefix for per-branch previews
+    preview_mode: str                   # platform (read the forge's deployment record) | local (the orchestrator starts the service itself)
     smoke_commands: tuple[str, ...]     # optional suite run against dev after every deploy ($BASE_URL substituted)
     console_workspace: str
     workspace_id: str | None            # ANTHROPIC_WORKSPACE_ID: required when the API key is not scoped to a workspace
@@ -162,6 +163,7 @@ def load(lock_path: Path | None = None, dotenv_path: Path | None = None) -> Conf
         service_manifest_path=os.environ.get("FACTORY_SERVICE_MANIFEST_PATH", "service_manifest.json"),
         dev_environment_name=os.environ.get("FACTORY_DEV_ENVIRONMENT", "dev"),
         preview_environment_prefix=os.environ.get("FACTORY_PREVIEW_ENVIRONMENT_PREFIX", "preview/"),
+        preview_mode=(os.environ.get("FACTORY_PREVIEW") or "platform").lower(),
         smoke_commands=tuple(c for c in os.environ.get("FACTORY_SMOKE_COMMANDS", "").split(";") if c.strip()),
         console_workspace=os.environ.get("ANTHROPIC_WORKSPACE", "default"),
         workspace_id=os.environ.get("ANTHROPIC_WORKSPACE_ID"),
