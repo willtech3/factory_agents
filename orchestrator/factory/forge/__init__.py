@@ -145,32 +145,39 @@ SKILL_PATH = ".claude/skills/platform-contract/SKILL.md"
 
 def ensure_repository(forge: Forge, repo: dict[str, Any], workflow_template: Path | None = None, *,
                       skill_file: Path | None = None, sleep=None, attempts: int = 4, log=print) -> dict[str, Any] | None:
-    """Create the outcome's repository when it asks for one (`create: true`) and it does not exist yet, and try to
-    give it the preview workflow.
+    """Create the outcome's repository when it asks for one (`create: true`) and it does not exist yet, seed the
+    platform-contract skill into any repository that lacks it, and try to give a new repository the preview workflow.
 
     A new repository is private unless the outcome says `visibility: public`, initialised so the default branch
     exists, and seeded with the preview workflow template (the platform's job elsewhere; on a personal GitHub
     the template is the platform). GitHub's git database can answer 404 to writes for a few seconds after a
     repository is created, so the seed commit is retried with backoff. A repository that already exists is left
-    alone except for that one file: when `create: true` and the workflow is missing (an earlier attempt died
-    between creation and seeding), it is added. A seed the forge keeps refusing is a warning, not a failure: the
-    usual cause is a token without GitHub's `workflow` scope, and a run with local previews never needs the
-    file. Returns what was created (with `workflow_seeded`), or None when the repository already existed."""
+    alone except for two files: the skill, whenever `skill_file` is given and the default branch lacks it (an
+    existing repository's sessions otherwise never see it; post-mortem 2026-10-10, issue 12), and, when `create:
+    true` and the workflow is missing (an earlier attempt died between creation and seeding), the workflow. A
+    seed the forge keeps refusing is a warning, not a failure: the usual cause is a token without GitHub's
+    `workflow` scope, and a run with local previews never needs the file. Returns what was created (with
+    `workflow_seeded`), or None when the repository already existed."""
     import time
     sleep = sleep or time.sleep
-    if not repo.get("create"):
+    seed_skill = bool(skill_file and skill_file.is_file() and forge.kind == "github")
+    if not repo.get("create") and not seed_skill:
         return None
     created = None
     if not forge.repository_exists():
+        if not repo.get("create"):
+            return None                     # nothing to seed into a repository that does not exist
         created = forge.create_repository(private=repo.get("visibility", "private") != "public",
                                           description=repo.get("description", "Created by the software factory"))
     branch = (created or {}).get("default_branch") or repo.get("default_branch", "main")
-    # The platform-contract skill is seeded first and on its own: the agents read it from the repository's
-    # .claude/skills/ and its path needs no special token scope. The workflow follows, with its own retries.
-    if skill_file and skill_file.is_file() and forge.kind == "github":
-        if created is not None or not forge.file_exists(branch, SKILL_PATH):
-            _seed(forge, branch, "factory: platform contract skill", {SKILL_PATH: skill_file.read_bytes()},
-                  sleep=sleep, attempts=attempts, log=log, hint="the forge refused to write {path}")
+    # The platform-contract skill is seeded first and on its own, into new and existing repositories alike: the
+    # agents read it from the repository's .claude/skills/ and its path needs no special token scope. The
+    # workflow follows, for repositories the factory creates, with its own retries.
+    if seed_skill and (created is not None or not forge.file_exists(branch, SKILL_PATH)):
+        _seed(forge, branch, "factory: platform contract skill", {SKILL_PATH: skill_file.read_bytes()},
+              sleep=sleep, attempts=attempts, log=log, hint="the forge refused to write {path}")
+    if not repo.get("create"):
+        return None
     path = ".github/workflows/preview.yml"
     if workflow_template and workflow_template.is_file() and forge.kind == "github":
         seeded = True if (created is None and forge.file_exists(branch, path)) else _seed(

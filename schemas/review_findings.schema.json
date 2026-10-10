@@ -231,6 +231,10 @@
           "type": "string",
           "description": "Which reviewer pass produced it: '1', '2', ... or 'security'. Set by the orchestrator when merging."
         },
+        "environmental": {
+          "type": "boolean",
+          "description": "Set by the orchestrator on a DET-* finding whose failure looks like the verification host's doing (a port already in use) rather than the change's: the implementer answers it, but the fix is usually to make the command robust, and the judge weighs it accordingly."
+        },
         "cwe": {
           "type": "string",
           "pattern": "^CWE-[0-9]+$",
