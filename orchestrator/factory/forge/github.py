@@ -57,6 +57,23 @@ class GitHubForge:
         r.raise_for_status()
         return r.json()
 
+    # ---- the repository itself
+    def repository_exists(self) -> bool:
+        return self.http.get(self._r("")).status_code == 200
+
+    def create_repository(self, private: bool = True, description: str = "") -> dict[str, Any]:
+        """POST /user/repos for the token's own account, POST /orgs/{org}/repos otherwise; auto_init so the default
+        branch exists. The fine-grained token needs 'Administration: write' (classic: repo) for this one call."""
+        owner, name = self.repo.split("/", 1)
+        me = self.http.get(f"{self.api}/user")
+        login = me.json().get("login", "") if me.status_code == 200 else ""
+        path = f"{self.api}/user/repos" if login.lower() == owner.lower() else f"{self.api}/orgs/{owner}/repos"
+        r = self.http.post(path, json={"name": name, "private": private, "auto_init": True, "description": description[:350]})
+        r.raise_for_status()
+        d = r.json()
+        return {"url": d.get("html_url", f"{self.url}/{self.repo}"), "default_branch": d.get("default_branch", "main"),
+                "private": d.get("private", private), "id": d.get("id")}
+
     # ---- branches & commits (Git Data API)
     def _ref_sha(self, ref: str) -> str:
         return self._get(f"/git/ref/heads/{ref}")["object"]["sha"]

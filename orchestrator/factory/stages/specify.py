@@ -2,11 +2,16 @@
 
 Loop shape (see docs/01-pipeline.md):
   for round in 1..spec_judge_max_rounds:
-      write/revise every spec that is not yet passing   (parallel sessions, one per work item)
+      write/revise every spec that is not yet passing   (parallel sessions, one per work item, all at once)
       judge the whole set in one independent session
       if verdict.pass -> Gate 2
       if verdict.escalate -> escalation gate
   after max rounds -> escalation gate with the last verdict
+
+Writers run all at once: each gets the decomposition (so it knows what its siblings will do) and, on later
+rounds, the siblings' current specs. Interface mismatches between siblings are the judge's job to catch and
+route back, which is cheaper than serialising the writers along the dependency chain. `Policy.spec_waves`
+restores dependency-order waves for repositories where that trade-off goes the other way.
 """
 from __future__ import annotations
 
@@ -109,13 +114,13 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
     to_write = set(items)
 
     for round_no in range(1, ctx.policy.spec_judge_max_rounds + 1):
-        # Write in dependency order waves so siblings can reference produced interfaces; parallel within a wave.
-        waves = _topological_waves(items)
+        # All writers at once (default), or dependency-order waves when the policy asks for them.
+        waves = _topological_waves(items) if ctx.policy.spec_waves else [list(items)]
         for wave in waves:
             batch = [w for w in wave if w in to_write]
             if not batch:
                 continue
-            with ThreadPoolExecutor(max_workers=min(4, len(batch))) as pool:
+            with ThreadPoolExecutor(max_workers=min(ctx.policy.parallel_spec_writers, len(batch))) as pool:
                 futures = {pool.submit(_write_one, ctx, outcome, decomposition, items[w],
                                        {s: specs[s] for s in specs if s != w},
                                        issues_by_item.get(w), (human_comments_by_item or {}).get(w), round_no): w

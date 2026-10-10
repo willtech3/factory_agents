@@ -9,12 +9,12 @@ Every success metric in `outcome.json` appears in `coverage` with at least one w
 - 2: all metrics covered with a rationale that names the mechanism.
 - 3: as 2, and the summary says which items matter most for each metric.
 
-## D2. Item granularity
-Work items are one coherent change each, sized XS to M, and deliver a testable behaviour (vertical slice), not a layer.
-- 0: any item is a horizontal layer ("all database changes") or has no observable behaviour.
-- 1: one or more L items without a stated reason they cannot be split.
-- 2: all items XS to M, each with an intent a tester could check.
-- 3: as 2, and items are ordered so early items produce visible value.
+## D2. Right-sized decomposition
+There are as few work items as reviewability allows: one item when the outcome is one coherent change a reviewer can approve as a single pull request; more only where parts must be approved or landed separately or an item would exceed size M. Every item is a change to the product with a testable behaviour (vertical slice), not a layer, an investigation, or a documentation rider.
+- 0: an item is not a change to the product (a "confirm current behaviour", "baseline", "investigate", or docs-only item when docs are not the outcome), or an item is a horizontal layer ("all database changes").
+- 1: more items than a reviewer needs (a change a single reviewer would approve as one pull request is split into several), or an L item with no stated reason it cannot be split.
+- 2: as few items as can each be reviewed as one change, all XS to M, each with an intent a tester could check.
+- 3: as 2, and the summary says why this count and not fewer.
 
 ## D3. Dependency graph
 `depends_on` forms a DAG; items touching the same paths are either dependent or merged.

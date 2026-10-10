@@ -106,6 +106,8 @@ class Policy:
         "implement": 40.0, "review": 15.0, "merge_judge": 8.0, "integrate": 2.0,
     })
     parallel_implementations: int = 3    # independent work items implemented at once (separate branches)
+    parallel_spec_writers: int = 8       # spec writer sessions at once; all items are written in one go by default
+    spec_waves: bool = False             # True: write specs in dependency-order waves instead of all at once
     reviewer_passes: int = 2             # independent reviewer copies per round, findings merged
     design_only: bool = False            # stop after Gate 2: real agents for decompose/specify/judge, no code stage, no forge needed
     preview_wait_seconds: int = 1800     # how long verification waits for the platform to deploy head_sha to its preview

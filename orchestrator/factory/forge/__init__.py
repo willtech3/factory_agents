@@ -15,6 +15,7 @@ orchestrator through the `open_change_request` custom tool (ADR-0008).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -39,6 +40,10 @@ class Forge(Protocol):
 
     kind: str                 # "github" | "gitlab"
     repo: str                 # "owner/repo" or "group/project"
+
+    # ---- the repository itself (greenfield outcomes)
+    def repository_exists(self) -> bool: ...
+    def create_repository(self, private: bool = True, description: str = "") -> dict[str, Any]: ...
 
     # ---- branches and commits (design CR, run record)
     def create_branch(self, branch: str, ref: str) -> None: ...
@@ -121,6 +126,32 @@ def make_forge(cfg: "Config", timeout: float = 30.0) -> Forge | None:
     raise ValueError(f"unknown forge {cfg.forge!r}; set FACTORY_FORGE=github|gitlab")
 
 
+def repo_from_url(url: str) -> str:
+    """`https://github.com/owner/name(.git)` -> `owner/name`; `https://gitlab.example/group/sub/proj` -> `group/sub/proj`."""
+    from urllib.parse import urlparse
+    path = urlparse(url).path.strip("/")
+    return path[:-4] if path.endswith(".git") else path
+
+
+def ensure_repository(forge: Forge, repo: dict[str, Any], workflow_template: Path | None = None) -> dict[str, Any] | None:
+    """Create the outcome's repository when it asks for one (`create: true`) and it does not exist yet.
+
+    A new repository is private unless the outcome says `visibility: public`, initialised so the default branch
+    exists, and seeded with the preview workflow template (the platform's job elsewhere; on a personal GitHub
+    the template is the platform). Returns what was created, or None when the repository already existed."""
+    if not repo.get("create") or forge.repository_exists():
+        return None
+    created = forge.create_repository(private=repo.get("visibility", "private") != "public",
+                                      description=repo.get("description", "Created by the software factory"))
+    files: dict[str, bytes] = {}
+    if workflow_template and workflow_template.is_file() and forge.kind == "github":
+        files[".github/workflows/preview.yml"] = workflow_template.read_bytes()
+    if files:
+        forge.commit_files(created.get("default_branch") or repo.get("default_branch", "main"),
+                           "factory: preview workflow for factory branches", files)
+    return created
+
+
 def ref_slug(ref: str) -> str:
     """Lowercase, [a-z0-9-], max 63 chars, no leading or trailing dash (GitLab's CI_COMMIT_REF_SLUG)."""
     import re
@@ -128,5 +159,5 @@ def ref_slug(ref: str) -> str:
     return slug[:63].rstrip("-")
 
 
-__all__ = ["ChangeRequest", "Forge", "PIPELINE_TERMINAL", "make_forge", "parse_pipeline_webhook",
-           "ref_slug", "render_feedback_md"]
+__all__ = ["ChangeRequest", "Forge", "PIPELINE_TERMINAL", "ensure_repository", "make_forge", "parse_pipeline_webhook",
+           "ref_slug", "render_feedback_md", "repo_from_url"]

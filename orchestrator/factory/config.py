@@ -122,7 +122,8 @@ def load(lock_path: Path | None = None, dotenv_path: Path | None = None) -> Conf
         for key, file in AGENT_FILES.items():
             entry = resources.get(file)
             if entry:
-                agents[key] = AgentRef(id=entry["id"], version=entry.get("version"))
+                v = entry.get("version")
+                agents[key] = AgentRef(id=entry["id"], version=int(v) if v not in (None, "") else None)   # ant writes "1"
         env_entry = resources.get(ENVIRONMENT_FILE)
         if env_entry and not env_id:
             env_id = env_entry["id"]
@@ -223,8 +224,6 @@ def missing(cfg: Config, design_only: bool = False) -> list[str]:
         gaps.append(f"FACTORY_FORGE={cfg.forge!r} (expected github|gitlab)")
     if not cfg.forge_token:
         gaps.append("FORGE_TOKEN (orchestrator-side; GITHUB_TOKEN or GITLAB_TOKEN also accepted)")
-    if not cfg.forge_repo:
-        gaps.append("FORGE_REPO (owner/repo or group/project)")
     if cfg.forge == "gitlab" and not cfg.vault_id:
         gaps.append("FACTORY_VAULT_ID (sandbox git access for the gitlab forge, ADR-0003)")
     return gaps + _surface_gaps(cfg)

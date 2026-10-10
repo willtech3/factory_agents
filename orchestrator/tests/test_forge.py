@@ -248,3 +248,33 @@ def test_dotenv_loader_and_design_only_gaps(monkeypatch, tmp_path):
     assert any("ANTHROPIC_API_KEY" in g for g in cfgmod.missing(cfg, design_only=True))
     pc = cfgmod.platform_check(cfg)
     assert pc["ok"] is False and "ANTHROPIC_API_KEY" in pc["error"]
+
+
+def test_github_creates_missing_repository_and_seeds_workflow(root):
+    from factory.forge import ensure_repository, repo_from_url
+    assert repo_from_url("https://github.com/will/factory-sample-app.git") == "will/factory-sample-app"
+    assert repo_from_url("https://gitlab.example.internal/group/sub/app") == "group/sub/app"
+    routes = {
+        "GET /repos/will/newapp": (404, {"message": "Not Found"}),
+        "GET /user": {"login": "will"},
+        "POST /user/repos": (201, {"html_url": "https://github.com/will/newapp", "default_branch": "main", "private": True, "id": 9}),
+        "GET /repos/will/newapp/git/ref/heads/main": {"object": {"sha": "init"}},
+        "GET /repos/will/newapp/git/commits/init": {"tree": {"sha": "t0"}},
+        "POST /repos/will/newapp/git/blobs": (201, {"sha": "b1"}),
+        "POST /repos/will/newapp/git/trees": (201, {"sha": "t1"}),
+        "POST /repos/will/newapp/git/commits": (201, {"sha": "c1"}),
+        "PATCH /repos/will/newapp/git/refs/heads/main": {"object": {"sha": "c1"}},
+    }
+    rec = Recorder(routes)
+    f = GitHubForge("https://github.com", "ghp_test", "will/newapp", transport=httpx.MockTransport(rec))
+    created = ensure_repository(f, {"url": "https://github.com/will/newapp", "create": True}, root / "templates" / "github-actions-preview.yml")
+    assert created["url"] == "https://github.com/will/newapp" and created["default_branch"] == "main"
+    create_call = next(b for m, p, _, b in rec.calls if p == "/user/repos")
+    assert create_call == {"name": "newapp", "private": True, "auto_init": True, "description": "Created by the software factory"}
+    tree = next(b for m, p, _, b in rec.calls if p.endswith("/git/trees"))
+    assert tree["tree"][0]["path"] == ".github/workflows/preview.yml"
+    # existing repository: nothing happens
+    rec2 = Recorder({"GET /repos/will/newapp": {"id": 1}})
+    f2 = GitHubForge("https://github.com", "ghp_test", "will/newapp", transport=httpx.MockTransport(rec2))
+    assert ensure_repository(f2, {"url": "https://github.com/will/newapp", "create": True}) is None
+    assert ensure_repository(f2, {"url": "https://github.com/will/newapp"}) is None and len(rec2.calls) == 1

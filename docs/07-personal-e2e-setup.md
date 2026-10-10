@@ -2,7 +2,7 @@
 
 This is the first real run. It uses the defaults the orchestrator now has: GitHub as the forge ([ADR-0008](adr/0008-pluggable-forge-github-default.md)) and Linear as the gate surface ([ADR-0007](adr/0007-pluggable-gate-surfaces.md)). Nothing in this repository has been run against the live platform, GitHub, or Linear yet; this guide is also the verification plan. Expect field-name surprises in `sessions.py`, `forge/github.py`, and `surfaces/tracker.py`, and fix them as you go.
 
-What you need: an Anthropic Console account with Managed Agents access, a personal GitHub account, a personal Linear workspace (free tier is fine), Python 3.11+, git, and the `ant` CLI.
+What you need: an Anthropic Console account with Managed Agents access, a personal GitHub account, a personal Linear workspace (free tier is fine), Python 3.11+, git, and the `ant` CLI (`brew install anthropics/tap/ant`; version 1.30 or later for `ant apply`).
 
 ## 0. The quickest real test: a design run
 
@@ -16,7 +16,11 @@ ant apply --dry-run -v agents environments       # review the plan: 8 agents, 1 
 ant apply --yes agents environments              # writes claude-lock.json (already committed for this workspace)
 ```
 
-`claude-lock.json` already holds agent and environment IDs created in the Console for this repository. If you apply in a different workspace, commit the new lock file. `environments/factory-cloud.yaml` allows `github.com` and `api.github.com`; sessions can push through the git proxy and nothing else.
+`claude-lock.json` is managed by `ant apply`: it records the organization, the workspace, and each agent's id and version, and `ant apply` refuses credentials for any other workspace. Editing a file under `agents/` or `environments/` and re-running `ant apply` creates a new version; `factory run` pins the version the lock file names. If you apply in a different workspace, commit the new lock file. `environments/factory-cloud.yaml` allows `github.com` and `api.github.com`; sessions can push through the git proxy and nothing else.
+
+## 1b. Starting from an empty repository
+
+The outcome's repository does not have to exist. Mark it `"create": true` in the outcome (or tick "Create this repository if it does not exist" on the Console's outcome form) and name the URL you want, such as `https://github.com/<you>/new-service`. Before the run starts, the orchestrator creates it on the code host (private unless `visibility: public`, initialised with a README) and commits the preview workflow template, then records `repository.created` on the run. The token needs repository administration rights for that one call (fine-grained: Administration read/write; classic: `repo`). The decomposer is told the repository is empty and makes the first work item the project skeleton: build and test commands, the service manifest at the contract's path, the preview workflow; everything else depends on it. `FORGE_REPO` can be left unset: it is taken from the outcome's URL, and must match it when set.
 
 ## 2. A small target repository
 

@@ -15,6 +15,7 @@
       "type": "string",
       "enum": [
         "run.created",
+        "repository.created",
         "stage.entered",
         "stage.exited",
         "session.started",

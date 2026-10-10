@@ -55,6 +55,7 @@ A simulated run from `examples/ledgerline/` asks you a question, then opens Gate
 ## Applying the agents (when ready to spike)
 
 ```bash
+brew install anthropics/tap/ant              # the ant CLI, once
 ant apply --dry-run -v agents environments   # review the plan
 ant apply --yes agents environments          # creates agents + environment, writes claude-lock.json (commit it)
 cd orchestrator && .venv/bin/factory doctor  # reconciles IDs, forge, gate surface

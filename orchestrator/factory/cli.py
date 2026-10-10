@@ -30,6 +30,32 @@ app = typer.Typer(no_args_is_help=True, add_completion=False)
 from .surfaces.filequeue import FileQueue  # noqa: E402  (the `file`/`web` gate surface)
 
 
+def _bind_forge(cfg, outcome: dict, want_forge: bool):
+    """The forge for this run, bound to the outcome's repository. FORGE_REPO may be left unset: it is derived from
+    the outcome's repository url (and must match it when set). A repository marked `create: true` that does not
+    exist yet is created before the run and seeded with the preview workflow template."""
+    import dataclasses
+    from .forge import ensure_repository, make_forge, repo_from_url
+
+    repo = (outcome.get("target_repositories") or [{}])[0]
+    url = repo.get("url", "")
+    derived = repo_from_url(url) if url else ""
+    if not want_forge:
+        return cfg, None, None
+    if cfg.forge_repo and derived and cfg.forge_repo.strip("/").lower() != derived.lower():
+        typer.echo(f"cannot run: the outcome targets {url} but FORGE_REPO is {cfg.forge_repo}; they must be the same repository")
+        raise typer.Exit(1)
+    if not cfg.forge_repo and derived:
+        cfg = dataclasses.replace(cfg, forge_repo=derived)
+    forge_obj = make_forge(cfg)
+    created = None
+    if forge_obj is not None and repo.get("create"):
+        created = ensure_repository(forge_obj, repo, cfg.templates_dir / "github-actions-preview.yml")
+        if created:
+            typer.echo(f"created repository {created['url']} (default branch {created.get('default_branch')})")
+    return cfg, forge_obj, created
+
+
 def _policy(outcome: dict, design_only: bool):
     """Loop limits and budgets; FACTORY_BUDGET_SCALE (e.g. 0.4) scales every per-stage cap for cheap first runs."""
     import os
@@ -52,7 +78,7 @@ def doctor():
     for k, ref in cfg.agents.items():
         typer.echo(f"agent {k:20s} {ref.id} v{ref.version}")
     typer.echo(f"environment {cfg.environment_id or '(missing)'}")
-    typer.echo(f"forge        {cfg.forge} {cfg.forge_url} {cfg.forge_repo or '(FORGE_REPO missing)'} "
+    typer.echo(f"forge        {cfg.forge} {cfg.forge_url} {cfg.forge_repo or '(repository taken from the outcome)'} "
                f"token={'set' if cfg.forge_token else 'MISSING'}")
     typer.echo(f"gate surface {cfg.gate_surface}" + (f" (Linear team {cfg.linear_team_id})" if cfg.gate_surface == "tracker" else ""))
     typer.echo(f"pages        {cfg.page_publisher} -> {cfg.runs_dir}/<run_id>/pages/")
@@ -92,12 +118,7 @@ def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the f
         raise typer.Exit(1)
     outcome = json.loads(outcome_path.read_text())
     run_id = new_run_id()
-    forge_obj = make_forge(cfg) if forge and not (design_only and cfg.gate_surface != "forge") else None
-    if forge_obj is not None:
-        repo_url = (outcome.get("target_repositories") or [{}])[0].get("url", "")
-        if cfg.forge_repo and cfg.forge_repo.strip("/").lower() not in repo_url.rstrip("/").removesuffix(".git").lower():
-            typer.echo(f"cannot run: the outcome targets {repo_url} but FORGE_REPO is {cfg.forge_repo}; they must be the same repository")
-            raise typer.Exit(1)
+    cfg, forge_obj, created = _bind_forge(cfg, outcome, forge and not (design_only and cfg.gate_surface != "forge"))
     queue, notifier = _queue(cfg), LogNotifier()
     tracker = make_tracker_queue(cfg)
     if tracker is not None:
@@ -108,6 +129,9 @@ def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the f
         policy=_policy(outcome, design_only),
         run_id=run_id, tracker=tracker, pages=make_publisher(cfg),
     )
+    if created:
+        ctx.event("repository.created", {"url": created["url"], "default_branch": created.get("default_branch"),
+                                         "private": created.get("private"), "forge": cfg.forge}, stage="intake", actor="platform")
     ctx.driver.on_session_started = lambda info: ctx.event(
         "session.started", {k: v for k, v in info.items() if k not in ("run_id", "work_item_id")},
         stage=info["stage"], actor="platform", work_item_id=info.get("work_item_id"))

@@ -90,6 +90,16 @@ def test_run_event_uses_change_request_kinds(schemas_dir):
         assert checks.schema_valid(ev, schemas_dir / "run_event.schema.json", schemas_dir).passed is ok, kind
 
 
+def test_outcome_repository_may_be_created(schemas_dir, examples):
+    import copy
+
+    outcome = copy.deepcopy(examples["outcome"])
+    outcome["target_repositories"][0].update({"create": True, "visibility": "private"})
+    assert checks.schema_valid(outcome, schemas_dir / "outcome.schema.json", schemas_dir).passed
+    outcome["target_repositories"][0]["visibility"] = "secret"
+    assert not checks.schema_valid(outcome, schemas_dir / "outcome.schema.json", schemas_dir).passed
+
+
 def test_outcome_accepts_measured_metrics(schemas_dir, examples):
     import copy
 

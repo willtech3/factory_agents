@@ -332,6 +332,7 @@
     const item = ev.spec_id || ev.work_item_id;
     switch (ev.kind) {
       case "run.created": return [who, { main: "Run created", detail: p.title }];
+      case "repository.created": return [who, { main: "Repository created on the code host", detail: p.url }];
       case "stage.entered": return [who, { main: `Entered ${({ decomposing: "decomposing", gate_1_decomposition: "Gate 1", specifying: "specifying", gate_2_spec_readiness: "Gate 2", implementing: "building", closed: "closed", completed: "completed" })[p.stage] || words(p.stage)}` }];
       case "gate.opened": return [who, { main: `${GATE_SHORT[p.kind] || p.kind} opened`, detail: `${(p.artifacts || []).length} files to approve` }];
       case "gate.decided": return ["human", { main: `${GATE_SHORT[p.kind] || p.kind}: ${DECISION_LABEL[p.decision] || p.decision}`, detail: p.comments ? `"${p.comments.slice(0, 120)}"` : "" }];
@@ -730,9 +731,15 @@
     f.repo = el("input", { type: "text", value: repo.url || "", placeholder: "https://github.com/you/app" });
     f.branch = el("input", { type: "text", value: repo.default_branch || "main" });
     f.paths = el("textarea"); f.paths.value = (repo.paths_in_scope || []).join("\n");
+    f.create = el("input", { type: "checkbox", checked: !!repo.create });
+    f.visibility = el("select", null, el("option", { value: "private", selected: repo.visibility !== "public" }, "private"), el("option", { value: "public", selected: repo.visibility === "public" }, "public"));
     form.append(card("Repository the agents will change", el("div", null,
+      el("p", { class: "help" }, "An existing repository, or one the factory creates for you on the code host before the run starts (initialised with a README and the preview workflow). The URL names it either way."),
       el("div", { class: "grid2" }, el("div", null, el("label", { class: "help" }, "HTTPS URL"), f.repo), el("div", null, el("label", { class: "help" }, "Default branch"), f.branch)),
-      el("label", { class: "help", style: "margin-top:10px" }, "Paths in scope (one per line, globs allowed). Agents may only change these."), f.paths)));
+      el("div", { class: "grid2", style: "margin-top:10px" },
+        el("label", { class: "pick", style: "font-weight:500" }, f.create, "Create this repository if it does not exist"),
+        el("div", null, el("label", { class: "help" }, "Visibility when created"), f.visibility)),
+      el("label", { class: "help", style: "margin-top:10px" }, "Paths in scope (one per line, globs allowed). Agents may only change these. Leave empty for a new repository."), f.paths)));
 
     const ow = o.owner || {};
     f.oname = el("input", { type: "text", value: ow.name || "" }); f.ohandle = el("input", { type: "text", value: ow.handle || "", placeholder: "your GitHub login" }); f.orole = el("input", { type: "text", value: ow.role || "" });
@@ -745,7 +752,8 @@
       success_metrics: metricRows.map(r => ({ metric: r.metric.value.trim(), baseline: r.baseline.value.trim() || null, target: r.target.value.trim(), measurement: r.measurement.value.trim() })).filter(m => m.metric || m.target),
       constraints: { must_not: lines(f.must_not), compliance: lines(f.compliance), budget_usd: Number(f.budget.value) || undefined, deadline: f.deadline.value || undefined },
       context_links: o.context_links || [], clarifications: o.clarifications || [],
-      target_repositories: [{ url: f.repo.value.trim(), default_branch: f.branch.value.trim() || "main", paths_in_scope: lines(f.paths) }],
+      target_repositories: [{ url: f.repo.value.trim(), default_branch: f.branch.value.trim() || "main", paths_in_scope: lines(f.paths),
+        create: f.create.checked || undefined, visibility: f.create.checked ? f.visibility.value : undefined }],
       owner: { name: f.oname.value.trim(), handle: f.ohandle.value.trim(), role: f.orole.value.trim() },
       created_at: o.created_at || undefined,
     });
