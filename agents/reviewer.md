@@ -43,7 +43,7 @@ Every finding must have:
 - a `refutation_condition`: what the implementer could show you that would make you withdraw it.
 If you cannot write the refutation condition, you do not have a finding yet.
 
-Second round (`review_response.json` present): for each prior finding, compare the response to your refutation condition. Mark `upheld` or `withdrawn` with one sentence of reasoning. Then review the new diff hunks as in round one. Do not reopen withdrawn findings without new evidence.
+Second round (`review_response.json` present): for each prior finding, compare the response to your refutation condition. Mark `upheld` or `withdrawn` with one sentence of reasoning, keeping the prior finding's id verbatim as `finding_id` and repeating it in `previous_finding_id` (the orchestrator merges the passes by that id; a restated location alone makes a duplicate). Then review the new diff hunks as in round one, numbering new findings after the highest prior id. Do not reopen withdrawn findings without new evidence.
 
 Severity: `blocking` breaks a criterion or corrupts data; `major` is a real defect not covered by a criterion, or a security or concurrency problem; `minor` is a correctness nit with a clear fix; `nit` is style. Do not inflate; the judge downstream checks calibration.
 

@@ -581,9 +581,10 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             sec_future = pool.submit(security_pass)
             passes = list(pool.map(one_pass, range(1, ctx.policy.reviewer_passes + 1)))
             sec = sec_future.result()
-        findings = merge_findings(passes + ([sec] if sec else []), sid, round_no, base_sha, head_sha, branch)
+        findings = merge_findings(passes + ([sec] if sec else []), sid, round_no, base_sha, head_sha, branch,
+                                  previous=findings, response=response)
         # A failed deterministic check is a finding the implementer must answer; nobody else can clear it.
-        findings["findings"].extend(deterministic_findings(det, cmd_results))
+        findings["findings"] = apply_deterministic(findings["findings"], deterministic_findings(det, cmd_results))
         ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-findings.merged.json",
                                json.dumps(findings, indent=2).encode())
         ctx.event("review.findings", {"round": round_no, "count": len(findings["findings"]),
@@ -677,39 +678,110 @@ def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]]
 
 
 def merge_findings(passes: list[dict[str, Any]], spec_id: str, round_no: int, base_sha: str, head_sha: str,
-                   branch: str) -> dict[str, Any]:
-    """Union of independent reviewer passes, de-duplicated by (category, first location)."""
-    seen: dict[tuple[str, str], dict[str, Any]] = {}
+                   branch: str, previous: dict[str, Any] | None = None, response: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Union of independent reviewer passes, with ids that survive rounds (post-mortem issue 14).
+
+    Round 1: findings are de-duplicated by (category, first location), the strictest severity wins, and they are
+    numbered F-1.. in severity order. A later round gets `previous` (the merged findings the implementer answered)
+    and `response` (its review_response.json): a finding a reviewer re-adjudicated keeps its previous id (matched on
+    `previous_finding_id`, on its own `finding_id` when the category matches, or on (category, location)), the
+    stricter re-evaluation wins across passes (upheld over withdrawn, then the higher severity), every previous
+    finding no pass mentioned (the orchestrator's DET-* included) is carried with the implementer's disposition as
+    its status, and only new findings are numbered, from the highest previous number on. Each finding and each
+    checks_performed row carries the pass that produced it; scope_check is the union of the passes'."""
+    prev_findings = (previous or {}).get("findings", [])
+    prev_by_id = {f["finding_id"]: f for f in prev_findings}
+    prev_by_key = {_loc_key(f): f["finding_id"] for f in reversed(prev_findings)}
+    disposition = {r.get("finding_id"): r.get("disposition") for r in (response or {}).get("responses", [])}
+    carried: dict[str, dict[str, Any]] = {}
+    fresh: dict[tuple[str, str], dict[str, Any]] = {}
     checks_performed: list[dict[str, Any]] = []
     conformance: dict[str, dict[str, Any]] = {}
+    scope: dict[str, set[str]] = {"files_outside_allowed_paths": set(), "unrelated_changes": set()}
     for p in passes:
         checks_performed.extend(p.get("checks_performed", []))
         for f in p.get("findings", []):
-            key = (f["category"], f["evidence"]["locations"][0].split(":")[0] + ":" + f["evidence"]["locations"][0].split(":")[-1][:3])
-            if key not in seen or _sev(f) > _sev(seen[key]):
-                seen[key] = f
+            pid = _previous_id(f, prev_by_id, prev_by_key)
+            if pid is not None:
+                f = {**f, "finding_id": pid, "previous_finding_id": pid}
+                if pid not in carried or _reevaluation_rank(f) > _reevaluation_rank(carried[pid]):
+                    carried[pid] = f
+                continue
+            key = _loc_key(f)
+            if key not in fresh or _sev(f) > _sev(fresh[key]):
+                fresh[key] = f
         for row in p.get("spec_conformance", []):
             prev = conformance.get(row["ac_id"])
             # The stricter status wins across passes.
             if prev is None or _status_rank(row["status"]) > _status_rank(prev["status"]):
                 conformance[row["ac_id"]] = row
-    findings = sorted(seen.values(), key=_sev, reverse=True)
-    for i, f in enumerate(findings, 1):
+        for k in scope:
+            scope[k] |= set((p.get("scope_check") or {}).get(k, []))
+    findings: list[dict[str, Any]] = []
+    for fid, prev in prev_by_id.items():                      # previous order first, ids intact
+        if fid in carried:
+            findings.append(carried[fid])
+        else:
+            answered = disposition.get(fid)
+            findings.append({**prev, "status": answered if answered in ("fixed", "refuted", "accepted_risk") else prev["status"]})
+    next_no = max([int(fid[2:]) for fid in prev_by_id if re.fullmatch(r"F-[0-9]+", fid)] + [0]) + 1
+    for i, f in enumerate(sorted(fresh.values(), key=_sev, reverse=True), next_no):
         f["finding_id"] = f"F-{i}"
+        findings.append(f)
     return {
         "review_id": f"rev_{spec_id.replace('spec_', '')}{round_no:02d}{head_sha[:6]}",
         "spec_id": spec_id, "round": round_no,
         "diff_ref": {"base_sha": base_sha, "head_sha": head_sha, "branch": branch},
         "checks_performed": checks_performed, "findings": findings,
         "spec_conformance": list(conformance.values()),
+        "scope_check": {k: sorted(v) for k, v in scope.items()},
         "produced_by": passes[0].get("produced_by", {}),
     }
 
 
+def apply_deterministic(findings: list[dict[str, Any]], det_findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fold this round's failed deterministic checks into the merged findings: a DET-* id that is failing again
+    replaces its carried entry (open and blocking once more), a carried DET-* whose check now passes is `fixed`
+    unless the implementer's disposition already closed it, and new failures are appended."""
+    failing = {f["finding_id"]: f for f in det_findings}
+    out = []
+    for f in findings:
+        fid = f["finding_id"]
+        if fid in failing:
+            out.append(failing.pop(fid))
+        elif fid.startswith("DET-") and f.get("status") in ("open", "upheld"):
+            out.append({**f, "status": "fixed"})
+        else:
+            out.append(f)
+    return out + list(failing.values())
+
+
+def _loc_key(f: dict[str, Any]) -> tuple[str, str]:
+    loc = (f.get("evidence") or {}).get("locations") or [""]
+    return (f.get("category", ""), loc[0].split(":")[0] + ":" + loc[0].split(":")[-1][:3])
+
+
+def _previous_id(f: dict[str, Any], prev_by_id: dict[str, dict[str, Any]], prev_by_key: dict[tuple[str, str], str]) -> str | None:
+    pid = f.get("previous_finding_id")
+    if pid in prev_by_id:
+        return pid
+    own = f.get("finding_id")
+    if own in prev_by_id and prev_by_id[own].get("category") == f.get("category"):
+        return own
+    return prev_by_key.get(_loc_key(f))
+
+
+def _reevaluation_rank(f: dict[str, Any]) -> tuple[int, int]:
+    return ({"upheld": 3, "open": 2, "fixed": 1, "refuted": 1, "accepted_risk": 1, "withdrawn": 0}.get(f.get("status", "open"), 2), _sev(f))
+
+
 def tag_pass(findings: dict[str, Any], label: str) -> dict[str, Any]:
-    """Mark every finding of a reviewer pass with the pass that produced it (kept through merging)."""
+    """Mark every finding and every checks_performed row of a reviewer pass with the pass that produced it (kept
+    through merging, so two passes' probe counts are never read as one)."""
     for f in findings.get("findings", []):
         f.setdefault("pass", label)
+    for row in findings.get("checks_performed", []):
+        row.setdefault("pass", label)
     return findings
 
 
