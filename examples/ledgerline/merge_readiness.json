@@ -10,6 +10,16 @@
       "judge_assessment": "Refutation accepted. Both cited schema.rb lines show unbounded Stripe id strings; the spec's interface says 'string'. Convention beats the nit. Reviewer withdrew with a reason."
     }
   ],
+  "criteria": [
+    {"ac_id": "AC-1", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:21 passes in test_results.json commands[0]; e2e row 'payment_failed' (target preview) exit 0"},
+    {"ac_id": "AC-2", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:47 passes; payment_failed_at cleared asserted"},
+    {"ac_id": "AC-3", "status": "met", "evidence": "payment_attempt_spec.rb:12 idempotent insert passes; e2e row 'payment_failed' replays the event, exit 0; my 20-thread re-run of the reviewer's probe: 20/20 clean"},
+    {"ac_id": "AC-4", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:63 publishes billing.retries_exhausted on null next_payment_attempt"},
+    {"ac_id": "AC-5", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:80 passes; e2e row 'unknown customer' (target preview) exit 0"},
+    {"ac_id": "AC-6", "status": "met", "evidence": "rubocop command exit 0 in test_results.json commands[1]; the migration is additive only (db/migrate/20261009_create_payment_attempts.rb)"},
+    {"ac_id": "AC-7", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:21 asserts the existing notification still fires"},
+    {"ac_id": "AC-8", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:95 passes; e2e row 'handler failure' (target preview) exit 0 with HTTP 500 observed"}
+  ],
   "deterministic_checks": [
     {"check": "diff_scope", "passed": true, "detail": "all changed files inside allowed_paths"},
     {"check": "protected_tests", "passed": true, "detail": "no existing tests modified"},

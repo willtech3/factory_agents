@@ -33,6 +33,26 @@ def provenance(ctx: RunContext, res: StageResult, agent_name: str, model: str, i
     }
 
 
+SKILL_UPLOAD_PATH = "skills/platform-contract/SKILL.md"
+SKILL_CLAUSE = ("The platform-contract skill is at /mnt/session/uploads/skills/platform-contract/SKILL.md (a repository that "
+                "carries it also has it at /workspace/repo/.claude/skills/platform-contract/SKILL.md). Read it first; do not "
+                "search the filesystem for it.")
+NO_SKILL_CLAUSE = ("No platform-contract skill is available for this run (the orchestrator has none to upload). Say so once "
+                   "in your assumptions and do not search the filesystem for one.")
+
+
+def platform_skill(ctx: RunContext) -> tuple[dict[str, bytes], str]:
+    """The upload (`skills/platform-contract/SKILL.md`) and the kickoff sentence that names it, for every stage.
+
+    Sessions on an existing repository have no other copy of the skill until the forge seeds it, and a brief that
+    says "read the skill first" without a path sends agents hunting the filesystem (post-mortem 2026-10-10, issue 12).
+    An absent skill file yields no upload and a sentence saying so."""
+    f = ctx.cfg.skills_dir / "platform-contract" / "SKILL.md"
+    if not f.is_file():
+        return {}, NO_SKILL_CLAUSE
+    return {SKILL_UPLOAD_PATH: f.read_bytes()}, SKILL_CLAUSE
+
+
 NO_REPO_RUBRIC_NOTE = """> **No repository is mounted in this session.** Criteria that require inspecting the code (paths or commands
 > exist, grounding in the codebase, questions the repository would answer) cannot be verified here: score them on
 > internal consistency and plausibility instead of 0, and say so in the evidence. Everything else applies in full.

@@ -15,6 +15,12 @@ the implementer and reviewer as `preview.json`. No agent deploys anything
 Repository access in the sandbox is the forge's business: GitHub sessions get the native
 `github_repository` resource (token injected by Anthropic's git proxy), GitLab sessions get the
 vault/bearer-header clone instructions of ADR-0003. Both come from `Forge.sandbox_git_instructions`.
+
+`FACTORY_PREVIEW=local` (no platform yet): the orchestrator runs the authoritative verification on its own
+host, in a per-run virtual environment it builds from the target repository (`LocalVerifier.prepare_environment`),
+and starts the service itself from the manifest entrypoint for the preview entries (`LocalPreview`). No sandbox
+can reach that instance, and `preview.json` says so (`unreachable_from_sandbox`): reviewers start their own
+instance from the same entrypoint and judge the preview entries against it (post-mortem 2026-10-10, issues 7, 13).
 """
 from __future__ import annotations
 
@@ -22,6 +28,8 @@ from dataclasses import dataclass
 
 import json
 import os
+import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -33,9 +41,10 @@ from typing import Any
 
 from .. import checks, security
 from ..budget import reserve_budget
+from ..checks import CheckResult
 from ..state import WorkItemStage
 from . import RunContext
-from .common import enter_item_stage, persist_outputs, provenance, require_json, artifact_json_or_none
+from .common import enter_item_stage, persist_outputs, platform_skill, provenance, require_json, artifact_json_or_none
 
 NO_FORGE_GIT_SETUP = """Git access: no forge is configured for this run. The repository at {repo_url} is not reachable
 from the sandbox; work on branch {branch} from {base_branch} only if it was mounted for you, otherwise record the
@@ -43,6 +52,7 @@ blocker in blocked.md."""
 
 IMPLEMENT_DESCRIPTION = """Implement specification {spec_id} from /mnt/session/uploads/spec.json (spec.md is the readable form).
 {git}
+{skill_clause}
 {review_clause}
 Write implementation_report.json{response_clause} to /mnt/session/outputs/. The report must map every acceptance criterion
 to the tests that prove it, as `criteria: [{{"ac_id": "AC-1", "tests": ["tests/test_x.py::test_name", ...]}}, ...]`
@@ -52,6 +62,7 @@ without a passing test. Run every command in the spec's test_plan before finishi
 REVIEW_DESCRIPTION = """Review the change for specification {spec_id}. The diff is at /mnt/session/uploads/diff.patch
 (base {base_sha}, head {head_sha}); the repository is cloned at /workspace/repo on branch {branch}.
 {git}
+{skill_clause}
 This is review round {round}.{second_round}
 {preview_clause}
 Write findings.json to /mnt/session/outputs/ and validate it. You never edit source files."""
@@ -60,10 +71,21 @@ PREVIEW_CLAUSE = """The platform has deployed this branch to a preview environme
 /mnt/session/uploads/preview.json. Run every test_plan.e2e entry with target "preview" against that URL (export
 BASE_URL from preview.json) and record each command's exit code and output. The orchestrator re-runs them itself."""
 
-LOCAL_PREVIEW_CLAUSE = """No preview environment is reachable from this sandbox (see /mnt/session/uploads/preview.json). Run the
-test_plan.e2e entries with target "local" now against an instance you start yourself and record the results; record the
-"preview" entries as not run. The orchestrator runs every "preview" entry itself against an instance it starts from the
-service manifest's entrypoint, so the service must start with that command and answer the manifest's health path."""
+LOCAL_PREVIEW_CLAUSE = """There is no preview deployment for this branch and none is reachable from this sandbox:
+/mnt/session/uploads/preview.json says status "unreachable_from_sandbox" with a null url. The orchestrator runs every
+test_plan.e2e entry itself, on its own host, against an instance it starts from the service manifest's runtime.entrypoint
+(the manifest's runtime.port replaced by a free port, also exported as PORT) in a per-run virtual environment built from the
+repository's pyproject (or the manifest's runtime.setup command); that run is the one that counts. Stand in for it the
+same way: start the service from that entrypoint on a free port yourself, export BASE_URL, run every "preview" entry and
+every "local" entry against it, and record each command, exit code and output tail. The service must start with the
+manifest command and answer the manifest's health path, with nothing installed beyond the repository's declared
+dependencies."""
+
+LOCAL_PREVIEW_REVIEW_CLAUSE = LOCAL_PREVIEW_CLAUSE + """ The instance you start from the manifest entrypoint is the preview
+stand-in for your spec_conformance table: record each run in checks_performed with target "local-manifest" and mark every
+user_visible criterion met or not_met on that evidence. not_assessed is only for a criterion you could not exercise because
+the entrypoint failed to start (which is itself a blocking finding), never because the orchestrator's instance was out of
+reach."""
 
 NO_PREVIEW_CLAUSE = """No preview environment exists for this branch yet (see "status" in /mnt/session/uploads/preview.json).
 Push your branch early; the platform's pipeline deploys it. Run the test_plan.e2e entries with target "local" now and
@@ -73,6 +95,7 @@ pipeline for your pushed head finishes; any later round of yours receives previe
 SECURITY_REVIEW_DESCRIPTION = """Security review of the change for specification {spec_id}. The diff is at /mnt/session/uploads/diff.patch
 (base {base_sha}, head {head_sha}); the repository is cloned at /workspace/repo on branch {branch}.
 {git}
+{skill_clause}
 This is review round {round}. Two general adversarial reviewers run beside you on the same diff; you cover what they
 do not: trust boundaries, attacker-controlled input, authorisation, secrets, dependencies, and the attack paths the
 diff opens. The orchestrator's deterministic pre-checks are at /mnt/session/uploads/security_prechecks.json (a secret
@@ -86,11 +109,39 @@ MERGE_JUDGE_DESCRIPTION = """Decide merge readiness for specification {spec_id},
 Inputs are under /mnt/session/uploads/: spec.json, diff.patch, findings.json, review_response.json,
 test_results.json (authoritative; run by the orchestrator), deterministic_checks.json (you may not override these).
 {git}
+{skill_clause}
+{criteria_clause}
 Write merge_readiness.json to /mnt/session/outputs/ and validate it."""
+
+CRITERIA_CLAUSE = """Fill `criteria` with your own status per acceptance criterion from evidence you located: the orchestrator's
+e2e rows in test_results.json (each names the criteria it covers in covers_ac, and its target and exit code) are the
+authoritative preview evidence; the reviewer's spec_conformance is an input, not the answer."""
+
+LOCAL_CRITERIA_CLAUSE = CRITERIA_CLAUSE + """ This run used preview mode "local": the orchestrator started the service from the
+manifest entrypoint on its own host and ran the "preview" entries there (test_results.json `preview.orchestrator_instance`
+and the e2e rows); reviewers could not reach that instance and ran the entries against one they started themselves. A
+user_visible criterion whose e2e rows exit 0 is met on that evidence, not not_assessed."""
 
 
 def _git(repo_dir: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=repo_dir, check=True, capture_output=True, text=True).stdout
+
+
+def verification_env(env_bin: Path | None) -> dict[str, str]:
+    """The environment the target repository's commands run in on the orchestrator host.
+
+    The per-run virtual environment's bin directory comes first on PATH and the orchestrator's own interpreter
+    directory is removed from it, so `python`, `pytest` and the service entrypoint resolve to what the target
+    repository declared, never to the orchestrator's packages (post-mortem 2026-10-10, issue 13). Python
+    environment variables that would leak the orchestrator's modules are dropped."""
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "__PYVENV_LAUNCHER__")}
+    own_bin = str(Path(sys.executable).resolve().parent)
+    parts = [p for p in env.get("PATH", "").split(os.pathsep) if p and str(Path(p).resolve()) != own_bin]
+    if env_bin is not None:
+        parts.insert(0, str(env_bin))
+        env["VIRTUAL_ENV"] = str(env_bin.parent)
+    env["PATH"] = os.pathsep.join(parts)
+    return env
 
 
 class LocalPreview:
@@ -98,11 +149,12 @@ class LocalPreview:
 
     The development stand-in for the platform's per-branch preview (`FACTORY_PREVIEW=local`): the manifest's
     `runtime.entrypoint` runs from the checkout with the manifest's port replaced by a free one (also exported as
-    PORT), and `health.path` must answer 200 within `timeout`. Dependencies must be importable from the
-    orchestrator's interpreter (its bin directory is put first on PATH), which is true for the sample app."""
+    PORT), and `health.path` must answer 200 within `timeout`. `env_bin` is the per-run virtual environment the
+    verifier built from the repository (`LocalVerifier.prepare_environment`); the entrypoint resolves its
+    interpreter and packages there, never in the orchestrator's own environment."""
 
-    def __init__(self, repo: Path, manifest: dict[str, Any], timeout: float = 60.0):
-        self.repo, self.manifest, self.timeout = repo, manifest, timeout
+    def __init__(self, repo: Path, manifest: dict[str, Any], timeout: float = 60.0, env_bin: Path | None = None):
+        self.repo, self.manifest, self.timeout, self.env_bin = repo, manifest, timeout, env_bin
         self.proc: subprocess.Popen | None = None
         self.url: str | None = None
         self.log = repo.parent / "preview.log"
@@ -114,7 +166,7 @@ class LocalPreview:
             raise RuntimeError("service manifest has no runtime.entrypoint; cannot start a local preview")
         port = _free_port()
         cmd = entry.replace(str(rt.get("port") or ""), str(port)) if rt.get("port") else entry
-        env = {**os.environ, "PORT": str(port), "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ.get('PATH', '')}"}
+        env = {**verification_env(self.env_bin), "PORT": str(port)}
         self.proc = subprocess.Popen(cmd, shell=True, cwd=self.repo, env=env, stdout=self.log.open("w"), stderr=subprocess.STDOUT,
                                      start_new_session=True)
         self.url = f"http://127.0.0.1:{port}"
@@ -157,16 +209,31 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+SETUP_CHECK = "verification_setup"
+SETUP_TIMEOUT = 900
+ENVIRONMENTAL_MARKERS = ("address already in use", "eaddrinuse")
+
+
 class LocalVerifier:
     """Orchestrator-side clone used for the authoritative test run and diff analysis.
 
-    Runs the spec's test commands in a clean checkout of head_sha. In production this is a
-    CI job on the branch (GitHub Actions or GitLab CI); the interface is the same.
+    Runs the spec's test commands in a clean checkout of head_sha, inside a per-run virtual environment built
+    from the target repository (`prepare_environment`), each command in its own process group. In production
+    this is a CI job on the branch (GitHub Actions or GitLab CI); the interface is the same.
     """
 
-    def __init__(self, repo_url_with_auth: str, workdir: Path):
+    def __init__(self, repo_url_with_auth: str, workdir: Path, setup_timeout: int = SETUP_TIMEOUT):
         self.repo_url = repo_url_with_auth
         self.workdir = workdir
+        self.setup_timeout = setup_timeout
+        self.env_dir = workdir / "venv"          # the per-run environment; rebuilt only when missing
+        self.setup: CheckResult | None = None    # the last `prepare_environment` result
+        self._logs = 0
+
+    @property
+    def env_bin(self) -> Path | None:
+        """The environment's bin directory once `prepare_environment` succeeded, else None (ambient PATH)."""
+        return self.env_dir / "bin" if self.setup is not None and self.setup.passed else None
 
     def checkout(self, branch: str) -> Path:
         repo = self.workdir / "repo"
@@ -175,6 +242,70 @@ class LocalVerifier:
         _git(repo, "fetch", "--quiet", "origin", branch)
         _git(repo, "checkout", "--quiet", "-B", branch, f"origin/{branch}")
         return repo
+
+    # ------------------------------------------------------------ the per-run environment
+
+    def prepare_environment(self, repo: Path, manifest: dict[str, Any] | None = None) -> CheckResult:
+        """Build (or refresh) the virtual environment the target repository's commands run in, as a check.
+
+        A fresh venv under the run's verify/ directory (uv when the host has it, else `python -m venv`), then the
+        install step: the manifest's `runtime.setup` command when it declares one; otherwise the repository's
+        pyproject (`-e .[dev]` when it is installable, its declared dependency lists when it only names them);
+        otherwise nothing, which is a pass with a note. Re-run on every verification so a dependency the
+        implementer added in this round is there. A failing step is a failed deterministic check with the
+        installer's output, never an exception: the merge judge cannot override it and the implementer answers
+        it like any other DET finding (post-mortem 2026-10-10, issue 13)."""
+        self.env_dir.parent.mkdir(parents=True, exist_ok=True)
+        uv = shutil.which("uv")
+        python = self.env_dir / "bin" / "python"
+        steps: list[tuple[str, list[str]]] = []
+        if not python.exists():
+            steps.append(("create venv", [uv, "venv", "--quiet", "--python", sys.executable, str(self.env_dir)] if uv
+                          else [sys.executable, "-m", "venv", str(self.env_dir)]))
+        setup_cmd = ((manifest or {}).get("runtime") or {}).get("setup")
+        plan = _install_plan(repo, setup_cmd, python, uv)
+        data: dict[str, Any] = {"env_dir": str(self.env_dir), "installer": "uv" if uv else "pip", "python": sys.version.split()[0],
+                                "install": plan["description"]}
+        for label, argv in steps:
+            p = subprocess.run(argv, capture_output=True, text=True, timeout=self.setup_timeout)
+            if p.returncode != 0:
+                self.setup = CheckResult(SETUP_CHECK, False, f"{label} failed (exit {p.returncode}): {(p.stderr or p.stdout)[-1500:].strip()}", data)
+                return self.setup
+        if plan["command"] is not None:
+            env = {**verification_env(self.env_dir / "bin"), "UV_PROJECT_ENVIRONMENT": str(self.env_dir), "PIP_DISABLE_PIP_VERSION_CHECK": "1"}
+            res = self._run_in_group(plan["command"], repo, env, self.setup_timeout, shell=plan["shell"])
+            data["exit_code"] = res["exit_code"]
+            if res["exit_code"] != 0:
+                tail = (res["stderr_tail"] or res["stdout_tail"] or "").strip()[-1500:]
+                self.setup = CheckResult(SETUP_CHECK, False, f"install step `{plan['description']}` failed (exit {res['exit_code']}): {tail}", data)
+                return self.setup
+        self.setup = CheckResult(SETUP_CHECK, True, f"per-run virtualenv ready ({data['installer']}, python {data['python']}): {plan['description']}", data)
+        return self.setup
+
+    # ------------------------------------------------------------ running the target repository's commands
+
+    def _run_in_group(self, cmd: str | list[str], cwd: Path, env: dict[str, str], timeout: int, shell: bool = True) -> dict[str, Any]:
+        """Run one command as the leader of its own process group, with output on files rather than pipes.
+
+        After the command exits (or times out, exit 124) the whole group is killed, so a server the command
+        backgrounded (`uvicorn ... &`) cannot outlive it and bind the next command's port; files instead of
+        pipes mean a leaked child holding stdout open cannot stall the orchestrator either."""
+        self._logs += 1
+        logs = self.workdir / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        out_path, err_path = logs / f"cmd-{self._logs:03d}.out", logs / f"cmd-{self._logs:03d}.err"
+        with out_path.open("w") as out, err_path.open("w") as err:
+            proc = subprocess.Popen(cmd, shell=shell, cwd=cwd, env=env, stdout=out, stderr=err, start_new_session=True)
+            try:
+                code = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                code = 124
+            finally:
+                _kill_group(proc)
+        stdout, stderr = out_path.read_text(errors="replace"), err_path.read_text(errors="replace")
+        if code == 124:
+            stderr += f"\n[orchestrator] timed out after {timeout}s; process group killed"
+        return {"exit_code": code, "stdout_tail": stdout[-4000:], "stderr_tail": stderr[-4000:]}
 
     def analyse(self, repo: Path, base_sha: str, head_sha: str) -> dict[str, Any]:
         names = _git(repo, "diff", "--name-status", f"{base_sha}..{head_sha}").splitlines()
@@ -196,12 +327,17 @@ class LocalVerifier:
                 "patch": _git(repo, "diff", f"{base_sha}..{head_sha}")}
 
     def run_commands(self, repo: Path, commands: list[str], timeout: int = 1800) -> list[dict[str, Any]]:
+        """The spec's `test_plan.commands`, each in its own process group inside the per-run environment.
+
+        When `prepare_environment` failed, nothing is run: every command is recorded with exit_code None and the
+        reason, so `test_plan_commands` fails for the stated cause rather than for missing packages."""
         results = []
-        env = {**os.environ, "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ.get('PATH', '')}"}
+        if self.setup is not None and not self.setup.passed:
+            return [{"command": cmd, "exit_code": None, "stdout_tail": "",
+                     "stderr_tail": f"not run: {SETUP_CHECK} failed ({self.setup.detail[:300]})"} for cmd in commands]
+        env = verification_env(self.env_bin)
         for cmd in commands:
-            p = subprocess.run(cmd, shell=True, cwd=repo, env=env, capture_output=True, text=True, timeout=timeout)
-            results.append({"command": cmd, "exit_code": p.returncode,
-                            "stdout_tail": p.stdout[-4000:], "stderr_tail": p.stderr[-4000:]})
+            results.append({"command": cmd, **self._run_in_group(cmd, repo, env, timeout)})
         return results
 
     def run_e2e(self, preview_url: str | None, e2e_entries: list[dict[str, Any]], repo: Path | None = None,
@@ -209,7 +345,8 @@ class LocalVerifier:
         """Run the spec's `test_plan.e2e` entries for `target` against a running deployment.
 
         `$BASE_URL` (and the env var BASE_URL) is the environment URL the orchestrator read from the forge's
-        deployment record, never a URL an agent reported. Entries are run from the checkout so fixtures
+        deployment record (or the instance it started itself in local mode), never a URL an agent reported.
+        Entries are run from the checkout, in the per-run environment and their own process group, so fixtures
         and e2e specs under the repo are available. If the URL is unknown (no preview deploy yet), every entry
         is recorded with exit_code None, which `checks.e2e_passed` treats as a failure: not run is not passed
         (Anthropic, "Effective harnesses": agents declare victory without end-to-end verification).
@@ -223,16 +360,75 @@ class LocalVerifier:
             if target == "preview" and not preview_url:
                 results.append({**row, "exit_code": None, "stderr_tail": "no preview URL available for this branch"})
                 continue
-            env = {**os.environ, "BASE_URL": preview_url or ""}
+            env = {**verification_env(self.env_bin), "BASE_URL": preview_url or ""}
             cmd = e["command"].replace("$BASE_URL", preview_url or "")
-            try:
-                p = subprocess.run(cmd, shell=True, cwd=repo or self.workdir, env=env, capture_output=True,
-                                   text=True, timeout=timeout)
-                results.append({**row, "exit_code": p.returncode, "stdout_tail": p.stdout[-4000:],
-                                "stderr_tail": p.stderr[-4000:]})
-            except subprocess.TimeoutExpired:
-                results.append({**row, "exit_code": 124, "stderr_tail": f"timed out after {timeout}s"})
+            results.append({**row, **self._run_in_group(cmd, repo or self.workdir, env, timeout)})
         return results
+
+
+def _kill_group(proc: subprocess.Popen, grace: float = 2.0) -> None:
+    """Terminate everything in the command's process group (SIGTERM, then SIGKILL), and reap the leader.
+
+    `start_new_session=True` made the command its own session and group leader, so the group id is its pid
+    even once it has been reaped; children it left behind (a backgrounded server) are still in the group."""
+    pgid = proc.pid
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            break                                   # nothing left in the group
+        except PermissionError:  # pragma: no cover
+            break
+        if proc.poll() is None:                     # reap the leader so a zombie does not count as alive below
+            try:
+                proc.wait(timeout=grace)
+            except subprocess.TimeoutExpired:
+                pass
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(pgid, 0)
+            except (ProcessLookupError, PermissionError):
+                return                              # gone (macOS answers EPERM for a member that is already a zombie)
+            time.sleep(0.05)
+    if proc.poll() is None:  # pragma: no cover
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def _install_plan(repo: Path, setup_cmd: str | None, python: Path, uv: str | None) -> dict[str, Any]:
+    """What installs the target repository's dependencies into the per-run environment.
+
+    Returns {command, shell, description}; `command` None means nothing to install. Order: the manifest's
+    `runtime.setup` (any language, run through the shell); a pyproject with a build system (`-e .` plus whichever
+    of the dev/test extras it declares); a pyproject that only names dependencies (installed as a list, the
+    repository root being importable through pytest's pythonpath as the platform contract asks); nothing."""
+    if setup_cmd:
+        return {"command": setup_cmd, "shell": True, "description": f"runtime.setup: {setup_cmd}"}
+    pyproject = repo / "pyproject.toml"
+    if not pyproject.is_file():
+        return {"command": None, "shell": False, "description": "no pyproject.toml and no runtime.setup: nothing installed"}
+    try:
+        import tomllib
+        meta = tomllib.loads(pyproject.read_text())
+    except Exception as e:  # noqa: BLE001  (a broken pyproject is reported by the install step, not here)
+        meta = {}
+        broken = str(e)[:200]
+    else:
+        broken = ""
+    installer = [uv, "pip", "install", "--quiet", "--python", str(python)] if uv else [str(python), "-m", "pip", "install", "--quiet"]
+    project = meta.get("project") or {}
+    extras = [x for x in ("dev", "test", "tests") if x in (project.get("optional-dependencies") or {})]
+    if broken or "build-system" in meta or "project" not in meta:
+        spec = "-e ." + (f"[{','.join(extras)}]" if extras else "")
+        return {"command": installer + [spec], "shell": False, "description": f"pip install {spec}"}
+    deps = list(project.get("dependencies") or [])
+    for x in extras:
+        deps.extend(project["optional-dependencies"][x])
+    if not deps:
+        return {"command": None, "shell": False, "description": "pyproject declares no dependencies: nothing installed"}
+    return {"command": installer + deps, "shell": False,
+            "description": f"dependencies from pyproject ({', '.join(['project'] + extras)}): {' '.join(deps)}"}
 
 
 def _branch_for(run_id: str, spec_id: str) -> str:
@@ -277,13 +473,17 @@ def preview_info(ctx: RunContext, branch: str, head_sha: str | None = None) -> d
 
     Shape handed to agents as `preview.json`: {branch, status, url, pipeline}. `status` is one of
     `ready` (pipeline succeeded and an environment URL exists), `pending` (pipeline not finished),
-    `failed`, or `unavailable` (no forge, or no pipeline yet). UNVERIFIED against a live forge.
+    `failed`, `unavailable` (no forge, or no pipeline yet), or `unreachable_from_sandbox` (local mode: the
+    orchestrator starts the service on its own host, which no sandbox can reach, so `url` is null and the
+    agent's own manifest-entrypoint instance is the stand-in). UNVERIFIED against a live forge.
     """
     info: dict[str, Any] = {"branch": branch, "status": "unavailable", "url": None, "pipeline": None,
                             "head_sha": head_sha}
     if ctx.cfg.preview_mode == "local":
-        info["mode"] = "local"
-        info["note"] = "the orchestrator starts the service itself from the manifest and runs the preview checks against it"
+        info.update(status="unreachable_from_sandbox", mode="local",
+                    note=("no platform preview exists in local mode: the orchestrator starts the service from the manifest "
+                          "entrypoint on its own host and runs the preview entries there; that instance cannot be reached from "
+                          "a sandbox. Start the service from runtime.entrypoint yourself and run the entries against it."))
         return info
     if ctx.forge is None:
         return info
@@ -329,11 +529,15 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     response: dict[str, Any] | None = None
     verdict: dict[str, Any] | None = None
     base_sha = _git(verifier.checkout(base_branch), "rev-parse", "HEAD").strip()
+    skill_uploads, skill_clause = platform_skill(ctx)
+    # Set when the previous round's only standing findings were failed deterministic checks: the implementer's
+    # response is re-verified and, if the checks now pass, goes straight to the merge judge without a review round.
+    det_only_response = resume_from is not None and findings is not None and _deterministic_only(findings["findings"])
 
     for round_no in range(resume_from.round_no if resume_from else 1, ctx.policy.review_max_rounds + 2):
         resumed_round = resume_from is not None and round_no == resume_from.round_no
         # ---- implementer (round 1 implements; later rounds respond to findings)
-        uploads = {"spec.json": json.dumps(spec, indent=2).encode(), "spec.md": spec.get("_markdown", "").encode()}
+        uploads = {"spec.json": json.dumps(spec, indent=2).encode(), "spec.md": spec.get("_markdown", "").encode(), **skill_uploads}
         for dsid, ds in dependency_specs.items():
             uploads[f"dependency_specs/{dsid}.json"] = json.dumps(ds, indent=2).encode()
         review_clause, response_clause = "", ""
@@ -344,6 +548,10 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             uploads["findings.json"] = json.dumps(findings, indent=2).encode()
             review_clause = ("Reviewer findings are at /mnt/session/uploads/findings.json. Respond to every finding "
                              "(fixed / refuted with evidence / accepted_risk) and push the updated branch.")
+            if det_only_response:
+                review_clause += (" Every standing finding is a DET-* entry: a deterministic check the orchestrator runs itself "
+                                  "(its detail and reproduction say exactly what failed). Fix the cause and push; the orchestrator "
+                                  "re-runs the checks on your pushed head and, if they pass, goes straight to the merge judge.")
             response_clause = " and review_response.json"
         if resumed_round and resume_from.report is not None:
             # This round's implementer finished before the orchestrator died; its outputs are in the store.
@@ -355,7 +563,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             res = ctx.driver.run(
                 agent_key="implementer", title=f"{ctx.run_id} implement {sid} r{round_no}", run_id=ctx.run_id,
                 stage="implement", uploads=uploads, work_item_id=wid,
-                description=IMPLEMENT_DESCRIPTION.format(spec_id=sid, git=git, review_clause=review_clause,
+                description=IMPLEMENT_DESCRIPTION.format(spec_id=sid, git=git, review_clause=review_clause, skill_clause=skill_clause,
                                                          response_clause=response_clause, preview_clause=preview_clause),
                 rubric_md=ctx.rubric("implementation"), max_iterations=ctx.policy.outcome_max_iterations,
                 budget_usd=ctx.policy.stage_budget_usd["implement"],
@@ -378,29 +586,44 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         repo = verifier.checkout(branch)
         head_sha = _git(repo, "rev-parse", "HEAD").strip()
         diff = verifier.analyse(repo, base_sha, head_sha)
+        manifest_path = repo / ctx.cfg.service_manifest_path
+        manifest = _manifest_or_none(manifest_path)
+        setup = verifier.prepare_environment(repo, manifest)       # the per-run environment, rebuilt from this head's pyproject
         cmd_results = verifier.run_commands(repo, spec["test_plan"]["commands"])
         # End-to-end against the preview the platform deployed for head_sha. The URL comes from the forge's
         # deployment record, not from the implementer's report; "not run" counts as failed.
         if ctx.cfg.preview_mode == "local":
-            preview, e2e_results = _local_preview_e2e(ctx, repo, branch, head_sha, verifier, spec)
+            preview, e2e_results = _local_preview_e2e(ctx, repo, branch, head_sha, verifier, spec, manifest)
         else:
             preview = wait_for_preview(ctx, branch, head_sha)
             e2e_results = verifier.run_e2e(preview["url"] if preview["status"] == "ready" else None,
                                            spec["test_plan"].get("e2e", []), repo=repo)
         passing_tests = [t for ts in checks.criteria_mapping(report).values() for t in ts]  # refined by a CI parser later
-        det = checks.run_all_for_merge(
+        det = [setup] + checks.run_all_for_merge(
             spec=spec, changed_files=diff["changed"], deleted_files=diff["deleted"], existing_test_files=diff["existing_tests"],
             added_lines_by_file=diff["added_lines"], implementation_report=report, passing_tests=passing_tests,
-            command_results=cmd_results, manifest_path=repo / ctx.cfg.service_manifest_path,
+            command_results=cmd_results, manifest_path=manifest_path,
             schema_dir=ctx.cfg.schemas_dir, e2e_results=e2e_results,
         )
+        test_results = {"commands": cmd_results, "e2e": e2e_results, "preview": preview,
+                        "environment": {"mode": ctx.cfg.preview_mode, "host": "orchestrator" if ctx.cfg.preview_mode == "local" else "platform",
+                                        **setup.data, "ready": setup.passed, "detail": setup.detail}}
         ctx.store.put_artifact(ctx.run_id, "implement", f"{sid}-r{round_no}-deterministic_checks.json",
                                json.dumps([d.to_dict() for d in det], indent=2).encode())
         ctx.store.put_artifact(ctx.run_id, "implement", f"{sid}-r{round_no}-test_results.json",
-                               json.dumps({"commands": cmd_results, "e2e": e2e_results, "preview": preview}, indent=2).encode())
+                               json.dumps(test_results, indent=2).encode())
 
         if round_no > ctx.policy.review_max_rounds:
             break  # last implementer response done; go straight to the merge judge
+        if det_only_response and all(d.passed for d in det):
+            # The previous round's only standing findings were the orchestrator's own checks; they pass on the
+            # pushed head, so a fresh adversarial read would re-prove what round one already proved. Straight to
+            # the judge, which still sees findings.json and the implementer's answers (post-mortem issue 6).
+            ctx.event("review.findings", {"round": round_no, "count": 0, "blocking": 0, "deterministic_only": True,
+                                          "skipped": "deterministic checks pass on the response; no review round"},
+                      work_item_id=wid, spec_id=sid)
+            break
+        det_only_response = False
 
         # ---- fresh-context adversarial review (N independent passes plus one security pass, merged)
         pass_ids = list(range(1, ctx.policy.reviewer_passes + 1))
@@ -417,13 +640,13 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 reserve_budget(ctx, "review", len(to_run), extra={"security_review": 1} if run_sec else None)
             else:
                 reserve_budget(ctx, "security_review", 1)
-        rev_uploads = {"spec.json": uploads["spec.json"], "spec.md": uploads["spec.md"],
+        rev_uploads = {"spec.json": uploads["spec.json"], "spec.md": uploads["spec.md"], **skill_uploads,
                        "diff.patch": diff["patch"].encode(),
                        "implementation_report.json": json.dumps(report, indent=2).encode(),
                        "preview.json": json.dumps(preview, indent=2).encode(),
                        "deterministic_checks.json": json.dumps([d.to_dict() for d in det], indent=2).encode()}
         rev_preview_clause = PREVIEW_CLAUSE if preview["status"] == "ready" and preview.get("mode") != "local" else (
-            LOCAL_PREVIEW_CLAUSE if preview.get("mode") == "local" else NO_PREVIEW_CLAUSE)
+            LOCAL_PREVIEW_REVIEW_CLAUSE if preview.get("mode") == "local" else NO_PREVIEW_CLAUSE)
         second = ""
         if findings and response:
             rev_uploads["previous_findings.json"] = json.dumps(findings, indent=2).encode()
@@ -438,7 +661,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 agent_key="reviewer", title=f"{ctx.run_id} review {sid} r{round_no} p{i}", run_id=ctx.run_id,
                 stage="review", uploads=rev_uploads, work_item_id=wid,
                 description=REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
-                                                      git=git, round=round_no, second_round=second,
+                                                      git=git, round=round_no, second_round=second, skill_clause=skill_clause,
                                                       preview_clause=rev_preview_clause),
                 rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["review"],
                 metadata={"pass": str(i)}, repository=mount(branch),
@@ -459,7 +682,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 agent_key="security_reviewer", title=f"{ctx.run_id} security-review {sid} r{round_no}", run_id=ctx.run_id,
                 stage="review", uploads={**rev_uploads, "security_prechecks.json": json.dumps(pre, indent=2).encode()}, work_item_id=wid,
                 description=SECURITY_REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
-                                                               git=git, round=round_no, second_round=second,
+                                                               git=git, round=round_no, second_round=second, skill_clause=skill_clause,
                                                                preview_clause=rev_preview_clause),
                 rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["security_review"],
                 metadata={"pass": "security"}, repository=mount(branch),
@@ -474,7 +697,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             sec = sec_future.result()
         findings = merge_findings(passes + ([sec] if sec else []), sid, round_no, base_sha, head_sha, branch)
         # A failed deterministic check is a finding the implementer must answer; nobody else can clear it.
-        findings["findings"].extend(deterministic_findings(det, cmd_results))
+        findings["findings"].extend(deterministic_findings(det, cmd_results, e2e_results))
         ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-findings.merged.json",
                                json.dumps(findings, indent=2).encode())
         ctx.event("review.findings", {"round": round_no, "count": len(findings["findings"]),
@@ -483,7 +706,10 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         standing = standing_findings(findings["findings"])
         if not standing and all(d.passed for d in det):
             break  # nothing standing; skip the implementer round and go to the judge
-        enter_item_stage(ctx, wid, sid, WorkItemStage.RESPONDING)
+        # Only the orchestrator's own checks stand (no agent finding is blocking or major): the next round is an
+        # implementer response re-verified by the checks, not a fresh review of the whole diff.
+        det_only_response = _deterministic_only(standing)
+        enter_item_stage(ctx, wid, sid, WorkItemStage.RESPONDING, deterministic_only=det_only_response)
 
     # ---- merge judge (independent)
     prior_verdict = artifact_json_or_none(ctx, "merge_judge", f"{sid}-merge_readiness.json") if resume_from else None
@@ -495,14 +721,16 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         "spec.json": json.dumps(spec, indent=2).encode(), "diff.patch": diff["patch"].encode(),
         "findings.json": json.dumps(findings or {"findings": []}, indent=2).encode(),
         "review_response.json": json.dumps(response or {"responses": []}, indent=2).encode(),
-        "test_results.json": json.dumps({"commands": cmd_results, "e2e": e2e_results, "preview": preview}, indent=2).encode(),
+        "test_results.json": json.dumps(test_results, indent=2).encode(),
         "deterministic_checks.json": json.dumps([d.to_dict() for d in det], indent=2).encode(),
+        **skill_uploads,
     }
     reserve_budget(ctx, "merge_judge")
     res = ctx.driver.run(
         agent_key="merge_judge", title=f"{ctx.run_id} merge-judge {sid}", run_id=ctx.run_id, stage="merge_judge",
         uploads=mj_uploads, work_item_id=wid,
-        description=MERGE_JUDGE_DESCRIPTION.format(spec_id=sid, round=len([1 for _ in range(1)]), git=git),
+        description=MERGE_JUDGE_DESCRIPTION.format(spec_id=sid, round=len([1 for _ in range(1)]), git=git, skill_clause=skill_clause,
+                                                   criteria_clause=LOCAL_CRITERIA_CLAUSE if ctx.cfg.preview_mode == "local" else CRITERIA_CLAUSE),
         rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["merge_judge"],
         repository=mount(branch),
     )
@@ -520,45 +748,101 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     return verdict
 
 
+def _manifest_or_none(path: Path) -> dict[str, Any] | None:
+    """The service manifest as a dict, or None when it is missing or not JSON (`manifest_valid` reports that)."""
+    try:
+        m = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return m if isinstance(m, dict) else None
+
+
 def _local_preview_e2e(ctx: RunContext, repo: Path, branch: str, head_sha: str, verifier: "LocalVerifier",
-                       spec: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Start the checked-out service from its manifest and run the spec's preview entries against it."""
-    manifest_path = repo / ctx.cfg.service_manifest_path
-    preview: dict[str, Any] = {"branch": branch, "head_sha": head_sha, "mode": "local", "status": "failed", "url": None, "pipeline": None}
-    if not manifest_path.is_file():
-        preview["error"] = f"no service manifest at {ctx.cfg.service_manifest_path}; cannot start a local preview"
+                       spec: dict[str, Any], manifest: dict[str, Any] | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Start the checked-out service from its manifest, in the per-run environment, and run the spec's preview
+    entries against it.
+
+    The returned preview record is the one agents and the change request see: status `unreachable_from_sandbox`,
+    url null (nobody but the orchestrator can reach this instance), and `orchestrator_instance` saying whether the
+    service started and where the orchestrator's own e2e rows ran."""
+    preview = preview_info(ctx, branch, head_sha)
+    instance: dict[str, Any] = {"status": "failed", "url": None}
+    preview["orchestrator_instance"] = instance
+    if manifest is None:
+        manifest = _manifest_or_none(repo / ctx.cfg.service_manifest_path)
+    if manifest is None:
+        instance["error"] = f"no readable service manifest at {ctx.cfg.service_manifest_path}; cannot start the service"
+        return preview, verifier.run_e2e(None, spec["test_plan"].get("e2e", []), repo=repo)
+    if verifier.setup is not None and not verifier.setup.passed:
+        instance["error"] = f"not started: {SETUP_CHECK} failed ({verifier.setup.detail[:300]})"
         return preview, verifier.run_e2e(None, spec["test_plan"].get("e2e", []), repo=repo)
     try:
-        with LocalPreview(repo, json.loads(manifest_path.read_text())) as url:
-            preview.update(status="ready", url=url)
+        with LocalPreview(repo, manifest, env_bin=verifier.env_bin) as url:
+            instance.update(status="ready", url=url)
             return preview, verifier.run_e2e(url, spec["test_plan"].get("e2e", []), repo=repo)
     except Exception as e:  # noqa: BLE001
-        preview["error"] = str(e)[:500]
+        instance["error"] = str(e)[:500]
         return preview, verifier.run_e2e(None, spec["test_plan"].get("e2e", []), repo=repo)
 
 
-def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    """Findings (review_findings schema shape) for every failed deterministic check, so the implementer sees
-    exactly what blocks the merge and can fix or refute it like any other finding."""
-    out = []
-    for d in det:
-        if d.passed:
+def _deterministic_only(findings: list[dict[str, Any]]) -> bool:
+    """True when `findings` is non-empty and every entry is one of the orchestrator's own DET-* checks."""
+    return bool(findings) and all(str(f.get("finding_id", "")).startswith("DET-") for f in findings)
+
+
+def is_environmental(results: list[dict[str, Any]]) -> bool:
+    """A failed command whose output blames the verification host (a port already bound) rather than the change."""
+    for r in results:
+        if r.get("exit_code", 1) in (0, None):
             continue
+        text = ((r.get("stderr_tail") or "") + (r.get("stdout_tail") or "")).lower()
+        if any(m in text for m in ENVIRONMENTAL_MARKERS):
+            return True
+    return False
+
+
+def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]] | None = None,
+                           e2e_results: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Findings (review_findings schema shape) for every failed deterministic check, so the implementer sees
+    exactly what blocks the merge and can fix or refute it like any other finding.
+
+    A failed `verification_setup` (the per-run environment could not be built) is the one finding for that round:
+    the command and e2e checks it kept from running are consequences, not separate defects. A command or e2e
+    failure whose output says the port was already in use is tagged `environmental`: the implementer still
+    answers it (the usual fix is a command that does not assume host state), and the judge weighs it as such."""
+    failed = [d for d in det if not d.passed]
+    setup_failed = any(d.check == SETUP_CHECK for d in failed)
+    out = []
+    for d in failed:
         name = d.check.split(":")[0]
-        repro = ""
+        if setup_failed and name in ("test_plan_commands", "e2e_preview", "ac_test_mapping"):
+            continue
+        repro, environmental = "", False
         if name == "test_plan_commands":
-            failed = [r for r in (command_results or []) if r.get("exit_code", 1) != 0]
-            repro = "; ".join(f"{r['command']} -> exit {r.get('exit_code')}: {(r.get('stderr_tail') or r.get('stdout_tail') or '')[-300:]}" for r in failed)
+            rows = [r for r in (command_results or []) if r.get("exit_code", 1) != 0]
+            repro = "; ".join(f"{r['command']} -> exit {r.get('exit_code')}: {(r.get('stderr_tail') or r.get('stdout_tail') or '')[-300:]}" for r in rows)
+            environmental = is_environmental(rows)
+        elif name == "e2e_preview":
+            rows = [r for r in (e2e_results or []) if r.get("exit_code", 1) != 0]
+            repro = "; ".join(f"{r['command']} -> exit {r.get('exit_code')}: {(r.get('stderr_tail') or r.get('stdout_tail') or '')[-300:]}" for r in rows)
+            environmental = is_environmental(rows)
+        fix = {"ac_test_mapping": "Map every automated acceptance criterion to a test in implementation_report.json `criteria` ([{ac_id, tests: [...]}]) and make sure those tests exist and pass.",
+               "test_plan_commands": "Make every test_plan command exit 0 from a clean checkout; if a command depends on a port or host, make it robust or pick a free port.",
+               SETUP_CHECK: "Make the repository installable into a fresh virtual environment: a pyproject.toml whose dependencies resolve (runtime plus a dev/test extra for the test plan), or a `runtime.setup` command in the service manifest that installs what the tests and the entrypoint need."}.get(name, "Fix the cause named in the detail.")
+        if environmental:
+            fix = ("The failure reads as environmental (a port already in use on the verification host), not as a defect in the "
+                   "change: make the command bind a free port or reuse $BASE_URL instead of a fixed port, then push; the "
+                   "orchestrator re-runs the check. ") + fix
         out.append({
             "finding_id": f"DET-{name}", "severity": "blocking",
-            "category": "security" if name == "secret_scan" else ("test_quality" if name in ("ac_test_mapping", "test_plan_commands", "test_weakening", "protected_tests", "e2e_coverage", "e2e_preview") else "spec_deviation"),
+            "category": "security" if name == "secret_scan" else ("test_quality" if name in ("ac_test_mapping", "test_plan_commands", "test_weakening", "protected_tests", "e2e_coverage", "e2e_preview", SETUP_CHECK) else "spec_deviation"),
             "claim": f"Deterministic check `{name}` failed: {d.detail}",
             "evidence": {"locations": ["deterministic_checks.json:1"], **({"reproduction": repro} if repro else {}), "observed": d.detail},
             "violates": f"orchestrator check {name} (cannot be overridden by any judge)",
             "refutation_condition": f"`{name}` passes on the orchestrator's next verification of the pushed head",
             "status": "open",
-            "suggested_fix": {"ac_test_mapping": "Map every automated acceptance criterion to a test in implementation_report.json `criteria` ([{ac_id, tests: [...]}]) and make sure those tests exist and pass.",
-                              "test_plan_commands": "Make every test_plan command exit 0 from a clean checkout; if a command depends on a port or host, make it robust or pick a free port."}.get(name, "Fix the cause named in the detail."),
+            "suggested_fix": fix,
+            **({"environmental": True} if environmental else {}),
         })
     return out
 
