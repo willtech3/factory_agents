@@ -1,4 +1,4 @@
-/* Factory Console. Vanilla JS, hash routes, no build step. */
+/* Factory Console: the factory floor. Vanilla JS, hash routes, no build step. */
 (() => {
   "use strict";
 
@@ -6,6 +6,7 @@
   const $main = document.getElementById("main");
   const $foot = document.getElementById("side-foot");
   const $inboxCount = document.getElementById("inbox-count");
+  const SVG = "http://www.w3.org/2000/svg";
 
   function el(tag, attrs, ...children) {
     const node = document.createElement(tag);
@@ -23,6 +24,12 @@
       if (c === null || c === undefined || c === false) continue;
       node.append(c instanceof Node ? c : document.createTextNode(String(c)));
     }
+    return node;
+  }
+  function svg(tag, attrs, ...children) {
+    const node = document.createElementNS(SVG, tag);
+    for (const [k, v] of Object.entries(attrs || {})) if (v !== null && v !== undefined) node.setAttribute(k, v);
+    for (const c of children.flat()) if (c) node.append(c);
     return node;
   }
 
@@ -50,10 +57,27 @@
     integrating: "Opening pull request", cr_open: "Pull request open", merged: "Merged", deploying_dev: "Deploying to dev",
     deployed_dev: "Verified in dev", closed: "Closed", escalated: "Escalated", blocked: "Blocked",
   };
-  const GATE_NAME = { gate_1_decomposition: "Gate 1: approve the plan", gate_2_spec_readiness: "Gate 2: approve the specs",
+  const GATE_NAME = { gate_1_decomposition: "Gate 1: approve the plan", gate_2_spec_readiness: "Gate 2: approve the contracts",
     escalation: "Escalation: the judge could not pass the specs", budget: "Budget: raise it or close the run", deploy_failure: "Deploy failure" };
   const GATE_SHORT = { gate_1_decomposition: "Gate 1", gate_2_spec_readiness: "Gate 2", escalation: "Escalation", budget: "Budget", deploy_failure: "Deploy failure" };
   const DECISION_LABEL = { approve: "Approve", approve_subset: "Approve selected", request_changes: "Request changes", reject: "Reject" };
+  const ROLE_NAME = { po: "Product owner", eng: "Engineer", ops: "Ops", crew: "Claude crew" };
+  const ROLE_DOES = { po: "Decides what gets built", eng: "Reviews and merges", ops: "Watches it land", crew: "Does the work between gates" };
+  const CREW_NAME = { codebase_researcher: "Researcher", decomposer: "Decomposer", spec_writer: "Spec writer", spec_judge: "Spec judge", implementer: "Implementer",
+    reviewer: "Reviewer", security_reviewer: "Security reviewer", merge_judge: "Merge judge", integrator: "Integrator" };
+  const CREW_DOES = { decomposer: "Outcome into work items", spec_writer: "One contract per item", spec_judge: "Scores the contracts", implementer: "Builds it, tests first",
+    reviewer: "Tries to break it", security_reviewer: "Attack paths and secrets", merge_judge: "Ready, or another round", integrator: "Opens the pull request" };
+  const TOOLS = {
+    clipboard: "M26 54h20v16H26z M30 52h12v4H30z M29 60h14v2H29z M29 65h10v2H29z",
+    pencil: "M44 50l6 6-14 14-8 2 2-8z M46 48l4-4 6 6-4 4z",
+    lens: "M42 56a7 7 0 1 1 .1 0z M43 56a4.5 4.5 0 1 0 .1 0z M47 62l8 8-3 3-8-8z",
+    wrench: "M48 50a7 7 0 0 1-8 9l-9 9-4-4 9-9a7 7 0 0 1 9-8l-4 4 3 3z",
+    shield: "M44 50l9 3v7c0 6-4 10-9 12-5-2-9-6-9-12v-7z M44 54l5 2v4c0 4-2 6-5 8-3-2-5-4-5-8v-4z",
+    gavel: "M28 58l6-6 10 10-6 6z M44 50l6-6 4 4-6 6z M30 70h18v4H30z",
+    stamp: "M30 62h20v8H30z M36 50h8v12h-8z M28 70h24v3H28z",
+    book: "M28 52h18v18H28z M30 55h14v1.6H30z M30 59h14v1.6H30z M30 63h10v1.6H30z",
+  };
+  const CREW_TOOL = { codebase_researcher: "book", decomposer: "clipboard", spec_writer: "pencil", spec_judge: "lens", implementer: "wrench", reviewer: "lens", security_reviewer: "shield", merge_judge: "gavel", integrator: "stamp" };
 
   function ago(iso) {
     if (!iso) return "";
@@ -63,12 +87,97 @@
     if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
     return `${Math.floor(s / 86400)} d ago`;
   }
-  function clock(iso) { return iso ? iso.slice(11, 19) : ""; }
+  function dur(fromIso, toIso) {
+    if (!fromIso) return "";
+    const s = Math.max(0, ((toIso ? Date.parse(toIso) : Date.now()) - Date.parse(fromIso)) / 1000);
+    if (s < 90) return `${Math.round(s)} s`;
+    if (s < 3600) return `${Math.round(s / 60)} min`;
+    return `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`;
+  }
+  function clock(iso) { return iso ? iso.slice(11, 16) : ""; }
   function money(n) { return n == null ? "" : `$${Number(n).toFixed(2)}`; }
   function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
   function words(s) { return String(s ?? "").replace(/_/g, " "); }
   function plural(n, one, many) { return `${n} ${n === 1 ? one : (many || one + "s")}`; }
 
+  // ------------------------------------------------------------------ the crew: one pixel Claude, a tool per role, five states
+  const PIX = [".1.....1.", ".1111111.", ".1111111.", "111111111", "111111111", ".1111111.", ".11...11.", ".11...11."];
+  function pixPath(u, ox, oy) {
+    let d = "";
+    PIX.forEach((row, y) => { row.split("").forEach((c, x) => { if (c === "1") d += `M${(ox + x * u).toFixed(1)} ${(oy + y * u).toFixed(1)}h${u}v${u}h-${u}z `; }); });
+    return d;
+  }
+  function eyesPath(u, ox, oy) { return [3, 6].map(x => `M${(ox + x * u).toFixed(1)} ${(oy + 3 * u).toFixed(1)}h${u}v${u}h-${u}z`).join(" "); }
+  // state: asleep | working | done | blocked | still. size: "l" (72x80) or "s" (44x50)
+  function crewFigure(role, state, size) {
+    const big = size !== "s";
+    const u = big ? 6.5 : 4, ox = big ? 6.5 : 4, oy = big ? 14 : 9;
+    const w = big ? 72 : 44, h = big ? 80 : 50;
+    const node = svg("svg", { class: `crew ${state || "asleep"}`, width: w, height: h, viewBox: `0 0 ${w} ${h}`, "aria-hidden": "true" });
+    if (state === "asleep") {
+      node.append(svg("text", { class: "z", x: big ? 54 : 34, y: big ? 18 : 10, "font-size": big ? 11 : 9, "font-weight": 700, fill: "#5B6B7A", opacity: 0 }, document.createTextNode("z")));
+      if (big) node.append(svg("text", { class: "z2", x: 60, y: 10, "font-size": 9, "font-weight": 700, fill: "#5B6B7A", opacity: 0 }, document.createTextNode("z")));
+    }
+    node.append(svg("path", { d: pixPath(u, ox, oy), fill: "var(--crew)" }));
+    node.append(svg("path", { class: "eye", d: eyesPath(u, ox, oy), fill: "#16202A" }));
+    const tool = TOOLS[CREW_TOOL[role] || "wrench"];
+    if (tool) {
+      const g = svg("g", { class: "tool", transform: big ? "" : "scale(0.6) translate(1,0)" });
+      g.append(svg("path", { d: tool, fill: "#16202A" }));
+      node.append(g);
+    }
+    const bx = big ? 62 : 38, by = big ? 22 : 13, br = big ? 8 : 5.5;
+    const ok = svg("g", { class: "badge-ok" }); ok.append(svg("circle", { cx: bx, cy: by, r: br, fill: "var(--ok)" }), svg("path", { d: big ? "M57.5 22l3 3 6-6" : "M35 13l2 2 4-4", stroke: "#fff", "stroke-width": big ? 2.2 : 1.6, fill: "none", "stroke-linecap": "round", "stroke-linejoin": "round" }));
+    const alert = svg("g", { class: "badge-alert" }); alert.append(svg("circle", { cx: bx, cy: by, r: br, fill: "var(--call)" }), svg("rect", { x: bx - 1.2, y: by - 5, width: 2.4, height: 6.5, rx: 1, fill: "#fff" }), svg("circle", { cx: bx, cy: by + 4.2, r: 1.4, fill: "#fff" }));
+    node.append(ok, alert);
+    if (big) node.append(svg("rect", { x: 4, y: 70, width: 64, height: 6, rx: 3, fill: "var(--line)" }));
+    return node;
+  }
+  document.getElementById("brand-mark").append(crewFigure("implementer", "still", "s"));
+
+  // ------------------------------------------------------------------ the line: a compact progress strip with the active station's crew member
+  function lineStrip(r) {
+    const open = (r.gates || []).filter(g => !g.recorded);
+    const stage = r.stage;
+    const terminal = TERMINAL[stage];
+    const S = [
+      { key: "intake", lbl: "Outcome", who: "po", d: "The brief" },
+      { key: "decomposing", lbl: "Decompose", who: "crew", d: "Work items", role: "decomposer" },
+      { key: "gate_1_decomposition", lbl: "Plan check", who: "po", d: "Gate 1" },
+      { key: "specifying", lbl: "Specify and judge", who: "crew", d: "Contracts", role: "spec_writer" },
+      { key: "gate_2_spec_readiness", lbl: "Contract check", who: "po", d: "Gate 2" },
+      { key: "implementing", lbl: "Build and review", who: "crew", d: "Branches", role: "implementer" },
+      { key: "completed", lbl: "Pull request", who: "eng", d: "Review and merge" },
+    ];
+    const idx = STAGES.findIndex(s => s[0] === stage);
+    const working = (r.crew || []).filter(c => c.state === "working").map(c => c.role);
+    const stations = el("div", { class: "stations" });
+    S.forEach((s, i) => {
+      let cls = `st ${s.who}`;
+      const done = !terminal && i < idx, current = !terminal && i === idx;
+      if (done || (stage === "completed" && i === S.length - 1)) cls += " done";
+      if (current && !r.design_only) cls += " current";
+      const isCall = open.length && ((s.key === "gate_1_decomposition" && open.some(g => g.kind === "gate_1_decomposition")) || (s.key === "gate_2_spec_readiness" && open.some(g => g.kind === "gate_2_spec_readiness")));
+      if (isCall) cls += " call calling";
+      let fig = null;
+      if (current && s.who === "crew") {
+        const role = working.find(w => ["decomposer", "spec_writer", "spec_judge", "implementer", "reviewer", "security_reviewer", "merge_judge", "integrator"].includes(w)) || s.role;
+        fig = el("span", { class: "fig" }, crewFigure(role, working.length ? "working" : "still", "s"));
+      }
+      stations.append(el("div", { class: cls, title: s.d },
+        el("div", { class: "bar" }), el("span", { class: "n" }, `Station ${i + 1}`), el("span", { class: "lbl" }, s.lbl),
+        el("span", { class: `who ${s.who}` }, isCall ? "Your call" : ROLE_NAME[s.who]), fig));
+    });
+    const belt = el("div", { class: "belt" });
+    return el("div", { class: `line ${terminal || stage === "completed" ? "still" : ""}` }, stations, belt);
+  }
+  function miniSteps(stage) {
+    const idx = STAGES.findIndex(s => s[0] === stage);
+    const terminal = TERMINAL[stage];
+    return el("span", { class: "mini-steps", title: terminal || (STAGES[idx] || [])[1] || stage },
+      STAGES.map((s, i) => el("i", { class: terminal ? (i < 2 ? "done" : "") : i < idx ? "done" : i === idx ? "current" : "" })),
+      terminal ? el("i", { class: "terminal" }) : null);
+  }
   function stepper(stage, designOnly) {
     const idx = STAGES.findIndex(s => s[0] === stage);
     const terminal = TERMINAL[stage];
@@ -83,13 +192,6 @@
     });
     if (terminal) t.append(el("div", { class: "step terminal", role: "listitem" }, el("span", { class: "lbl" }, terminal)));
     return t;
-  }
-  function miniSteps(stage) {
-    const idx = STAGES.findIndex(s => s[0] === stage);
-    const terminal = TERMINAL[stage];
-    return el("span", { class: "mini-steps", title: terminal || (STAGES[idx] || [])[1] || stage },
-      STAGES.map((s, i) => el("i", { class: terminal ? (i < 2 ? "done" : "") : i < idx ? "done" : i === idx ? "current" : "" })),
-      terminal ? el("i", { class: "terminal" }) : null);
   }
 
   // tiny markdown subset for decomposition.md and spec.md
@@ -124,7 +226,6 @@
   // ------------------------------------------------------------------ chrome: sidebar, nav, polling
   const state = { config: null, poll: null, lastKey: {} };
 
-  // Light by default; dark is a choice remembered per browser.
   function applyTheme(t) { document.documentElement.dataset.theme = t === "dark" ? "dark" : ""; try { localStorage.setItem("factory-theme", t); } catch (e) { /* private window */ } }
   try { applyTheme(localStorage.getItem("factory-theme") || "light"); } catch (e) { applyTheme("light"); }
 
@@ -136,10 +237,9 @@
       $inboxCount.textContent = n; $inboxCount.classList.toggle("zero", n === 0);
       const dark = document.documentElement.dataset.theme === "dark";
       $foot.replaceChildren(
-        el("b", null, "Agents"), el("span", { class: c.can_run_design ? "" : "warn" }, c.can_run_design ? "ready for live runs" : "not configured"),
-        el("br"), el("b", null, "Code host"), el("span", { class: c.can_run_live ? "" : "warn" }, c.can_run_live ? `${c.forge}: ${c.forge_repo}` : "not configured"),
-        el("br"), el("a", { href: "#/settings", style: "color:#94A3B8" }, "Settings"),
-        el("br"), el("button", { class: "theme", type: "button", onclick: () => { applyTheme(dark ? "light" : "dark"); loadChrome(); } }, dark ? "Switch to light mode" : "Switch to dark mode"));
+        el("b", null, "Crew"), el("span", { class: c.can_run_design ? "" : "warn" }, c.can_run_design ? "ready" : "not configured"),
+        el("br"), el("b", null, "Code host"), el("span", { class: c.can_run_live ? "" : "warn" }, c.can_run_live ? `${c.forge}${c.forge_repo ? ": " + c.forge_repo : ""}` : "not configured"),
+        el("br"), el("button", { class: "theme", type: "button", onclick: () => { applyTheme(dark ? "light" : "dark"); loadChrome(); } }, dark ? "Light mode" : "Dark mode"));
     } catch (e) { $foot.textContent = "Console offline"; }
   }
   function setNav(key) {
@@ -151,9 +251,8 @@
   function startPoll(fn, ms) { stopPoll(); state.poll = setInterval(() => { if (document.visibilityState === "visible") fn(); }, ms); }
   function typing() {
     const a = document.activeElement;
-    return !!(a && $main.contains(a) && (a.tagName === "TEXTAREA" || a.tagName === "INPUT"));
+    return !!(a && $main.contains(a) && (a.tagName === "TEXTAREA" || a.tagName === "INPUT" || a.tagName === "SELECT"));
   }
-  // Re-render a list view only when the server's picture changed, never while the person is typing in it.
   function refreshWhenChanged(key, fetchKey, render) {
     return async () => {
       if (typing()) return;
@@ -175,48 +274,71 @@
       title ? el("div", { class: "card-head" }, el("h2", null, title), meta ? el("span", { class: "meta" }, meta) : null) : null,
       el("div", { class: "card-body" }, body));
   }
+  function roleLegend() {
+    return el("div", { style: "display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center;font-size:14px" },
+      el("span", { class: "role crew" }, el("i"), "Claude crew"),
+      el("span", { class: "role po" }, el("i"), "Product owner decides what is built"),
+      el("span", { class: "role eng" }, el("i"), "Engineer reviews and merges"),
+      el("span", { class: "role ops" }, el("i"), "Ops watches it land"),
+      el("span", { class: "role call", style: "margin-left:auto" }, el("i"), "A human is needed now"));
+  }
 
-  // ------------------------------------------------------------------ inbox
+  // ------------------------------------------------------------------ the board: columns are the pipeline, rows are who owns the work
   async function viewInbox() {
     setNav("inbox");
-    const inbox = await api("/api/inbox");
-    const items = [
-      ...inbox.gates.map(g => ({ kind: "gate", at: g.opened_at, g })),
-      ...inbox.questions.map(q => ({ kind: "question", at: q.asked_at, q })),
-    ].sort((a, b) => (a.at || "").localeCompare(b.at || ""));
+    const b = await api("/api/board");
+    const live = b.runs.filter(r => !r.terminal);
+    const waiting = live.flatMap(r => r.cards.filter(c => c.kind === "gate" || c.kind === "question" || c.kind === "pr"));
     const frag = document.createDocumentFragment();
-    frag.append(pageHead("Inbox", "Everything that is waiting on a person. Runs pause here until you decide or answer.",
-      [el("a", { class: "btn primary", href: "#/outcomes/new" }, "New outcome")]));
-    if (!items.length) {
-      frag.append(card(null, el("div", { class: "empty" }, el("h3", null, "Nothing is waiting on you"),
-        el("div", null, "Runs keep going on their own until the next gate or a question from an agent."),
-        el("a", { class: "btn", href: "#/runs" }, "See the runs"))));
+    frag.append(pageHead("The board", "Columns are the pipeline. Rows are who owns the work. A card only sits in its owner's row, so whose turn it is is the row, not a label.",
+      [waiting.length ? el("span", { class: "tag gate" }, `${plural(waiting.length, "decision")} waiting`) : el("span", { class: "tag ok" }, "Nothing waiting on a person"),
+       el("a", { class: "btn primary", href: "#/start" }, "Start a run")]));
+    if (!live.length) {
+      frag.append(card(null, el("div", { class: "empty" }, crewFigure("implementer", "asleep", "l"), el("h3", null, "The floor is quiet"),
+        el("div", null, "No run is in progress. Start one from an outcome; the crew wakes up and the board fills in."),
+        el("a", { class: "btn primary", href: "#/start" }, "Start a run"))));
     } else {
-      const list = el("ul", { class: "list" });
-      for (const it of items) {
-        if (it.kind === "gate") {
-          const g = it.g;
-          list.append(el("li", null,
-            el("span", { class: "tag gate" }, GATE_SHORT[g.kind] || g.kind),
-            el("div", { class: "main" }, el("div", { class: "title" }, g.run_title), el("div", { class: "desc" }, (GATE_NAME[g.kind] || g.kind) + ". " + g.summary)),
-            el("div", { class: "side-meta" }, el("b", null, g.recorded ? "Decision recorded" : `opened ${ago(g.opened_at)}`)),
-            el("a", { class: "btn primary", href: `#/gates/${g.gate_id}` }, g.recorded ? "View" : "Review and decide")));
-        } else {
-          const q = it.q;
-          list.append(el("li", null,
-            el("span", { class: "tag question" }, q.blocking ? "Question" : "Note"),
-            el("div", { class: "main" }, el("div", { class: "title" }, q.run_title), el("div", { class: "desc" }, `The ${q.asked_by} asks: ${q.question}`)),
-            el("div", { class: "side-meta" }, el("b", null, q.blocking ? "Agent paused" : "Default applied"), ago(q.asked_at)),
-            el("a", { class: "btn primary", href: `#/runs/${q.run_id}#q` }, "Answer")));
+      const g = el("div", { class: "g" });
+      g.append(el("div"));
+      for (const col of [["plan", "Plan"], ["specify", "Specify"], ["build", "Build"], ["review", "Review"], ["ship", "Ship"]]) g.append(el("div", { class: "colh" }, col[1]));
+      for (const row of ["po", "eng", "ops", "crew"]) {
+        g.append(el("div", { class: `rowh ${row}` }, el("b", null, ROLE_NAME[row]), el("span", null, ROLE_DOES[row])));
+        for (const col of ["plan", "specify", "build", "review", "ship"]) {
+          const cell = el("div", { class: "cell" });
+          for (const r of live) {
+            for (const c of r.cards.filter(c => c.row === row && c.column === col)) cell.append(boardCard(r, c));
+            // quiet placeholders that say what will happen next for a human, so an empty row still answers "when is it my turn"
+            if (row === "eng" && col === "ship" && r.column !== "ship" && !r.cards.some(c => c.kind === "pr")) cell.append(el("div", { class: "k quiet" }, el("span", { class: "run" }, r.title), el("span", { class: "t" }, "Review the pull request"), el("span", { class: "s" }, "after Build and Review")));
+          }
+          g.append(cell);
         }
       }
-      frag.append(card("Needs you", list, plural(items.length, "item")));
+      frag.append(card(null, el("div", { class: "board" }, g, el("div", { class: "legend" }, el("span", null, `${plural(live.length, "run")} in progress. Finished runs are under Runs.`))), null));
     }
-    frag.append(card("How a run moves", el("div", null, stepper("x"),
-      el("p", { class: "explain", style: "margin-top:12px" }, "Agents do the stages in grey. The two gates are yours: nothing is built until you have approved the plan and then the specs. After Gate 2, review and merge happen on the pull request as usual.")), null, "soft"));
+    frag.append(card("How a run moves", el("div", null, roleLegend(), el("p", { class: "explain", style: "margin-top:12px" }, "The crew do the stages between the gates. The two gates are the product owner's: nothing is built until the plan and then the contracts are approved. The engineer reviews and merges the pull request. Ops watches the deploy.")), null, "soft"));
     $main.replaceChildren(frag);
-    state.lastKey.inbox = JSON.stringify(items.map(i => i.kind === "gate" ? [i.g.gate_id, !!i.g.recorded] : i.q.question_id));
-    startPoll(refreshWhenChanged("inbox", async () => { const x = await api("/api/inbox"); return JSON.stringify([...x.gates.map(g => [g.gate_id, !!g.recorded]), ...x.questions.map(q => q.question_id)]); }, viewInbox), 5000);
+    state.lastKey.inbox = boardKey(b);
+    startPoll(refreshWhenChanged("inbox", async () => boardKey(await api("/api/board")), viewInbox), 5000);
+  }
+  function boardKey(b) { return JSON.stringify(b.runs.map(r => [r.run_id, r.stage, r.updated_at, r.cards.map(c => [c.kind, c.gate_id || c.question_id || c.role || c.work_item_id])])); }
+  function boardCard(r, c) {
+    if (c.kind === "agent") {
+      return el("div", { class: "k agent" }, crewFigure(c.role, "working", "s"),
+        el("div", { class: "txt" }, el("span", { class: "t" }, CREW_NAME[c.role] || words(c.role)), el("span", { class: "s" }, `${r.title}, ${dur(c.since)}`)));
+    }
+    if (c.kind === "gate") {
+      return el("div", { class: "k call calling" }, el("span", { class: "since" }, `Your call since ${clock(c.since)}`), el("span", { class: "t" }, GATE_NAME[c.title] || words(c.title)),
+        el("span", { class: "s" }, `${r.title}. ${(c.summary || "").slice(0, 140)}`), el("a", { class: "btn call", href: `#/gates/${c.gate_id}`, style: "align-self:flex-start" }, "Review and decide"));
+    }
+    if (c.kind === "question") {
+      return el("div", { class: "k call calling" }, el("span", { class: "since" }, `${c.blocking ? "Agent paused" : "Question"} since ${clock(c.since)}`), el("span", { class: "t" }, c.title),
+        el("span", { class: "s" }, r.title), el("a", { class: "btn call", href: `#/runs/${r.run_id}#q`, style: "align-self:flex-start" }, "Answer"));
+    }
+    if (c.kind === "pr") {
+      return el("div", { class: "k call" }, el("span", { class: "since" }, "Waiting for you"), el("span", { class: "t" }, c.title), el("span", { class: "s" }, r.title),
+        c.url ? el("a", { class: "btn", href: c.url, target: "_blank", rel: "noopener", style: "align-self:flex-start" }, "Open on the code host") : null);
+    }
+    return el("div", { class: "k quiet" }, el("span", { class: "run" }, r.title), el("span", { class: "t" }, c.title));
   }
 
   // ------------------------------------------------------------------ runs
@@ -225,19 +347,19 @@
     const runs = (await api("/api/runs")).runs;
     const frag = document.createDocumentFragment();
     frag.append(pageHead("Runs", "One run per outcome. A run ends with pull requests for a person to review.",
-      [el("a", { class: "btn primary", href: "#/outcomes/new" }, "New outcome")]));
+      [el("a", { class: "btn primary", href: "#/start" }, "Start a run")]));
     if (!runs.length) {
-      frag.append(card(null, el("div", { class: "empty" }, el("h3", null, "No runs yet"),
-        el("div", null, "Write an outcome, or load the sample one and run it as a demo to see how the gates work."),
-        el("a", { class: "btn primary", href: "#/outcomes/new?example=sample-app" }, "Load the sample app outcome"))));
+      frag.append(card(null, el("div", { class: "empty" }, crewFigure("decomposer", "asleep", "l"), el("h3", null, "No runs yet"),
+        el("div", null, "Start one from an outcome, or run the sample outcome as a demo to see how the gates work."),
+        el("a", { class: "btn primary", href: "#/start" }, "Start a run"))));
     } else {
-      const tbl = el("table", null, el("tr", null, el("th", null, "Outcome"), el("th", null, "Stage"), el("th", null, "Work items"), el("th", null, "Spend"), el("th", null, "Last activity")));
+      const tbl = el("table", null, el("tr", null, el("th", null, "Outcome"), el("th", null, "Where"), el("th", null, "Items"), el("th", null, "Spend"), el("th", null, "Last activity")));
       for (const r of runs) {
         const wi = r.work_items || { total: 0 };
         const waiting = r.waiting ? r.waiting.gates + r.waiting.questions : 0;
         tbl.append(el("tr", { class: "link", onclick: () => { location.hash = `#/runs/${r.run_id}`; } },
-          el("td", null, el("div", { class: "title" }, el("a", { href: `#/runs/${r.run_id}` }, r.title), r.demo ? el("span", { class: "tag demo" }, "demo") : el("span", { class: "tag live" }, r.design_only ? "live, design only" : "live")),
-            waiting ? el("div", { class: "explain" }, `${plural(waiting, "item")} waiting on you`) : null),
+          el("td", null, el("div", { class: "title" }, el("a", { href: `#/runs/${r.run_id}` }, r.title), r.demo ? el("span", { class: "tag demo" }, "demo") : el("span", { class: "tag live" }, r.design_only ? "design only" : "live")),
+            waiting ? el("div", { class: "explain", style: "color:var(--call-text);font-weight:700" }, `${plural(waiting, "decision")} waiting on you`) : null),
           el("td", null, miniSteps(r.stage), " ", el("span", { class: "explain" }, TERMINAL[r.stage] || (STAGES.find(s => s[0] === r.stage) || [])[1] || r.stage)),
           el("td", null, wi.total), el("td", null, money(r.cost), r.budget_usd != null ? el("span", { class: "explain" }, ` of ${money(r.budget_usd)}`) : null), el("td", { class: "explain" }, ago(r.updated_at))));
       }
@@ -252,7 +374,7 @@
     const ta = el("textarea", { placeholder: "Your answer", "aria-label": "Your answer" });
     const status = el("div", { class: "explain" });
     const options = el("div", { class: "options" }, q.options.map(o => el("button", { class: "btn sm", type: "button", onclick: () => { ta.value = o; ta.focus(); } }, o)));
-    const send = el("button", { class: "btn primary", type: "button", style: "margin-top:8px", onclick: async () => {
+    const send = el("button", { class: "btn call", type: "button", style: "margin-top:8px", onclick: async () => {
       if (!ta.value.trim()) { status.textContent = "Type or pick an answer first."; return; }
       send.disabled = true;
       try { await api(`/api/questions/${q.question_id}/answer`, { body: { answer: ta.value.trim(), by: "console" } });
@@ -263,67 +385,104 @@
     } }, "Send answer");
     const box = el("div", { class: "ask", id: "q" },
       el("div", { class: "q" }, q.question),
-      el("div", { class: "why" }, `The ${q.asked_by} is paused until you answer. ${q.why ? "Why it matters: " + q.why : ""}`),
+      el("div", { class: "why" }, `The ${words(q.asked_by)} is paused until you answer. ${q.why ? "Why it matters: " + q.why : ""}`),
       q.default ? el("div", { class: "why" }, `If nobody answers: ${q.default}`) : null,
       q.options.length ? options : null, ta, send, status);
     return box;
   }
 
+  // ------------------------------------------------------------------ the crew view: one run
   async function viewRun(runId) {
     setNav("runs");
     const r = await api(`/api/runs/${runId}`);
     const frag = document.createDocumentFragment();
     const stageName = TERMINAL[r.stage] || (STAGES.find(s => s[0] === r.stage) || [])[1] || r.stage;
     const b = r.budget || {};
-    const costTag = b.budget_usd != null ? `${money(r.cost)} of ${money(b.budget_usd)}` : `${money(r.cost)} spent`;
-    frag.append(pageHead(r.title, r.outcome ? r.outcome.statement : null,
-      [r.demo ? el("span", { class: "tag demo" }, "demo run") : el("span", { class: "tag live" }, r.design_only ? "live design run" : "live run"),
-       el("span", { class: `tag ${b.paused ? "warn" : ""}`, title: b.budget_usd != null ? "Agent spend so far, and the run's budget (the outcome's constraints.budget_usd)" : "Agent spend so far" }, costTag)],
+    const started = r.created_at;
+    frag.append(pageHead(r.title, r.outcome ? r.outcome.statement.split(". ")[0] + "." : null,
+      [r.demo ? el("span", { class: "tag demo" }, "demo") : el("span", { class: "tag live" }, r.design_only ? "design only" : (TERMINAL[r.stage] || stageName)),
+       el("span", { class: `tag ${b.paused ? "warn" : ""}` }, `${money(r.cost)}${b.budget_usd != null ? ` of ${money(b.budget_usd)}` : " spent"}`),
+       el("span", { class: "tag" }, dur(started, TERMINAL[r.stage] || r.stage === "completed" ? r.updated_at : null))],
       [el("a", { href: "#/runs" }, "Runs"), " / ", el("span", { class: "mono" }, r.run_id)]));
-    frag.append(card("Where it is", el("div", null, stepper(r.stage, r.design_only), el("p", { class: "explain", style: "margin-top:10px" },
-      r.stage === "completed" && r.design_only ? "Done: this was a design run. The approved specs are in the files below; nothing was built. Start a full run from the outcome to implement them."
-      : r.stage === "completed" && r.watch && r.watch.pending.length ? "Done building. Review and merge happen on the code host; the watcher below records each merge and follows the deploy to dev."
-      : r.stage === "completed" ? "Done. Every approved item has a pull request; review and merge happen on the code host."
-      : b.paused ? "Paused at its budget. The next agent session would take the run past the cap, so nothing started; the work so far is kept. Raise the budget below to continue, or close the run."
-      : r.resumable ? "Failed during implementation. The work so far is kept: resume below and the run continues from the last finished step."
-      : TERMINAL[r.stage] ? `${stageName}. Nothing more happens in this run.`
-      : `Now: ${stageName}.${r.design_only ? " This is a design run: it stops after Gate 2." : ""}`))));
 
-    if (b.paused && b.pause) frag.append(budgetCard(r));
+    frag.append(card(null, lineStrip(r), null, "soft"));
 
-    // The budget gate is decided from the budget card above, not listed here.
-    // A run-cap pause is decided from the Budget card above; any other gate, a session's own cap included, is listed here.
+    // roster
+    const roster = el("div", { class: "roster" });
+    for (const m of r.crew || []) {
+      const costTxt = m.cost_usd ? money(m.cost_usd) : (m.state === "working" && m.started_at ? dur(m.started_at) : "");
+      const st = m.state === "working" ? (m.title ? m.title.replace(`${r.run_id} `, "") : "Working") :
+        m.state === "done" ? `Done${m.sessions > 1 ? `, ${plural(m.sessions, "session")}` : ""}` :
+        m.state === "blocked" ? "Stopped at its budget" : crewAsleepText(m.role, r);
+      roster.append(el("div", { class: `m ${m.state}` }, crewFigure(m.role, m.state, "s"),
+        el("div", { class: "txt" }, el("div", { class: "nm" }, el("span", null, CREW_NAME[m.role] || words(m.role)), el("span", null, costTxt)),
+          el("span", { class: "st" }, st))));
+    }
+    const consoleUrl = sid => state.config && state.config.console_session_url && !r.demo ? state.config.console_session_url.replace("SESSION_ID", sid) : null;
+    const liveMember = (r.crew || []).find(m => m.state === "working" && m.session_id);
+    const rosterCard = card("The crew", el("div", null, roster,
+      el("p", { class: "explain", style: "margin-top:10px;font-size:12.5px" }, "Asleep means not started or finished for this run.", liveMember && consoleUrl(liveMember.session_id) ? [" ", el("a", { href: consoleUrl(liveMember.session_id), target: "_blank", rel: "noopener" }, "Open the live session in the Anthropic Console.")] : null)));
+
+    // the story so far
+    const story = el("div", { class: "story" });
+    const entries = storyEntries(r).reverse();
+    for (const e of entries) story.append(el("div", { class: "e" }, el("time", { datetime: e.at, title: e.at }, clock(e.at)),
+      el("div", { class: "rail" }, el("i", { class: e.who }), el("b")),
+      el("div", { class: "body" }, el("div", { class: "t" }, el("span", null, e.title), el("span", { class: `who ${e.who}` }, e.whoLabel)), e.body ? el("div", { class: "d" }, e.body) : null)));
+    const storyCard = card("The story so far", entries.length ? story : el("p", { class: "explain" }, "Nothing has happened yet."), "newest first");
+
+    // your turn
     const onCard = g => g.kind === "budget" && b.paused && b.pause;
     const gates = r.gates.filter(g => !g.recorded && !onCard(g)), recorded = r.gates.filter(g => g.recorded && !onCard(g));
-    if (gates.length || r.questions.length || recorded.length) {
-      const body = el("div", { class: "stack" });
-      for (const q of r.questions) body.append(askBlock(q, () => setTimeout(() => viewRun(runId), 1500)));
-      for (const g of gates) body.append(el("div", { class: "list" }, el("li", null,
-        el("span", { class: "tag gate" }, GATE_SHORT[g.kind] || g.kind),
-        el("div", { class: "main" }, el("div", { class: "title" }, GATE_NAME[g.kind] || g.kind), el("div", { class: "desc" }, g.summary)),
-        el("a", { class: "btn primary", href: `#/gates/${g.gate_id}` }, "Review and decide"))));
-      for (const g of recorded) body.append(el("div", { class: "notice ok" }, el("b", null, `${DECISION_LABEL[g.recorded.decision] || g.recorded.decision} recorded on ${GATE_SHORT[g.kind]}. `), "The run picks it up within a few seconds. ", el("a", { href: `#/gates/${g.gate_id}` }, "View")));
-      frag.append(card("Needs you", body));
+    const turn = el("div", { class: "turn" });
+    const waiting = gates.length + r.questions.length + (b.paused ? 1 : 0);
+    turn.append(el("div", { class: "dot" }, el("i", { class: waiting ? "on" : "" }), el("h2", { style: "font-size:17px" }, "Your turn")));
+    if (b.paused && b.pause) turn.append(budgetCard(r));
+    if (waiting) {
+      for (const q of r.questions) turn.append(askBlock(q, () => setTimeout(() => viewRun(runId), 1500)));
+      for (const g of gates) turn.append(el("div", { class: "card call", style: "padding:12px" },
+        el("div", { style: "font-size:12px;font-weight:700;color:var(--call-text)" }, `Your call since ${clock(g.opened_at)}`),
+        el("div", { style: "font-weight:700;font-size:15px;margin:4px 0" }, GATE_NAME[g.kind] || g.kind),
+        el("div", { class: "explain" }, (g.summary || "").slice(0, 220)),
+        el("a", { class: "btn call", href: `#/gates/${g.gate_id}`, style: "margin-top:10px" }, "Review and decide")));
+    } else {
+      turn.append(el("p", { style: "margin:0;font-size:15px" }, r.stage === "completed" ? "Nothing waiting on you here. The pull request is on the code host." : TERMINAL[r.stage] ? `${stageName}. Nothing more happens in this run.` : "Nothing waiting on you."));
     }
-
-    if (r.resumable && !b.paused) {
-      const why = (r.events || []).slice().reverse().find(e => e.kind === "run.failed");
-      const box = el("div", { class: "stack" },
-        el("p", { class: "explain" }, "The orchestrator stopped before this run reached a pull request", why && why.detail ? `: ${why.detail}` : ".",
-          " Resuming does not repeat finished agent sessions; it re-checks the branch and carries on from there."),
-        el("div", { class: "actions" }, el("button", { class: "btn primary", type: "button", onclick: async (ev) => {
-          const b = ev.currentTarget; b.disabled = true; b.textContent = "Resuming…";
-          try {
-            const res = await api(`/api/runs/${runId}/resume`, { body: {} });
-            box.append(el("div", { class: "notice ok" }, el("b", null, "Resumed. "), `The run continues in the background (log ${res.log}). This page follows it.`));
-            setTimeout(() => viewRun(runId), 2500);
-          } catch (e) { b.disabled = false; b.textContent = "Resume run"; box.append(el("div", { class: "notice bad" }, String(e.message || e))); }
-        } }, "Resume run")));
-      frag.append(card("Resume", box));
+    for (const g of recorded) turn.append(el("div", { class: "notice ok", style: "margin:0" }, el("b", null, `${DECISION_LABEL[g.recorded.decision] || g.recorded.decision} recorded on ${GATE_SHORT[g.kind]}. `), "The run picks it up within seconds. ", el("a", { href: `#/gates/${g.gate_id}` }, "View")));
+    if (!TERMINAL[r.stage]) {
+      const up = el("div", { class: "up" }, el("span", { class: "explain", style: "font-size:12.5px" }, "Coming up for humans"));
+      const pendingGate = r.stage === "decomposing" || r.stage === "intake" ? "approve the plan (Gate 1)" : r.stage === "specifying" ? "approve the contracts (Gate 2)" : null;
+      if (pendingGate) up.append(el("span", null, el("b", { class: "po" }, "Product owner"), `: ${pendingGate}, when the crew is done`));
+      if (!r.design_only) up.append(el("span", null, el("b", { class: "eng" }, "Engineer"), r.stage === "completed" ? ": review and merge the pull request" : ": review the pull request, after Build and Review"));
+      up.append(el("span", null, el("b", { class: "ops" }, "Ops"), r.watch && r.watch.pending && r.watch.pending.length ? ": the dev deploy is being watched" : ": nothing in this setup"));
+      turn.append(up);
     }
+    if (r.resumable && r.resuming) turn.append(el("div", { class: "notice info", style: "margin:0" }, el("b", null, "Resuming. "), "The orchestrator is re-checking the branch; this page follows it."));
+    else if (r.resumable && !b.paused) turn.append(resumeBox(r, runId));
+    if (r.watch && (r.watch.pending.length || r.watch.heartbeat)) turn.append(watchBox(r, runId));
+    const turnCard = card(null, turn, null, waiting ? "call" : "");
 
-    if (r.watch && (r.watch.pending.length || r.watch.heartbeat)) frag.append(watchCard(r, runId));
+    // how this run is tuned (read-only here; the next run is tuned on the Start screen)
+    const p = { ...(r.policy || {}), ...(b.budget_usd != null ? { run_budget_usd: b.budget_usd } : {}) };
+    const tune = el("div", { class: "tune" });
+    const caps = p.stage_budget_usd || {};
+    const summary = [p.run_budget_usd ? `$${p.run_budget_usd} cap` : null, p.preview_mode === "local" ? "local previews" : p.preview_mode ? `${p.preview_mode} previews` : null,
+      p.reviewer_passes ? `${p.reviewer_passes} reviewers${p.security_review ? " plus security" : ""}` : null, p.review_max_rounds ? `${p.review_max_rounds} review rounds` : null].filter(Boolean).join(", ");
+    const details = el("div", { class: "tier", hidden: true },
+      el("dl", null,
+        tunePair("Run budget", p.run_budget_usd ? `$${p.run_budget_usd}` : "from the outcome"), tunePair("Preview", p.preview_mode || "platform"),
+        tunePair("Reviewer passes", p.reviewer_passes ?? "default"), tunePair("Review rounds", p.review_max_rounds ?? "default"),
+        tunePair("Security reviewer", p.security_review === false ? "off" : "on"), tunePair("Items built at once", p.parallel_implementations ?? "default"),
+        tunePair("Grader iterations", p.outcome_max_iterations ?? "default"), tunePair("Cap per implementer", caps.implement ? `$${caps.implement}` : "default"),
+        tunePair("Cap per judge", caps.judge ? `$${caps.judge}` : "default"), tunePair("Cap per review", caps.review ? `$${caps.review}` : "default")),
+      el("p", { class: "explain", style: "margin:10px 0 0;font-size:12.5px" }, "Settings are fixed for a run once it starts. ", el("a", { href: "#/start" }, "Tune the next run on the Start screen.")));
+    const toggle = el("button", { class: "btn sm", type: "button", onclick: () => { details.hidden = !details.hidden; toggle.textContent = details.hidden ? "Show all" : "Hide"; } }, "Show all");
+    tune.append(el("div", { class: "row" }, el("h2", { style: "font-size:16px" }, "How this run is tuned"), toggle), el("p", { class: "explain", style: "margin:0" }, summary || "Defaults."), details);
+    const tuneCard = card(null, tune);
 
+    frag.append(el("div", { class: "floor" }, rosterCard, storyCard, el("aside", { class: "stack" }, turnCard, tuneCard)));
+
+    // the details a reviewer or operator sometimes needs, folded away
     const items = el("table", null, el("tr", null, el("th", null, "Work item"), el("th", null, "Stage"), el("th", null, "Depends on"), el("th", null, "Pull request")));
     for (const w of r.work_items) items.append(el("tr", null,
       el("td", null, el("div", null, w.title || w.work_item_id), el("div", { class: "explain mono" }, w.work_item_id)),
@@ -332,34 +491,101 @@
       el("td", null, w.cr_url ? el("a", { href: w.cr_url, target: "_blank", rel: "noopener" }, `#${w.cr_id}`) : (w.branch ? el("span", { class: "explain mono" }, w.branch) : el("span", { class: "explain" }, "not yet")),
         w.stage === "deployed_dev" && w.dev_environment_url ? [" · ", el("a", { href: w.dev_environment_url, target: "_blank", rel: "noopener" }, "dev")] : null,
         w.merge_sha ? [" ", el("span", { class: "explain mono" }, `merged as ${w.merge_sha.slice(0, 10)}`)] : null)));
-    frag.append(card("Work items", r.work_items.length ? items : el("p", { class: "explain" }, "Work items appear once the decomposition exists."), r.work_items.length ? plural(r.work_items.length, "item") : null));
-
     const tl = el("ol", { class: "timeline" });
-    for (const ev of [...r.events].reverse().slice(0, 80)) {
+    for (const ev of [...r.events].reverse().slice(0, 120)) {
       const [who, what] = describe(ev);
-      const link = what.session_id && state.config && state.config.console_session_url && !r.demo
-        ? el("a", { href: state.config.console_session_url.replace("SESSION_ID", what.session_id), target: "_blank", rel: "noopener" }, " open in the Anthropic Console") : null;
-      tl.append(el("li", null, el("time", { datetime: ev.at, title: ev.at }, clock(ev.at)),
+      const link = what.session_id && consoleUrl(what.session_id) ? el("a", { href: consoleUrl(what.session_id), target: "_blank", rel: "noopener" }, " open in the Anthropic Console") : null;
+      tl.append(el("li", null, el("time", { datetime: ev.at, title: ev.at }, ev.at ? ev.at.slice(11, 19) : ""),
         el("span", null, el("span", { class: who === "human" ? "human" : "" }, what.main), what.detail ? el("span", { class: "detail" }, " ", what.detail) : null, link)));
     }
     const files = el("table", null, el("tr", null, el("th", null, "Stage"), el("th", null, "File"), el("th", null, "Fingerprint")));
     for (const a of r.artifacts) files.append(el("tr", null, el("td", { class: "explain" }, a.stage),
       el("td", null, el("a", { href: `/api/artifacts/${r.run_id}/${a.stage}/${a.name}`, target: "_blank", rel: "noopener" }, a.name)),
       el("td", { class: "explain mono" }, a.sha256 ? a.sha256.slice(0, 12) : "")));
-    frag.append(el("div", { class: "grid-2" }, card("Timeline", tl, "newest first"), card("Files produced", r.artifacts.length ? files : el("p", { class: "explain" }, "None yet."))));
+    const more = el("details", { style: "margin-top:16px" }, el("summary", { class: "explain", style: "cursor:pointer;font-weight:700" }, `Work items (${r.work_items.length}), every event (${r.events.length}) and every file (${r.artifacts.length})`),
+      el("div", { class: "stack", style: "margin-top:12px" }, card("Work items", r.work_items.length ? items : el("p", { class: "explain" }, "Work items appear once the decomposition exists.")),
+        el("div", { class: "grid-2" }, card("Every event", tl, "newest first"), card("Files produced", r.artifacts.length ? files : el("p", { class: "explain" }, "None yet.")))));
+    frag.append(more);
+
     $main.replaceChildren(frag);
+    if (location.hash.endsWith("#q")) { const q = document.getElementById("q"); if (q) q.scrollIntoView(); }
     state.lastKey.run = runKey(r);
     // A parked run stops polling; one paused at its budget keeps polling so the page follows the resume it started.
     if (!(TERMINAL[r.stage] || r.stage === "completed") || r.stage === "paused_budget") startPoll(refreshWhenChanged("run", async () => runKey(await api(`/api/runs/${runId}`)), () => viewRun(runId)), 4000);
     else stopPoll();
   }
+  function tunePair(k, v) { return el("div", null, el("dt", null, k), el("dd", null, String(v))); }
+  function crewAsleepText(role, r) {
+    const past = STAGES.findIndex(s => s[0] === r.stage);
+    const needs = { decomposer: 1, spec_writer: 3, spec_judge: 3, implementer: 5, reviewer: 5, security_reviewer: 5, merge_judge: 5, integrator: 5 }[role] || 0;
+    if (TERMINAL[r.stage]) return "Not needed";
+    if (r.design_only && needs >= 5) return "Not in a design run";
+    const waits = { decomposer: "Waits for the outcome", spec_writer: "Waits for the plan", spec_judge: "Waits for the contracts", implementer: "Waits for the approved contract",
+      reviewer: "Waits for a branch", security_reviewer: "Waits for a branch", merge_judge: "Waits for the reviews", integrator: "Waits for the verdict" };
+    return past < needs ? waits[role] : (waits[role] || "Waiting");
+  }
   function runKey(r) {
     const hb = r.watch && r.watch.heartbeat;
     return JSON.stringify([r.updated_at, r.stage, r.gates.map(g => [g.gate_id, !!g.recorded]), r.questions.map(q => q.question_id),
-      hb ? [hb.alive, hb.last_poll_at] : null]);
+      hb ? [hb.alive, hb.last_poll_at] : null, (r.crew || []).map(c => c.state), r.resuming || null]);
+  }
+  function storyEntries(r) {
+    const out = [];
+    const title = (r.outcome && r.outcome.title) || r.title;
+    for (const ev of r.events) {
+      const p = ev.payload || {}, item = ev.spec_id || ev.work_item_id;
+      const E = (who, whoLabel, t, body) => out.push({ at: ev.at, who, whoLabel, title: t, body });
+      switch (ev.kind) {
+        case "run.created": E("po", "Product owner", "Outcome written", title); break;
+        case "repository.created": E("po", "Product owner", "Repository created", `${p.url}${p.workflow_seeded === false ? ". The preview workflow could not be seeded (token scope); local previews do not need it." : ""}`); break;
+        case "session.started": { const role = p.agent_key; if (!role || role === "codebase_researcher") break;
+          const what = { decomposer: "Decomposing started", spec_writer: "Writing the contract", spec_judge: "Judging the contract", implementer: "Building started",
+            reviewer: "Reviewing the branch", security_reviewer: "Security review started", merge_judge: "Deciding merge readiness", integrator: "Opening the pull request" }[role] || words(role);
+          E("crew", CREW_NAME[role] || words(role), what, p.title ? p.title.replace(`${r.run_id} `, "") : ""); break; }
+        case "gate.opened": E("call", "Your call", `${GATE_SHORT[p.kind] || p.kind} opened`, (p.summary || "").slice(0, 260)); break;
+        case "gate.decided": E("po", "Product owner", `${GATE_SHORT[p.kind] || p.kind}: ${(DECISION_LABEL[p.decision] || p.decision).toLowerCase()}`, p.comments ? `“${p.comments.slice(0, 240)}${p.comments.length > 240 ? "…" : ""}”` : "No notes."); break;
+        case "question.asked": E("call", "Your call", `The ${words(p.asked_by)} asked a question`, p.question); break;
+        case "question.answered": E("po", "Product owner", "Question answered", p.answer); break;
+        case "judge.verdict": E("crew", "Spec judge", `Spec ${p.result === "pass" ? "passed" : "sent back"} on round ${p.round}`, p.blocking ? `${plural(p.blocking, "blocking issue")}.` : ""); break;
+        case "review.findings": E("crew", "Reviewers", `Review round ${p.round}: ${plural(p.count, "finding")}`, p.blocking ? `${p.blocking} blocking.` : p.count ? "None blocking." : "Nothing to fix."); break;
+        case "review.response": { const n = {}; for (const d of (p.dispositions || [])) n[d] = (n[d] || 0) + 1;
+          E("crew", "Implementer", `Answered review round ${p.round}`, Object.entries(n).map(([d, c]) => `${c} ${words(d)}`).join(", ")); break; }
+        case "merge.verdict": E("crew", "Merge judge", `Merge judge: ${words(p.result)}`, item); break;
+        case "cr.opened": E(p.design ? "po" : "crew", p.design ? "Product owner" : "Integrator", p.design ? "Design pull request opened" : "Pull request opened", p.url); break;
+        case "cr.merged": E("eng", "Engineer", `Merged${p.id ? ` #${p.id}` : ""}`, p.merge_commit_sha ? `as ${String(p.merge_commit_sha).slice(0, 10)}` : ""); break;
+        case "cr.closed": E("eng", "Engineer", "Pull request closed without merging", item); break;
+        case "deploy.started": E("ops", "Ops", "Dev deploy started", p.pipeline_url || ""); break;
+        case "deploy.succeeded": E("ops", "Ops", "Dev deploy succeeded", p.environment_url || ""); break;
+        case "deploy.failed": E("ops", "Ops", "Dev deploy failed", p.status ? words(p.status) : ""); break;
+        case "e2e.dev_passed": E("ops", "Ops", "Dev checks passed", ""); break;
+        case "e2e.dev_failed": E("ops", "Ops", "Dev checks failed", ""); break;
+        case "run.escalated": E("call", "Your call", "Escalated", p.reason); break;
+        case "run.failed": E("call", "Your call", "The orchestrator stopped", p.reason); break;
+        case "run.resumed": E("po", "Product owner", "Run resumed", Object.entries(p.points || {}).map(([s, x]) => `${s}: round ${x.round}${x.implementer_done ? ", implementer done" : ""}`).join("; ")); break;
+        case "budget.reached": E("call", "Your call", "Budget reached", p.reason || ""); break;
+        case "run.completed": E("eng", "Engineer", p.design_only ? "Design stages done" : "Done: the pull request is yours", p.design_only ? "Nothing was built; start a full run from the outcome to implement the approved specs." : "Review and merge happen on the code host."); break;
+        default: break;
+      }
+    }
+    return out;
   }
 
-  function watchCard(r, runId) {
+  function resumeBox(r, runId) {
+    const why = (r.events || []).slice().reverse().find(e => e.kind === "run.failed");
+    const box = el("div", { class: "stack" },
+      el("p", { class: "explain", style: "margin:0" }, "The orchestrator stopped before this run reached a pull request", why && why.payload && why.payload.reason ? `: ${why.payload.reason}` : ".",
+        " Resuming does not repeat finished agent sessions; it re-checks the branch and carries on."),
+      el("div", { class: "actions" }, el("button", { class: "btn primary", type: "button", onclick: async (ev) => {
+        const b = ev.currentTarget; b.disabled = true; b.textContent = "Resuming…";
+        try {
+          const res = await api(`/api/runs/${runId}/resume`, { body: {} });
+          box.append(el("div", { class: "notice ok" }, el("b", null, "Resumed. "), `The run continues in the background (log ${res.log}). This page follows it.`));
+          setTimeout(() => viewRun(runId), 2500);
+        } catch (e) { b.disabled = false; b.textContent = "Resume run"; box.append(el("div", { class: "notice bad" }, String(e.message || e))); }
+      } }, "Resume run")));
+    return box;
+  }
+  function watchBox(r, runId) {
     const w = r.watch, hb = w.heartbeat;
     const box = el("div", { class: "stack" });
     const names = Object.fromEntries(r.work_items.map(x => [x.work_item_id, x]));
@@ -369,21 +595,19 @@
       const list = el("ul", { class: "list" });
       for (const wid of w.pending) {
         const x = names[wid] || { work_item_id: wid };
-        list.append(el("li", null, el("span", { class: "tag" }, ITEM_STAGE[x.stage] || words(x.stage || "")),
+        list.append(el("li", { style: "padding:10px 0" }, el("span", { class: "tag" }, ITEM_STAGE[x.stage] || words(x.stage || "")),
           el("div", { class: "main" }, el("div", { class: "title" }, x.title || wid), el("div", { class: "desc" }, stageText[x.stage] || "")),
-          x.cr_url ? el("a", { class: "btn", href: x.cr_url, target: "_blank", rel: "noopener" }, `Open #${x.cr_id}`) : null));
+          x.cr_url ? el("a", { class: "btn sm", href: x.cr_url, target: "_blank", rel: "noopener" }, `Open #${x.cr_id}`) : null));
       }
       box.append(list);
     }
-    box.append(el("p", { class: "explain" }, "The factory never merges. Once you merge on the code host, the watcher records the merge, follows the platform's pipeline for the merge commit, ",
-      "runs the spec's end-to-end checks against the dev URL, and marks the item verified in dev or opens a deploy-failure gate in the Inbox."));
     if (hb && hb.alive) {
-      box.append(el("div", { class: "notice ok" }, el("b", null, "Watching. "), `Last checked ${ago(hb.last_poll_at)} (pid ${hb.pid}).`,
+      box.append(el("div", { class: "notice ok", style: "margin:0" }, el("b", null, "Watching. "), `Last checked ${ago(hb.last_poll_at)}.`,
         hb.last_tick && hb.last_tick.errors && hb.last_tick.errors.length ? ` Last error: ${hb.last_tick.errors[0].error}` : ""));
     } else if (hb && !w.pending.length) {
-      box.append(el("div", { class: "notice info" }, el("b", null, "Watcher finished. "), `Last checked ${ago(hb.last_poll_at)}; nothing is left to watch.`));
+      box.append(el("div", { class: "notice info", style: "margin:0" }, el("b", null, "Watcher finished. "), `Last checked ${ago(hb.last_poll_at)}; nothing is left to watch.`));
     } else {
-      if (hb) box.append(el("div", { class: "notice info" }, el("b", null, "Not watching. "), `The last watcher checked ${ago(hb.last_poll_at)} and is no longer running. Starting it again is safe: nothing is recorded twice.`));
+      if (hb) box.append(el("div", { class: "notice info", style: "margin:0" }, el("b", null, "Not watching. "), `The last watcher checked ${ago(hb.last_poll_at)} and is no longer running. Starting it again is safe.`));
       if (w.watchable) box.append(el("div", { class: "actions" }, el("button", { class: "btn primary", type: "button", onclick: async (ev) => {
         const b = ev.currentTarget; b.disabled = true; b.textContent = "Starting…";
         try {
@@ -391,9 +615,9 @@
           box.append(el("div", { class: "notice ok" }, el("b", null, "Watching. "), `The watcher runs in the background (log ${res.log}); this page follows it.`));
           setTimeout(() => viewRun(runId), 2500);
         } catch (e) { b.disabled = false; b.textContent = "Watch for merges"; box.append(el("div", { class: "notice bad" }, String(e.message || e))); }
-      } }, "Watch for merges"), el("span", { class: "explain" }, " or run ", el("code", null, `factory watch ${runId}`), " in a terminal")));
+      } }, "Watch for merges")));
     }
-    return card("Pull requests and the dev deploy", box, w.pending.length ? plural(w.pending.length, "item") + " in flight" : null);
+    return box;
   }
 
   // The run is parked at its budget: the numbers, and the decision (raise and continue, or close) in one place.
@@ -485,7 +709,7 @@
       case "e2e.dev_passed": return [who, { main: `Dev checks passed for ${item}`, detail: p.results ? `${p.results.length} of ${p.results.length} passed on ${p.environment_url || "dev"}` : "" }];
       case "e2e.dev_failed": { const n = (p.results || []).length, bad = (p.results || []).filter(x => x.exit_code !== 0).length;
         return [who, { main: `Dev checks failed for ${item}`, detail: n ? `${bad} of ${n} failed on ${p.environment_url || "dev"}` : "" }]; }
-      case "session.started": return [who, { main: `Agent session started: ${p.agent_key || p.agent_id || "agent"}`, detail: p.title || "", session_id: p.session_id }];
+      case "session.started": return [who, { main: `Agent session started: ${CREW_NAME[p.agent_key] || p.agent_key || p.agent_id || "agent"}`, detail: p.title || "", session_id: p.session_id }];
       case "session.finished": return [who, { main: `Agent session finished: ${p.agent_id || "agent"}`, detail: p.list_cost_usd != null ? money(p.list_cost_usd) : "", session_id: p.session_id }];
       case "work_item.stage": return [who, { main: `${ev.work_item_id}: ${ITEM_STAGE[p.stage] || words(p.stage)}` }];
       case "run.escalated": return [who, { main: "Escalated", detail: p.reason }];
@@ -503,6 +727,133 @@
     }
   }
 
+  // ------------------------------------------------------------------ start a run: three guardrails visible, the rest two clicks away
+  async function viewStart(params) {
+    setNav("start");
+    const [outs, cfg, examples] = await Promise.all([api("/api/outcomes"), state.config || api("/api/config"), api("/api/outcomes/examples")]);
+    state.config = cfg;
+    const frag = document.createDocumentFragment();
+    frag.append(pageHead("Start a run", "Three things decide how a run goes: what, where, and the guardrails. Everything else has defaults from the last calibration.",
+      [el("span", { style: "display:inline-flex;align-items:center;gap:10px" }, crewFigure("implementer", "working", "s"), el("span", { class: "explain" }, "The crew is ready."))]));
+
+    // 1. what
+    let outcomeId = params.get("outcome") || (outs.outcomes[0] || {}).outcome_id || null;
+    let outcome = null;
+    const choices = el("div", { class: "choices" });
+    const choiceNodes = [];
+    const pickOutcome = async (id) => {
+      outcomeId = id; choiceNodes.forEach(n => n.classList.toggle("on", n.dataset.id === id));
+      try { outcome = (await api(`/api/outcomes/${id}`)).outcome; } catch (e) { outcome = null; }
+      syncRepo(); syncSummary();
+    };
+    for (const o of outs.outcomes) {
+      const radio = el("input", { type: "radio", name: "outcome", checked: o.outcome_id === outcomeId, onchange: () => pickOutcome(o.outcome_id) });
+      const n = el("label", { class: `choice ${o.outcome_id === outcomeId ? "on" : ""}`, dataset: { id: o.outcome_id } }, radio,
+        el("span", { class: "txt" }, el("b", null, o.title || o.outcome_id), el("span", null, `${o.runs.length ? plural(o.runs.length, "run") + " so far." : "No runs yet."}${o.owner ? " Owner " + o.owner + "." : ""}`)));
+      choiceNodes.push(n); choices.append(n);
+    }
+    const exampleLinks = el("div", { class: "actions", style: "margin-top:10px" }, examples.examples.map(e => el("a", { class: "btn sm", href: `#/outcomes/new?example=${encodeURIComponent(e.name)}`, title: e.title }, `Load the ${e.name} example`)), el("a", { class: "btn sm", href: "#/outcomes/new" }, "Write a new outcome"));
+    const whatCard = card("1. What should be built", el("div", null, outs.outcomes.length ? choices : el("p", { class: "explain" }, "No saved outcomes yet. Load an example or write one."), exampleLinks));
+
+    // 2. where
+    const repoUrl = el("input", { type: "text", placeholder: "https://github.com/you/app" });
+    const repoNew = el("input", { type: "radio", name: "repo" }), repoExisting = el("input", { type: "radio", name: "repo", checked: true });
+    const newName = el("input", { type: "text", placeholder: "https://github.com/you/factory-new-app", style: "max-width:380px" });
+    const existingChoice = el("label", { class: "choice on" }, repoExisting, el("span", { class: "txt" }, el("b", null, "An existing repository"), repoUrl));
+    const newChoice = el("label", { class: "choice" }, repoNew, el("span", { class: "txt" }, el("b", null, "A new private repository the factory creates and seeds"), newName));
+    const syncRepoChoice = () => { existingChoice.classList.toggle("on", repoExisting.checked); newChoice.classList.toggle("on", repoNew.checked); syncSummary(); };
+    repoExisting.onchange = repoNew.onchange = syncRepoChoice;
+    const syncRepo = () => {
+      const repo = ((outcome || {}).target_repositories || [{}])[0] || {};
+      if (repo.create) { repoNew.checked = true; newName.value = repo.url || ""; } else { repoExisting.checked = true; repoUrl.value = repo.url || ""; }
+      syncRepoChoice();
+    };
+    const whereCard = card("2. Where it is built", el("div", { class: "stack" }, el("div", { style: "display:flex;flex-direction:column;gap:10px" }, existingChoice, newChoice),
+      el("p", { class: "explain", style: "margin:0;font-size:13px" }, "Branches are named factory/<run>/<spec>; one pull request per work item into the default branch. Changing the repository here updates the outcome before the run starts.")));
+
+    // 3. guardrails
+    const budget = el("input", { type: "number", min: "5", step: "5", value: 60 });
+    const preview = el("select", null, el("option", { value: "local" }, "Local, started by the orchestrator"), el("option", { value: "platform" }, "Platform deploy workflow"));
+    const owner = (outcome && outcome.owner) || {};
+    const whoBox = el("div", { class: "who" });
+    const syncWho = () => { const ow = (outcome && outcome.owner) || {}; whoBox.replaceChildren(
+      el("span", null, el("b", { class: "po" }, "Product owner"), el("span", null, ow.name || ow.handle || "the outcome's owner")),
+      el("span", null, el("b", { class: "eng" }, "Engineer"), el("span", null, ow.handle || "the outcome's owner")),
+      el("span", null, el("b", { class: "ops" }, "Ops"), el("span", { class: "explain" }, "nobody yet"))); };
+    const guards = el("div", { class: "guards" },
+      el("label", null, "Run budget (USD)", budget, el("span", { class: "h" }, "The last one-item run cost about $33. The run pauses and asks before it goes over.")),
+      el("label", null, "Preview", preview, el("span", { class: "h" }, "Local needs no cloud. Platform needs the deploy workflow in the repository.")),
+      el("div", null, el("span", { style: "font-size:13px;color:var(--text-3);display:block;margin-bottom:6px" }, "Who decides"), whoBox, el("a", { href: "#/outcomes", style: "font-size:13px;font-weight:700" }, "Change on the outcome")));
+    // more
+    const passes = el("input", { type: "number", min: "1", max: "4", value: 2 }), rounds = el("input", { type: "number", min: "1", max: "4", value: 2 });
+    const security = el("input", { type: "checkbox", checked: true }), parallel = el("input", { type: "number", min: "1", max: "6", value: 3 });
+    const scale = el("input", { type: "number", min: "0.2", max: "3", step: "0.1", value: 1 });
+    const more = el("div", { class: "tier", hidden: true },
+      el("label", null, "Reviewer passes per round", passes), el("label", null, "Review rounds before the judge", rounds),
+      el("label", { class: "check" }, security, "Security reviewer on every round"),
+      el("label", null, "Items built at once", parallel), el("label", null, "Scale every per-stage cap by", scale));
+    const iterations = el("input", { type: "number", min: "1", max: "6", value: 3 });
+    const expert = el("div", { class: "tier", hidden: true },
+      el("label", null, "Grader iterations per stage", iterations),
+      el("div", { class: "explain", style: "grid-column:1 / -1;font-size:12.5px" }, "Effort per agent and the platform timeouts live in the agent definitions and the orchestrator's environment; they are not per-run knobs yet."));
+    const moreBtn = el("button", { class: "btn link", type: "button", onclick: () => { more.hidden = !more.hidden; moreBtn.textContent = more.hidden ? "More controls: passes, rounds, caps" : "Fewer controls"; if (more.hidden) { expert.hidden = true; expertBtn.hidden = true; } else expertBtn.hidden = false; } }, "More controls: passes, rounds, caps");
+    const expertBtn = el("button", { class: "btn link", type: "button", hidden: true, onclick: () => { expert.hidden = !expert.hidden; expertBtn.textContent = expert.hidden ? "Expert: iterations" : "Hide expert settings"; } }, "Expert: iterations");
+    const guardsCard = card("3. Guardrails", el("div", { class: "stack" }, guards, el("div", null, moreBtn), more, el("div", null, expertBtn), expert));
+
+    // summary + start
+    const summary = el("ul", { class: "summary-list" });
+    const notice = el("div");
+    const syncSummary = () => {
+      const repo = repoNew.checked ? (newName.value.trim() || "a new private repository") : (repoUrl.value.trim() || "the outcome's repository");
+      summary.replaceChildren(
+        el("li", null, el("b", null, outcome ? outcome.title : "No outcome selected")),
+        el("li", null, "Into ", el("span", { class: "mono" }, repo.replace(/^https:\/\/github\.com\//, ""))),
+        el("li", null, `Up to $${budget.value}; the run asks before going over`),
+        el("li", null, "You decide at Gate 1 (plan) and Gate 2 (contracts); you review the pull request"),
+        el("li", null, `${passes.value} reviewer${passes.value === "1" ? "" : "s"}${security.checked ? " and the security reviewer" : ""} on every round`));
+    };
+    [budget, passes, security, repoUrl, newName].forEach(i => i.addEventListener("input", syncSummary));
+    const settings = () => ({ budget_usd: Number(budget.value) || undefined, preview: preview.value, reviewer_passes: Number(passes.value) || undefined, review_rounds: Number(rounds.value) || undefined,
+      security_review: security.checked, parallel_items: Number(parallel.value) || undefined, grader_iterations: Number(iterations.value) || undefined, budget_scale: Number(scale.value) !== 1 ? Number(scale.value) : undefined });
+    async function saveRepo() {
+      if (!outcome) return;
+      const repo = (outcome.target_repositories || [{}])[0] || {};
+      const url = repoNew.checked ? newName.value.trim() : repoUrl.value.trim();
+      const changed = url !== (repo.url || "") || !!repo.create !== repoNew.checked;
+      if (!changed) return;
+      const next = { ...outcome, target_repositories: [{ ...repo, url, create: repoNew.checked || undefined, visibility: repoNew.checked ? (repo.visibility || "private") : undefined, paths_in_scope: repo.paths_in_scope || [] }] };
+      const r = await api("/api/outcomes", { body: { outcome: next } });
+      if (!r.ok) throw new Error((r.errors || ["The outcome did not save"]).join("; "));
+      outcome = next;
+    }
+    async function go(mode, btn) {
+      notice.replaceChildren();
+      if (!outcomeId) { notice.append(el("div", { class: "notice bad" }, "Pick an outcome first.")); return; }
+      btn.disabled = true;
+      try {
+        await saveRepo();
+        const s = await api("/api/runs", { body: { outcome_id: outcomeId, mode, settings: mode === "demo" ? {} : settings() } });
+        if (s.run_id) location.hash = `#/runs/${s.run_id}`;
+        else { notice.append(el("div", { class: "notice ok" }, el("b", null, "Run started. "), "The crew is waking up; the run appears under Runs within a minute.")); setTimeout(() => { location.hash = "#/runs"; }, 4000); }
+      } catch (e) { notice.append(el("div", { class: "notice bad" }, e.message)); btn.disabled = false; }
+    }
+    const startBtn = el("button", { class: "btn call", type: "button", style: "min-height:48px;font-size:16px", disabled: !cfg.can_run_live, title: cfg.can_run_live ? "" : "Needs the code host configured; see Settings", onclick: ev => go("live", ev.currentTarget) }, "Start the run");
+    const designBtn = el("button", { class: "btn", type: "button", disabled: !cfg.can_run_design, title: cfg.can_run_design ? "" : "Needs the crew and API key; see Settings", onclick: ev => go("design", ev.currentTarget) }, "Design only: stop after Gate 2");
+    const demoBtn = el("button", { class: "btn sm", type: "button", onclick: ev => go("demo", ev.currentTarget) }, "Run as a demo");
+    const aside = el("aside", null,
+      card("This run", el("div", { class: "stack" }, summary, el("div", { class: "btn-col" }, startBtn, designBtn), notice,
+        el("p", { class: "explain", style: "margin:0;font-size:12.5px" }, "A design-only run costs about $8 and needs no repository access. ", demoBtn),
+        (!cfg.can_run_live || !cfg.can_run_design) ? el("p", { class: "explain", style: "margin:0;font-size:12.5px" }, el("a", { href: "#/settings" }, "What is missing to run")) : null)),
+      card(null, el("div", { class: "explain", style: "font-size:13px" }, el("b", { style: "display:block;color:var(--text);font-size:14px;margin-bottom:4px" }, "What you are not asked"),
+        "Model choices, iteration caps, timeouts and per-stage budgets have defaults from the last calibration and live under More and Expert. A run never needs them changed to succeed.")));
+
+    frag.append(el("div", { class: "start" }, el("main", null, whatCard, whereCard, guardsCard), aside));
+    $main.replaceChildren(frag);
+    stopPoll();
+    if (outcomeId) await pickOutcome(outcomeId); else { syncWho(); syncSummary(); }
+    syncWho();
+  }
+
   // ------------------------------------------------------------------ gate review
   async function viewGate(gateId) {
     setNav("inbox");
@@ -512,7 +863,7 @@
     const picks = new Map();
     const frag = document.createDocumentFragment();
     frag.append(pageHead(GATE_NAME[rec.kind] || rec.kind, g.run_title, rec.kind === "budget" ? null : [el("a", { class: "btn", href: `/gates/${gateId}/page`, target: "_blank", rel: "noopener" }, "Open as a page")],
-      [el("a", { href: "#/inbox" }, "Inbox"), " / ", el("a", { href: `#/runs/${g.run_id}` }, g.run_title), " / opened ", ago(rec.opened_at)]));
+      [el("a", { href: "#/inbox" }, "Board"), " / ", el("a", { href: `#/runs/${g.run_id}` }, g.run_title), " / opened ", ago(rec.opened_at)]));
 
     const doc = el("div", { class: "stack" });
     const prev = rv.previous_decisions || [];
@@ -554,7 +905,6 @@
     return el("div", { class: "note" }, el("label", null, "Your note on this item (goes to the agent: as feedback with Request changes, as guidance with Approve)"), ta);
   }
   function waves(items) {
-    // dependency order: the order the work would happen in
     const byId = Object.fromEntries(items.map(w => [w.work_item_id, w]));
     const level = {};
     const depth = id => { if (level[id] != null) return level[id]; const w = byId[id]; level[id] = 0; level[id] = 1 + Math.max(-1, ...(w && w.depends_on || []).filter(d => byId[d]).map(depth)); return level[id]; };
@@ -573,7 +923,7 @@
     const checksBad = (rv.checks || []).filter(c => !c.passed);
 
     doc.append(card("What you are deciding", el("div", { class: "stack" },
-      el("p", { class: "explain" }, el("strong", null, "The decomposer turned the outcome into work items. "), "Approving means agents start writing a specification for each item. Nothing is built yet, and you get another gate before code."),
+      el("p", { class: "explain" }, el("strong", null, "The decomposer turned the outcome into work items. "), "Approving means the crew starts writing a contract for each item. Nothing is built yet, and you get another gate before code."),
       summaryCard("The decomposer's summary", d.summary),
       glance([[items.length, "work items"], [`${metrics.length - uncovered.length}/${metrics.length}`, "metrics covered", uncovered.length ? "bad" : "ok"],
         [judgement.length, "need your judgement", judgement.length ? "warn" : ""], [openQ.length, "open questions", ""],
@@ -633,24 +983,24 @@
     const openQ = Object.values(specs).flatMap(s => (s.open_questions || []).map(q => ({ ...q, sid: s.spec_id })));
 
     doc.append(card("What you are deciding", el("div", { class: "stack" },
-      el("p", { class: "explain" }, el("strong", null, "Agents wrote one specification per work item; an independent judge checked the set. "), "A spec is the contract an agent will build to: acceptance criteria, interfaces, and which files it may touch. Approving a spec starts its implementation."),
+      el("p", { class: "explain" }, el("strong", null, "The crew wrote one contract per work item; an independent judge checked the set. "), "A contract is what an agent will build to: acceptance criteria, interfaces, and which files it may touch. Approving a contract starts its implementation."),
       summaryCard("The judge's summary", ov.summary_for_human || ""),
-      glance([[words(ov.result), "judge's verdict", ov.result === "pass" ? "ok" : "warn"], [Object.keys(specs).length, "specs"],
+      glance([[words(ov.result), "judge's verdict", ov.result === "pass" ? "ok" : "warn"], [Object.keys(specs).length, "contracts"],
         [`${totalAC} (${userVisible} user-visible)`, "acceptance criteria"], [sev("blocking") ? `${sev("blocking")} blocking` : sev("major") ? `${sev("major")} major` : allIssues.length, "issues the judge flagged", sev("blocking") ? "bad" : sev("major") ? "warn" : ""],
         [`${(v.goal_coverage || []).length - notCovered.length}/${(v.goal_coverage || []).length}`, "metrics covered by criteria", notCovered.length ? "warn" : "ok"]]))));
 
     doc.append(card("What to check", checklist([
-      ["The judge's verdict and anything it flagged", allIssues.length ? `${allIssues.length} issues, listed under each spec. Blocking ones should be resolved before you approve.` : "The judge found nothing outstanding."],
+      ["The judge's verdict and anything it flagged", allIssues.length ? `${allIssues.length} issues, listed under each contract. Blocking ones should be resolved before you approve.` : "The judge found nothing outstanding."],
       ["User-visible acceptance criteria", `${userVisible} criteria describe behaviour a user or operator will see. Read those as if they were the feature description.`],
       ["Product decisions hiding in the criteria", "Customer-facing wording, limits, timings, and defaults in a criterion are decisions you are making by approving."],
-      ["Where each agent may change code", "Each spec lists allowed paths. If a spec reaches into something it should not, request changes."],
-      ["Open questions and their defaults", openQ.length ? `${openQ.length} questions across the specs will use their defaults unless you say otherwise.` : "None."],
+      ["Where each agent may change code", "Each contract lists allowed paths. If one reaches into something it should not, request changes."],
+      ["Open questions and their defaults", openQ.length ? `${openQ.length} questions across the contracts will use their defaults unless you say otherwise.` : "None."],
     ])));
 
     const gc = el("table", { class: "coverage" }, el("tr", null, el("th", null, "Success metric"), el("th", null, "Covered?"), el("th", null, "By which criteria"), el("th", null, "Judge's note")));
     for (const g of v.goal_coverage || []) gc.append(el("tr", null, el("td", null, el("b", null, g.metric)), el("td", { class: g.assessment === "covered" ? "ok" : "gap" }, words(g.assessment)), el("td", { class: "mono explain" }, (g.covering_acs || []).join(", ")), el("td", null, g.note || "")));
     const coh = Object.entries(v.coherence || {}).flatMap(([bucket, items]) => (items || []).map(it => ({ bucket, it })));
-    doc.append(card("Metrics and how the specs fit together", el("div", { class: "stack" }, gc,
+    doc.append(card("Metrics and how the contracts fit together", el("div", { class: "stack" }, gc,
       coh.length ? el("div", null, el("h3", null, "Across the set"), el("ul", { class: "reading" }, coh.map(({ bucket, it }) => el("li", null, el("span", { class: "tag" }, words(bucket)), " ", typeof it === "string" ? it : (it.description || JSON.stringify(it)), it.related_spec_ids ? el("span", { class: "explain" }, ` (${it.related_spec_ids.join(", ")})`) : null)))) : null)));
 
     const wrap = el("div");
@@ -671,7 +1021,7 @@
       wrap.append(el("div", { class: "item-card", id: `spec-${sid}` },
         el("div", { class: "ih" }, el("span", { class: "num" }, i + 1), el("span", { class: "t" }, s.title), el("span", { class: "id" }, sid),
           el("span", { class: "right" }, blocking ? el("span", { class: "tag bad" }, `${blocking} blocking`) : (ps.issues || []).length ? el("span", { class: "tag warn" }, plural((ps.issues || []).length, "issue")) : el("span", { class: "tag ok" }, "no issues"),
-            subsetAllowed ? el("label", { class: "pick" }, cb, "Approve this spec") : null)),
+            subsetAllowed ? el("label", { class: "pick" }, cb, "Approve this contract") : null)),
         el("div", { class: "ib" },
           el("div", { class: "intent" }, s.goal),
           el("div", { class: "facts" }, el("span", null, el("b", null, `${acs.length} criteria`), `, ${uv} user-visible`), el("span", null, el("b", null, "Size: "), s.estimated_size || "?"),
@@ -684,10 +1034,10 @@
             el("h3", { style: "font-size:13px;margin:8px 0 4px" }, "Test plan"), el("ul", { class: "paths" }, (tp.commands || []).map(c => el("li", null, c))),
             (tp.e2e || []).length ? el("ul", { class: "paths" }, tp.e2e.map(e => el("li", null, `${e.command}  (${e.target}, covers ${(e.covers_ac || []).join(", ")})`))) : null)),
           (s.open_questions || []).length ? el("details", null, el("summary", null, `Open questions (${s.open_questions.length})`), el("div", null, el("ul", { class: "reading" }, s.open_questions.map(q => el("li", null, q.question, el("div", { class: "explain" }, `Default: ${q.default_if_unanswered || "none"}`)))))) : null,
-          rv.spec_md[sid] ? el("details", null, el("summary", null, "The spec as the agent wrote it"), el("div", { class: "reading", html: md(rv.spec_md[sid]) })) : null,
-          noteField(sid, "What should change in this spec?", notes))));
+          rv.spec_md[sid] ? el("details", null, el("summary", null, "The contract as the agent wrote it"), el("div", { class: "reading", html: md(rv.spec_md[sid]) })) : null,
+          noteField(sid, "What should change in this contract?", notes))));
     });
-    doc.append(card("The specs", wrap, plural(Object.keys(specs).length, "spec")));
+    doc.append(card("The contracts", wrap, plural(Object.keys(specs).length, "contract")));
   }
 
   function renderBudget(doc, rv, rec, g) {
@@ -729,7 +1079,7 @@
     const refresh = () => {
       const n = [...notes.values()].filter(ta => ta.value.trim()).length;
       const picked = picks.size ? subset().length : null;
-      counts.textContent = [n ? `${plural(n, "note")} on items will be sent with Request changes` : "", picked !== null ? `${picked} of ${picks.size} specs selected` : ""].filter(Boolean).join(". ");
+      counts.textContent = [n ? `${plural(n, "note")} on items will be sent with Request changes` : "", picked !== null ? `${picked} of ${picks.size} contracts selected` : ""].filter(Boolean).join(". ");
       buttons.forEach(b => {
         if (b.dataset.decision === "approve_subset") b.hidden = picked === picks.size;
         if (b.dataset.decision === "approve" && picks.size) b.hidden = picked !== picks.size;
@@ -741,10 +1091,9 @@
     comment.addEventListener("input", refresh);
 
     const consequences = {
-      gate_1_decomposition: { approve: "Agents start writing a spec for every work item, with your notes as guidance. You get Gate 2 before any code.", approve_subset: "", request_changes: "The decomposer revises the plan using your notes and asks you again.", reject: "The run closes. Nothing else happens." },
-      gate_2_spec_readiness: { approve: "Agents start implementing all specs on separate branches; pull requests follow.", approve_subset: "Selected specs are implemented; the others go back to the writer with your notes.", request_changes: "The spec writers revise using your notes; the judge re-checks; you decide again.", reject: "The run closes. Nothing is built." },
-      escalation: { approve: "Proceed with the specs as they are.", approve_subset: "Selected specs proceed; the rest go back.", request_changes: "The writers revise using your notes.", reject: "The run closes." },
-      budget: { approve: "The session runs again with its cap raised by half (or, after an iteration cap, its last output is accepted and checked downstream).", reject: "The run closes." },
+      gate_1_decomposition: { approve: "The crew starts writing a contract for every work item, with your notes as guidance. You get Gate 2 before any code.", approve_subset: "", request_changes: "The decomposer revises the plan using your notes and asks you again.", reject: "The run closes. Nothing else happens." },
+      gate_2_spec_readiness: { approve: "The crew starts implementing all contracts on separate branches; pull requests follow.", approve_subset: "Selected contracts are implemented; the others go back to the writer with your notes.", request_changes: "The writers revise using your notes; the judge re-checks; you decide again.", reject: "The run closes. Nothing is built." },
+      escalation: { approve: "Proceed with the contracts as they are.", approve_subset: "Selected contracts proceed; the rest go back.", request_changes: "The writers revise using your notes.", reject: "The run closes." },
       deploy_failure: { approve: "The failure was the platform's; the next deploy is watched.", request_changes: "An agent fixes it on a new branch; a follow-up pull request follows.", reject: "This work item is closed." },
       budget: { approve: "The run's budget becomes the amount above; when continued, it picks up at the step it stopped before.", reject: "The run closes when continued. Nothing more is built; the files stay." },
     }[rec.kind] || {};
@@ -762,7 +1111,6 @@
         el("div", { class: "explain" }, consequences[opt] || ""),
         el("div", { class: "btn-col", style: "margin-top:10px" }, go, el("button", { class: "btn block", type: "button", onclick: disarm }, "Cancel")));
       confirmBox.hidden = false;
-      // Confirm sits where no first-step button was and wakes after a beat: a doubled or mis-aimed click never decides.
       setTimeout(() => { go.disabled = false; go.focus(); }, 600);
     }
     function disarm() { confirmBox.hidden = true; buttons.forEach(b => b.hidden = false); refresh(); }
@@ -795,7 +1143,7 @@
       el("details", null, el("summary", null, "Why this is safe to approve"),
         el("div", { class: "explain", style: "margin-top:6px" }, "Your decision is tied to the exact files you are looking at, by fingerprint. If an agent changed one after this page loaded, the decision is refused and the gate reopens, so you can never approve something you did not read."),
         el("ul", { class: "files" }, rec.artifacts.map(a => el("li", null, el("span", null, a.name), el("code", { title: a.sha256 }, a.sha256.slice(0, 10)))))));
-    const node = el("aside", { class: "decide" }, card("Your decision", el("div", null, status, form)));
+    const node = el("aside", { class: "decide" }, card("Your call", el("div", null, status, form), null, "call"));
     if (g.decided) showDecided(g.decided);
     else if (rec.recorded) showRecorded(rec.recorded);
     refresh();
@@ -808,41 +1156,22 @@
     const [outs, cfg] = [(await api("/api/outcomes")).outcomes, state.config || await api("/api/config")];
     const frag = document.createDocumentFragment();
     frag.append(pageHead("Outcomes", "An outcome is the business result you want, with metrics. Each run starts from one.",
-      [el("a", { class: "btn", href: "#/outcomes/new?example=sample-app" }, "Load the sample app outcome"), el("a", { class: "btn", href: "#/outcomes/new?example=ledgerline" }, "Load the Ledgerline example"), el("a", { class: "btn primary", href: "#/outcomes/new" }, "New outcome")]));
+      [el("a", { class: "btn", href: "#/outcomes/new?example=sample-app" }, "Load the sample app outcome"), el("a", { class: "btn", href: "#/outcomes/new?example=switchboard" }, "Load the Switchboard example"), el("a", { class: "btn primary", href: "#/outcomes/new" }, "New outcome")]));
     if (!outs.length) {
-      frag.append(card(null, el("div", { class: "empty" }, el("h3", null, "No outcomes saved yet"), el("div", null, "Write one in your own words, or load the sample app outcome (examples/sample-app) to run the real test case; the Ledgerline example is the fictional one the demo uses."),
+      frag.append(card(null, el("div", { class: "empty" }, el("h3", null, "No outcomes saved yet"), el("div", null, "Write one in your own words, or load an example."),
         el("a", { class: "btn primary", href: "#/outcomes/new?example=sample-app" }, "Load the sample app outcome"))));
     } else {
       const list = el("ul", { class: "list" });
       for (const o of outs) {
-        const start = el("div", { class: "actions" });
         list.append(el("li", null, el("div", { class: "main" }, el("div", { class: "title" }, el("a", { href: `#/outcomes/new?outcome=${o.outcome_id}` }, o.title || o.outcome_id)),
           el("div", { class: "desc" }, `${o.owner ? "Owner " + o.owner + ". " : ""}${o.runs.length ? plural(o.runs.length, "run") + ": " + o.runs.map(r => r.slice(4, 12)).join(", ") : "No runs yet."}`)),
-          start));
-        startButtons(start, o.outcome_id, cfg);
+          el("a", { class: "btn primary", href: `#/start?outcome=${o.outcome_id}` }, "Start a run")));
       }
       frag.append(card("Saved outcomes", list, plural(outs.length, "outcome")));
     }
     $main.replaceChildren(frag);
     stopPoll();
   }
-
-  function startButtons(container, outcomeId, cfg) {
-    const go = async (mode, btn) => {
-      btn.disabled = true;
-      try {
-        const r = await api("/api/runs", { body: { outcome_id: outcomeId, mode } });
-        if (r.run_id) location.hash = `#/runs/${r.run_id}`;
-        else { location.hash = "#/runs"; }
-      } catch (e) { alertBox(container, e.message); btn.disabled = false; }
-    };
-    const live = el("button", { class: "btn primary", type: "button", disabled: !cfg.can_run_live, title: cfg.can_run_live ? "" : "Needs the code host configured; see Settings" }, "Start full run");
-    const design = el("button", { class: "btn", type: "button", disabled: !cfg.can_run_design, title: cfg.can_run_design ? "" : "Needs the agents and API key; see Settings" }, "Start design run");
-    const demo = el("button", { class: "btn", type: "button" }, "Run as demo");
-    live.onclick = () => go("live", live); design.onclick = () => go("design", design); demo.onclick = () => go("demo", demo);
-    container.replaceChildren(live, design, demo);
-  }
-  function alertBox(container, msg) { container.append(el("div", { class: "notice bad", style: "margin:8px 0 0" }, msg)); }
 
   async function viewOutcomeForm(params) {
     setNav("outcomes");
@@ -899,7 +1228,7 @@
     f.create = el("input", { type: "checkbox", checked: !!repo.create });
     f.visibility = el("select", null, el("option", { value: "private", selected: repo.visibility !== "public" }, "private"), el("option", { value: "public", selected: repo.visibility === "public" }, "public"));
     form.append(card("Repository the agents will change", el("div", null,
-      el("p", { class: "help" }, "An existing repository, or one the factory creates for you on the code host before the run starts (initialised with a README and the preview workflow). The URL names it either way."),
+      el("p", { class: "help" }, "An existing repository, or one the factory creates for you on the code host before the run starts. The URL names it either way."),
       el("div", { class: "grid2" }, el("div", null, el("label", { class: "help" }, "HTTPS URL"), f.repo), el("div", null, el("label", { class: "help" }, "Default branch"), f.branch)),
       el("div", { class: "grid2", style: "margin-top:10px" },
         el("label", { class: "pick", style: "font-weight:500" }, f.create, "Create this repository if it does not exist"),
@@ -927,30 +1256,12 @@
       const r = await api("/api/outcomes", { body: { outcome: collect() } });
       if (!r.ok) { notice.replaceChildren(el("div", { class: "notice bad" }, el("b", null, "Not saved yet. "), ...r.errors.map(e => el("div", null, e)))); return null; }
       savedId = r.outcome_id;
-      notice.replaceChildren(el("div", { class: "notice ok" }, el("b", null, "Saved. "), "Start a run below, or come back to it from Outcomes."));
+      notice.replaceChildren(el("div", { class: "notice ok" }, el("b", null, "Saved. "), el("a", { href: `#/start?outcome=${savedId}` }, "Start a run from it.")));
       return r;
     }
-    async function start(mode, btn) {
-      btn.disabled = true;
-      const r = await save();
-      if (!r) { btn.disabled = false; return; }
-      try {
-        const s = await api("/api/runs", { body: { outcome_id: savedId, mode } });
-        if (s.run_id) location.hash = `#/runs/${s.run_id}`;
-        else { notice.replaceChildren(el("div", { class: "notice ok" }, el("b", null, "Run started. "), "The orchestrator is running; the run appears under Runs within a minute. Its log is under Settings.")); btn.disabled = false; }
-      } catch (e) { notice.replaceChildren(el("div", { class: "notice bad" }, e.message)); btn.disabled = false; }
-    }
-    const saveBtn = el("button", { class: "btn", type: "button", onclick: save }, "Save");
-    const liveBtn = el("button", { class: "btn primary", type: "button", disabled: !cfg.can_run_live, title: cfg.can_run_live ? "" : "Needs the code host configured; see Settings" }, "Save and start full run");
-    const designBtn = el("button", { class: "btn", type: "button", disabled: !cfg.can_run_design, title: cfg.can_run_design ? "" : "Needs the agents and API key; see Settings" }, "Save and start design run");
-    const demoBtn = el("button", { class: "btn", type: "button" }, "Save and run as demo");
-    liveBtn.onclick = () => start("live", liveBtn); designBtn.onclick = () => start("design", designBtn); demoBtn.onclick = () => start("demo", demoBtn);
-    form.append(card("Start", el("div", null,
-      el("p", { class: "explain" }, el("b", null, "Full run: "), "real agents decompose, specify, implement, and open pull requests on your repository. ",
-        el("b", null, "Design run: "), "real agents through Gate 2, no code, no repository access needed. ",
-        el("b", null, "Demo: "), "simulated agents, real gates, nothing leaves this machine.",
-        (!cfg.can_run_live || !cfg.can_run_design) ? el("span", null, " ", el("a", { href: "#/settings" }, "What is missing")) : null),
-      notice, el("div", { class: "startbar" }, saveBtn, el("span", { class: "spacer" }), demoBtn, designBtn, liveBtn))));
+    const saveBtn = el("button", { class: "btn primary", type: "button", onclick: save }, "Save");
+    const startLink = el("button", { class: "btn call", type: "button", onclick: async () => { const r = await save(); if (r) location.hash = `#/start?outcome=${savedId}`; } }, "Save and start a run");
+    form.append(card("Save", el("div", null, notice, el("div", { class: "startbar" }, saveBtn, el("span", { class: "spacer" }), startLink))));
     frag.append(form);
     $main.replaceChildren(frag);
     stopPoll();
@@ -969,10 +1280,10 @@
     const surfaceGaps = want(c.gaps, ["LINEAR", "FACTORY_GATE_SURFACE", "FACTORY_PAGE_PUBLISHER"]);
     const r = (title, ok, desc, gaps, how, label) => el("div", { class: "r" }, el("h3", null, title), el("div", { class: `status ${ok ? "ok" : "warn"}` }, ok ? "Ready" : (label || "Not configured")),
       el("p", { class: "explain", style: "margin-top:6px" }, desc), gaps.length ? el("ul", null, gaps.map(x => el("li", null, x))) : null, how ? el("p", { class: "explain" }, how) : null);
-    const agentsCard = r("Agents and platform", !platformGaps.length, "The eight agents and the sandbox environment in your Console workspace, plus the API key the orchestrator uses to start sessions.", platformGaps, "Run `ant apply agents environments` once and put ANTHROPIC_API_KEY (and ANTHROPIC_WORKSPACE_ID if the key is not workspace-scoped) in .env at the repository root.", "Checking...");
+    const agentsCard = r("The crew and the platform", !platformGaps.length, "The agents and the sandbox environment in your Console workspace, plus the API key the orchestrator uses to start sessions.", platformGaps, "Run `ant apply agents environments` once and put ANTHROPIC_API_KEY (and ANTHROPIC_WORKSPACE_ID if the key is not workspace-scoped) in .env at the repository root.", "Checking...");
     frag.append(card("Readiness", el("div", { class: "readiness" },
       agentsCard,
-      r("Code host", !forgeGaps.length, `Where the code lives and pull requests are opened (${c.forge}). Needed for full runs, not for design runs.`, forgeGaps, "Export FORGE_REPO=owner/repo and FORGE_TOKEN (a fine-grained GitHub token)."),
+      r("Code host", !forgeGaps.length, `Where the code lives and pull requests are opened (${c.forge}). Needed for full runs, not for design runs.`, forgeGaps, "Export FORGE_TOKEN (a GitHub token with repo and workflow scopes); FORGE_REPO may stay unset, it follows the outcome."),
       r("Decisions", !surfaceGaps.length, `Where gate decisions are read from: ${c.gate_surface === "tracker" ? "Linear and this Console" : "this Console and the CLI"}.`, surfaceGaps, null))));
     const platformBox = el("div", null, el("p", { class: "explain" }, "Checking the platform..."));
     frag.append(card("On the platform", platformBox, "live check of the agents in claude-lock.json and the last sessions"));
@@ -984,7 +1295,7 @@
       if (p.error) parts.push(el("div", { class: "notice bad" }, el("b", null, "Cannot reach the agents. "), p.error));
       if (p.agents && p.agents.length) {
         const t = el("table", null, el("tr", null, el("th", null, "Agent"), el("th", null, "Id"), el("th", null, "On the platform")));
-        for (const a of p.agents) t.append(el("tr", null, el("td", null, a.key), el("td", { class: "mono explain" }, a.id), el("td", null, el("span", { class: `tag ${a.found ? "ok" : "bad"}` }, a.found ? `found${a.name ? ": " + a.name : ""}` : "missing"))));
+        for (const a of p.agents) t.append(el("tr", null, el("td", null, el("span", { style: "display:inline-flex;align-items:center;gap:8px" }, crewFigure(a.key, "still", "s"), CREW_NAME[a.key] || a.key)), el("td", { class: "mono explain" }, a.id), el("td", null, el("span", { class: `tag ${a.found ? "ok" : "bad"}` }, a.found ? `found${a.name ? ": " + a.name : ""}` : "missing"))));
         parts.push(t);
       }
       if (p.sessions && p.sessions.length) {
@@ -1011,17 +1322,18 @@
     const [path, query] = hash.slice(1).split("?");
     const params = new URLSearchParams(query || "");
     try {
-      if (path === "/" || path === "" || path === "/inbox") await viewInbox();
+      if (path === "/" || path === "" || path === "/inbox" || path === "/board") await viewInbox();
       else if (path === "/runs") await viewRuns();
       else if (path.startsWith("/runs/")) await viewRun(path.slice(6).split("#")[0]);
       else if (path.startsWith("/gates/")) await viewGate(path.slice(7));
+      else if (path === "/start") await viewStart(params);
       else if (path === "/outcomes") await viewOutcomes();
       else if (path === "/outcomes/new") await viewOutcomeForm(params);
       else if (path === "/settings") await viewSettings();
-      else { $main.replaceChildren(card(null, el("div", { class: "empty" }, el("h3", null, "No such page"), el("a", { class: "btn", href: "#/inbox" }, "Back to the inbox")))); stopPoll(); }
+      else { $main.replaceChildren(card(null, el("div", { class: "empty" }, el("h3", null, "No such page"), el("a", { class: "btn", href: "#/inbox" }, "Back to the board")))); stopPoll(); }
     } catch (e) {
       stopPoll();
-      $main.replaceChildren(pageHead("Something did not load"), card(null, el("div", { class: "empty" }, el("div", null, e.message), el("a", { class: "btn", href: "#/inbox" }, "Back to the inbox"))));
+      $main.replaceChildren(pageHead("Something did not load"), card(null, el("div", { class: "empty" }, el("div", null, e.message), el("a", { class: "btn", href: "#/inbox" }, "Back to the board"))));
     }
     window.scrollTo(0, 0);
   }

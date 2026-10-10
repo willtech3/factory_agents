@@ -72,7 +72,7 @@ def _policy(outcome: dict, design_only: bool, budget_usd: float | None = None):
     scale = float(os.environ.get("FACTORY_BUDGET_SCALE", "1") or 1)
     base = Policy()
     knob = lambda name, default: int(os.environ.get(name) or default)  # noqa: E731
-    run_budget = budget_usd if budget_usd is not None else (outcome.get("constraints", {}).get("budget_usd") or 150.0)
+    run_budget = budget_usd if budget_usd is not None else (os.environ.get("FACTORY_RUN_BUDGET_USD") or outcome.get("constraints", {}).get("budget_usd") or 150.0)
     return Policy(run_budget_usd=float(run_budget), design_only=design_only,
                   stage_budget_usd={k: max(round(v * scale, 2), base.stage_budget_floor_usd.get(k, 0.0))
                                     for k, v in base.stage_budget_usd.items()},

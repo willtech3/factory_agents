@@ -160,3 +160,14 @@ def test_budget_scale_never_drops_a_cap_below_the_observed_median(monkeypatch):
     assert scaled["judge"] == base.stage_budget_floor_usd["judge"] == 2.5 and scaled["implement"] == 3.3    # floored at p50
     monkeypatch.setenv("FACTORY_BUDGET_SCALE", "2")
     assert _policy({}, False).stage_budget_usd["judge"] == 12.0
+
+
+def test_start_screen_budget_and_resumed_cap_keep_their_precedence(monkeypatch):
+    from factory.cli import _policy
+
+    outcome = {"constraints": {"budget_usd": 60}}
+    monkeypatch.setenv("FACTORY_RUN_BUDGET_USD", "45")
+    assert _policy(outcome, False).run_budget_usd == 45
+    assert _policy(outcome, False, budget_usd=90).run_budget_usd == 90
+    monkeypatch.delenv("FACTORY_RUN_BUDGET_USD")
+    assert _policy(outcome, False).run_budget_usd == 60

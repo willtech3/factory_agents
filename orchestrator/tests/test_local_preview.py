@@ -140,3 +140,42 @@ def test_sample_app_runs_from_its_own_pyproject_not_the_orchestrator_venv(tmp_pa
         results = v.run_e2e(url, [{"command": "curl -fsS $BASE_URL/health", "target": "preview", "covers_ac": ["AC-1"]}], repo=repo)
     assert results[0]["exit_code"] == 0 and "ok" in results[0]["stdout_tail"]
     assert subprocess.run([str(v.env_bin / "python"), "-c", "import uvicorn"], capture_output=True).returncode == 0
+
+
+def test_e2e_commands_see_base_url_in_the_environment_including_the_guarded_form(tmp_path):
+    """Live greenfield run: the spec guarded with ${BASE_URL:?BASE_URL is required} inside sh -c and the
+    orchestrator's textual substitution turned it into ${http://...:?...}, a shell error on a passing check."""
+    from factory.stages.implement import LocalVerifier
+    v = LocalVerifier("unused", tmp_path)
+    entries = [{"command": "sh -c ': \"${BASE_URL:?BASE_URL is required}\"; echo ok $BASE_URL'", "target": "preview", "covers_ac": ["AC-1"]},
+               {"command": "echo ${BASE_URL}", "target": "preview", "covers_ac": []}]
+    res = v.run_e2e("http://127.0.0.1:4321", entries, repo=tmp_path)
+    assert [r["exit_code"] for r in res] == [0, 0]
+    assert "ok http://127.0.0.1:4321" in res[0]["stdout_tail"] and res[1]["stdout_tail"].strip() == "http://127.0.0.1:4321"
+    unrun = v.run_e2e(None, entries[:1], repo=tmp_path)
+    assert unrun[0]["exit_code"] is None
+
+
+def test_verifier_runs_spec_commands_under_a_modern_shell(tmp_path):
+    """The construct that failed on macOS /bin/sh (bash 3.2): escaped quotes inside "$( ... )" inside a nested sh -c,
+    which bash 3.2 brace-expands. With a bash 4+ on the host the verifier uses it, and as `sh` too."""
+    import pytest
+    from factory.stages import implement as impl
+    from factory.stages.implement import LocalVerifier, verification_shell
+    impl._SHELL.clear()
+    exe, shim = verification_shell(tmp_path)
+    if exe is None:
+        pytest.skip("no bash 4+ on this host")
+    assert (tmp_path / "shell-shim" / "sh").is_symlink()
+    v = LocalVerifier("unused", tmp_path)
+    cmd = """sh -c '
+set -eu
+K=abc
+f() { printf "%s|" "$@"; }
+out="$(f -d "{\\"key\\":\\"x$K\\",\\"r\\":1}")"
+test "$out" = "-d|{\\"key\\":\\"xabc\\",\\"r\\":1}|"
+echo "shell ok $(bash -c "echo ${BASH_VERSINFO[0]}")"
+'"""
+    res = v.run_commands(tmp_path, [cmd])
+    assert res[0]["exit_code"] == 0, res[0]
+    assert "shell ok" in res[0]["stdout_tail"]

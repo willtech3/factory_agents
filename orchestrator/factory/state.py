@@ -188,6 +188,8 @@ class RunState:
 
 
 def _move_run(state: RunState, to: RunStage) -> None:
+    if to == state.stage:
+        return                      # re-entering the stage you are in (a resume) is not a transition
     if to not in RUN_TRANSITIONS[state.stage]:
         raise IllegalTransition(f"run {state.run_id}: {state.stage.value} -> {to.value}")
     state.stage = to
@@ -195,6 +197,8 @@ def _move_run(state: RunState, to: RunStage) -> None:
 
 def _move_item(state: RunState, work_item_id: str, to: WorkItemStage) -> None:
     wi = state.work_items[work_item_id]
+    if to == wi.stage:
+        return                      # same: `factory resume` re-enters the round the item was already in
     if to not in WORK_ITEM_TRANSITIONS[wi.stage]:
         raise IllegalTransition(f"work item {work_item_id}: {wi.stage.value} -> {to.value}")
     wi.stage = to

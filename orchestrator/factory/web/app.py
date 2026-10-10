@@ -73,6 +73,64 @@ class OutcomeBody(BaseModel):
 class StartRunBody(BaseModel):
     outcome_id: str
     mode: str = "demo"          # demo | design | live
+    settings: dict[str, Any] = {}   # tunables from the Start screen; see SETTINGS_ENV
+
+
+# Start-screen settings -> the environment variables the orchestrator reads (cli._policy, config). Keys not listed are ignored.
+SETTINGS_ENV = {
+    "budget_usd": "FACTORY_RUN_BUDGET_USD", "preview": "FACTORY_PREVIEW", "reviewer_passes": "FACTORY_REVIEWER_PASSES",
+    "review_rounds": "FACTORY_REVIEW_MAX_ROUNDS", "security_review": "FACTORY_SECURITY_REVIEW",
+    "parallel_items": "FACTORY_PARALLEL_IMPLEMENTATIONS", "grader_iterations": "FACTORY_OUTCOME_MAX_ITERATIONS",
+    "budget_scale": "FACTORY_BUDGET_SCALE",
+}
+CREW_ROLES = ["decomposer", "spec_writer", "spec_judge", "implementer", "reviewer", "security_reviewer", "merge_judge", "integrator"]
+
+
+def settings_env(settings: dict[str, Any]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for key, var in SETTINGS_ENV.items():
+        if key in settings and settings[key] not in (None, ""):
+            v = settings[key]
+            out[var] = ("1" if v else "0") if isinstance(v, bool) else str(v)
+    return out
+
+
+def crew_roster(events) -> list[dict[str, Any]]:
+    """One row per crew role from the run's session events: state (asleep, working, done), the live or last session,
+    sessions so far, cost so far."""
+    by_role: dict[str, dict[str, Any]] = {r: {"role": r, "sessions": 0, "cost_usd": 0.0, "state": "asleep", "title": None,
+                                               "started_at": None, "finished_at": None, "session_id": None, "live": []} for r in CREW_ROLES}
+    started: dict[str, dict[str, Any]] = {}
+    for ev in events:
+        p = ev.payload
+        if ev.kind == "session.started" and p.get("agent_key") in by_role:
+            row = by_role[p["agent_key"]]
+            started[p["session_id"]] = {"role": p["agent_key"], "at": ev.at, "title": p.get("title")}
+            row["sessions"] += 1; row["title"] = p.get("title"); row["started_at"] = ev.at; row["session_id"] = p["session_id"]
+            row["live"].append(p["session_id"]); row["state"] = "working"
+        elif ev.kind == "session.finished":
+            meta = started.get(p.get("session_id"))
+            if meta is None:
+                continue
+            row = by_role[meta["role"]]
+            row["cost_usd"] += float(p.get("list_cost_usd") or 0.0)
+            if p["session_id"] in row["live"]:
+                row["live"].remove(p["session_id"])
+            row["finished_at"] = ev.at
+            row["state"] = "working" if row["live"] else ("blocked" if p.get("stop_reason") in ("budget_reached",) else "done")
+        elif ev.kind == "run.failed":
+            # sessions the orchestrator interrupted on its way out never get a session.finished of their own
+            for sid in p.get("interrupted_sessions") or []:
+                meta = started.get(sid)
+                if meta and sid in by_role[meta["role"]]["live"]:
+                    row = by_role[meta["role"]]
+                    row["live"].remove(sid)
+                    row["finished_at"] = ev.at
+                    row["state"] = "working" if row["live"] else "done"
+    for row in by_role.values():
+        row["cost_usd"] = round(row["cost_usd"], 2)
+        row["live_count"] = len(row.pop("live"))
+    return list(by_role.values())
 
 
 class ResumeBody(BaseModel):
@@ -168,9 +226,12 @@ class Console:
         pending = [wi.work_item_id for wi in pending_work_items(st)]
         watch = {"pending": pending, "watchable": bool(pending) and not self.demo.is_demo(run_id),
                  "heartbeat": watcher_heartbeat(self.cfg.runs_dir, run_id)}
+        created = next((ev.payload for ev in events if ev.kind == "run.created"), {})
+        policy = created.get("policy") or {"run_budget_usd": ((outcome or {}).get("constraints") or {}).get("budget_usd"),
+                                           "preview_mode": self.cfg.preview_mode, "recorded": False}
         return {"run_id": run_id, "title": self._title(run_id, events), "outcome": outcome, "stage": st.stage.value,
                 "cost": round(st.list_cost_usd, 2), "demo": self.demo.is_demo(run_id), "design_only": design_only, "work_items": items,
-                "resumable": resumable, "budget": budget, "watch": watch,
+                "resumable": resumable, "budget": budget, "resuming": self.resuming(run_id), "watch": watch, "crew": crew_roster(events), "policy": policy,
                 "gates": gates, "questions": questions, "events": timeline, "artifacts": self._artifacts(run_id),
                 "created_at": events[0].at, "updated_at": events[-1].at}
 
@@ -437,8 +498,53 @@ class Console:
         args = [sys.executable, "-u", "-m", "factory.cli", "run", str(path)] + (["--design-only"] if design else [])
         with log.open("w") as fh:
             proc = subprocess.Popen(args, cwd=str(Path(__file__).resolve().parents[2]), stdout=fh, stderr=subprocess.STDOUT,
-                                    env={**os.environ, "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}, start_new_session=True)
-        return {"ok": True, "mode": body.mode, "pid": proc.pid, "log": log.name}
+                                    env={**os.environ, **settings_env(body.settings), "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}, start_new_session=True)
+        return {"ok": True, "mode": body.mode, "pid": proc.pid, "log": log.name, "settings": settings_env(body.settings)}
+
+    def board(self) -> dict[str, Any]:
+        """The role-swimlane view across runs: for every run that is not finished (plus finished ones from today), the cards
+        in each (column, row): a human's decisions and reviews, and the crew's live sessions."""
+        gates = self.queue.open_gates()
+        questions = self.queue.open_questions()
+        runs = []
+        for run_id in self.store.list_runs():
+            try:
+                events = self.store.events(run_id)
+                st = self.store.state(run_id)
+            except Exception:
+                continue
+            if not events:
+                continue
+            cards: list[dict[str, Any]] = []
+            stage = st.stage.value
+            column = {"intake": "plan", "decomposing": "plan", "gate_1_decomposition": "plan", "specifying": "specify",
+                      "gate_2_spec_readiness": "specify", "implementing": "build", "completed": "ship"}.get(stage, "plan")
+            for g in gates.values():
+                if g["run_id"] == run_id and g["gate_id"] in st.open_gates and not g["recorded"]:
+                    col = "plan" if g["kind"] == "gate_1_decomposition" else "specify" if g["kind"] == "gate_2_spec_readiness" else "ship" if g["kind"] == "deploy_failure" else "specify"
+                    row = "ops" if g["kind"] == "deploy_failure" else "po"
+                    cards.append({"column": col, "row": row, "kind": "gate", "gate_id": g["gate_id"], "title": g["kind"], "summary": g.get("summary", ""), "since": g.get("opened_at")})
+            for q in questions.values():
+                if q["run_id"] == run_id and q["question_id"] in st.open_questions and not q["answered"]:
+                    row = "eng" if q.get("asked_by") in ("implementer", "reviewer", "security_reviewer", "merge_judge") else "po"
+                    cards.append({"column": column, "row": row, "kind": "question", "question_id": q["question_id"], "title": q["question"][:140], "since": q.get("asked_at"), "blocking": q.get("blocking")})
+            for wi in st.work_items.values():
+                if wi.stage.value == "cr_open":
+                    cr = next((ev.payload for ev in events if ev.kind == "cr.opened" and ev.work_item_id == wi.work_item_id), {})
+                    cards.append({"column": "ship", "row": "eng", "kind": "pr", "title": f"Review pull request #{wi.cr_id}" if wi.cr_id else "Review the pull request", "url": cr.get("url"), "work_item_id": wi.work_item_id})
+                elif wi.stage.value in ("merged", "deploying_dev"):
+                    cards.append({"column": "ship", "row": "ops", "kind": "deploy", "title": "Watch the dev deploy", "work_item_id": wi.work_item_id})
+            for member in crew_roster(events):
+                if member["state"] == "working":
+                    col = {"decomposer": "plan", "spec_writer": "specify", "spec_judge": "specify", "implementer": "build",
+                           "reviewer": "review", "security_reviewer": "review", "merge_judge": "review", "integrator": "ship"}[member["role"]]
+                    cards.append({"column": col, "row": "crew", "kind": "agent", "role": member["role"], "title": member["title"], "since": member["started_at"], "session_id": member["session_id"]})
+            runs.append({"run_id": run_id, "title": self._title(run_id, events), "stage": stage, "column": column, "cost": round(st.list_cost_usd, 2),
+                         "demo": self.demo.is_demo(run_id), "updated_at": events[-1].at, "cards": cards,
+                         "terminal": stage in ("completed", "closed", "failed", "escalated")})
+        runs.sort(key=lambda r: (r["terminal"], r["updated_at"]), reverse=False)
+        runs.sort(key=lambda r: r["updated_at"] or "", reverse=True)
+        return {"columns": ["plan", "specify", "build", "review", "ship"], "rows": ["po", "eng", "ops", "crew"], "runs": runs}
 
     def resume_run(self, run_id: str, body: ResumeBody | None = None) -> dict[str, Any]:
         """Continue a run that failed during implementation or paused at its budget: spawns `factory resume <run_id>`
@@ -449,6 +555,9 @@ class Console:
         if not detail["resumable"]:
             raise HTTPException(409, f"run {run_id} is {detail['stage']}; only a failed run that reached implementation, "
                                      f"or a run paused at its budget, can be resumed")
+        live = self.resuming(run_id)
+        if live:
+            raise HTTPException(409, f"run {run_id} is already being resumed (pid {live})")
         budget = detail["budget"]
         new_budget = body.budget_usd if body is not None else None
         if budget["paused"]:
@@ -470,7 +579,27 @@ class Console:
         with log.open("w") as fh:
             proc = subprocess.Popen(args, cwd=str(Path(__file__).resolve().parents[2]), stdout=fh, stderr=subprocess.STDOUT,
                                     env={**os.environ, "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}, start_new_session=True)
+        (self.cfg.runs_dir / run_id / "resume.pid").write_text(str(proc.pid))
         return {"ok": True, "mode": "resume", "run_id": run_id, "pid": proc.pid, "log": log.name}
+
+    def resuming(self, run_id: str) -> int | None:
+        """The pid of a `factory resume` this Console started for the run and that is still alive, else None.
+        A second click on Resume must never start a second orchestrator on the same run."""
+        p = self.cfg.runs_dir / run_id / "resume.pid"
+        try:
+            pid = int(p.read_text().strip())
+        except (OSError, ValueError):
+            return None
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return None
+        try:                                            # a zombie the Console has not reaped yet is not alive
+            if os.waitpid(pid, os.WNOHANG) != (0, 0):
+                return None
+        except ChildProcessError:
+            pass
+        return pid
 
     def watch_run(self, run_id: str) -> dict[str, Any]:
         """Start `factory watch <run_id>` in the background: Gate 3 (the merge on the forge) and Stage 5 (the dev deploy
@@ -596,6 +725,10 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
     @app.get("/api/runs")
     def api_runs():
         return {"runs": console.runs()}
+
+    @app.get("/api/board")
+    def api_board():
+        return console.board()
 
     @app.get("/api/inbox")
     def api_inbox():

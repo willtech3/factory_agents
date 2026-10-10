@@ -49,6 +49,48 @@ from ..state import WorkItemStage
 from . import RunContext
 from .common import enter_item_stage, persist_outputs, platform_skill, public, require_json, run_session, stamp_provenance, artifact_json_or_none
 
+_SHELL: dict[str, tuple[str | None, str | None]] = {}        # per verifier workdir: (bash executable, shim dir)
+
+
+def verification_shell(workdir: Path) -> tuple[str | None, str | None]:
+    """The shell the verifier runs spec commands with: the newest bash 4+ on the host, plus a directory holding an
+    `sh` symlink to it to put first on PATH so a nested `sh -c` in a command gets the same shell.
+
+    macOS ships /bin/sh as bash 3.2, which mis-parses escaped quotes inside "$( ... )" and brace-expands the result;
+    the sandbox the agents wrote and tested the command in runs bash 5. Live greenfield run: a passing end-to-end
+    check failed with `test: too many arguments` on the orchestrator host for exactly that reason. Returns
+    (executable, shim_dir), both None when no bash 4+ exists (then /bin/sh is used and a hint is printed once)."""
+    import shutil
+
+    key = str(workdir)
+    if key in _SHELL:
+        return _SHELL[key]
+    candidates = [c for c in (shutil.which("bash"), "/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/bin/bash") if c]
+    chosen = None
+    for c in candidates:
+        try:
+            out = subprocess.run([c, "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True, text=True, timeout=5).stdout.strip()
+            if out.isdigit() and int(out) >= 4:
+                chosen = c
+                break
+        except (OSError, subprocess.SubprocessError):
+            continue
+    if chosen is None:
+        print("[verify] no bash 4+ found; spec commands run under /bin/sh (bash 3.2 on macOS, which mis-parses "
+              "escaped quotes inside \"$( ... )\"). `brew install bash` fixes it.")
+        _SHELL[key] = (None, None)
+        return _SHELL[key]
+    shim = workdir / "shell-shim"
+    shim.mkdir(parents=True, exist_ok=True)
+    link = shim / "sh"
+    if not link.exists() or os.readlink(link) != chosen:
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(chosen)
+    _SHELL[key] = (chosen, str(shim))
+    return _SHELL[key]
+
+
 NO_FORGE_GIT_SETUP = """Git access: no forge is configured for this run. The repository at {repo_url} is not reachable
 from the sandbox; work on branch {branch} from {base_branch} only if it was mounted for you, otherwise record the
 blocker in blocked.md."""
@@ -149,6 +191,9 @@ def verification_env(env_bin: Path | None) -> dict[str, str]:
     if env_bin is not None:
         parts.insert(0, str(env_bin))
         env["VIRTUAL_ENV"] = str(env_bin.parent)
+        shim = verification_shell(env_bin.parent.parent)[1]       # `sh` -> a modern bash, for nested sh -c
+        if shim:
+            parts.insert(1, shim)                                   # after the venv's bin, before everything else
     env["PATH"] = os.pathsep.join(parts)
     return env
 
@@ -176,7 +221,7 @@ class LocalPreview:
         port = _free_port()
         cmd = entry.replace(str(rt.get("port") or ""), str(port)) if rt.get("port") else entry
         env = {**verification_env(self.env_bin), "PORT": str(port)}
-        self.proc = subprocess.Popen(cmd, shell=True, cwd=self.repo, env=env, stdout=self.log.open("w"), stderr=subprocess.STDOUT,
+        self.proc = subprocess.Popen(cmd, shell=True, executable=verification_shell(self.repo.parent)[0], cwd=self.repo, env=env, stdout=self.log.open("w"), stderr=subprocess.STDOUT,
                                      start_new_session=True)
         self.url = f"http://127.0.0.1:{port}"
         health = (self.manifest.get("health") or {}).get("path", "/health")
@@ -304,7 +349,8 @@ class LocalVerifier:
         logs.mkdir(parents=True, exist_ok=True)
         out_path, err_path = logs / f"cmd-{self._logs:03d}.out", logs / f"cmd-{self._logs:03d}.err"
         with out_path.open("w") as out, err_path.open("w") as err:
-            proc = subprocess.Popen(cmd, shell=shell, cwd=cwd, env=env, stdout=out, stderr=err, start_new_session=True)
+            proc = subprocess.Popen(cmd, shell=shell, executable=verification_shell(self.workdir)[0] if shell else None,
+                                    cwd=cwd, env=env, stdout=out, stderr=err, start_new_session=True)
             try:
                 code = proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
@@ -398,8 +444,10 @@ class LocalVerifier:
             if target == "preview" and not preview_url:
                 results.append({**row, "exit_code": None, "stderr_tail": "no preview URL available for this branch"})
                 continue
+            # The shell expands $BASE_URL, ${BASE_URL} and ${BASE_URL:?...} from the environment. Substituting the
+            # text ourselves broke the guarded form (`${http://127.0.0.1:5xxxx:?...}`) and failed a passing check.
             env = {**verification_env(self.env_bin), "BASE_URL": preview_url or ""}
-            cmd = e["command"].replace("$BASE_URL", preview_url or "")
+            cmd = e["command"]
             results.append({**row, **self._run_in_group(cmd, repo or self.workdir, env, timeout)})
         return results
 

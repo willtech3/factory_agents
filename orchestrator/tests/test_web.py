@@ -28,7 +28,7 @@ def _seed(client):
 
 def test_index_static_and_config(client):
     r = client.get("/")
-    assert r.status_code == 200 and "<title>Factory Console</title>" in r.text and "/static/app.js" in r.text
+    assert r.status_code == 200 and "<title>Factory</title>" in r.text and "/static/app.js" in r.text
     assert client.get("/static/app.css").status_code == 200
     c = client.get("/api/config").json()
     assert c["forge"] == "github" and c["gate_surface"] == "web" and c["can_run_live"] is False and c["gaps"]
@@ -392,6 +392,11 @@ def test_budget_pause_is_shown_decided_and_resumed_from_the_console(client, monk
     with TestClient(webapp.create_app(cfg2, demo_thread=False)) as c2:
         out = c2.post(f"/api/runs/{rid}/resume", json={"budget_usd": 90}).json()
         assert out["mode"] == "resume" and out["pid"] == 777
+        monkeypatch.setattr(webapp.Console, "resuming", lambda self, run_id: 777)
+        duplicate = c2.post(f"/api/runs/{rid}/resume")
+        assert duplicate.status_code == 409 and "already being resumed" in duplicate.json()["detail"]
+        assert len(calls) == 1
+        monkeypatch.setattr(webapp.Console, "resuming", lambda self, run_id: None)  # the first process has exited
         out2 = c2.post(f"/api/runs/{rid}/resume").json()                            # without a body: applies what is recorded
         assert out2["pid"] == 777
     assert calls[0][0][-3:] == ["resume", rid, "--budget=90"] and calls[1][0][-2:] == ["resume", rid]
@@ -480,3 +485,85 @@ def test_watch_is_offered_for_live_runs_with_open_pull_requests(client, examples
     d = client.get(f"/api/runs/{rid}").json()
     assert d["work_items"][0]["stage"] == "merged" and d["work_items"][0]["merge_sha"] == "c" * 40
     assert [e["kind"] for e in d["events"]][-2:] == ["cr.merged", "work_item.stage"] and d["watch"]["pending"] == [wid]
+
+
+def test_crew_roster_board_and_settings_passthrough(client, monkeypatch):
+    """The Crew view's roster and policy come from the run's events; the board lays decisions and live sessions into
+    role rows; the Start screen's settings reach the orchestrator as environment variables."""
+    import json
+    from factory.web import app as webapp
+    from factory.web.app import crew_roster, settings_env
+    from factory.store import RunStore
+
+    store = RunStore(client.cfg.runs_dir)
+    rid = "run_crew00000001"
+    actor = {"type": "system", "id": "test"}
+    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "Crew run", "policy": {"run_budget_usd": 60, "reviewer_passes": 2, "security_review": True}})
+    store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "Crew run", "statement": "s"}).encode())
+    store.append(rid, "stage.entered", actor, {"stage": "decomposing"})
+    store.append(rid, "session.started", actor, {"session_id": "s1", "agent_key": "decomposer", "agent_id": "a", "title": "decompose"}, stage="decompose")
+    store.append(rid, "session.finished", actor, {"session_id": "s1", "agent_id": "a", "list_cost_usd": 0.8, "stop_reason": "end_turn"}, stage="decompose")
+    store.append(rid, "artifact.produced", actor, {"artifact_type": "decomposition", "revision": 1, "work_items": [{"work_item_id": "wi-a", "title": "A"}]})
+    store.append(rid, "stage.entered", actor, {"stage": "gate_1_decomposition"})
+    store.append(rid, "stage.entered", actor, {"stage": "specifying"})
+    store.append(rid, "session.started", actor, {"session_id": "s2", "agent_key": "spec_writer", "agent_id": "b", "title": "spec wi-a r1"}, stage="specify", work_item_id="wi-a")
+    events = store.events(rid)
+    roster = {r["role"]: r for r in crew_roster(events)}
+    assert roster["decomposer"]["state"] == "done" and roster["decomposer"]["cost_usd"] == 0.8 and roster["decomposer"]["sessions"] == 1
+    assert roster["spec_writer"]["state"] == "working" and roster["spec_writer"]["live_count"] == 1 and roster["spec_writer"]["session_id"] == "s2"
+    assert roster["integrator"]["state"] == "asleep"
+
+    d = client.get(f"/api/runs/{rid}").json()
+    assert d["policy"]["run_budget_usd"] == 60 and d["policy"]["security_review"] is True
+    assert [c["role"] for c in d["crew"]][:2] == ["decomposer", "spec_writer"]
+
+    b = client.get("/api/board").json()
+    run = next(r for r in b["runs"] if r["run_id"] == rid)
+    assert run["column"] == "specify"
+    agent_cards = [c for c in run["cards"] if c["kind"] == "agent"]
+    assert agent_cards and agent_cards[0]["row"] == "crew" and agent_cards[0]["column"] == "specify" and agent_cards[0]["role"] == "spec_writer"
+
+    assert settings_env({"budget_usd": 45, "security_review": False, "preview": "local", "reviewer_passes": "", "nope": 1}) == {
+        "FACTORY_RUN_BUDGET_USD": "45", "FACTORY_SECURITY_REVIEW": "0", "FACTORY_PREVIEW": "local"}
+    # the environment the orchestrator is spawned with carries them
+    from conftest import make_config
+    from factory.config import AgentRef
+    cfg = make_config(client.cfg.schemas_dir.parent, client.cfg.runs_dir.parent / "runs3", forge_token="t", environment_id="env_1",
+                      agents={k: AgentRef("agent_" + k, 1) for k in ("codebase_researcher", "decomposer", "spec_writer", "spec_judge",
+                                                                     "implementer", "reviewer", "merge_judge", "integrator")})
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    app2 = webapp.create_app(cfg, demo_thread=False)
+    calls = []
+
+    class FakeProc:
+        pid = 4343
+    monkeypatch.setattr(webapp.subprocess, "Popen", lambda args, **kw: calls.append((args, kw)) or FakeProc())
+    from fastapi.testclient import TestClient
+    with TestClient(app2) as c2:
+        o = c2.get("/api/outcomes/template").json()["outcome"]["_example"]
+        oid = c2.post("/api/outcomes", json={"outcome": o}).json()["outcome_id"]
+        r = c2.post("/api/runs", json={"outcome_id": oid, "mode": "design", "settings": {"budget_usd": 45, "reviewer_passes": 1}}).json()
+    assert r["settings"] == {"FACTORY_RUN_BUDGET_USD": "45", "FACTORY_REVIEWER_PASSES": "1"}
+    assert calls[-1][1]["env"]["FACTORY_RUN_BUDGET_USD"] == "45" and calls[-1][1]["env"]["FACTORY_REVIEWER_PASSES"] == "1"
+
+
+def test_resume_refuses_a_second_orchestrator_on_the_same_run(client):
+    """The Console remembers the resume it spawned; while that process is alive a second Resume is a 409 and the run
+    detail says it is resuming."""
+    import json, os
+    from factory.store import RunStore
+    store = RunStore(client.cfg.runs_dir)
+    rid = "run_resume0000ab"
+    actor = {"type": "system", "id": "test"}
+    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "t"})
+    store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
+    for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness", "implementing"):
+        store.append(rid, "stage.entered", actor, {"stage": stage})
+    store.append(rid, "run.failed", actor, {"reason": "boom"})
+    (client.cfg.runs_dir / rid / "resume.pid").write_text(str(os.getpid()))        # a live pid: this test process
+    d = client.get(f"/api/runs/{rid}").json()
+    assert d["resumable"] is True and d["resuming"] == os.getpid()
+    r = client.post(f"/api/runs/{rid}/resume")
+    assert r.status_code == 409 and "already being resumed" in r.json()["detail"]
+    (client.cfg.runs_dir / rid / "resume.pid").write_text("999999999")               # a dead pid: not resuming
+    assert client.get(f"/api/runs/{rid}").json()["resuming"] is None

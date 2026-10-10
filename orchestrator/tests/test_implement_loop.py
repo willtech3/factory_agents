@@ -122,19 +122,17 @@ def _ctx(tmp_path, root, driver, **cfg):
 
 
 def _titles(driver) -> list[str]:
-    """Session titles in the order the driver saw them, except that a round's reviewer passes (which run in parallel,
-    so their recorded order is a race) are sorted among themselves."""
-    out = [c["title"].split(" ", 1)[1] for c in driver.calls]
-    i = 0
-    while i < len(out):
-        if out[i].startswith("review "):
-            j = i
-            while j < len(out) and out[j].startswith("review "):
-                j += 1
-            out[i:j] = sorted(out[i:j])
-            i = j
-        else:
-            i += 1
+    """Session titles in call order, with the reviewer passes of one round in pass order: they run in parallel
+    threads (with the security pass beside them), so the order the fake driver saw them in is not deterministic."""
+    raw = [kw["title"].split(" ", 1)[1] for kw in driver.calls]
+    out, run = [], []
+    for t in raw + [None]:
+        if t is not None and t.startswith("review ") and " p" in t:
+            run.append(t)
+            continue
+        out.extend(sorted(run)); run = []
+        if t is not None:
+            out.append(t)
     return out
 
 
