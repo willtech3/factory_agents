@@ -20,6 +20,7 @@
         "stage.exited",
         "session.started",
         "session.finished",
+        "session.truncated",
         "artifact.produced",
         "work_item.stage",
         "gate.opened",

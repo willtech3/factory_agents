@@ -23,7 +23,7 @@ from ..forge import Forge
 from ..sessions import SessionContext
 from ..state import WorkItemStage
 from . import RunContext
-from .common import persist_outputs, public, require_json
+from .common import persist_outputs, public, require_json, run_session
 
 INTEGRATE_DESCRIPTION = """Open the change request (pull request or merge request) for specification {spec_id}.
 Inputs are under /mnt/session/uploads/ (spec.json, merge_readiness.json, findings.json, review_response.json,
@@ -116,7 +116,8 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
                                         "run_record_paths": run_record_paths(ctx.run_id, sid)}, indent=2).encode(),
         "cr_template.md": (ctx.cfg.templates_dir / "cr_template.md").read_bytes(),
     }
-    res = ctx.driver.run(
+    res = run_session(
+        ctx, prefix=f"{sid}-", spec_id=sid,
         agent_key="integrator", title=f"{ctx.run_id} integrate {sid}", run_id=ctx.run_id, stage="integrate",
         uploads=uploads, work_item_id=wid,
         description=INTEGRATE_DESCRIPTION.format(spec_id=sid, branch=branch, head_sha=head_sha, judged_sha=judged_sha),

@@ -8,7 +8,7 @@ from .. import checks
 from ..gates import Decision, GateKind
 from ..state import RunStage
 from . import RunContext
-from .common import make_ask_human, open_gate_and_wait, persist_outputs, provenance, require_json, rubric_text
+from .common import make_ask_human, open_gate_and_wait, persist_outputs, provenance, require_json, rubric_text, run_session
 
 DESCRIPTION = """Produce a decomposition of the business outcome in /mnt/session/uploads/outcome.json.
 {repo_clause}
@@ -55,8 +55,8 @@ def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | N
                            "and address every comment explicitly in decomposition.md. Increment `revision`.")
 
     mount, repo_clause, repo_available = repository_access(ctx, outcome)
-    res = ctx.driver.run(
-        agent_key="decomposer", title=f"{ctx.run_id} decompose", run_id=ctx.run_id, stage="decompose",
+    res = run_session(
+        ctx, agent_key="decomposer", title=f"{ctx.run_id} decompose", run_id=ctx.run_id, stage="decompose",
         uploads=uploads, description=DESCRIPTION.format(feedback_clause=feedback_clause, repo_clause=repo_clause),
         rubric_md=rubric_text(ctx, "decomposition", repo_available), max_iterations=ctx.policy.outcome_max_iterations,
         budget_usd=ctx.policy.stage_budget_usd["decompose"],

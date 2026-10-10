@@ -28,7 +28,7 @@ from .. import checks
 from ..gates import Decision, GateKind
 from ..state import RunStage, WorkItemStage
 from . import RunContext
-from .common import make_ask_human, open_gate_and_wait, persist_outputs, provenance, public, require_json, rubric_text
+from .common import make_ask_human, open_gate_and_wait, persist_outputs, provenance, public, require_json, rubric_text, run_session
 
 WRITER_DESCRIPTION = """Write the specification for work item {work_item_id} ({title}).
 Inputs are under /mnt/session/uploads/ (outcome.json, decomposition.json, work_item.json, sibling_specs/,
@@ -70,7 +70,8 @@ def _write_one(ctx: RunContext, outcome, decomposition, work_item, sibling_specs
         uploads["prior/spec.json"] = json.dumps(public(prior_spec), indent=2).encode()   # the draft being revised
     from .decompose import repository_access
     mount, repo_clause, repo_available = repository_access(ctx, outcome, REPO_MOUNTED, REPO_ABSENT)
-    res = ctx.driver.run(
+    res = run_session(
+        ctx, prefix=f"{wid}-r{round_no}-",
         agent_key="spec_writer", title=f"{ctx.run_id} spec {wid} r{round_no}", run_id=ctx.run_id, stage="specify",
         uploads=uploads, description=WRITER_DESCRIPTION.format(work_item_id=wid, title=work_item["title"], repo_clause=repo_clause),
         rubric_md=rubric_text(ctx, "spec", repo_available), max_iterations=ctx.policy.outcome_max_iterations,
@@ -112,7 +113,8 @@ def _judge(ctx: RunContext, outcome, decomposition, specs: dict[str, dict], roun
         uploads["previous_verdict.json"] = json.dumps(previous_verdict, indent=2).encode()
     if owner_comments:
         uploads["human_comments.md"] = owner_comments.encode()
-    res = ctx.driver.run(
+    res = run_session(
+        ctx, prefix=f"r{round_no}-",
         agent_key="spec_judge", title=f"{ctx.run_id} spec-judge r{round_no}", run_id=ctx.run_id, stage="judge",
         uploads=uploads, description=JUDGE_DESCRIPTION.format(round=round_no, repo_clause=JUDGE_REPO_MOUNTED if repo_available else JUDGE_REPO_ABSENT,
                                                               owner_clause=OWNER_CLAUSE if owner_comments else ""),

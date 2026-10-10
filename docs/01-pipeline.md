@@ -84,7 +84,7 @@ Work items have their own state (`pending → spec_drafting → spec_judging →
 | Knob | Default | Why |
 |---|---|---|
 | Run budget | `outcome.constraints.budget_usd`, else $150 | Every session carries a hard dollar cap (platform-enforced); the run total is the sum of stage caps. |
-| Stage caps | decompose 15, specify 10, judge 8, implement 40, review 15, merge judge 8, integrate 2 (USD, list price) | A session that hits its cap pauses with `budget_reached`; the orchestrator escalates rather than silently raising it. |
+| Stage caps | decompose 4, specify 3, judge 6, implement 15, review 6, security review 6, merge judge 3, integrate 2 (USD, list price; observed p95 x 3 from the first live runs). `FACTORY_BUDGET_SCALE` scales them, never below the stage's observed median (`Policy.stage_budget_floor_usd`). | A session that hits its cap stops with `budget_reached`; the orchestrator records `budget.reached`, keeps the session's files without using them, and opens a budget gate: approve re-runs the session with the cap raised by half, reject closes the run. A graded session that exhausts its grader iterations (`max_iterations_reached`) opens the same gate; approve accepts its last output for the judges downstream to check. |
 | Outcome iterations | 4 | Platform grader loop inside writing sessions. |
 | Spec judge rounds | 3 | Then escalate. |
 | Review rounds | 2 | One fresh review per round. |

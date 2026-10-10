@@ -45,7 +45,7 @@ OUTCOME_ID = re.compile(r"^out_[a-z0-9]{8,}$")
 EXAMPLES = {p.parent.name: p for p in sorted((REPO_ROOT / "examples").glob("*/outcome.json"))}
 TIMELINE_KINDS = {"run.created", "repository.created", "stage.entered", "session.started", "gate.opened", "gate.decided", "question.asked", "question.answered",
                   "judge.verdict", "review.findings", "review.response", "merge.verdict", "cr.opened", "cr.merged", "cr.closed",
-                  "deploy.started", "deploy.succeeded", "deploy.failed", "e2e.dev_passed", "e2e.dev_failed", "budget.reached",
+                  "deploy.started", "deploy.succeeded", "deploy.failed", "e2e.dev_passed", "e2e.dev_failed", "budget.reached", "session.truncated",
                   "run.escalated", "run.failed", "run.resumed", "run.completed", "session.finished", "work_item.stage"}
 
 

@@ -37,7 +37,7 @@ from typing import Any
 from .. import checks, security
 from ..state import WorkItemStage
 from . import RunContext
-from .common import persist_outputs, provenance, public, require_json, artifact_json_or_none
+from .common import persist_outputs, provenance, public, require_json, run_session, artifact_json_or_none
 
 NO_FORGE_GIT_SETUP = """Git access: no forge is configured for this run. The repository at {repo_url} is not reachable
 from the sandbox; work on branch {branch} from {base_branch} only if it was mounted for you, otherwise record the
@@ -437,7 +437,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             if findings and response is None:
                 raise RuntimeError(f"cannot resume {sid} at round {round_no}: no review_response for round {round_no - 1}'s findings")
         else:
-            res = ctx.driver.run(
+            res = run_session(
+                ctx, prefix=f"{sid}-r{round_no}-", spec_id=sid,
                 agent_key="implementer", title=f"{ctx.run_id} implement {sid} r{round_no}", run_id=ctx.run_id,
                 stage="implement", uploads=uploads, work_item_id=wid,
                 description=IMPLEMENT_DESCRIPTION.format(spec_id=sid, git=git, review_clause=review_clause,
@@ -514,7 +515,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 prior = artifact_json_or_none(ctx, "review", f"{sid}-r{round_no}-p{i}-findings.json")
                 if prior is not None:
                     return tag_pass(prior, str(i))      # this pass finished before the orchestrator died
-            r = ctx.driver.run(
+            r = run_session(
+                ctx, prefix=f"{sid}-r{round_no}-p{i}-", spec_id=sid,
                 agent_key="reviewer", title=f"{ctx.run_id} review {sid} r{round_no} p{i}", run_id=ctx.run_id,
                 stage="review", uploads=rev_uploads, work_item_id=wid,
                 description=REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
@@ -537,7 +539,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                     return tag_pass(prior, "security")
             pre = security.prechecks(repo, diff["changed"], diff["added_lines"])
             ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-security_prechecks.json", json.dumps(pre, indent=2).encode())
-            r = ctx.driver.run(
+            r = run_session(
+                ctx, prefix=f"{sid}-r{round_no}-sec-", spec_id=sid,
                 agent_key="security_reviewer", title=f"{ctx.run_id} security-review {sid} r{round_no}", run_id=ctx.run_id,
                 stage="review", uploads={**rev_uploads, "security_prechecks.json": json.dumps(pre, indent=2).encode()}, work_item_id=wid,
                 description=SECURITY_REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
@@ -581,7 +584,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     if prior_verdict is not None and prior_verdict.get("_head_sha") == head_sha:
         ctx.event("merge.verdict", {"result": prior_verdict["result"], "reused": True}, work_item_id=wid, spec_id=sid, actor="agent")
         return prior_verdict      # judged this very head before the orchestrator died
-    res = ctx.driver.run(
+    res = run_session(
+        ctx, prefix=f"{sid}-", spec_id=sid,
         agent_key="merge_judge", title=f"{ctx.run_id} merge-judge {sid}", run_id=ctx.run_id, stage="merge_judge",
         uploads=mj_uploads, work_item_id=wid,
         description=MERGE_JUDGE_DESCRIPTION.format(spec_id=sid, round=len([1 for _ in range(1)]), git=git),
