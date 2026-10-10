@@ -1796,7 +1796,7 @@
         plan.app_kind ? el("p", { class: "explain" }, `Kind of app: ${words(plan.app_kind)}`) : null,
         (plan.journeys || []).length ? el("div", null, el("h3", { class: "mini-h" }, "User journeys it would test"), journeys) : null,
         (plan.capabilities || []).length ? el("div", null, el("h3", { class: "mini-h" }, "What a test run can exercise"), capabilityList(plan)) : null,
-        (plan.limitations || []).length ? el("div", null, el("h3", { class: "mini-h" }, "Limits of this setup"), el("ul", { class: "plain-list" }, plan.limitations.map(x => el("li", null, x)))) : null,
+        (plan.limitations || []).length ? el("div", null, el("h3", { class: "mini-h" }, "Agent’s planning assumptions and limits"), a.verification ? el("p", { class: "explain" }, "These notes were written before testing. Use the verification result above for the current status.") : null, el("ul", { class: "plain-list" }, plan.limitations.map(x => el("li", null, x)))) : null,
         tech), a.plan_sha256 ? `plan ${a.plan_sha256.slice(0, 10)}` : null));
 
       // questions: drafts survive polling; answers are saved, then discovery resumes only on an explicit click

@@ -522,9 +522,28 @@ class AppOnboarding:
             if response.status_code not in (201, 422):
                 response.raise_for_status()
             forge.commit_files(branch, "feat: add Factory app onboarding and isolated verification", files)
+            # Discovery prose predates execution and can still say "nothing was
+            # verified". Describe the published result from controller evidence.
+            verification = r["verification"]
+            missing = [c["label"] for c in r["plan"]["capabilities"] if not c["available"]]
+            description = (
+                f"Add a repository-owned test setup for {r['name']}. Factory provisions the app and its "
+                "dependencies in an isolated hosted sandbox, runs the recipe with synthetic data, and stops the services. "
+                "Declared provider credentials come from scoped test vaults.\n\n"
+                f"Hosted verification passed for recipe `{r['plan']['profile_path']}`. "
+                "Readiness covers this recipe's checks, not every app feature or production behavior.\n\n"
+                f"- Source commit: `{r['source_sha']}`\n"
+                f"- Tested snapshot: `{verification.get('head_sha', 'not reported')}`\n"
+                f"- Setup fingerprint: `{r['plan_sha256']}`\n"
+                f"- Verification session: `{verification.get('session_id', 'not reported')}`\n\n"
+                "Recipe journeys:\n" + "\n".join(f"- {j['title']}" for j in r["plan"]["journeys"])
+            )
+            if missing:
+                description += "\n\nUnavailable capabilities: " + "; ".join(missing) + "."
+            description += "\n\nReview the recipe and setup documentation for runtime requirements and coverage limits. This draft does not approve any change-run gate or merge."
             pr = forge.create_change_request(source_branch=branch, target_branch=(r.get("revision") or r.get("default_branch", "main")) if r["kind"] == "existing" and not re.fullmatch(r"[a-f0-9]{40}", r.get("revision", "")) else r.get("default_branch", "main"),
                 title="Add Factory onboarding and isolated app verification",
-                description=f"{r['plan']['summary']}\n\nHosted baseline verification passed. Setup fingerprint: `{r['plan_sha256']}`.\n\nLimits: " + "; ".join(r["plan"]["limitations"]), labels=[], reviewers=[], draft=True)
+                description=description, labels=[], reviewers=[], draft=True)
             self.update(app_id, pr_url=pr.url, status="ready_limited" if r["plan"]["limitations"] else "ready", phase="Setup pull request is ready for human review")
         finally:
             forge.http.close()
