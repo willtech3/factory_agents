@@ -58,8 +58,8 @@
     deployed_dev: "Verified in dev", closed: "Closed", escalated: "Escalated", blocked: "Blocked",
   };
   const GATE_NAME = { gate_1_decomposition: "Gate 1: approve the plan", gate_2_spec_readiness: "Gate 2: approve the contracts",
-    escalation: "Escalation: the judge could not pass the specs", deploy_failure: "Deploy failure" };
-  const GATE_SHORT = { gate_1_decomposition: "Gate 1", gate_2_spec_readiness: "Gate 2", escalation: "Escalation", deploy_failure: "Deploy failure" };
+    escalation: "Escalation: the judge could not pass the specs", budget: "Budget: raise it or close the run", deploy_failure: "Deploy failure" };
+  const GATE_SHORT = { gate_1_decomposition: "Gate 1", gate_2_spec_readiness: "Gate 2", escalation: "Escalation", budget: "Budget", deploy_failure: "Deploy failure" };
   const DECISION_LABEL = { approve: "Approve", approve_subset: "Approve selected", request_changes: "Request changes", reject: "Reject" };
   const ROLE_NAME = { po: "Product owner", eng: "Engineer", ops: "Ops", crew: "Claude crew" };
   const ROLE_DOES = { po: "Decides what gets built", eng: "Reviews and merges", ops: "Watches it land", crew: "Does the work between gates" };
@@ -361,7 +361,7 @@
           el("td", null, el("div", { class: "title" }, el("a", { href: `#/runs/${r.run_id}` }, r.title), r.demo ? el("span", { class: "tag demo" }, "demo") : el("span", { class: "tag live" }, r.design_only ? "design only" : "live")),
             waiting ? el("div", { class: "explain", style: "color:var(--call-text);font-weight:700" }, `${plural(waiting, "decision")} waiting on you`) : null),
           el("td", null, miniSteps(r.stage), " ", el("span", { class: "explain" }, TERMINAL[r.stage] || (STAGES.find(s => s[0] === r.stage) || [])[1] || r.stage)),
-          el("td", null, wi.total), el("td", null, money(r.cost)), el("td", { class: "explain" }, ago(r.updated_at))));
+          el("td", null, wi.total), el("td", null, money(r.cost), r.budget_usd != null ? el("span", { class: "explain" }, ` of ${money(r.budget_usd)}`) : null), el("td", { class: "explain" }, ago(r.updated_at))));
       }
       frag.append(card("All runs", tbl, plural(runs.length, "run")));
     }
@@ -397,10 +397,11 @@
     const r = await api(`/api/runs/${runId}`);
     const frag = document.createDocumentFragment();
     const stageName = TERMINAL[r.stage] || (STAGES.find(s => s[0] === r.stage) || [])[1] || r.stage;
+    const b = r.budget || {};
     const started = r.created_at;
     frag.append(pageHead(r.title, r.outcome ? r.outcome.statement.split(". ")[0] + "." : null,
       [r.demo ? el("span", { class: "tag demo" }, "demo") : el("span", { class: "tag live" }, r.design_only ? "design only" : (TERMINAL[r.stage] || stageName)),
-       el("span", { class: "tag" }, `${money(r.cost)}${r.policy && r.policy.run_budget_usd ? ` of $${r.policy.run_budget_usd}` : " spent"}`),
+       el("span", { class: `tag ${b.paused ? "warn" : ""}` }, `${money(r.cost)}${b.budget_usd != null ? ` of ${money(b.budget_usd)}` : " spent"}`),
        el("span", { class: "tag" }, dur(started, TERMINAL[r.stage] || r.stage === "completed" ? r.updated_at : null))],
       [el("a", { href: "#/runs" }, "Runs"), " / ", el("span", { class: "mono" }, r.run_id)]));
 
@@ -431,10 +432,12 @@
     const storyCard = card("The story so far", entries.length ? story : el("p", { class: "explain" }, "Nothing has happened yet."), "newest first");
 
     // your turn
-    const gates = r.gates.filter(g => !g.recorded), recorded = r.gates.filter(g => g.recorded);
+    const onCard = g => g.kind === "budget" && b.paused && b.pause;
+    const gates = r.gates.filter(g => !g.recorded && !onCard(g)), recorded = r.gates.filter(g => g.recorded && !onCard(g));
     const turn = el("div", { class: "turn" });
-    const waiting = gates.length + r.questions.length;
+    const waiting = gates.length + r.questions.length + (b.paused ? 1 : 0);
     turn.append(el("div", { class: "dot" }, el("i", { class: waiting ? "on" : "" }), el("h2", { style: "font-size:17px" }, "Your turn")));
+    if (b.paused && b.pause) turn.append(budgetCard(r));
     if (waiting) {
       for (const q of r.questions) turn.append(askBlock(q, () => setTimeout(() => viewRun(runId), 1500)));
       for (const g of gates) turn.append(el("div", { class: "card call", style: "padding:12px" },
@@ -455,12 +458,12 @@
       turn.append(up);
     }
     if (r.resumable && r.resuming) turn.append(el("div", { class: "notice info", style: "margin:0" }, el("b", null, "Resuming. "), "The orchestrator is re-checking the branch; this page follows it."));
-    else if (r.resumable) turn.append(resumeBox(r, runId));
+    else if (r.resumable && !b.paused) turn.append(resumeBox(r, runId));
     if (r.watch && (r.watch.pending.length || r.watch.heartbeat)) turn.append(watchBox(r, runId));
     const turnCard = card(null, turn, null, waiting ? "call" : "");
 
     // how this run is tuned (read-only here; the next run is tuned on the Start screen)
-    const p = r.policy || {};
+    const p = { ...(r.policy || {}), ...(b.budget_usd != null ? { run_budget_usd: b.budget_usd } : {}) };
     const tune = el("div", { class: "tune" });
     const caps = p.stage_budget_usd || {};
     const summary = [p.run_budget_usd ? `$${p.run_budget_usd} cap` : null, p.preview_mode === "local" ? "local previews" : p.preview_mode ? `${p.preview_mode} previews` : null,
@@ -507,7 +510,8 @@
     $main.replaceChildren(frag);
     if (location.hash.endsWith("#q")) { const q = document.getElementById("q"); if (q) q.scrollIntoView(); }
     state.lastKey.run = runKey(r);
-    if (!(TERMINAL[r.stage] || r.stage === "completed")) startPoll(refreshWhenChanged("run", async () => runKey(await api(`/api/runs/${runId}`)), () => viewRun(runId)), 4000);
+    // A parked run stops polling; one paused at its budget keeps polling so the page follows the resume it started.
+    if (!(TERMINAL[r.stage] || r.stage === "completed") || r.stage === "paused_budget") startPoll(refreshWhenChanged("run", async () => runKey(await api(`/api/runs/${runId}`)), () => viewRun(runId)), 4000);
     else stopPoll();
   }
   function tunePair(k, v) { return el("div", null, el("dt", null, k), el("dd", null, String(v))); }
@@ -616,6 +620,69 @@
     return box;
   }
 
+  // The run is parked at its budget: the numbers, and the decision (raise and continue, or close) in one place.
+  // Both record the decision on the budget gate and then start `factory resume`, which applies it.
+  function budgetCard(r) {
+    const b = r.budget, p = b.pause, next = p.next || {};
+    const needed = Number(p.needed_usd || 0);
+    const recorded = b.decision;
+    const box = el("div", { class: "stack" });
+    box.append(glance([[money(p.spent_usd), `spent across ${plural(p.sessions_finished || b.sessions || 0, "session")}`],
+      [money(p.budget_usd), "the run's budget", "warn"], [money(next.cap_usd), `next: ${next.label || next.stage} (${plural(next.sessions || 1, "session")}), at most`],
+      [money(needed), "needed to continue", "bad"]]));
+    box.append(el("p", { class: "explain" }, "Every agent session carries its own hard cap, so the check is spent plus the next step's caps: the run can never go past the budget, and a step is refused before it starts rather than cut off midway. The caps are conservative; a step usually costs less than its cap."));
+    const status = el("div");
+    const err = el("div", { class: "err", role: "alert" });
+    async function go(body, btn, label) {
+      btn.disabled = true; btn.textContent = label; err.textContent = "";
+      try {
+        const res = await api(`/api/runs/${r.run_id}/resume`, { body });
+        status.replaceChildren(el("div", { class: "notice ok" }, el("b", null, body.budget_usd != null ? `Budget raised to ${money(body.budget_usd)}. ` : "Decision applied. "),
+          `The orchestrator continues in the background (log ${res.log}). This page follows it.`));
+        setTimeout(() => viewRun(r.run_id), 2500);
+      } catch (e) { btn.disabled = false; btn.textContent = btn.dataset.label; err.textContent = String(e.message || e); }
+    }
+    if (recorded) {
+      const raise = recorded.decision === "approve";
+      const amount = raise ? (String(recorded.comments || "").match(/(\d+(?:\.\d+)?)/) || [])[1] : null;
+      const apply = el("button", { class: "btn primary", type: "button", dataset: { label: raise ? "Continue the run" : "Close the run" } }, raise ? "Continue the run" : "Close the run");
+      apply.onclick = () => go({}, apply, raise ? "Continuing…" : "Closing…");
+      box.append(el("div", { class: "notice info" }, el("b", null, raise ? `Raise to ${amount ? money(amount) : "a new budget"} recorded${recorded.decided_by ? " by " + recorded.decided_by : ""}. ` : `Close recorded${recorded.decided_by ? " by " + recorded.decided_by : ""}. `),
+        "The orchestrator is not running while the run is paused; apply the decision to continue."),
+        el("div", { class: "actions" }, apply), status, err);
+    } else {
+      const input = el("input", { type: "number", min: String(Math.ceil(needed)), step: "1", value: String(Math.ceil(needed)), "aria-label": "New budget in USD", style: "max-width:140px" });
+      const raise = el("button", { class: "btn primary", type: "button", dataset: { label: "Raise the budget and continue" } }, "Raise the budget and continue");
+      const close = el("button", { class: "btn danger", type: "button", dataset: { label: "Close the run" } }, "Close the run");
+      raise.onclick = () => {
+        const v = Number(input.value);
+        if (!(v >= needed)) { err.textContent = `The next step needs at least ${money(needed)}.`; return; }
+        go({ budget_usd: v }, raise, "Raising…");
+      };
+      const actions = el("div", { class: "actions", style: "align-items:center;gap:10px;flex-wrap:wrap" },
+        el("label", { class: "help", style: "margin:0" }, "New budget in USD"), input, raise, close);
+      // Closing is two steps, like every gate decision: the confirm appears after a beat where no first button was.
+      close.onclick = () => {
+        const yes = el("button", { class: "btn danger", type: "button", disabled: true, dataset: { label: "Yes, close the run" } }, "Yes, close the run");
+        const cancel = el("button", { class: "btn", type: "button", onclick: () => confirmRow.replaceWith(actions) }, "Cancel");
+        const confirmRow = el("div", { class: "confirm" }, el("div", { class: "what" }, "Close this run?"),
+          el("div", { class: "explain" }, "Nothing more is built. The work so far stays in the files, and the branch on the code host is left as it is."),
+          el("div", { class: "actions", style: "margin-top:10px" }, yes, cancel));
+        yes.onclick = async () => {
+          yes.disabled = true; cancel.disabled = true;
+          try { await api(`/api/gates/${b.gate_id}/decision`, { body: { decision: "reject", comments: "", by: "console" } }); }
+          catch (e) { yes.disabled = false; cancel.disabled = false; err.textContent = String(e.message || e); return; }
+          go({}, yes, "Closing…");
+        };
+        actions.replaceWith(confirmRow);
+        setTimeout(() => { yes.disabled = false; yes.focus(); }, 600);
+      };
+      box.append(actions, status, err,
+        el("p", { class: "explain" }, "Also from a terminal: ", el("code", null, `factory resume ${r.run_id} --budget ${Math.ceil(needed)}`), "."));
+    }
+    return card("Budget", box, b.gate_id ? el("a", { href: `#/gates/${b.gate_id}` }, "gate") : null);
+  }
+
   function describe(ev) {
     const p = ev.payload || {};
     const who = ev.actor;
@@ -648,8 +715,14 @@
       case "run.escalated": return [who, { main: "Escalated", detail: p.reason }];
       case "run.completed": return [who, { main: p.design_only ? "Design stages completed" : "Run completed", detail: (p.specs_with_change_requests || p.approved_specs || []).join(", ") }];
       case "run.failed": return [who, { main: "Run failed", detail: p.reason }];
-      case "run.resumed": return [who, { main: "Run resumed", detail: Object.entries(p.points || {}).map(([s, x]) => `${s}: round ${x.round}${x.implementer_done ? " (implementer done)" : ""}`).join("; ") }];
-      case "budget.reached": return [who, { main: "Budget reached" }];
+      case "run.resumed": return [who, { main: `Run resumed${p.from === "paused_budget" ? " after the budget pause" : ""}`, detail: Object.entries(p.points || {}).map(([s, x]) => `${s}: round ${x.round}${x.implementer_done ? " (implementer done)" : ""}`).join("; ") || (p.stage ? `into ${words(p.stage)}` : "") }];
+      case "budget.reached": {
+        // Two shapes: the run cap (budget.py; `next` says what could not start) and one session hitting its own cap (run_session).
+        if (p.next) { const n = p.next; return [who, { main: "Paused: the next step would pass the budget", detail: `${money(p.spent_usd)} spent of ${money(p.budget_usd)}; ${n.label || n.stage || "next step"} (${plural(n.sessions || 1, "session")}) could cost ${money(n.cap_usd)}` }]; }
+        return [who, { main: `Budget reached: ${p.title || p.agent_key || "a session"} hit its ${p.budget_usd != null ? money(p.budget_usd) : ""} cap`, detail: p.list_cost_usd != null ? `spent ${money(p.list_cost_usd)}; waiting for the owner` : "waiting for the owner", session_id: p.session_id }];
+      }
+      case "budget.raised": return ["human", { main: `Budget raised to ${money(p.budget_usd)}`, detail: p.previous_budget_usd != null ? `was ${money(p.previous_budget_usd)}${p.decided_by ? ", by " + p.decided_by : ""}` : "" }];
+      case "session.truncated": return [who, { main: `Session cut short: ${p.title || p.agent_key || "a session"} (${p.reason || "unfinished"})`, detail: p.outcome_iterations != null ? `${p.outcome_iterations} grader iterations; waiting for the owner` : "waiting for the owner", session_id: p.session_id }];
       default: return [who, { main: ev.kind }];
     }
   }
@@ -789,7 +862,7 @@
     const notes = new Map();
     const picks = new Map();
     const frag = document.createDocumentFragment();
-    frag.append(pageHead(GATE_NAME[rec.kind] || rec.kind, g.run_title, [el("a", { class: "btn", href: `/gates/${gateId}/page`, target: "_blank", rel: "noopener" }, "Open as a page")],
+    frag.append(pageHead(GATE_NAME[rec.kind] || rec.kind, g.run_title, rec.kind === "budget" ? null : [el("a", { class: "btn", href: `/gates/${gateId}/page`, target: "_blank", rel: "noopener" }, "Open as a page")],
       [el("a", { href: "#/inbox" }, "Board"), " / ", el("a", { href: `#/runs/${g.run_id}` }, g.run_title), " / opened ", ago(rec.opened_at)]));
 
     const doc = el("div", { class: "stack" });
@@ -801,6 +874,7 @@
     if (rv.kind === "decomposition" && rv.decomposition) renderDecomposition(doc, rv, notes);
     else if (rv.kind === "specs" && rv.verdict) renderSpecs(doc, rv, notes, picks, rec.options.includes("approve_subset"));
     else if (rv.kind === "deploy") renderDeploy(doc, rv, rec);
+    else if (rv.kind === "budget") renderBudget(doc, rv, rec, g);
     else doc.append(card("Summary", el("div", { class: "reading" }, rec.summary)));
 
     const decide = buildDecide(g, notes, picks);
@@ -966,6 +1040,17 @@
     doc.append(card("The contracts", wrap, plural(Object.keys(specs).length, "contract")));
   }
 
+  function renderBudget(doc, rv, rec, g) {
+    const p = rv.budget || {}, next = p.next || {};
+    doc.append(card("What you are deciding", el("div", { class: "stack" },
+      el("p", { class: "explain" }, el("strong", null, "The run stopped before starting an agent session that could take it past its budget. "),
+        "Nothing is running. Approve with a new budget to continue from exactly where it stopped, or reject to close the run; the work so far stays in the files either way."),
+      glance([[money(p.spent_usd), `spent across ${plural(p.sessions_finished || 0, "session")}`], [money(p.budget_usd), "the run's budget", "warn"],
+        [money(next.cap_usd), `next: ${next.label || next.stage} (${plural(next.sessions || 1, "session")}), at most`], [money(p.needed_usd), "needed to continue", "bad"]]),
+      el("p", { class: "explain" }, `Paused in the ${words(p.run_stage || "")} stage. Every session carries its own hard cap, so the check is spent plus the next step's caps: the run can never go past the budget. A step usually costs less than its cap.`),
+      el("p", { class: "explain" }, "The decision is applied by the orchestrator when the run is continued: from the ", el("a", { href: `#/runs/${g.run_id}` }, "run page"), ", or with ", el("code", null, `factory resume ${g.run_id}`), "."))));
+  }
+
   function renderDeploy(doc, rv, rec) {
     doc.append(card("What happened", el("div", { class: "stack" }, el("div", { class: "reading" }, rec.summary),
       rv.report ? el("pre", { class: "block" }, rv.report.log_excerpt || "(no log)") : null,
@@ -980,8 +1065,12 @@
     const counts = el("div", { class: "explain", style: "margin-top:6px" });
     const confirmBox = el("div", { class: "confirm", hidden: true });
 
+    const isBudget = rec.kind === "budget";
+    const needed = isBudget ? Number(((g.review || {}).budget || {}).needed_usd || 0) : 0;
+    const budgetInput = isBudget ? el("input", { id: "decide-budget", type: "number", min: String(Math.ceil(needed)), step: "1", value: String(Math.ceil(needed)), "aria-label": "New budget in USD", style: "max-width:140px" }) : null;
     const composeComments = () => {
       const lines = [];
+      if (isBudget && budgetInput.value) lines.push(`budget_usd: ${Number(budgetInput.value)}`);
       if (comment.value.trim()) lines.push(comment.value.trim());
       for (const [id, ta] of notes) if (ta.value.trim()) lines.push(`${id}: ${ta.value.trim()}`);
       return lines.join("\n");
@@ -1006,6 +1095,7 @@
       gate_2_spec_readiness: { approve: "The crew starts implementing all contracts on separate branches; pull requests follow.", approve_subset: "Selected contracts are implemented; the others go back to the writer with your notes.", request_changes: "The writers revise using your notes; the judge re-checks; you decide again.", reject: "The run closes. Nothing is built." },
       escalation: { approve: "Proceed with the contracts as they are.", approve_subset: "Selected contracts proceed; the rest go back.", request_changes: "The writers revise using your notes.", reject: "The run closes." },
       deploy_failure: { approve: "The failure was the platform's; the next deploy is watched.", request_changes: "An agent fixes it on a new branch; a follow-up pull request follows.", reject: "This work item is closed." },
+      budget: { approve: "The run's budget becomes the amount above; when continued, it picks up at the step it stopped before.", reject: "The run closes when continued. Nothing more is built; the files stay." },
     }[rec.kind] || {};
     const buttons = rec.options.map(opt => el("button", { class: `btn block ${opt === "approve" || opt === "approve_subset" ? "approve" : opt === "request_changes" ? "changes" : "danger"}`,
       type: "button", dataset: { decision: opt }, onclick: () => arm(opt) }, DECISION_LABEL[opt] || opt));
@@ -1014,6 +1104,7 @@
       error.textContent = "";
       const comments = composeComments();
       if (opt === "request_changes" && !comments) { error.textContent = "Say what should change first."; return; }
+      if (isBudget && opt === "approve" && !(Number(budgetInput.value) >= needed)) { error.textContent = `The next step needs at least ${money(needed)}.`; return; }
       buttons.forEach(b => b.hidden = true);
       const go = el("button", { class: `btn block ${opt === "reject" ? "danger" : opt === "request_changes" ? "changes" : "approve"}`, type: "button", disabled: true, onclick: () => decide(opt, comments) }, `Yes, ${(DECISION_LABEL[opt] || opt).toLowerCase()}`);
       confirmBox.replaceChildren(el("div", { class: "what" }, `${DECISION_LABEL[opt] || opt}?`),
@@ -1034,7 +1125,8 @@
     function cls(d) { return d === "request_changes" ? "changes" : d === "reject" ? "reject" : "ok"; }
     function showRecorded(d) {
       status.replaceChildren(el("div", { class: `recorded ${cls(d.decision)}` }, el("b", null, `${DECISION_LABEL[d.decision] || d.decision} recorded`),
-        `${ago(d.decided_at)}. The run picks it up within a few seconds. `, el("a", { href: `#/runs/${g.run_id}` }, "Back to the run")));
+        `${ago(d.decided_at)}. ${isBudget ? "The run is parked: continue it from its page to apply the decision. " : "The run picks it up within a few seconds. "}`,
+        el("a", { href: `#/runs/${g.run_id}` }, isBudget ? "Go to the run" : "Back to the run")));
       form.hidden = true;
     }
     function showDecided(p) {
@@ -1045,6 +1137,7 @@
 
     const form = el("div", null,
       el("p", { class: "explain" }, Object.entries(consequences).filter(([k]) => rec.options.includes(k) && consequences[k]).map(([k, v]) => el("span", { style: "display:block;margin-bottom:4px" }, el("b", null, DECISION_LABEL[k] + ": "), v))),
+      isBudget ? el("div", { style: "margin-bottom:10px" }, el("label", { for: "decide-budget" }, "New budget in USD"), budgetInput) : null,
       el("label", { for: "decide-comment" }, "Your comment"), comment, counts,
       confirmBox, el("div", { class: "btn-col", style: "margin-top:12px" }, buttons), error,
       el("details", null, el("summary", null, "Why this is safe to approve"),

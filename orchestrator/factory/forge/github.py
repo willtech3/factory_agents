@@ -27,6 +27,11 @@ github_repository resource; clone and push are authenticated by Anthropic's git 
 sandbox. Work on branch {branch}: `git fetch origin && git checkout {branch}` if it exists on origin, otherwise
 `git checkout -b {branch} {base_branch}`. Commit as you go and `git push -u origin {branch}` when done."""
 
+GIT_READ_ONLY = """Git access: the repository is mounted at /workspace/repo on branch {branch} through the platform's
+github_repository resource (read it there; `git fetch`, `git log`, `git diff` and `git checkout` are fine). This session is
+read-only on the repository: never commit, never push, never rewrite history, and write everything you produce under
+/mnt/session/outputs/, not in the working tree."""
+
 
 class GitHubForge:
     kind = "github"
@@ -240,7 +245,9 @@ class GitHubForge:
         return {"type": "github_repository", "url": url, "mount_path": "/workspace/repo",
                 "authorization_token": self.token, "checkout": {"type": "branch", "name": branch}}
 
-    def sandbox_git_instructions(self, repo_url: str, base_branch: str, branch: str) -> str:
+    def sandbox_git_instructions(self, repo_url: str, base_branch: str, branch: str, read_only: bool = False) -> str:
+        if read_only:
+            return GIT_READ_ONLY.format(branch=branch)
         return GIT_SETUP.format(base_branch=base_branch, branch=branch)
 
     def authenticated_url(self, repo_url: str) -> str:
@@ -289,4 +296,4 @@ def parse_workflow_run_webhook(payload: dict[str, Any]) -> dict[str, Any] | None
     return out
 
 
-__all__ = ["BOT_MARKER", "GIT_SETUP", "GitHubForge", "PIPELINE_TERMINAL", "parse_workflow_run_webhook"]
+__all__ = ["BOT_MARKER", "GIT_READ_ONLY", "GIT_SETUP", "GitHubForge", "PIPELINE_TERMINAL", "parse_workflow_run_webhook"]
