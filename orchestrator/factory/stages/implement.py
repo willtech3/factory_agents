@@ -117,7 +117,9 @@ Write implementation_report.json{response_clause} to /mnt/session/outputs/ and v
 (the file relative to the repository root, describe blocks outermost first, the test name as Bun reports it); the
 orchestrator runs the test plan itself, derives the passing set from its own run's test reports, and fails any automated
 criterion whose tests it did not collect or did not see pass. Run every command in the spec's test_plan before finishing
-and record the results. {preview_clause}"""
+and record the results. For a criterion proved by an e2e entry itself, use `e2e:<zero-based index>` in tests (for example
+`e2e:0` for test_plan.e2e[0]). That entry must declare the criterion in covers_ac and pass in the controller's run,
+including its exact browser evidence when visual; a baseline or an agent's claim never counts. {preview_clause}"""
 
 REVIEW_DESCRIPTION = """Review the change for specification {spec_id}. The diff is at /mnt/session/uploads/diff.patch
 (base {base_sha}, head {head_sha}); the repository is cloned at /workspace/repo on branch {branch}.

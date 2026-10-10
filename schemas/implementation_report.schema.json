@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://factory.example/schemas/implementation_report.schema.json",
   "title": "ImplementationReport",
-  "description": "The Implementer's account of one implementation round: which tests prove each acceptance criterion, what it ran, what it changed, and what it is unsure about. The orchestrator reads `criteria` for the ac_test_mapping check and verifies every named test against its own pytest run; everything else is a hypothesis for the reviewer to test.",
+  "description": "The Implementer's account of one implementation round: which tests prove each acceptance criterion, what it ran, what it changed, and what it is unsure about. The orchestrator reads `criteria` for the ac_test_mapping check and verifies every named test against its own test reports and e2e results; everything else is a hypothesis for the reviewer to test.",
   "type": "object",
   "additionalProperties": false,
   "required": ["spec_id", "criteria", "commands_run", "files_changed"],
@@ -23,7 +23,7 @@
           "tests": {
             "type": "array",
             "items": { "type": "string" },
-            "description": "Test ids exactly as the orchestrator's own run reports them. pytest: node ids as `pytest --collect-only -q` prints them (tests/test_x.py::test_name, tests/test_x.py::TestClass::test_name, tests/test_x.py::test_name[param]). Bun: `path/to/x.test.ts::outer describe > inner describe > test name` (file relative to the repository root, describe blocks outermost first, the test name as Bun reports it, test.each names expanded), counted only from a direct `bun test ...` test_plan command. A file, pytest class or Bun describe id covers every test under it. Empty only for a criterion whose verification is not automated_test."
+            "description": "Test ids exactly as the orchestrator's own run reports them. pytest: node ids as `pytest --collect-only -q` prints them (tests/test_x.py::test_name, tests/test_x.py::TestClass::test_name, tests/test_x.py::test_name[param]). Bun: `path/to/x.test.ts::outer describe > inner describe > test name` (file relative to the repository root, describe blocks outermost first, the test name as Bun reports it, test.each names expanded), counted only from a direct `bun test ...` test_plan command. A file, pytest class or Bun describe id covers every test under it. Empty only for a criterion whose verification is not automated_test. A controller-run e2e journey can be referenced as e2e:<zero-based index>, such as e2e:0 for test_plan.e2e[0]. That entry must declare this criterion in covers_ac and pass with all required visual evidence."
           },
           "red_on_base": { "type": "boolean", "description": "Whether the named tests were seen failing on base_sha (rubric I1 level 3)." },
           "note": { "type": "string" }

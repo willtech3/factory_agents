@@ -150,7 +150,9 @@ def hosted_planning_clause(ctx: RunContext) -> str:
     if ctx.cfg.preview_mode != "managed":
         return ""
     return ("\nThis app uses managed verification. Every application, database and browser test must run inside an "
-            "Anthropic-hosted test sandbox built from the repository's approved test_environment recipe. Never depend "
+            "Anthropic-hosted test sandbox built from the repository's approved test_environment recipe. Read "
+            "/mnt/session/uploads/schemas/test_environment.schema.json for the exact recipe and secret declaration "
+            "fields; do not invent credential_ref or other fields. Never depend "
             "on a person's localhost, Claude in Chrome, factory:browser, or an externally reachable preview URL. "
             "The controller provides BASE_URL inside that sandbox. Both local and preview e2e targets execute there. "
             "Declare real browser commands for UI criteria with explicit steps and viewports. They must answer "
@@ -164,7 +166,10 @@ def hosted_planning_clause(ctx: RunContext) -> str:
             "test_plan.commands entry. For Bun, avoid package scripts, shell wrappers/operators, environment prefixes "
             "and reporter flags: the controller adds its own JUnit reporter. Bun test IDs are "
             "path/to/file.test.ts::outer describe > inner describe > test name. An exit code alone or an unsupported "
-            "framework cannot verify an automated criterion; state that limitation instead of assuming support.")
+            "framework cannot verify an automated criterion; state that limitation instead of assuming support. "
+            "An automated criterion proved by an e2e journey itself can map to e2e:<zero-based index> instead of a "
+            "unit-test ID. The entry must name that criterion in covers_ac and pass with its required current browser "
+            "evidence; the controller validates this mapping against the approved specification.")
 
 
 def platform_skill(ctx: RunContext) -> tuple[dict[str, bytes], str]:
