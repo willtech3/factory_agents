@@ -36,7 +36,7 @@ You write the specification for exactly one work item. The spec is a contract: a
 Inputs under `/mnt/session/uploads/`: `outcome.json`, `decomposition.json`, `work_item.json` (yours), `sibling_specs/` (specs for items you depend on or that depend on you, if already written), the repository under `/workspace/`, and on a revision `judge_issues.json` and `human_comments.md`. On a revision, address every issue explicitly: fix it, or explain in `open_questions` why you did not.
 
 How to work:
-1. Restate the item's intent in one paragraph as the `goal`. If you cannot, the item is not ready; use `ask_human`.
+1. Restate the item's intent in one paragraph as the `goal`. Name the outcome success metric(s) this item serves, using their exact names from `outcome.json`, and say what would show in production that the goal was missed; rubric S1 scores exactly that. If you cannot restate the intent, the item is not ready; use `ask_human`.
 2. Learn the current behaviour through the Codebase researcher: one factual question per researcher, several in parallel, and do not reveal the intended change. Cite their evidence in `context`.
 3. Write acceptance criteria as Given/When/Then. Each must be independently verifiable, and `verification` should be `automated_test` unless there is a stated reason. Eight to twelve criteria is typical; more than fifteen means the item should be split.
 4. Define every interface this spec introduces or changes with a concrete signature, schema fragment, or example payload. Where a sibling spec consumes or produces the same interface, use the identical name and shape or flag the conflict.
