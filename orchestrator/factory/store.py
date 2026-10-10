@@ -6,12 +6,21 @@ Layout (relative to FACTORY_RUNS_DIR, default ./runs):
     runs/<run_id>/artifacts/<stage>/<name>          # raw files fetched from sessions
     runs/<run_id>/artifacts/<stage>/<name>.sha256
 
+Event sequence numbers are assigned under a per-run `threading.Lock` (the spec writers and the reviewer passes
+emit from worker threads) and an `fcntl.flock` on events.jsonl (the Console and `factory resume` append from other
+processes). The last seq is cached per run and trusted only while the file is the size this process last left it,
+so another process's appends are seen. Without this, five threads got seqs [1, 1, 1, 1, 2] and replay refused the
+run (docs/postmortems/2026-10-10-first-live-runs.md issue 2).
+
 SQLite or Postgres would replace this in production; the interface is small on purpose.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
+import threading
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -28,6 +37,9 @@ class RunStore:
     def __init__(self, root: Path):
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
+        self._locks: dict[str, threading.Lock] = {}
+        self._locks_guard = threading.Lock()
+        self._tail: dict[str, tuple[int, int]] = {}      # run_id -> (file size after our last append, last seq)
 
     # ----- events -----
     def _events_path(self, run_id: str) -> Path:
@@ -35,12 +47,22 @@ class RunStore:
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
 
+    def _lock(self, run_id: str) -> threading.Lock:
+        with self._locks_guard:
+            return self._locks.setdefault(run_id, threading.Lock())
+
     def events(self, run_id: str) -> list[RunEvent]:
         p = self._events_path(run_id)
         if not p.exists():
             return []
+        with p.open("r") as f:
+            fcntl.flock(f, fcntl.LOCK_SH)       # never read a line another process is half-way through writing
+            try:
+                text = f.read()
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
         out = []
-        for line in p.read_text().splitlines():
+        for line in text.splitlines():
             if line.strip():
                 d = json.loads(line)
                 out.append(RunEvent(**d))
@@ -48,11 +70,21 @@ class RunStore:
 
     def append(self, run_id: str, kind: str, actor: dict[str, Any], payload: dict[str, Any] | None = None,
                **extra: Any) -> RunEvent:
-        existing = self.events(run_id)
-        seq = existing[-1].seq + 1 if existing else 0
-        ev = RunEvent(run_id=run_id, seq=seq, kind=kind, actor=actor, payload=payload or {}, **extra)
-        with self._events_path(run_id).open("a") as f:
-            f.write(json.dumps(ev.to_dict()) + "\n")
+        """Append one event with the next contiguous seq. Safe across threads of this process and across processes
+        appending to the same run."""
+        path = self._events_path(run_id)
+        with self._lock(run_id), path.open("a") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                size = os.fstat(f.fileno()).st_size
+                cached = self._tail.get(run_id)
+                last = cached[1] if cached and cached[0] == size else _last_seq(path, size)
+                ev = RunEvent(run_id=run_id, seq=last + 1, kind=kind, actor=actor, payload=payload or {}, **extra)
+                f.write(json.dumps(ev.to_dict()) + "\n")
+                f.flush()
+                self._tail[run_id] = (os.fstat(f.fileno()).st_size, ev.seq)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
         return ev
 
     def state(self, run_id: str) -> RunState:
@@ -95,3 +127,21 @@ class RunStore:
     def sha256(self, run_id: str, stage: str, name: str) -> str:
         return self.artifact_path(run_id, stage, name).with_suffix(
             Path(name).suffix + ".sha256").read_text().strip()
+
+
+def _last_seq(path: Path, size: int) -> int:
+    """The seq of the last event line in the file (-1 when empty), read from the tail without loading the whole log.
+    Called under the lock, so the last line is complete; the chunk is widened until it holds that whole line."""
+    chunk = 1 << 16
+    with path.open("rb") as f:
+        while True:
+            start = max(0, size - chunk)
+            f.seek(start)
+            tail = f.read(size - start).rstrip(b"\n")
+            cut = tail.rfind(b"\n")
+            if not tail.strip():
+                if start == 0:
+                    return -1
+            elif cut != -1 or start == 0:
+                return int(json.loads(tail[cut + 1:])["seq"])
+            chunk *= 4
