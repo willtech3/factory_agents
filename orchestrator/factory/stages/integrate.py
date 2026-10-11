@@ -116,11 +116,13 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
             base = verifier.checkout(base_branch)
             if _git(base, "rev-parse", "HEAD").strip() != ctx.evaluation_target[1]:
                 raise RuntimeError("evaluation comparison branch moved after review")
-            beyond = _numstat_since(verifier, default_branch, judged_sha)
             repo = verifier.checkout(branch)
         base_sha = verdict.get("_base_sha") or _merge_base(repo, base_branch, judged_sha)
         if base_sha:
             stats, measured = size.measure_repo(repo, base_sha, judged_sha, spec.get("regenerated") or [])
+        if ctx.evaluation_target and stats is not None:
+            beyond = _numstat_beyond(verifier, default_branch, judged_sha, [f["path"] for f in stats["files"]])
+            verifier.checkout(branch)
     budget = getattr(ctx.policy, "size_budget_lines", None) or size.DEFAULT_BUDGET
     estimate = size.estimate_of(spec)
     sized = {"diff": stats, "measured": measured, "estimate": estimate, "budget": dict(budget),
@@ -193,25 +195,34 @@ def _normal_default_branch(ctx: RunContext, base_branch: str) -> str:
     return base_branch
 
 
+def _ref(repo: Path, branch: str) -> str | None:
+    return next((r for r in (f"origin/{branch}", branch)
+                 if subprocess.run(["git", "rev-parse", "--verify", "--quiet", r], cwd=repo, capture_output=True,
+                                   check=False).returncode == 0), None)
+
+
 def _merge_base(repo: Path, branch: str, head_sha: str) -> str | None:
     """Where `head_sha` left `branch` (as the forge shows a change request); None when git cannot say."""
     try:
-        ref = next((r for r in (f"origin/{branch}", branch)
-                    if subprocess.run(["git", "rev-parse", "--verify", "--quiet", r], cwd=repo, capture_output=True,
-                                      check=False).returncode == 0), None)
+        ref = _ref(repo, branch)
         return _git(repo, "merge-base", ref, head_sha).strip() if ref else None
     except (subprocess.CalledProcessError, OSError):
         return None
 
 
-def _numstat_since(verifier: Any, branch: str, head_sha: str) -> dict[str, Any] | None:
-    """Lines the head adds beyond `branch`, from their merge base; None when git cannot say."""
+def _numstat_beyond(verifier: Any, branch: str, head_sha: str, paths: list[str]) -> dict[str, Any] | None:
+    """What an evaluation copy holds beyond the current `branch`, in the files the change touches: a tree diff from
+    the branch's tip, not from the merge base, because the copy is cut from a baseline the branch already contains;
+    a change that reached the branch through other commits (a merge or a squash of the original) counts as nothing.
+    None when git cannot say."""
+    if not paths:
+        return {"files": [], "added": 0, "removed": 0}
     try:
         repo = verifier.checkout(branch)
+        ref = _ref(repo, branch)
+        return pr_description.diff_stats(_git(repo, "diff", "--numstat", ref, head_sha, "--", *paths)) if ref else None
     except (subprocess.CalledProcessError, OSError):
         return None
-    base = _merge_base(repo, branch, head_sha)
-    return size.numstat(repo, base, head_sha) if base else None
 
 
 def _git(repo: Path, *args: str) -> str:
