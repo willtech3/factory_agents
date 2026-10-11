@@ -9,9 +9,9 @@
     "./agents/app_onboarding.md": {
       "kind": "agent",
       "id": "agent_01Vfcs8bh7apzKYPVAYMDRfh",
-      "version": "3",
-      "hash": "4bd79d4adf371b0a2fc6b6da119682ac",
-      "remote_hash": "e1e0ebaa861ef909c18c0a6c0c8d553d"
+      "version": "4",
+      "hash": "b76a2d8a508888e534f0716a61b2e741",
+      "remote_hash": "bad9cce7e12e831087185a079413294b"
     },
     "./agents/codebase_researcher.md": {
       "kind": "agent",
@@ -23,9 +23,9 @@
     "./agents/decomposer.md": {
       "kind": "agent",
       "id": "agent_01PsowtEChbuMJTdyvzzpyQn",
-      "version": "6",
-      "hash": "c17b55cfa18d680f02ee65d1fa4d748f",
-      "remote_hash": "b670bf357fee95addfa05614ed522837"
+      "version": "7",
+      "hash": "a533347495789e59802a48b3c8e57b40",
+      "remote_hash": "916266543f0b0b9d1b5255657abc00cf"
     },
     "./agents/implementer.md": {
       "kind": "agent",
@@ -72,9 +72,9 @@
     "./agents/spec_writer.md": {
       "kind": "agent",
       "id": "agent_01AxE2BD34oT5H1dfkwaRDTC",
-      "version": "5",
-      "hash": "7633f31ab07e542fb89fe5e28e5d96e1",
-      "remote_hash": "a7e10db8e1a1bb47398a74dd637da79a"
+      "version": "6",
+      "hash": "669663dee600483b99bf67b58500d150",
+      "remote_hash": "92e34630acc6c17cf100ff4ab93e88d3"
     },
     "./environments/factory-cloud.yaml": {
       "kind": "environment",
