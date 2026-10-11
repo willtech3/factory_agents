@@ -269,8 +269,7 @@ def size_budget(measured: dict[str, Any] | None, estimate: int | None, budget: d
     return CheckResult("size_budget", True, detail, {"measured": measured, "estimate": estimate, "budget": dict(budget)}, flag=over)
 
 
-EVIDENCE_PROTOCOL = re.compile(r"\bFACTORY_[A-Z][A-Z_]+\b|\bviewport_observed\b|\bvisual[_ ]request\b|\bevidence[_ ]dir(?:ectory)?\b",
-                               re.IGNORECASE)
+EVIDENCE_PROTOCOL = re.compile(r"\bFACTORY_(?:VISUAL_REQUEST|EVIDENCE_DIR)\b|\bviewport_observed\b")
 
 
 def criteria_describe_product(spec: dict[str, Any]) -> CheckResult:
