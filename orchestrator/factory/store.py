@@ -124,6 +124,25 @@ class RunStore:
     def get_artifact(self, run_id: str, stage: str, name: str) -> bytes:
         return self.artifact_path(run_id, stage, name).read_bytes()
 
+    def put_derived_artifact(self, run_id: str, stage: str, name: str, content: bytes) -> str:
+        """Refresh controller-derived evidence, retaining every version by content hash.
+
+        Raw agent outputs and approved contracts still use immutable put_artifact.
+        A resumed verification may legitimately produce new evidence for the same round.
+        """
+        allowed = ("-hosted_verification.json", "-deterministic_checks.json", "-test_results.json",
+                   "-findings.merged.json")
+        if not name.endswith(allowed):
+            raise ValueError(f"not controller-derived evidence: {name}")
+        path = self.artifact_path(run_id, stage, name)
+        versions = [content]
+        if path.exists():
+            versions.insert(0, path.read_bytes())
+        for version in versions:
+            digest = hashlib.sha256(version).hexdigest()
+            self.put_artifact(run_id, "history", f"{stage}/{name}/{digest}", version)
+        return self.put_artifact(run_id, stage, name, content, replace=True)
+
     def get_json(self, run_id: str, stage: str, name: str) -> Any:
         return json.loads(self.get_artifact(run_id, stage, name))
 

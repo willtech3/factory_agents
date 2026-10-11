@@ -275,7 +275,7 @@ class HostedVerifier:
         environment = CheckResult(ENVIRONMENT_CHECK, env_ok, env_detail, {"phases": record.get("phases", []), "baseline": baseline})
         hosted = {k: record.get(k) for k in ("status", "session_id", "profile_sha256", "environment_id", "app_id")}
         preview = preview_record(branch, record.get("head_sha"), hosted)
-        ctx.store.put_artifact(ctx.run_id, "implement", f"{sid}-r{record['round']}-hosted_verification.json",
+        ctx.store.put_derived_artifact(ctx.run_id, "implement", f"{sid}-r{record['round']}-hosted_verification.json",
                                json.dumps(record, indent=2, default=str).encode())
         ctx.event("verification.hosted", {"head_sha": record["head_sha"], "round": record["round"], "status": record["status"],
                                           "app_id": record.get("app_id"), "profile_sha256": record.get("profile_sha256"),

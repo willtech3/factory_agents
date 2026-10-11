@@ -76,6 +76,22 @@ def test_run_resumed_moves_a_failed_run_back_into_implementation():
         raise AssertionError("a completed run must not resume")
 
 
+def test_resume_review_cache_is_bound_to_both_base_and_head(tmp_path, root):
+    from factory.stages.implement import review_evidence_prefix
+    ctx = _ctx(tmp_path, root)
+    original = {"diff_ref": {"base_sha": "base1", "head_sha": "head1"}, "findings": []}
+    _put(ctx, "review", "spec_a-r2-p1-findings.json", original)
+    prefix, found = review_evidence_prefix(ctx, "spec_a", 2, "p1", "base1", "head1")
+    assert prefix == "spec_a-r2-p1-" and found == original
+    for base, head in [("base2", "head1"), ("base1", "head2")]:
+        prefix, found = review_evidence_prefix(ctx, "spec_a", 2, "p1", base, head)
+        assert found is None and prefix != "spec_a-r2-p1-"
+        fresh = {"diff_ref": {"base_sha": base, "head_sha": head}, "findings": []}
+        _put(ctx, "review", prefix + "findings.json", fresh)
+        assert review_evidence_prefix(ctx, "spec_a", 2, "p1", base, head) == (prefix, fresh)
+    assert ctx.store.get_json(ctx.run_id, "review", "spec_a-r2-p1-findings.json") == original
+
+
 def test_reentering_the_same_stage_is_a_no_op_not_an_illegal_transition():
     """Live greenfield run: the resume re-emitted work_item.stage reviewing while the item was already reviewing,
     and every replay (the Console, the integrate step's cost lookup) raised IllegalTransition."""
