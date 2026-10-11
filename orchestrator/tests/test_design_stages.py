@@ -39,7 +39,7 @@ def test_decompose_retry_does_not_reenter_the_stage(tmp_path, root, examples):
     from factory.stages import decompose as dec
 
     ctx = _ctx(tmp_path, root, None)
-    ctx.event("run.created", {"outcome_id": "o", "title": "t"})
+    ctx.event("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     outcome = examples["outcome"]
     bad = dict(examples["decomposition"], coverage=[])            # fails metric_coverage once
     good = examples["decomposition"]
@@ -98,7 +98,7 @@ def test_design_sessions_get_the_platform_contract_skill_by_path(tmp_path, root,
     from factory.stages.common import SKILL_UPLOAD_PATH
 
     ctx = _ctx(tmp_path, root, None)
-    ctx.event("run.created", {"outcome_id": "o", "title": "t"})
+    ctx.event("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     calls = []
 
     class Driver:

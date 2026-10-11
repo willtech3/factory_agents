@@ -1,7 +1,6 @@
 """Forge selection and the GitHub client's request shapes, through httpx's MockTransport. No network."""
 import base64
 import json
-from pathlib import Path
 
 import httpx
 import pytest
@@ -63,14 +62,13 @@ def test_make_forge_selects_by_config(tmp_path, root):
         make_forge(make_config(root, tmp_path, forge="bitbucket", forge_token="t"))
 
 
-def test_config_env_aliases_and_defaults(monkeypatch, tmp_path):
-    for k in ("FACTORY_FORGE", "FORGE_URL", "FORGE_TOKEN", "FORGE_REPO", "GITHUB_TOKEN", "GITHUB_REPO", "GITLAB_URL",
-              "GITLAB_TOKEN", "GITLAB_PROJECT", "LINEAR_API_KEY", "FACTORY_GATE_SURFACE", "FACTORY_VAULT_ID", "ANTHROPIC_API_KEY",
-              "ANTHROPIC_WORKSPACE_ID"):
+def test_config_env_and_defaults(monkeypatch, tmp_path):
+    for k in ("FACTORY_FORGE", "FORGE_URL", "FORGE_TOKEN", "FORGE_REPO", "LINEAR_API_KEY", "FACTORY_GATE_SURFACE",
+              "FACTORY_VAULT_ID", "ANTHROPIC_API_KEY", "ANTHROPIC_WORKSPACE_ID"):
         monkeypatch.delenv(k, raising=False)
     nodotenv = tmp_path / "no.env"
-    monkeypatch.setenv("GITHUB_TOKEN", "ghp_x")
-    monkeypatch.setenv("GITHUB_REPO", "will/ledgerline")
+    monkeypatch.setenv("FORGE_TOKEN", "ghp_x")
+    monkeypatch.setenv("FORGE_REPO", "will/ledgerline")
     cfg = cfgmod.load(tmp_path / "no-lock.json", dotenv_path=nodotenv)
     assert cfg.forge == "github" and cfg.forge_url == "https://github.com" and cfg.forge_token == "ghp_x"
     assert cfg.forge_repo == "will/ledgerline" and cfg.repo_url == "https://github.com/will/ledgerline"
@@ -83,9 +81,9 @@ def test_config_env_aliases_and_defaults(monkeypatch, tmp_path):
     assert any("LINEAR_TEAM_ID" in g for g in cfgmod.missing(cfgmod.load(tmp_path / "no-lock.json", dotenv_path=nodotenv)))
 
     monkeypatch.setenv("FACTORY_FORGE", "gitlab")
-    monkeypatch.setenv("GITLAB_URL", "https://gitlab.example.internal")
-    monkeypatch.setenv("GITLAB_TOKEN", "glpat")
-    monkeypatch.setenv("GITLAB_PROJECT", "group/app")
+    monkeypatch.setenv("FORGE_URL", "https://gitlab.example.internal")
+    monkeypatch.setenv("FORGE_TOKEN", "glpat")
+    monkeypatch.setenv("FORGE_REPO", "group/app")
     cfg = cfgmod.load(tmp_path / "no-lock.json", dotenv_path=nodotenv)
     assert (cfg.forge, cfg.forge_url, cfg.forge_token, cfg.forge_repo) == ("gitlab", "https://gitlab.example.internal", "glpat", "group/app")
     assert any("FACTORY_VAULT_ID" in g for g in cfgmod.missing(cfg))
@@ -208,12 +206,8 @@ def test_parse_pipeline_webhook_dispatches_on_shape():
     assert parse_pipeline_webhook({"object_kind": "merge_request"}) is None
 
 
-def test_old_gitlab_module_is_gone():
-    assert not (Path(__file__).resolve().parents[1] / "factory" / "gitlab.py").exists()
-
-
 def test_dotenv_loader_and_design_only_gaps(monkeypatch, tmp_path):
-    for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_WORKSPACE_ID", "FORGE_TOKEN", "GITHUB_TOKEN", "FORGE_REPO", "GITHUB_REPO", "LINEAR_API_KEY"):
+    for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_WORKSPACE_ID", "FORGE_TOKEN", "FORGE_REPO", "LINEAR_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     env = tmp_path / ".env"
     env.write_text("# comment\nexport ANTHROPIC_API_KEY='sk-test'\nANTHROPIC_WORKSPACE_ID=wrkspc_1\nFORGE_REPO=\"will/app\"\n")

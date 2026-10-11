@@ -146,7 +146,6 @@ def test_mixed_pytest_and_bun_commands_each_report_their_own_framework(tmp_path,
     rows = run_commands(tmp_path, ["python -m pytest -q tests/test_a.py", "bun test src/catalog"], env_of(fake_bun, FAKE_BUN_EXIT="1"))
     pytest_row, bun_row = rows
     assert pytest_row["tests"]["framework"] == "pytest" and pytest_row["tests"]["passed"] == ["tests/test_a.py::test_a"]
-    assert pytest_row["pytest"]["passed"] == ["tests/test_a.py::test_a"], "the pytest lists stay for older readers"
     assert bun_row["command"] == "bun test src/catalog" and bun_row["instrumented"] == "bun-junit"
     assert bun_row["exit_code"] == 1 and bun_row["tests"]["status"] == "reported" and bun_row["tests"]["failed"] == [FAILING_BUN]
     assert fake_bun["argv"].read_text().startswith("test --reporter=junit --reporter-outfile=")
@@ -187,14 +186,13 @@ def test_the_real_bun_runtime_produces_what_the_parser_expects(tmp_path):
 
 def test_the_controller_only_accepts_ids_of_the_reported_framework():
     good = {"framework": "bun", "report": "junit", "status": "reported", "passed": [PASSING_BUN], "failed": [], "skipped": []}
-    assert _test_evidence(good, None)["passed"] == [PASSING_BUN]
+    assert _test_evidence(good)["passed"] == [PASSING_BUN]
     wrong = {**good, "passed": ["tests/test_a.py::test_a"]}
-    assert _test_evidence(wrong, None)["status"] == "invalid"
-    assert _test_evidence({"framework": "bun", "status": "unsupported", "reason": "package script"}, None) == \
+    assert _test_evidence(wrong)["status"] == "invalid"
+    assert _test_evidence({"framework": "bun", "status": "unsupported", "reason": "package script"}) == \
         {"framework": "bun", "status": "unsupported", "reason": "package script"}
-    assert _test_evidence({"framework": "jest", "status": "reported", "passed": ["x"], "failed": [], "skipped": []}, None) is None
-    legacy = {"passed": ["tests/test_a.py::test_a"], "failed": [], "skipped": []}
-    assert _test_evidence(None, legacy) == {"framework": "pytest", "report": "junit", "status": "reported", **legacy}
+    assert _test_evidence({"framework": "jest", "status": "reported", "passed": ["x"], "failed": [], "skipped": []}) is None
+    assert _test_evidence(None) is None
 
 
 def test_exit_codes_and_unsupported_rows_are_never_test_evidence():

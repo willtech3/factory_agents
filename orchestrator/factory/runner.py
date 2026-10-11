@@ -8,7 +8,7 @@ Gate presentation depends on `cfg.gate_surface` (ADR-0007):
 - nothing is committed to the target repository and no change request is opened before Gate 3 (ADR-0011);
 - `tracker`: `ctx.tracker` (a `TrackerQueue`, also part of `ctx.queue`) opens the gate
   on the run's tracker issue and harvests the decision and comments from there;
-- `file` / `web`: pages plus the CLI's file queue, which the Factory Console reads and writes.
+- `web`: pages plus the CLI's file queue, which the Factory Console reads and writes.
 """
 from __future__ import annotations
 
@@ -208,12 +208,11 @@ def record_approval(ctx: RunContext, d: GateDecision, approved: dict[str, dict])
 
 
 def approved_record(ctx: RunContext, events: list[Any], specs: dict[str, dict]) -> dict[str, str]:
-    """The guidance a resumed implementation carries, after checking each approved spec is still the approved bytes. Runs
-    approved before approvals were recorded resume without guidance, as they did before."""
+    """The guidance a resumed implementation carries, after checking each approved spec is still the approved bytes."""
     produced = next((ev.payload for ev in reversed(events) if ev.kind == "artifact.produced"
                      and ev.payload.get("artifact_type") == "gate2_approval"), None)
     if produced is None:
-        return {}
+        raise RuntimeError(f"{ctx.run_id} has no recorded Gate 2 approval to resume from")
     record = json.loads(ctx.store.get_artifact(ctx.run_id, "gate_2", Path(produced["path"]).name))
     if set(record["approved"]) != set(specs):
         raise RuntimeError(f"the specs marked approved ({sorted(specs)}) differ from Gate 2 {record['gate_id']}'s approval "
@@ -448,11 +447,10 @@ def _cr_already_open(ctx: RunContext, spec_id: str) -> bool:
 
 
 def _open_change_requests(ctx: RunContext) -> dict[str, int]:
-    """spec_id -> change request id for every change request this run has opened (a design CR, recorded by runs
-    from before ADR-0011, is not one)."""
+    """spec_id -> change request id for every change request this run has opened."""
     out: dict[str, int] = {}
     for ev in ctx.store.events(ctx.run_id):
-        if ev.kind == "cr.opened" and ev.spec_id and not ev.payload.get("design"):
+        if ev.kind == "cr.opened" and ev.spec_id:
             out[ev.spec_id] = int(ev.payload["id"])
     return out
 
@@ -543,7 +541,7 @@ def controller_lock(runs_dir: Path, run_id: str) -> Iterator[None]:
     """A nonblocking exclusive lock on `runs/<run_id>/controller.lock`, held for the whole resumed drive, so two
     recovering controllers never wait on (and consume) the same pending gate. Re-entrant within one process: the CLI
     takes it before the drive and `resume` finds it held. Raises `RunLocked`, before anything is written, when another
-    process holds it. Controllers started by older code take no lock: stop them first (`run.failed` proves it)."""
+    process holds it."""
     if run_id in _HELD_LOCKS:
         yield
         return
@@ -809,7 +807,7 @@ def budget_decision(ctx: RunContext, st: Any, events: list[Any], budget_usd: flo
 
 
 def _raise_budget(ctx: RunContext, st: Any, new_budget: float, by: str, gate_id: str | None) -> None:
-    previous = st.budget_usd if st.budget_usd is not None else ctx.policy.run_budget_usd
+    previous = st.budget_usd
     ctx.policy = dataclasses.replace(ctx.policy, run_budget_usd=new_budget)
     ctx.event("budget.raised", {"budget_usd": new_budget, "previous_budget_usd": previous, "spent_usd": round(st.list_cost_usd, 2),
                                 "gate_id": gate_id, "decided_by": by}, stage="budget", actor="human")
@@ -830,7 +828,7 @@ def _resume_after_budget_pause(ctx: RunContext, outcome: dict[str, Any], st: Any
     if action == "close":
         ctx.event("stage.entered", {"stage": RunStage.CLOSED.value}, stage="budget", actor="human")
         return RunStage.CLOSED
-    if st.budget_usd is None or new_budget != st.budget_usd:
+    if new_budget != st.budget_usd:
         _raise_budget(ctx, st, new_budget, by=by, gate_id=gate_id)
     else:
         ctx.policy = dataclasses.replace(ctx.policy, run_budget_usd=new_budget)

@@ -1,7 +1,7 @@
 """The file-backed gate surface: JSON files under `runs/_queue/` that two processes share.
 
 `factory run` opens gates and questions here; `factory decide` / `factory answer` and the Factory Console
-(`factory web`) write decisions and answers here. It is the `file` (alias `web`) gate surface and is
+(`factory web`) write decisions and answers here. It is the `web` gate surface and is
 always composed in alongside the tracker, so a decision from any side wins (ADR-0007).
 """
 from __future__ import annotations

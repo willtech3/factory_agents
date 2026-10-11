@@ -231,9 +231,6 @@ class GitLabForge:
         return r.json()[0]["id"]
 
 
-GitLabClient = GitLabForge   # pre-ADR-0008 name
-
-
 def _pipeline_summary(d: dict[str, Any]) -> dict[str, Any]:
     return {"id": d["id"], "status": d["status"], "ref": d.get("ref"), "sha": d.get("sha"), "web_url": d.get("web_url"),
             "created_at": d.get("created_at"), "updated_at": d.get("updated_at")}
@@ -263,4 +260,4 @@ def parse_pipeline_webhook(payload: dict[str, Any]) -> dict[str, Any] | None:
                                     if b.get("environment")})}
 
 
-__all__ = ["GIT_READ_ONLY", "GIT_SETUP", "GitLabClient", "GitLabForge", "PIPELINE_TERMINAL", "parse_pipeline_webhook"]
+__all__ = ["GIT_READ_ONLY", "GIT_SETUP", "GitLabForge", "PIPELINE_TERMINAL", "parse_pipeline_webhook"]

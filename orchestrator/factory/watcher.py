@@ -206,11 +206,6 @@ class Watcher:
     def _merge_sha(self, wi: WorkItemState) -> str:
         if wi.merge_sha:
             return wi.merge_sha
-        for ev in reversed(self.ctx.store.events(self.ctx.run_id)):      # a merge recorded before merge_sha existed on the state
-            if ev.kind == "cr.merged" and ev.work_item_id == wi.work_item_id:
-                sha = ev.payload.get("merge_commit_sha") or ev.payload.get("head_sha")
-                if sha:
-                    return sha
         raise RuntimeError(f"{wi.work_item_id} is {wi.stage.value} but no merge commit is recorded for it")
 
     def _observe(self, wi: WorkItemState, attempt: int, report: TickReport) -> None:

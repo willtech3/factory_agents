@@ -175,7 +175,7 @@ class RunState:
     open_questions: dict[str, dict[str, Any]] = field(default_factory=dict)
     list_cost_usd: float = 0.0           # sum of session.finished list_cost_usd: what the run has spent so far
     sessions_finished: int = 0
-    budget_usd: float | None = None      # the run's cap (run.created), raised by budget.raised; None on logs older than the cap
+    budget_usd: float | None = None      # the run's cap (run.created), raised by budget.raised; None until run.created
     last_seq: int = -1
 
     def ready_work_items(self) -> list[WorkItemState]:
@@ -216,8 +216,7 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
 
     if k == "run.created":
         state.outcome_id = p["outcome_id"]
-        if p.get("budget_usd") is not None:
-            state.budget_usd = float(p["budget_usd"])
+        state.budget_usd = float(p["budget_usd"])
     elif k == "stage.entered":
         _move_run(state, RunStage(p["stage"]))
     elif k == "artifact.produced" and p.get("artifact_type") == "decomposition" and "work_items" in p:

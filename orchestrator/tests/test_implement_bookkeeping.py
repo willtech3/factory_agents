@@ -56,7 +56,8 @@ class Verifier:
 
     def run_commands(self, repo, commands, timeout=0):
         return [{"command": c, "exit_code": 0, "stdout_tail": "ok", "stderr_tail": "",
-                 "pytest": {"passed": self.passed, "failed": [], "skipped": []}} for c in commands]
+                 "tests": {"framework": "pytest", "report": "junit", "status": "reported",
+                           "passed": self.passed, "failed": [], "skipped": []}} for c in commands]
 
     def collect_test_ids(self, repo, timeout=0):
         return self.collected
@@ -120,7 +121,7 @@ def _ctx(tmp_path, root, examples, mapping, passed=(TEST_ID,), collected=(TEST_I
                      notifier=LogNotifier(), forge=None, run_id=RUN,
                      policy=Policy(reviewer_passes=1, security_review=False, review_max_rounds=1, preview_wait_seconds=0))
     ctx.driver = Driver(ctx, examples, list(mapping))
-    ctx.event("run.created", {"outcome_id": "o", "title": "t"})
+    ctx.event("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     for stage in ("decomposing", "gate_1_decomposition"):
         ctx.event("stage.entered", {"stage": stage})
     ctx.event("artifact.produced", {"artifact_type": "decomposition", "revision": 1, "work_items": examples["decomposition"]["work_items"]})
@@ -151,7 +152,7 @@ def test_one_round_to_ready_with_every_hand_off_and_the_bookkeeping(tmp_path, ro
     det = {d["check"]: d for d in verdict["deterministic_checks"]}
     assert det[SETUP_CHECK]["passed"] and det["ac_test_mapping"]["passed"] and "saw pass" in det["ac_test_mapping"]["detail"]
     test_results = ctx.store.get_json(RUN, "implement", f"{SID}-r1-test_results.json")
-    assert test_results["commands"][0]["pytest"]["passed"] == [TEST_ID]
+    assert test_results["commands"][0]["tests"]["passed"] == [TEST_ID]
     # issue 16: the merge judge was told the real round, its verdict carries it, and provenance is the orchestrator's
     assert verdict["result"] == "ready" and verdict["round"] == 1 and "round 1." in calls["merge_judge"]["description"]
     assert verdict["produced_by"]["session_id"] == "sesn_merge_judge_1" and verdict["produced_by"]["agent_id"] == "agent_merge_judge"
@@ -160,7 +161,8 @@ def test_one_round_to_ready_with_every_hand_off_and_the_bookkeeping(tmp_path, ro
     assert stored["produced_by"]["session_id"] == "sesn_merge_judge_1" and stored["round"] == 1
     report = ctx.store.get_json(RUN, "implement", f"{SID}-r1-implementation_report.json")
     assert report["produced_by"]["session_id"] == "sesn_implementer_1"
-    findings = ctx.store.get_json(RUN, "review", f"{SID}-r1-p1-findings.json")
+    [path] = (tmp_path / "runs" / RUN / "artifacts" / "review").glob(f"{SID}-r1-base*-head*-p1-findings.json")
+    findings = ctx.store.get_json(RUN, "review", path.name)
     assert findings["produced_by"]["session_id"] == "sesn_reviewer_1" and findings["produced_by"]["agent_name"] == "Adversarial reviewer"
     # issue 16: every session.finished and artifact.produced names the spec and the work item
     events = ctx.store.events(RUN)

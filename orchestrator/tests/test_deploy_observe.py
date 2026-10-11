@@ -61,7 +61,7 @@ def _ctx(tmp_path: Path, root: Path, queue) -> RunContext:
 
 
 def _seed_merged(ctx: RunContext, examples, wid="wi-smart-retries"):
-    ctx.event("run.created", {"outcome_id": "out_ledger0001"})
+    ctx.event("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "out_ledger0001"})
     ctx.event("artifact.produced", {"artifact_type": "decomposition", "revision": 1,
                                     "work_items": examples["decomposition"]["work_items"]}, actor="agent")
     for stage in ("spec_drafting", "spec_judging", "spec_approved", "implementing", "reviewing", "merge_judging",

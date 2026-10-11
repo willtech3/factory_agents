@@ -6,9 +6,9 @@ The orchestrator never calls `agents.create()`; it only reads IDs here.
 Forge and gate-surface selection (ADR-0007, ADR-0008):
 
     FACTORY_FORGE=github|gitlab          default github
-    FORGE_URL / FORGE_TOKEN / FORGE_REPO  with GITHUB_* and GITLAB_URL/GITLAB_TOKEN/GITLAB_PROJECT as aliases
-    FACTORY_GATE_SURFACE=tracker|file|web  default tracker when LINEAR_API_KEY is set, else web;
-                                          web (or file) = decide in the Factory Console / CLI only.
+    FORGE_URL / FORGE_TOKEN / FORGE_REPO  FORGE_URL defaults to the public host of the forge
+    FACTORY_GATE_SURFACE=tracker|web      default tracker when LINEAR_API_KEY is set, else web;
+                                          web = decide in the Factory Console / CLI only.
                                           There is no forge surface: the factory opens no design PR (ADR-0011)
     FACTORY_PAGE_PUBLISHER=local|artifact default local
     LINEAR_API_KEY / LINEAR_TEAM_ID       the tracker surface (Linear); JIRA_* is a stub
@@ -40,7 +40,7 @@ ENVIRONMENT_FILE = "./environments/factory-cloud.yaml"
 OPTIONAL_AGENTS = {"security_reviewer", "app_onboarding"}
 
 FORGES = ("github", "gitlab")
-GATE_SURFACES = ("tracker", "file", "web")   # web = the Factory Console over the file queue
+GATE_SURFACES = ("tracker", "web")   # web = the Factory Console over the file queue
 PAGE_PUBLISHERS = ("local", "artifact")
 DEFAULT_FORGE_URL = {"github": "https://github.com", "gitlab": "https://gitlab.com"}
 
@@ -127,14 +127,6 @@ def managed_gaps(cfg: Config) -> list[str]:
     return gaps
 
 
-def _first(*names: str, default: str | None = None) -> str | None:
-    for n in names:
-        v = os.environ.get(n)
-        if v:
-            return v
-    return default
-
-
 def load_dotenv(path: Path | None = None, override: bool = False) -> list[str]:
     """Load KEY=VALUE lines from the repo's .env into os.environ (never overriding what is set). Returns the keys loaded.
     No dependency, no interpolation; quotes around values are stripped. Values are never logged."""
@@ -181,14 +173,9 @@ def load(lock_path: Path | None = None, dotenv_path: Path | None = None) -> Conf
             agents[key] = AgentRef(id=override, version=None)
 
     forge = (os.environ.get("FACTORY_FORGE") or "github").lower()
-    if forge == "github":
-        forge_url = _first("FORGE_URL", "GITHUB_URL", default=DEFAULT_FORGE_URL["github"])
-        forge_token = _first("FORGE_TOKEN", "GITHUB_TOKEN")
-        forge_repo = _first("FORGE_REPO", "GITHUB_REPO", "GITHUB_REPOSITORY", default="")
-    else:
-        forge_url = _first("FORGE_URL", "GITLAB_URL", default=DEFAULT_FORGE_URL.get(forge, ""))
-        forge_token = _first("FORGE_TOKEN", "GITLAB_TOKEN")
-        forge_repo = _first("FORGE_REPO", "GITLAB_PROJECT", default="")
+    forge_url = os.environ.get("FORGE_URL") or DEFAULT_FORGE_URL.get(forge, "")
+    forge_token = os.environ.get("FORGE_TOKEN") or None
+    forge_repo = os.environ.get("FORGE_REPO") or ""
     linear_key = os.environ.get("LINEAR_API_KEY")
     gate_surface = (os.environ.get("FACTORY_GATE_SURFACE") or ("tracker" if linear_key else "web")).lower()
 
@@ -278,7 +265,7 @@ def missing(cfg: Config, design_only: bool = False) -> list[str]:
     if cfg.forge not in FORGES:
         gaps.append(f"FACTORY_FORGE={cfg.forge!r} (expected github|gitlab)")
     if not cfg.forge_token:
-        gaps.append("FORGE_TOKEN (orchestrator-side; GITHUB_TOKEN or GITLAB_TOKEN also accepted)")
+        gaps.append("FORGE_TOKEN (orchestrator-side)")
     if cfg.forge == "gitlab" and not cfg.vault_id:
         gaps.append("FACTORY_VAULT_ID (sandbox git access for the gitlab forge, ADR-0003)")
     return gaps + _surface_gaps(cfg)
@@ -291,14 +278,14 @@ def missing_for_watch(cfg: Config) -> list[str]:
     if cfg.forge not in FORGES:
         gaps.append(f"FACTORY_FORGE={cfg.forge!r} (expected github|gitlab)")
     if not cfg.forge_token:
-        gaps.append("FORGE_TOKEN (orchestrator-side; GITHUB_TOKEN or GITLAB_TOKEN also accepted)")
+        gaps.append("FORGE_TOKEN (orchestrator-side)")
     return gaps + _surface_gaps(cfg)
 
 
 def _surface_gaps(cfg: Config) -> list[str]:
     gaps = []
     if cfg.gate_surface not in GATE_SURFACES:
-        gaps.append(f"FACTORY_GATE_SURFACE={cfg.gate_surface!r} (expected tracker|file|web)")
+        gaps.append(f"FACTORY_GATE_SURFACE={cfg.gate_surface!r} (expected tracker|web)")
     if cfg.gate_surface == "tracker":
         if not cfg.linear_api_key:
             gaps.append("LINEAR_API_KEY (tracker gate surface)")

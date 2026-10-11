@@ -58,7 +58,7 @@ def _ctx(tmp_path, root, examples, driver, queue):
     ctx = RunContext(cfg=make_config(root, tmp_path), store=RunStore(tmp_path), driver=driver, queue=queue,
                      notifier=LogNotifier(), forge=None, policy=Policy(spec_judge_max_rounds=2), run_id="run_budget000001")
     ctx.store.put_artifact(ctx.run_id, "intake", "outcome.json", json.dumps(examples["outcome"]).encode())
-    ctx.event("run.created", {"outcome_id": "o", "title": "t"})
+    ctx.event("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     ctx.event("stage.entered", {"stage": "decomposing"})
     ctx.event("artifact.produced", {"artifact_type": "decomposition", "revision": 1, "work_items": examples["decomposition"]["work_items"]})
     ctx.event("stage.entered", {"stage": "gate_1_decomposition"})

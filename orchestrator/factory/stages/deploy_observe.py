@@ -293,7 +293,3 @@ def on_change_request_merged(ctx: RunContext, spec: dict[str, Any], merge_sha: s
     return observe_deploy(ctx, spec, merge_sha, default_branch, ctx.forge, run_e2e,
                           smoke_commands=ctx.cfg.smoke_commands, assignees=assignees,
                           timeout_seconds=ctx.policy.dev_pipeline_timeout_seconds)
-
-
-on_mr_merged = on_change_request_merged   # pre-ADR-0008 name
-_observe_once = observe_once               # name before the watcher split the stage into ticks

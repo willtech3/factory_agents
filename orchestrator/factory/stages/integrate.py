@@ -20,7 +20,7 @@ test_results.json, run_summary.json, cr_template.md). The branch {branch} is alr
 {head_sha} (the exact head verified and approved by the merge judge).
 {git}
 Factory records remain in the external artifact store: use run_summary.json artifact_links in the PR description.
-Do not write or commit .factory files to the target repository. This replaces the earlier run-record-commit workflow.
+Do not write or commit .factory files to the target repository.
 Render the supplied current template, call open_change_request, and write cr.json to /mnt/session/outputs/. The verification was run in
 preview mode "{preview_mode}" (run_summary.json `preview_mode`; test_results.json `environment` and `preview` say exactly
 where and how). {skill_clause}"""

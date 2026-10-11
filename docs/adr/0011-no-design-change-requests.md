@@ -9,7 +9,7 @@ The first live use (evergreen_chat PR 118, run `run_1bf2f7742b`) showed the cost
 
 ## Decision
 1. **The target repository sees nothing from the factory before Gate 3.** No branch, commit or change request is created for Gates 1 and 2. The only change requests are the code PRs (or MRs) the integrator opens.
-2. **The `forge` gate surface is removed.** `FACTORY_GATE_SURFACE` accepts `tracker`, `file` and `web`; the default is `tracker` when `LINEAR_API_KEY` is set, else `web`. A leftover `forge` value is an unknown surface and reported as a configuration gap.
+2. **The `forge` gate surface is removed.** `FACTORY_GATE_SURFACE` accepts `tracker` and `web`; the default is `tracker` when `LINEAR_API_KEY` is set, else `web`. A leftover `forge` value is an unknown surface and reported as a configuration gap.
 3. **Gates are read on the artifact pages and the Factory Console, and decided on the Console, the CLI or the tracker.** Inline review comments on the specs are replaced by the notes the Console carries with Request changes and by tracker comments.
 4. **The forge protocol loses what only the design CR used**: `create_branch`, `file_url`, `change_request_comments`, `change_request_discussions` and `render_feedback_md`. The integrator's `open_change_request` tool drops `design_cr_id`, and the PR template drops its design CR link.
 
