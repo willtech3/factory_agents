@@ -289,7 +289,10 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
         if state.stage != to:
             _move_run(state, to)
     elif k == "run.completed":
-        _move_run(state, RunStage.COMPLETED)
+        # An escalated run waits for a person. The runner used to append run.completed after a merge-judge escalation
+        # (run_8d9b17b4f5), and replaying escalated -> completed raised, so the run could not be read at all.
+        if state.stage != RunStage.ESCALATED:
+            _move_run(state, RunStage.COMPLETED)
     elif k in ("deploy.started", "deploy.succeeded") and ev.work_item_id in state.work_items:
         wi = state.work_items[ev.work_item_id]
         wi.dev_pipeline_id = p.get("pipeline_id", wi.dev_pipeline_id)
