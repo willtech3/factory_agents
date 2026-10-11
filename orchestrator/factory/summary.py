@@ -58,7 +58,10 @@ def summarize(events: list[RunEvent], state: RunState, controller_alive: bool | 
     escalations = [ev.payload.get("reason") for ev in events if ev.kind == "run.escalated" and ev.payload.get("reason")]
     failed_in = _stage_before(events, "run.failed")
     pause = last_pause(events) if state.stage == RunStage.PAUSED_BUDGET else None
-    working = _working_roles(events)
+    live = _live_sessions(events)
+    working = _working_roles(live)
+    # when the oldest live session started: agent activity, which pipeline events (updated_at) do not track
+    working_since = min((at for _, at in live.values()), default=None)
     status = _status(state, controller_alive)
     counts = {
         "work_items": len(state.work_items), "specs_approved": len(approved), "pull_requests": len(pull_requests),
@@ -78,6 +81,7 @@ def summarize(events: list[RunEvent], state: RunState, controller_alive: bool | 
         "counts": counts, "pull_requests": [{**p, "stage": p["stage"].value} for p in pull_requests],
         "specs_approved": approved, "decisions": decisions,
         "failure": failure, "failed_in": failed_in, "escalations": escalations, "pause": pause, "working": working,
+        "working_since": working_since, "live_sessions": len(live),
         "open_gates": [GATE_LABEL.get(g.get("kind"), g.get("kind")) for g in state.open_gates.values()],
         "open_questions": len(state.open_questions),
         "open_gate_ids": list(state.open_gates), "open_question_ids": list(state.open_questions),
@@ -171,20 +175,25 @@ def _ended_at(events: list[RunEvent], state: RunState) -> str | None:
     return None
 
 
-def _working_roles(events: list[RunEvent]) -> list[str]:
-    """Roles with a session started and not yet finished, in the order they started."""
-    live: dict[str, str] = {}
+def _live_sessions(events: list[RunEvent]) -> dict[str, tuple[str, str]]:
+    """Sessions started and not yet finished: session id -> (role, started at), in the order they started."""
+    live: dict[str, tuple[str, str]] = {}
     for ev in events:
         p = ev.payload
         if ev.kind == "session.started" and p.get("session_id"):
-            live[p["session_id"]] = p.get("agent_key") or p.get("agent_id") or "agent"
+            live[p["session_id"]] = (p.get("agent_key") or p.get("agent_id") or "agent", ev.at)
         elif ev.kind == "session.finished":
             live.pop(p.get("session_id"), None)
         elif ev.kind == "run.failed":
             for sid in p.get("interrupted_sessions") or []:
                 live.pop(sid, None)
+    return live
+
+
+def _working_roles(live: dict[str, tuple[str, str]]) -> list[str]:
+    """Roles with a session started and not yet finished (`_live_sessions`), in the order they started."""
     seen: list[str] = []
-    for role in live.values():
+    for role, _ in live.values():
         if role not in seen:
             seen.append(role)
     return seen

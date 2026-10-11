@@ -530,7 +530,8 @@ class Console:
             except json.JSONDecodeError:
                 continue
             out.append({"outcome_id": o.get("outcome_id"), "title": o.get("title"), "created_at": o.get("created_at"),
-                        "owner": (o.get("owner") or {}).get("handle"), "runs": runs_by_outcome.get(o.get("outcome_id"), []),
+                        "owner": (o.get("owner") or {}).get("handle"), "owner_name": (o.get("owner") or {}).get("name"),
+                        "runs": runs_by_outcome.get(o.get("outcome_id"), []),
                         "target_repositories": o.get("target_repositories", []),
                         "path": str(p)})
         out.sort(key=lambda o: o.get("created_at") or "", reverse=True)
@@ -544,12 +545,9 @@ class Console:
         if not outcome.get("created_at"):
             outcome["created_at"] = datetime.now(timezone.utc).isoformat()
         outcome = _clean(outcome)
-        result = checks.schema_valid(outcome, self.cfg.schemas_dir / "outcome.schema.json", self.cfg.schemas_dir)
-        problems = [] if result.passed else [result.detail]
-        if not (outcome.get("success_metrics") or []):
-            problems.append("at least one success metric with a target is required")
-        if problems:
-            return {"ok": False, "errors": problems, "outcome": outcome}
+        field_errors = outcome_field_errors(outcome, self.cfg.schemas_dir)
+        if field_errors:
+            return {"ok": False, "errors": [e["message"] for e in field_errors], "field_errors": field_errors, "outcome": outcome}
         self.outcomes_dir.mkdir(parents=True, exist_ok=True)
         path = self.outcomes_dir / f"{outcome['outcome_id']}.json"
         path.write_text(json.dumps(outcome, indent=2))
@@ -746,6 +744,8 @@ class Console:
                 "design_gaps": design_gaps, "can_run_design": not design_gaps,
                 "workspace_id": self.cfg.workspace_id, "console_session_url": self.cfg.console_session_url("SESSION_ID"),
                 "agents": {k: {"id": v.id, "version": v.version} for k, v in self.cfg.agents.items()},
+                # the security pass runs only when its optional agent is deployed (implement.py skips it otherwise)
+                "security_review_available": "security_reviewer" in self.cfg.agents,
                 "environment_id": self.cfg.environment_id}
 
     _platform_cache: tuple[float, dict[str, Any]] | None = None
@@ -783,6 +783,51 @@ def redact(text: str) -> str:
         if v and len(v) >= 12 and any(t in k.upper() for t in ("TOKEN", "KEY", "SECRET", "PASSWORD")):
             text = text.replace(v, "***")
     return re.sub(r"(https?://)[^/\s:@]+:[^/\s@]+@", r"\1***@", text)
+
+
+# What the outcome form calls each field, by JSON pointer with list indexes as `*`.
+OUTCOME_FIELDS = {
+    "title": "The short title", "statement": "The outcome statement", "success_metrics": "Success metrics",
+    "success_metrics/*/metric": "The metric", "success_metrics/*/target": "The target",
+    "success_metrics/*/baseline": "The baseline", "success_metrics/*/measurement": "How it is measured",
+    "owner": "The owner", "owner/name": "The owner's name", "owner/handle": "The owner's code host handle",
+    "target_repositories/*/url": "The repository URL", "target_repositories/*/default_branch": "The default branch",
+    "constraints/budget_usd": "The budget", "constraints/deadline": "The deadline",
+}
+
+
+def outcome_field_errors(outcome: dict[str, Any], schemas_dir: Path) -> list[dict[str, str]]:
+    """Why an outcome cannot be saved, one entry per form field: `field` is a JSON pointer into the outcome
+    (`success_metrics/0/target`) so the form can mark that control and put `message` beside it, in the form's words
+    rather than the schema's."""
+    def label(path: list[Any]) -> str:
+        key = "/".join("*" if isinstance(x, int) else str(x) for x in path)
+        return OUTCOME_FIELDS.get(key, "This field" if path else "The outcome")
+
+    out: list[dict[str, str]] = []
+    if not (outcome.get("success_metrics") or []):
+        out.append({"field": "success_metrics", "message": "Add at least one success metric with a target."})
+    for e in checks.schema_errors(outcome, schemas_dir / "outcome.schema.json", schemas_dir):
+        path = list(e.path)
+        if e.validator == "required":
+            for name in e.validator_value:
+                if isinstance(e.instance, dict) and name not in e.instance:
+                    out.append({"field": "/".join(map(str, path + [name])), "message": f"{label(path + [name])} is required."})
+            continue
+        if e.validator == "minItems" and path == ["success_metrics"]:
+            continue                                    # said once above
+        n = e.validator_value
+        message = {"minLength": f"{label(path)} needs at least {n} characters; it has {len(e.instance) if isinstance(e.instance, str) else 0}.",
+                   "maxLength": f"{label(path)} can be at most {n} characters.",
+                   "type": f"{label(path)} has the wrong kind of value.",
+                   "format": f"{label(path)} is not a valid {n}."}.get(e.validator, f"{label(path)}: {e.message}")
+        out.append({"field": "/".join(map(str, path)), "message": message})
+    # jsonschema reports `required` once per missing property, each carrying the whole list: keep each field once
+    unique: list[dict[str, str]] = []
+    for e in out:
+        if e not in unique:
+            unique.append(e)
+    return unique
 
 
 def _trim(payload: dict[str, Any], limit: int = 4000) -> dict[str, Any]:
@@ -833,7 +878,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.get("/api/apps")
     def api_apps():
-        return {"apps": onboarding.list()}
+        return {"apps": [onboarding.refresh_setup_pr(a) for a in onboarding.list()]}
 
     @app.post("/api/apps")
     def api_create_app(body: AppBody):
@@ -854,7 +899,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.get("/api/apps/{app_id}")
     def api_app(app_id: str):
-        return onboarding.get(app_id)
+        return onboarding.refresh_setup_pr(onboarding.get(app_id))
 
     @app.post("/api/apps/{app_id}/discover")
     def api_app_discover(app_id: str):

@@ -15,6 +15,7 @@ import re
 import subprocess
 import tarfile
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -31,6 +32,10 @@ from .test_environments import fingerprint, snapshot, validate_profile, run_host
 from .app_environments import DISCOVERY_PROFILE, AppEnvironments, links_from_records
 
 BUSY = {"discovering", "verifying", "publishing"}
+PR_RECHECK_SECONDS = 300     # how often an open setup pull request's state is re-read from the forge
+PR_PHASE = {"open": "Setup pull request is ready for human review",
+            "merged": "Setup pull request merged; change runs can use this setup",
+            "closed": "Setup pull request closed without merging"}
 APP_ID = re.compile(r"app_[a-f0-9]{12}")
 MAX_SOURCE = 100 * 1024 * 1024
 
@@ -147,6 +152,7 @@ def validate_plan(plan: dict, kind: str, repo: Path, schemas: Path, manifest_pat
 class AppOnboarding:
     def __init__(self, cfg, client=None):
         self.cfg, self._client = cfg, client
+        self._pr_checked: dict[str, float] = {}      # app_id -> monotonic time of the last forge read of its setup PR
         self.root = cfg.runs_dir / "_apps"
         self.root.mkdir(parents=True, exist_ok=True)
 
@@ -569,9 +575,43 @@ class AppOnboarding:
             pr = forge.create_change_request(source_branch=branch, target_branch=(r.get("revision") or r.get("default_branch", "main")) if r["kind"] == "existing" and not re.fullmatch(r"[a-f0-9]{40}", r.get("revision", "")) else r.get("default_branch", "main"),
                 title="Add Factory onboarding and isolated app verification",
                 description=description, labels=[], reviewers=[], draft=True)
-            self.update(app_id, pr_url=pr.url, status="ready_limited" if r["plan"]["limitations"] else "ready", phase="Setup pull request is ready for human review")
+            self.update(app_id, pr_url=pr.url, pr_state="open", status="ready_limited" if r["plan"]["limitations"] else "ready", phase=PR_PHASE["open"])
         finally:
             forge.http.close()
+
+    def refresh_setup_pr(self, r):
+        """`r` with its setup pull request's state as the forge reports it now (pr_state: open, merged or closed).
+        Publishing records only that the pull request was opened; the merge or close happens later on the forge, so a
+        record read on its own goes stale. An open pull request is re-read at most every PR_RECHECK_SECONDS per app; a
+        settled one never again. A failed read (no token, forge unreachable) keeps the last known state."""
+        match = re.search(r"/pull/(\d+)$", r.get("pr_url") or "")
+        if not match or r.get("pr_state") in ("merged", "closed"):
+            return r
+        app_id, now_s = r["app_id"], time.monotonic()
+        if now_s - self._pr_checked.get(app_id, float("-inf")) < PR_RECHECK_SECONDS:
+            return r
+        self._pr_checked[app_id] = now_s
+        try:
+            forge = self.forge(r)
+        except (ValueError, HTTPException):
+            return r
+        try:
+            seen = forge.change_request_state(int(match.group(1)))
+        except Exception:  # noqa: BLE001
+            return r
+        finally:
+            forge.http.close()
+        state = "open" if seen.get("state") == "opened" else seen.get("state")
+        if state not in PR_PHASE or state == r.get("pr_state", "open"):
+            return r
+        with self.locked(app_id) as rec:
+            if rec.get("pr_url") != r["pr_url"]:
+                return self.get(app_id)
+            rec.update(pr_state=state, pr_merged_at=seen.get("merged_at"))
+            if rec["status"] in ("ready", "ready_limited"):     # the phase still describes the published setup
+                rec["phase"] = PR_PHASE[state]
+            self.write(rec)
+        return self.get(app_id)
 
     def binding_for(self, target, app_id=None):
         """The managed-run settings for a change to `target`, on every start path: the named app's (`run_settings`), else

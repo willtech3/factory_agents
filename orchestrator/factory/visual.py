@@ -61,7 +61,9 @@ def media_type(path: Path) -> str | None:
 
 
 def collect(directory: Path, request: dict, exit_code: int | None) -> dict:
-    result = {**request, "status": "blocked", "summary": "No browser evidence returned", "media": [],
+    # summary_source says who wrote the summary: the worker's own words ("worker"), or the controller's reason for
+    # refusing or not having its report ("controller"). The Console shows the worker's text as its interpretation only.
+    result = {**request, "status": "blocked", "summary": "No browser evidence returned", "summary_source": "controller", "media": [],
               "steps_observed": [], "recorded_at": datetime.now(timezone.utc).isoformat()}
     try:
         p = directory / "result.json"
@@ -75,7 +77,7 @@ def collect(directory: Path, request: dict, exit_code: int | None) -> dict:
             raise ValueError("browser status must be passed, failed or blocked")
         if not isinstance(report.get("summary"), str) or not report["summary"].strip():
             raise ValueError("browser observation summary is missing")
-        result.update(status=status, summary=report["summary"][:2000], runner=str(report.get("runner", "unspecified"))[:120])
+        result.update(status=status, summary=report["summary"][:2000], summary_source="worker", runner=str(report.get("runner", "unspecified"))[:120])
         steps = report.get("steps", [])
         if not isinstance(steps, list) or len(steps) != len(request["steps"]):
             raise ValueError("browser report must account for every planned step")
@@ -114,7 +116,7 @@ def collect(directory: Path, request: dict, exit_code: int | None) -> dict:
                 raise ValueError("a passing browser check needs an observed screenshot")
         result["demo_note"] = str(report.get("demo_note", "Recording not supplied; screenshots are available."))[:500]
     except (OSError, ValueError, TypeError, AttributeError) as exc:
-        result.update(status="blocked", summary=f"Browser evidence unavailable: {exc}")
+        result.update(status="blocked", summary=f"Browser evidence unavailable: {exc}", summary_source="controller")
         result["media"] = []
     return result
 
@@ -131,7 +133,7 @@ def persist(ctx, spec_id: str, round_no: int, head: str, rows: list[dict]) -> di
             source = Path(media.pop("source"))
             content = source.read_bytes()
             if hashlib.sha256(content).hexdigest() != media["sha256"]:
-                evidence.update(status="blocked", summary="Browser media changed after verification")
+                evidence.update(status="blocked", summary="Browser media changed after verification", summary_source="controller")
                 continue
             name = prefix + media["name"]
             ctx.store.put_artifact(ctx.run_id, "visual", name, content)

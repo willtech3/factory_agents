@@ -90,6 +90,8 @@ def policy_snapshot(ctx: RunContext) -> dict[str, Any]:
     p = ctx.policy
     return {"run_budget_usd": p.run_budget_usd, "reviewer_passes": p.reviewer_passes, "review_max_rounds": p.review_max_rounds,
             "security_review": getattr(p, "security_review", True), "parallel_implementations": p.parallel_implementations,
+            # the pass also needs its optional agent deployed; without one it is skipped whatever the policy says
+            "security_review_available": "security_reviewer" in ctx.cfg.agents,
             "outcome_max_iterations": p.outcome_max_iterations, "stage_budget_usd": dict(p.stage_budget_usd),
             "preview_mode": ctx.cfg.preview_mode, "design_only": p.design_only}
 
