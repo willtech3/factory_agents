@@ -11,8 +11,8 @@ Two kinds of human interaction:
    and returns the answer as a `user.custom_tool_result`.
 
 Surfaces implement `Notifier` and `ApprovalQueue`: the file queue behind the CLI, the tracker
-(`surfaces/tracker.py`: Linear today, Jira stub), the forge's design change request, and later
-Slack or the Factory Console. `CompositeQueue` lets several surfaces answer the same gate, so a
+(`surfaces/tracker.py`: Linear today, Jira stub), the Factory Console over the file queue, and
+later Slack. `CompositeQueue` lets several surfaces answer the same gate, so a
 decision can come from the CLI or from Linear. The in-memory implementations here are for tests
 and local use. See docs/adr/0007-pluggable-gate-surfaces.md.
 """
@@ -63,7 +63,7 @@ def parse_budget(text: str | None) -> float | None:
 class ArtifactRef:
     name: str
     sha256: str
-    url: str | None = None                # where the human can read it (gate page anchor, design CR file, tracker)
+    url: str | None = None                # where the human can read it (gate page anchor, tracker)
 
 
 @dataclass

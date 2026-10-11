@@ -30,9 +30,9 @@
     "./agents/integrator.md": {
       "kind": "agent",
       "id": "agent_01WDu19kHsS3Xyew5Jofp2Nr",
-      "version": "3",
-      "hash": "fc2778541b9eed1636864e8cee56ecb5",
-      "remote_hash": "f686cb3bed21e548f17b297fdb1ab78c"
+      "version": "4",
+      "hash": "03bd5dbd7a2f5e9e4c4cd7ff4f783b58",
+      "remote_hash": "6051ca8374b2df17fcecf2baee0df769"
     },
     "./agents/merge_judge.md": {
       "kind": "agent",
@@ -76,6 +76,7 @@
       "remote_hash": "5536fbc8164faf7fdb49197ff47f38c3"
     },
     "./agents/security_reviewer.md": {
+      "kind": "agent",
       "id": "agent_014sD4HhWvEK12TiuSJrztnB",
       "version": "1"
     }

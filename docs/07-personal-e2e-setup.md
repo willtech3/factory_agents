@@ -112,8 +112,6 @@ The run id is printed first. The process blocks at each gate; keep a second term
 
 **From the CLI.** `factory gates` lists open gates and questions with their artifact hashes; `factory decide <gate_id> approve|request_changes|reject|approve_subset --comment "..." [--spec spec_x]` and `factory answer <question_id> "text"`. The CLI binds the hashes automatically. Both surfaces are polled; the first decision wins.
 
-**From the forge** (`FACTORY_GATE_SURFACE=forge`): the design PR holds the files for inline comments; the decision still comes from the CLI (or the tracker when both are configured).
-
 ## 8. What you see in the Anthropic Console
 
 Each stage is a session titled `<run_id> <stage> ...`, with `metadata.run_id` so the sessions list can be filtered. The session view shows the `github_repository` resource, the uploaded `schemas/` and `tools/validate.py`, every tool call, the outcome-grader iterations for writing stages (`span.outcome_evaluation_end`), custom tool calls (`ask_human`, `open_change_request`) with the orchestrator's replies, and the list cost. `ant beta:sessions connect <session_id>` attaches a terminal to a live session. Every artifact's `produced_by.session_id` is the link back.

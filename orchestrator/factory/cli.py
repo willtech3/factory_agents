@@ -186,7 +186,7 @@ def _context(cfg, outcome: dict, run_id: str, *, forge: bool, design_only: bool,
     from .surfaces.artifact_pages import make_publisher
     from .surfaces.tracker import make_tracker_queue
 
-    cfg, forge_obj, created = _bind_forge(cfg, outcome, forge and not (design_only and cfg.gate_surface != "forge"))
+    cfg, forge_obj, created = _bind_forge(cfg, outcome, forge and not design_only)
     queue, notifier = _queue(cfg), LogNotifier()
     tracker = make_tracker_queue(cfg)
     if tracker is not None:

@@ -1,6 +1,6 @@
 # ADR-0007: Pluggable gate surfaces, tracker as the default board
 
-**Status:** accepted · **Date:** 2026-10-10
+**Status:** accepted · **Date:** 2026-10-10 · The `forge` surface was removed by [ADR-0011](0011-no-design-change-requests.md); the default without Linear is now `web`.
 
 ## Context
 Gates 1 and 2 were bound to one surface: a draft merge request on GitLab holding the decomposition and specs as files, with inline comments as feedback and the CLI's file queue as the only place a decision was actually read from ([ADR-0003](0003-gitlab-integration.md)). That assumed GitLab, assumed every owner is comfortable reviewing JSON on a merge request, and gave the run no board: nobody could see at a glance which work items were where. The user wants to run the factory with a personal GitHub account and a personal Linear workspace first, and later at work with Jira and self-hosted GitLab, so both the forge and the surface a human decides on must be pluggable.

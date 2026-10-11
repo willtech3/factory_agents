@@ -7,8 +7,9 @@ Forge and gate-surface selection (ADR-0007, ADR-0008):
 
     FACTORY_FORGE=github|gitlab          default github
     FORGE_URL / FORGE_TOKEN / FORGE_REPO  with GITHUB_* and GITLAB_URL/GITLAB_TOKEN/GITLAB_PROJECT as aliases
-    FACTORY_GATE_SURFACE=forge|tracker|file|web   default tracker when LINEAR_API_KEY is set, else forge;
-                                          web (or file) = decide in the Factory Console / CLI only
+    FACTORY_GATE_SURFACE=tracker|file|web  default tracker when LINEAR_API_KEY is set, else web;
+                                          web (or file) = decide in the Factory Console / CLI only.
+                                          There is no forge surface: the factory opens no design PR (ADR-0011)
     FACTORY_PAGE_PUBLISHER=local|artifact default local
     LINEAR_API_KEY / LINEAR_TEAM_ID       the tracker surface (Linear); JIRA_* is a stub
 """
@@ -39,7 +40,7 @@ ENVIRONMENT_FILE = "./environments/factory-cloud.yaml"
 OPTIONAL_AGENTS = {"security_reviewer", "app_onboarding"}
 
 FORGES = ("github", "gitlab")
-GATE_SURFACES = ("forge", "tracker", "file", "web")   # web = the Factory Console over the file queue
+GATE_SURFACES = ("tracker", "file", "web")   # web = the Factory Console over the file queue
 PAGE_PUBLISHERS = ("local", "artifact")
 DEFAULT_FORGE_URL = {"github": "https://github.com", "gitlab": "https://gitlab.com"}
 
@@ -59,7 +60,7 @@ class Config:
     forge_url: str                      # https://github.com, or the self-hosted GitLab host
     forge_token: str | None             # orchestrator-side token; also the github_repository authorization_token
     forge_repo: str                     # "owner/repo" (GitHub) or "group/project" (GitLab)
-    gate_surface: str                   # forge | tracker | file
+    gate_surface: str                   # tracker | file | web
     page_publisher: str                 # local | artifact
     linear_api_key: str | None
     linear_team_id: str | None
@@ -189,7 +190,7 @@ def load(lock_path: Path | None = None, dotenv_path: Path | None = None) -> Conf
         forge_token = _first("FORGE_TOKEN", "GITLAB_TOKEN")
         forge_repo = _first("FORGE_REPO", "GITLAB_PROJECT", default="")
     linear_key = os.environ.get("LINEAR_API_KEY")
-    gate_surface = (os.environ.get("FACTORY_GATE_SURFACE") or ("tracker" if linear_key else "forge")).lower()
+    gate_surface = (os.environ.get("FACTORY_GATE_SURFACE") or ("tracker" if linear_key else "web")).lower()
 
     return Config(
         agents=agents,
@@ -297,7 +298,7 @@ def missing_for_watch(cfg: Config) -> list[str]:
 def _surface_gaps(cfg: Config) -> list[str]:
     gaps = []
     if cfg.gate_surface not in GATE_SURFACES:
-        gaps.append(f"FACTORY_GATE_SURFACE={cfg.gate_surface!r} (expected forge|tracker|file|web)")
+        gaps.append(f"FACTORY_GATE_SURFACE={cfg.gate_surface!r} (expected tracker|file|web)")
     if cfg.gate_surface == "tracker":
         if not cfg.linear_api_key:
             gaps.append("LINEAR_API_KEY (tracker gate surface)")

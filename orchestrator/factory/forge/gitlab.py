@@ -1,10 +1,7 @@
 """GitLab forge (orchestrator side). The second `Forge` implementation; GitHub is the default.
 
-Two uses:
-1. The **design MR** (when `FACTORY_GATE_SURFACE=forge`): decomposition and specs are committed
-   under `.factory/runs/<run_id>/` on a branch and opened as a draft MR, so Gate 1 and Gate 2
-   happen in GitLab's own review UI with inline comments.
-2. The **code MR** per spec, created by the `open_change_request` custom tool handler.
+Its use is the **code MR** per spec, created by the `open_change_request` custom tool handler. Gates 1 and 2
+never touch the project: no design MR is opened (ADR-0011).
 
 The sandbox never holds this token. Sessions clone and push through the vault bearer-header path
 of ADR-0003 (`sandbox_git_instructions`). Only the REST calls the factory needs are implemented.
@@ -17,7 +14,7 @@ from urllib.parse import quote
 
 import httpx
 
-from . import ChangeRequest, PIPELINE_TERMINAL, ref_slug, render_feedback_md
+from . import ChangeRequest, PIPELINE_TERMINAL, ref_slug
 
 GIT_SETUP = """Git access: the repository is NOT pre-mounted. Clone it with
   git -c http.extraHeader="Authorization: Bearer $GITLAB_TOKEN" clone --branch {base_branch} {repo_url} /workspace/repo
@@ -66,11 +63,6 @@ class GitLabForge:
                 "private": private, "id": d.get("id")}
 
     # ---- branches & commits
-    def create_branch(self, branch: str, ref: str) -> None:
-        r = self.http.post(self._p("/repository/branches"), data={"branch": branch, "ref": ref})
-        if r.status_code not in (201, 400):   # 400 when it already exists
-            r.raise_for_status()
-
     def commit_files(self, branch: str, message: str, files: dict[str, bytes]) -> str:
         """Create or update several files in one commit. Returns the commit sha."""
         existing = self._existing_paths(branch, list(files))
@@ -95,9 +87,6 @@ class GitLabForge:
 
     def file_exists(self, branch: str, path: str) -> bool:
         return self.http.head(self._p(f"/repository/files/{quote(path, safe='')}"), params={"ref": branch}).status_code == 200
-
-    def file_url(self, branch: str, path: str) -> str:
-        return f"{self.url}/{self.repo}/-/blob/{branch}/{path}"
 
     # ---- merge requests
     def create_change_request(self, *, source_branch: str, target_branch: str, title: str, description: str,
@@ -128,27 +117,6 @@ class GitLabForge:
         r.raise_for_status()
         d = r.json()
         return bool(d.get("approved")) or bool(d.get("approvals_left", 1) == 0 and d.get("approved_by"))
-
-    def change_request_comments(self, cr_id: int) -> list[dict[str, Any]]:
-        """Human comments on the MR, oldest first, excluding system notes. Fed back to agents verbatim."""
-        r = self.http.get(self._p(f"/merge_requests/{cr_id}/notes"), params={"sort": "asc", "per_page": 100})
-        r.raise_for_status()
-        return [{"author": n["author"]["username"], "body": n["body"], "created_at": n["created_at"],
-                 "position": n.get("position")} for n in r.json() if not n.get("system")]
-
-    def change_request_discussions(self, cr_id: int) -> list[dict[str, Any]]:
-        """Inline discussions with file/line positions, for feedback that points at a spec line."""
-        r = self.http.get(self._p(f"/merge_requests/{cr_id}/discussions"), params={"per_page": 100})
-        r.raise_for_status()
-        out = []
-        for d in r.json():
-            for n in d.get("notes", []):
-                if n.get("system"):
-                    continue
-                pos = n.get("position") or {}
-                out.append({"author": n["author"]["username"], "body": n["body"], "resolved": n.get("resolved"),
-                            "path": pos.get("new_path"), "line": pos.get("new_line")})
-        return out
 
     def add_labels(self, cr_id: int, labels: list[str]) -> None:
         r = self.http.put(self._p(f"/merge_requests/{cr_id}"), json={"add_labels": ",".join(labels)})
@@ -255,9 +223,6 @@ class GitLabForge:
 
     def authenticated_url(self, repo_url: str) -> str:
         return repo_url.replace("https://", f"https://oauth2:{self.token}@", 1)
-
-    def render_feedback_md(self, comments: list[dict[str, Any]], discussions: list[dict[str, Any]]) -> str:
-        return render_feedback_md(comments, discussions, title="Human feedback from the design MR")
 
     def _user_id(self, username: str) -> int | None:
         r = self.http.get(f"{self.base}/users", params={"username": username})
