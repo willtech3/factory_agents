@@ -325,6 +325,18 @@ def journey_command(entry: dict, uploads: Path) -> tuple[str | None, str | None]
     return JOURNEY_COMMAND.format(runner=shlex.quote(str(runner)), journey=shlex.quote(str(path))), None
 
 
+def command_env(repo: Path, env: dict) -> tuple[dict, str | None]:
+    """The environment the spec's commands run with: the sandbox's, with the virtual environment the recipe's prepare
+    phase built in the repository first on PATH, as the platform contract's per-run environment is. Without it a bare
+    `pytest` or `ruff` resolves to the sandbox's own tools, which lack the app's dependencies (live emoji-smith: every
+    module that imports google-cloud-pubsub failed collection with exit 2 while the same commands passed in .venv)."""
+    for name in (".venv", "venv"):
+        bin_dir = repo / name / "bin"
+        if (bin_dir / "python").is_file():
+            return {**env, "VIRTUAL_ENV": str(repo / name), "PATH": f"{bin_dir}:{env.get('PATH', os.defpath)}"}, name
+    return env, None
+
+
 def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: float, logs: Path, evidence: Path,
                work: Path, outputs: Path, report: dict, uploads: Path = UPLOADS) -> None:
     phases = report["phases"]
@@ -359,11 +371,13 @@ def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: flo
         out["baseline"] = {"status": "blocked", "detail": "the app did not start or its services did not become ready"}
     junit_dir = work / "junit"
     junit_dir.mkdir(exist_ok=True)
+    spec_env, venv = command_env(repo, env)
+    out["command_environment"] = {"virtualenv": venv} if venv else {"virtualenv": None}
     for i, text in enumerate(commands):
         junit, bun_report = junit_dir / f"cmd-{i}.xml", junit_dir / f"cmd-{i}-bun.xml"
         addopts = f"{env.get('PYTEST_ADDOPTS', '')} --junitxml={shlex.quote(str(junit))} -o junit_family=xunit1".strip()
         executed, bun_reason = bun_command(text, bun_report)
-        result = command(executed or text, repo, {**env, "PYTEST_ADDOPTS": addopts}, min(per_command, deadline - time.monotonic()), logs / f"change-cmd-{i}.log")
+        result = command(executed or text, repo, {**spec_env, "PYTEST_ADDOPTS": addopts}, min(per_command, deadline - time.monotonic()), logs / f"change-cmd-{i}.log")
         row = {"index": i, "command": text, **result}      # the spec's text; the reporter flags are the harness's own
         if executed:
             row["instrumented"] = "bun-junit"
@@ -378,7 +392,7 @@ def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: flo
         out["commands"].append(row)
     if change.get("collect_tests"):
         log = logs / "collect.log"
-        result = command('PY="$(command -v python || command -v python3)"; "$PY" -m pytest --collect-only -q', repo, env, min(per_command, deadline - time.monotonic()), log)
+        result = command('PY="$(command -v python || command -v python3)"; "$PY" -m pytest --collect-only -q', repo, spec_env, min(per_command, deadline - time.monotonic()), log)
         ids = [ln.strip() for ln in log.read_text(errors="replace").splitlines() if NODE_ID_RE.match(ln.strip())][:MAX_NODE_IDS]
         out["collected_tests"] = {"exit_code": result.get("exit_code"), "status": result["status"], "node_ids": ids}
     elif change.get("collect_skip_reason"):
@@ -394,7 +408,9 @@ def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: flo
             continue
         directory = work / f"e2e-{index}"
         directory.mkdir()
-        entry_env = {**env, "FACTORY_EVIDENCE_DIR": str(directory)}      # never the baseline's evidence directory
+        # The spec's own command uses the app's environment; the factory's journey runner keeps the sandbox's
+        # Python, which has Playwright.
+        entry_env = {**(env if executed else spec_env), "FACTORY_EVIDENCE_DIR": str(directory)}      # never the baseline's evidence directory
         if executed:
             entry_env.update(FACTORY_SECRET_NAMES=",".join(s["name"] for s in profile["secrets"]),
                              FACTORY_REQUIRED_SECRETS=",".join(s["name"] for s in profile["secrets"] if s["required"]),
