@@ -21,7 +21,7 @@ Sessions mount the repository with the platform's native `github_repository` res
 There is no GitLab equivalent of the `github_repository` resource, so GitLab is handled in two parts (see [ADR-0003](../docs/adr/0003-gitlab-integration.md)):
 
 1. **Clone and push from the sandbox** with a vault `environment_variable` credential named `GITLAB_TOKEN`, scoped to the GitLab host, header-only injection. The orchestrator's session kickoff tells the agent to configure git with an `http.extraHeader` carrying the placeholder, which the egress proxy substitutes. **The roadmap's work-setup spike verifies that your GitLab accepts bearer PATs on git-over-HTTPS; if it does not, fall back to a host-side `push_branch` custom tool.**
-2. **Change request creation** is the `open_change_request` custom tool executed by the orchestrator with its own token (`FORGE_TOKEN`, alias `GITLAB_TOKEN`). The sandbox never sees it.
+2. **Change request creation** is the `open_change_request` custom tool executed by the orchestrator with its own token (`FORGE_TOKEN`). The sandbox never sees it.
 
 The vault itself is created once per workspace and referenced by ID at session create (`FACTORY_VAULT_ID`, required only for the gitlab forge). Vault files are intentionally not committed here because `ant apply` manages vaults as containers only and credentials are added separately:
 

@@ -48,6 +48,9 @@ def test_gate2_page_has_judge_summary_matrix_specs_and_hashes(examples):
         assert html.escape(e["command"][:30]) in page
     for q in spec["open_questions"]:
         assert html.escape(q["question"][:30]) in page
+    rubric = next(p for p in verdict["per_spec"] if p["spec_id"] == spec["spec_id"])["criteria"]
+    for c in rubric:          # the rubric table names each criterion as the verdict schema spells it
+        assert f"<tr><td><code>{html.escape(c['criterion'])}</code></td><td>{c['score']}</td>" in page
     assert "c" * 64 in page and "d" * 64 in page
     assert "<details><summary>spec.md</summary>" in page
 
