@@ -6,6 +6,13 @@
     "workspace_id": "wrkspc_01PiQryXNBxRUaPY2GA9iGBn"
   },
   "resources": {
+    "./agents/app_onboarding.md": {
+      "kind": "agent",
+      "id": "agent_01Vfcs8bh7apzKYPVAYMDRfh",
+      "version": "1",
+      "hash": "f1a82c6d1e4f56483299bfd597de8836",
+      "remote_hash": "5536fbc8164faf7fdb49197ff47f38c3"
+    },
     "./agents/codebase_researcher.md": {
       "kind": "agent",
       "id": "agent_01V6QbSFYa2UVZK37hRoBncz",
@@ -16,16 +23,16 @@
     "./agents/decomposer.md": {
       "kind": "agent",
       "id": "agent_01PsowtEChbuMJTdyvzzpyQn",
-      "version": "4",
-      "hash": "51b1101306bfd7dccce8fc349dd9aaf8",
-      "remote_hash": "50b7ce1d967369063efafc9b61cd4abe"
+      "version": "5",
+      "hash": "9d460f729aac819cf4afd934bfdde46a",
+      "remote_hash": "991ee66ef707842368ab1d5235b884fd"
     },
     "./agents/implementer.md": {
       "kind": "agent",
       "id": "agent_01VRpRLcYCbSvLCNdVU8rKMS",
-      "version": "3",
-      "hash": "f0aca09543561924cbf220c09c0714f9",
-      "remote_hash": "9c7f638866e9d58bf061c8fa282662ff"
+      "version": "4",
+      "hash": "ff03b481eb726264637228d9657eed9a",
+      "remote_hash": "8e3e5ace764b917fb95b6185807a49ff"
     },
     "./agents/integrator.md": {
       "kind": "agent",
@@ -44,9 +51,16 @@
     "./agents/reviewer.md": {
       "kind": "agent",
       "id": "agent_01HxQzdADN7Aomrt8hRsyTu8",
-      "version": "4",
-      "hash": "d6dfc859b30c56dcf9babe7dcf463125",
-      "remote_hash": "273beae359ce7fe08e84ed748392d854"
+      "version": "5",
+      "hash": "d1295696e89d78be63d608b13814c8d1",
+      "remote_hash": "a2f30ad6c86bf2c9945357a3bdbc46d4"
+    },
+    "./agents/security_reviewer.md": {
+      "kind": "agent",
+      "id": "agent_014sD4HhWvEK12TiuSJrztnB",
+      "version": "1",
+      "hash": "9b922a8fffcae26c0a816ddd4e706d65",
+      "remote_hash": "70bda783fef7e45f0e1cc50cc0beb354"
     },
     "./agents/spec_judge.md": {
       "kind": "agent",
@@ -58,27 +72,15 @@
     "./agents/spec_writer.md": {
       "kind": "agent",
       "id": "agent_01AxE2BD34oT5H1dfkwaRDTC",
-      "version": "3",
-      "hash": "cb896be4ed324af75ded4b0d41a4ed41",
-      "remote_hash": "0125aed2ba615c45143ab8ba2033edf0"
+      "version": "4",
+      "hash": "3ea6ac5013950a00e1ab9ab88a3cb3d1",
+      "remote_hash": "32a83e56d7b42f92c567257500b2159a"
     },
     "./environments/factory-cloud.yaml": {
       "kind": "environment",
       "id": "env_01XmyirwbUp692ZoNJtHxouq",
       "hash": "5d952a5a3351e9af15593d82d1a1cc54",
       "remote_hash": "9762efa3e8ea89e8376fa1e56cf8aba4"
-    },
-    "./agents/app_onboarding.md": {
-      "kind": "agent",
-      "id": "agent_01Vfcs8bh7apzKYPVAYMDRfh",
-      "version": "1",
-      "hash": "f1a82c6d1e4f56483299bfd597de8836",
-      "remote_hash": "5536fbc8164faf7fdb49197ff47f38c3"
-    },
-    "./agents/security_reviewer.md": {
-      "kind": "agent",
-      "id": "agent_014sD4HhWvEK12TiuSJrztnB",
-      "version": "1"
     }
   }
 }
