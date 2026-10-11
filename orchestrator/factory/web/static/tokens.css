@@ -1,0 +1,50 @@
+/* Factory design tokens. See docs/console-design-system.md before adding a token. */
+:root {
+  --bg: #F5F6F8;
+  --surface: #FFFFFF;
+  --surface-2: #F6F8FA;
+  --text: #16202A;
+  --text-2: #2B3742;
+  --text-3: #5B6B7A;
+  --line: #E0E4E8;
+  --line-2: #CBD2DA;
+  --ink: #16202A;
+  --call: var(--text);          /* human-action text; neutral, never a decorative stripe */
+  --call-soft: var(--surface-2);
+  --call-text: var(--text);
+  --crew: #D97757;          /* the little Claudes */
+  --crew-soft: var(--surface-2);
+  --crew-text: var(--text-2);
+  --po: var(--text-2);
+  --eng: var(--text-2);
+  --ops: var(--text-2);
+  --ok: #1F9D55;
+  --ok-soft: #E6F4EA;
+  --warn: #B45309;
+  --warn-soft: #FEF3C7;
+  --bad: #B91C1C;
+  --bad-soft: #FEE2E2;
+  --link: #1D4ED8;
+  /* status colours as text (fills keep --ok/--warn/--bad): at least 4.5:1 on the surfaces and the soft fills */
+  --ok-text: var(--text-2); --warn-text: var(--text-2); --bad-text: #B91C1C;
+  --radius: 8px;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px; --space-7: 48px;
+  --text-xs: 12px; --text-sm: 13px; --text-base: 15px; --text-lg: 18px; --text-xl: 24px; --text-2xl: 30px;
+  --radius-sm: 6px; --radius-md: 6px; --content-max: 1400px; --reading-max: 72ch;
+  --control-height: 40px; --focus-ring: #2563EB;
+  --shadow: none;
+  --display: "Bricolage Grotesque", "Atkinson Hyperlegible", system-ui, sans-serif;
+  --sans: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --primary: var(--ink); --primary-fg: #fff; --primary-soft: #E3E8ED;
+  --approve: var(--call); --approve-soft: var(--call-soft); --changes: var(--warn); --changes-soft: var(--warn-soft);
+  --reject: var(--bad); --reject-soft: var(--bad-soft); --info-soft: #EAF0F6;
+}
+html[data-theme="dark"] {
+  --focus-ring: #A8C7FA; --po: var(--text-2); --eng: var(--text-2); --ops: var(--text-2);
+  --bg: #0F1419; --surface: #171D24; --surface-2: #1E262F; --text: #E8ECF0; --text-2: #C3CBD3; --text-3: #8E9AA6;
+  --line: #2A343F; --line-2: #3A4653; --ink: #E8ECF0; --primary: #E8ECF0; --primary-fg: #0F1419; --primary-soft: #263038;
+  --call-soft: var(--surface-2); --call-text: var(--text); --crew-soft: var(--surface-2); --crew-text: var(--text-2); --ok-soft: #12301E; --warn-soft: #3A2B0A;
+  --bad-soft: #3A1414; --info-soft: #1E2A36; --link: #8AB4F8;
+  --ok-text: var(--text-2); --warn-text: var(--text-2); --bad-text: #FCA5A5; --approve-soft: var(--call-soft); --changes-soft: var(--warn-soft); --reject-soft: var(--bad-soft);
+}

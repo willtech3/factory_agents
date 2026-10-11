@@ -71,10 +71,11 @@ body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif
 h1{font-size:1.6rem;margin:.2em 0}h2{font-size:1.2rem;margin-top:2em;border-bottom:1px solid var(--line);padding-bottom:.2em}h3{font-size:1.05rem;margin-top:1.4em}
 table{border-collapse:collapse;width:100%;margin:.6em 0;font-size:.92em}th,td{border:1px solid var(--line);padding:6px 8px;vertical-align:top;text-align:left}th{background:var(--soft)}
 code{font:.88em ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--soft);padding:1px 4px;border-radius:3px}pre{background:var(--soft);padding:10px;overflow:auto;border-radius:6px}
-.summary{background:var(--soft);border-left:4px solid var(--ok);padding:12px 16px;border-radius:6px;white-space:pre-wrap}.summary.warn{border-color:var(--warn)}
-.muted{color:var(--muted)}.pill{display:inline-block;padding:0 8px;border-radius:999px;font-size:.8em;border:1px solid var(--line)}
-.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}nav a{margin-right:12px}.sha{font:.8em ui-monospace,monospace;word-break:break-all}
-details{margin:.4em 0}summary{cursor:pointer}
+.summary{background:var(--soft);border:1px solid var(--line);padding:12px 16px;border-radius:6px;white-space:pre-wrap}
+.muted{color:var(--muted)}.status-label{display:inline;margin-left:8px;font-size:.8em;font-weight:600}
+.ok{color:var(--fg)}.bad{color:var(--bad)}.warn{color:var(--fg)}nav a{margin-right:12px}.sha{font:.8em ui-monospace,monospace;word-break:break-all}
+details{margin:.4em 0}summary{cursor:pointer;min-height:32px}summary:focus-visible{outline:2px solid var(--link);outline-offset:2px}
+@media(max-width:640px){table{display:block;overflow-x:auto;max-width:100%}.summary{overflow-wrap:anywhere}}
 """
 
 
@@ -179,7 +180,7 @@ def _questions_section(questions: list[dict[str, Any]], heading: str = "Open que
         return f"<h2 id=\"questions\">{_e(heading)}</h2><p class=\"muted\">None.</p>"
     items = "".join(
         f"<li><strong>{_e(q.get('question'))}</strong>"
-        f"{' <span class=\"pill bad\">blocking</span>' if q.get('blocking') else ' <span class=\"pill\">non-blocking</span>'}"
+        f"{' <span class=\"status-label bad\">blocking</span>' if q.get('blocking') else ' <span class=\"status-label\">non-blocking</span>'}"
         f"<br><span class=\"muted\">Default if unanswered: {_e(q.get('default_if_unanswered') or '—')}</span></li>"
         for q in questions)
     return f"<h2 id=\"questions\">{_e(heading)}</h2><ul>{items}</ul>"
@@ -257,7 +258,7 @@ def render_gate2_page(run_id: str, outcome: dict[str, Any], specs: dict[str, dic
             f"<td><b>Given</b> {_e(ac.get('given'))}<br><b>When</b> {_e(ac.get('when'))}<br><b>Then</b> {_e(ac.get('then'))}</td>"
             f"<td>{_e(ac.get('verification'))}</td></tr>" for ac in s.get("acceptance_criteria", []))
         ifaces = "".join(
-            f"<li><code>{_e(i.get('name'))}</code> <span class=\"pill\">{_e(i.get('kind'))} · {_e(i.get('change'))}</span>"
+            f"<li><code>{_e(i.get('name'))}</code> <span class=\"status-label\">{_e(i.get('kind'))} · {_e(i.get('change'))}</span>"
             f"<pre>{_e(i.get('definition'))}</pre></li>" for i in s.get("interfaces", []))
         paths = "".join(f"<li><code>{_e(p)}</code></li>" for p in s.get("allowed_paths", []))
         tp = s.get("test_plan", {})

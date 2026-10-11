@@ -7,9 +7,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700;800&family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/tokens.css">
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to content</a>
 <div class="app">
   <aside class="side">
     <a class="brand" href="#/runs"><span class="mark" id="brand-mark" aria-hidden="true"></span>Factory</a>
@@ -23,8 +25,11 @@
     </nav>
     <div class="foot" id="side-foot"></div>
   </aside>
-  <main class="content" id="main" aria-live="polite"></main>
+  <main class="content" id="main" tabindex="-1"></main>
 </div>
+<div id="live-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+<div id="connection-status" class="connection-status" hidden></div>
+<script src="/static/console-model.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

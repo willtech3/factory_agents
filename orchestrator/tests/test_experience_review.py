@@ -200,10 +200,17 @@ def test_exported_gate_pages_keep_links_and_status_readable_in_both_themes():
 def test_console_status_text_is_readable_in_both_themes():
     """Review of the fixes: inline errors and warning tags used --bad/--warn, which the dark theme never redefined."""
     css = (Path(__file__).resolve().parents[1] / "factory" / "web" / "static" / "app.css").read_text()
-    colour = r"--([a-z0-9-]+):\s*(#[0-9a-fA-F]{6})\b"
-    light = dict(re.findall(colour, css.split(":root {")[1].split("}")[0]))
-    dark = {**light, **dict(re.findall(colour, css.split('html[data-theme="dark"] {')[1].split("}")[0]))}
-    for theme in (light, dark):
+    tokens = (Path(__file__).resolve().parents[1] / "factory" / "web" / "static" / "tokens.css").read_text()
+    colour = r"--([a-z0-9-]+):\s*(#[0-9a-fA-F]{6}|var\(--[a-z0-9-]+\))"
+    light = dict(re.findall(colour, tokens.split(":root {")[1].split("}")[0]))
+    dark = {**light, **dict(re.findall(colour, tokens.split('html[data-theme="dark"] {')[1].split("}")[0]))}
+
+    def resolve(theme, name):
+        value = theme[name]
+        return resolve(theme, value[6:-1]) if value.startswith("var(--") else value
+
+    for source in (light, dark):
+        theme = {name: resolve(source, name) for name in source}
         for name in ("ok-text", "warn-text", "bad-text"):
             for ground in ("surface", "surface-2", "bg", name.replace("-text", "-soft")):
                 assert _contrast(theme[name], theme[ground]) >= 4.5, (name, ground, theme[name], theme[ground])

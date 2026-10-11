@@ -117,7 +117,7 @@ SETTINGS_ENV = {
     "parallel_items": "FACTORY_PARALLEL_IMPLEMENTATIONS", "grader_iterations": "FACTORY_OUTCOME_MAX_ITERATIONS",
     "budget_scale": "FACTORY_BUDGET_SCALE", "size_budget": "FACTORY_SIZE_BUDGET",
 }
-CREW_ROLES = ["decomposer", "spec_writer", "spec_judge", "implementer", "reviewer", "security_reviewer", "merge_judge", "integrator"]
+CREW_ROLES = ["decomposer", "spec_writer", "spec_judge", "implementer", "reviewer", "security_reviewer", "merge_judge", "integrator", "codebase_researcher"]
 
 
 def settings_env(settings: dict[str, Any]) -> dict[str, str]:
@@ -150,7 +150,8 @@ def crew_roster(events) -> list[dict[str, Any]]:
         p = ev.payload
         if ev.kind == "session.started" and p.get("agent_key") in by_role:
             row = by_role[p["agent_key"]]
-            started[p["session_id"]] = {"role": p["agent_key"], "at": ev.at, "title": p.get("title")}
+            started[p["session_id"]] = {"role": p["agent_key"], "at": ev.at, "title": p.get("title"),
+                                            "session_id": p["session_id"], "work_item_id": ev.work_item_id, "spec_id": ev.spec_id}
             row["sessions"] += 1; row["title"] = p.get("title"); row["started_at"] = ev.at; row["session_id"] = p["session_id"]
             row["live"].append(p["session_id"]); row["state"] = "working"
         elif ev.kind == "session.finished":
@@ -181,7 +182,13 @@ def crew_roster(events) -> list[dict[str, Any]]:
                     row["state"] = "working" if row["live"] else "done"
     for row in by_role.values():
         row["cost_usd"] = round(row["cost_usd"], 2)
-        row["live_count"] = len(row.pop("live"))
+        live_ids = row.pop("live")
+        row["live_count"] = len(live_ids)
+        row["live_sessions"] = [started[sid] for sid in live_ids]
+        if live_ids:
+            # The last started session can finish before an older one. Link the one still open.
+            live = started[live_ids[0]]
+            row.update(session_id=live["session_id"], title=live["title"], started_at=live["at"])
     return list(by_role.values())
 
 
@@ -628,13 +635,19 @@ class Console:
                     cards.append({"column": "ship", "row": "eng", "kind": "pr", "title": f"Review pull request #{wi.cr_id}" if wi.cr_id else "Review the pull request", "url": cr.get("url"), "work_item_id": wi.work_item_id})
                 elif wi.stage.value in ("merged", "deploying_dev"):
                     cards.append({"column": "ship", "row": "ops", "kind": "deploy", "title": "Watch the dev deploy", "work_item_id": wi.work_item_id})
+            run_summary = summarize(events, st, controller_running(self.cfg.runs_dir, run_id))
             for member in crew_roster(events):
-                if member["state"] == "working":
+                if member["state"] == "working" and run_summary["live_sessions"]:
                     col = {"decomposer": "plan", "spec_writer": "specify", "spec_judge": "specify", "implementer": "build",
-                           "reviewer": "review", "security_reviewer": "review", "merge_judge": "review", "integrator": "ship"}[member["role"]]
-                    cards.append({"column": col, "row": "crew", "kind": "agent", "role": member["role"], "title": member["title"], "since": member["started_at"], "session_id": member["session_id"]})
+                           "reviewer": "review", "security_reviewer": "review", "merge_judge": "review", "integrator": "ship"}.get(member["role"], column)
+                    for session in member["live_sessions"]:
+                        cards.append({"column": col, "row": "crew", "kind": "agent", "role": member["role"],
+                                      "title": session["title"], "since": session["at"], "session_id": session["session_id"]})
+            if run_summary["status"] == "stopped":
+                cards.append({"column": column, "row": "ops", "kind": "stopped", "title": "Controller stopped",
+                              "summary": "No controller is advancing this run. Review its diagnostics before restarting."})
             runs.append({"run_id": run_id, "title": self._title(run_id, events), "stage": stage, "column": column, "cost": round(st.list_cost_usd, 2),
-                         "updated_at": events[-1].at, "cards": cards,
+                         "updated_at": events[-1].at, "cards": cards, "status": run_summary["status"],
                          "terminal": stage in ("completed", "closed", "failed", "escalated")})
         runs.sort(key=lambda r: (r["terminal"], r["updated_at"]), reverse=False)
         runs.sort(key=lambda r: r["updated_at"] or "", reverse=True)
