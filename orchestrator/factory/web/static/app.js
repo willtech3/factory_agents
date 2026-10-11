@@ -782,7 +782,8 @@
     setNav("start");
     const [outs, cfg, examples] = await Promise.all([api("/api/outcomes"), state.config || api("/api/config"), api("/api/outcomes/examples")]);
     state.config = cfg;
-    let app = null, appNotice = null;
+    let app = null, appNotice = null, apps = [];
+    if (!params.get("app")) { try { apps = (await api("/api/apps")).apps || []; } catch (e) { apps = []; } }
     if (params.get("app")) {
       try { app = await api(appPath(params.get("app"))); appNotice = el("div", { class: "notice info" }, el("b", null, `Requesting a change to ${app.name}. `), "Its repository and hosted test setup are selected. Pick or write the outcome; the verified setup must be on the selected base branch before this run can start."); }
       catch (e) { appNotice = el("div", { class: "notice bad" }, el("b", null, "The app did not load. "), `${e.message}. Return to Apps before starting this app run.`); }
@@ -812,7 +813,10 @@
     const exampleLinks = el("div", { class: "actions", style: "margin-top:10px" }, app ? null : examples.examples.map(e => el("a", { class: "btn sm", href: `#/outcomes/new?example=${encodeURIComponent(e.name)}`, title: e.title }, `Load the ${e.name} example`)), el("a", { class: "btn sm", href: `#/outcomes/new${app ? '?app=' + encodeURIComponent(app.app_id) : ''}` }, "Write a new outcome"));
     const whatCard = card("1. What should be built", el("div", null, appOutcomes.length ? choices : el("p", { class: "explain" }, app ? "No saved outcomes for this app yet. Describe the change you want." : "No saved outcomes yet. Load an example or write one."), exampleLinks));
 
-    // 2. where: browse the repositories visible to the configured GitHub account.
+    // 2. where: browse the repositories visible to the configured GitHub account. An onboarded app's repository binds to
+    // its verified hosted setup on every start path; the server decides, this only says so before you click.
+    const bindNote = el("div", { role: "status" });
+    let bound = null;
     let repositories = [], nextRepoPage = 1, selectedRepo = null;
     const repoUrl = el("input", { type: "url", placeholder: "https://github.com/you/app", "aria-label": "Repository URL" });
     const repoNew = el("input", { type: "radio", name: "repo" }), repoExisting = el("input", { type: "radio", name: "repo", checked: true });
@@ -872,12 +876,30 @@
     const whereCard = app ? card("2. Where it is built", el("div", {class:"stack"},
       el("a", {href:app.repository_url, target:"_blank", rel:"noopener"}, repoName(app.repository_url)),
       el("p", {class:"explain"}, `Base branch: ${app.default_branch || 'main'}. Uses this app's verified hosted setup.`)))
-      : card("2. Where it is built", el("div", { class: "stack" }, existingChoice, newChoice,
+      : card("2. Where it is built", el("div", { class: "stack" }, existingChoice, newChoice, bindNote,
       el("p", { class: "explain", style: "margin:0;font-size:13px" }, "Only repositories this GitHub connection can access are shown. Archived and read-only repositories cannot be selected. The run works on a separate branch and opens a pull request.")));
 
     // 3. guardrails
     const budget = el("input", { type: "number", min: "5", step: "5", value: 60 });
-    const preview = el("select", { disabled: !!app }, ...(app ? [el("option", {value:"managed", selected:true}, "Hosted sandbox · verified app setup")] : []), el("option", { value: "local" }, "Local, started by the orchestrator"), el("option", { value: "platform" }, "Platform deploy workflow"));
+    const hostedOption = el("option", { value: "managed", selected: !!app, hidden: !app }, "Hosted sandbox · verified app setup");
+    const preview = el("select", { disabled: !!app }, hostedOption, el("option", { value: "local", selected: !app }, "Local, started by the orchestrator"), el("option", { value: "platform" }, "Platform deploy workflow"));
+    const previewHelp = el("span", { class: "h" }, app ? "Application, database and browser tests run in a fresh hosted sandbox." : "Local runs app commands on this computer. Platform uses the repository deploy workflow.");
+    const syncBinding = () => {
+      if (app) return;
+      const url = repoNew.checked ? "" : repoUrl.value.trim();
+      const matches = url ? apps.filter(a => normRepo(a.repository_url) === normRepo(url)) : [];
+      bound = matches.length === 1 ? matches[0] : null;
+      hostedOption.hidden = !bound; preview.disabled = !!bound;
+      if (bound) preview.value = "managed"; else if (preview.value === "managed") preview.value = "local";
+      previewHelp.textContent = bound ? "This repository is an onboarded app: live runs verify in its hosted sandbox." : "Local runs app commands on this computer. Platform uses the repository deploy workflow.";
+      const ready = bound && ["ready", "ready_limited"].includes(bound.status);
+      bindNote.replaceChildren(...(matches.length > 1 ? [el("div", { class: "notice bad", style: "margin:0" }, el("b", null, "Several apps use this repository. "),
+          `A live run must name one: start it from the app you mean (${matches.map(a => a.name || a.app_id).join(", ")}) under Apps.`)]
+        : bound && ready ? [el("div", { class: "notice info", style: "margin:0" }, el("b", null, `Onboarded app: ${bound.name || bound.app_id}. `),
+          "A live run uses its verified hosted setup; local and platform previews are not offered for it.")]
+        : bound ? [el("div", { class: "notice bad", style: "margin:0" }, el("b", null, `Onboarded app ${bound.name || bound.app_id} is not ready (${words(bound.status)}). `),
+          "Verify its setup on the app page before a live run; a design-only run still works.")] : []));
+    };
     const owner = (outcome && outcome.owner) || {};
     const whoBox = el("div", { class: "who" });
     const syncWho = () => { const ow = (outcome && outcome.owner) || {}; whoBox.replaceChildren(
@@ -886,7 +908,7 @@
       el("span", null, el("b", { class: "ops" }, "Ops"), el("span", { class: "explain" }, "nobody yet"))); };
     const guards = el("div", { class: "guards" },
       el("label", null, "Run budget (USD)", budget, el("span", { class: "h" }, "The last one-item run cost about $33. The run pauses and asks before it goes over.")),
-      el("label", null, "Preview", preview, el("span", { class: "h" }, app ? "Application, database and browser tests run in a fresh hosted sandbox." : "Local runs app commands on this computer. Platform uses the repository deploy workflow.")),
+      el("label", null, "Preview", preview, previewHelp),
       el("div", null, el("span", { style: "font-size:13px;color:var(--text-3);display:block;margin-bottom:6px" }, "Who decides"), whoBox, el("a", { href: "#/outcomes", style: "font-size:13px;font-weight:700" }, "Change on the outcome")));
     // more
     const passes = el("input", { type: "number", min: "1", max: "4", value: 2 }), rounds = el("input", { type: "number", min: "1", max: "4", value: 2 });
@@ -908,6 +930,7 @@
     const summary = el("ul", { class: "summary-list" });
     const notice = el("div");
     const syncSummary = () => {
+      syncBinding();
       const repo = repoNew.checked ? (newName.value.trim() || "a new private repository") : (repoUrl.value.trim() || "the outcome's repository");
       summary.replaceChildren(
         el("li", null, el("b", null, outcome ? outcome.title : "No outcome selected")),
@@ -939,7 +962,7 @@
       btn.disabled = true;
       try {
         await saveRepo();
-        const s = await api("/api/runs", { body: { outcome_id: outcomeId, app_id: app ? app.app_id : undefined, mode, settings: mode === "demo" ? {} : settings() } });
+        const s = await api("/api/runs", { body: { outcome_id: outcomeId, app_id: app ? app.app_id : (mode === "live" && bound ? bound.app_id : undefined), mode, settings: mode === "demo" ? {} : settings() } });
         if (s.run_id) location.hash = `#/runs/${s.run_id}`;
         else { notice.append(el("div", { class: "notice ok" }, el("b", null, "Run started. "), "The crew is waking up; the run appears under Runs within a minute.")); setTimeout(() => { location.hash = "#/runs"; }, 4000); }
       } catch (e) { notice.append(el("div", { class: "notice bad" }, e.message)); btn.disabled = false; }
@@ -1212,8 +1235,8 @@
 
     const consequences = {
       gate_1_decomposition: { approve: "The crew starts writing a contract for every work item, with your notes as guidance. You get Gate 2 before any code.", approve_subset: "", request_changes: "The decomposer revises the plan using your notes and asks you again.", reject: "The run closes. Nothing else happens." },
-      gate_2_spec_readiness: { approve: "The crew starts implementing all contracts on separate branches; pull requests follow.", approve_subset: "Selected contracts are implemented; the others go back to the writer with your notes.", request_changes: "The writers revise using your notes; the judge re-checks; you decide again.", reject: "The run closes. Nothing is built." },
-      escalation: { approve: "Proceed with the contracts as they are.", approve_subset: "Selected contracts proceed; the rest go back.", request_changes: "The writers revise using your notes.", reject: "The run closes." },
+      gate_2_spec_readiness: { approve: "The crew starts implementing all contracts on separate branches; your notes go to the implementers as guidance and never change a contract. Pull requests follow.", approve_subset: "Only the selected contracts are implemented, with your notes as guidance. The others are not built in this run and are not sent back to a writer; use Request changes to have them revised. A selection must include the contracts it depends on.", request_changes: "The writers revise using your notes; the judge re-checks; you decide again.", reject: "The run closes. Nothing is built." },
+      escalation: { approve: "Proceed with the contracts as they are; your notes go to the implementers as guidance.", approve_subset: "Only the selected contracts proceed (with their prerequisites selected too); the rest are not built in this run.", request_changes: "The writers revise using your notes.", reject: "The run closes." },
       deploy_failure: { approve: "The failure was the platform's; the next deploy is watched.", request_changes: "An agent fixes it on a new branch; a follow-up pull request follows.", reject: "This work item is closed." },
       budget: { approve: "The run's budget becomes the amount above; when continued, it picks up at the step it stopped before.", reject: "The run closes when continued. Nothing more is built; the files stay." },
     }[rec.kind] || {};

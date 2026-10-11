@@ -266,17 +266,46 @@ def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the f
     from .runner import new_run_id, run as run_pipeline
 
     cfg = apply_preview_choice(cfgmod.load(), preview, app_id, test_profile_sha256, test_vault, verify_budget)
+    outcome = json.loads(outcome_path.read_text())
+    if not design_only and cfg.preview_mode != "managed":
+        cfg = _bind_onboarded_app(cfg, outcome, explicit_preview=preview)
     gaps = cfgmod.missing(cfg, design_only=design_only)
     if gaps:
         typer.echo("cannot run; missing: " + ", ".join(gaps))
         raise typer.Exit(1)
-    outcome = json.loads(outcome_path.read_text())
     run_id = new_run_id()
     ctx = _context(cfg, outcome, run_id, forge=forge, design_only=design_only)
     typer.echo(f"run {run_id} started (forge={cfg.forge if ctx.forge else 'none'}, gate surface={cfg.gate_surface}"
                f"{', design only' if design_only else ''}, budget ${ctx.policy.run_budget_usd:.2f})")
     final = _drive(ctx, lambda c: run_pipeline(c, outcome))
     _report_final(ctx, run_id, final)
+
+
+def _bind_onboarded_app(cfg, outcome: dict, explicit_preview: str | None):
+    """A live run on an onboarded app's repository verifies in that app's hosted sandbox, whichever path started it (the
+    Console binds server-side the same way). Several apps for the repository, a setup that is not verified, or an explicit
+    local/platform preview for it is a refusal; a repository no app was onboarded for runs as configured."""
+    if not any((cfg.runs_dir / "_apps").glob("app_*/app.json")):
+        return cfg
+    from fastapi import HTTPException
+
+    from .onboarding import AppOnboarding
+
+    try:
+        binding = AppOnboarding(cfg).binding_for((outcome.get("target_repositories") or [{}])[0])
+    except HTTPException as e:
+        typer.echo(f"cannot run: {e.detail}")
+        raise typer.Exit(1)
+    if binding is None:
+        return cfg
+    if explicit_preview:
+        typer.echo(f"cannot run: this repository is the onboarded app {binding['FACTORY_APP_ID']}; its change runs verify in the "
+                   f"hosted sandbox, so --preview {explicit_preview} is not available for it")
+        raise typer.Exit(1)
+    typer.echo(f"bound to onboarded app {binding['FACTORY_APP_ID']}: hosted verification with its approved recipe")
+    return apply_preview_choice(cfg, "managed", binding["FACTORY_APP_ID"], binding["FACTORY_TEST_PROFILE_SHA256"],
+                                [v for v in binding["FACTORY_TEST_VAULT_IDS"].split(",") if v],
+                                float(binding["FACTORY_MANAGED_VERIFY_BUDGET_USD"]))
 
 
 def _report_final(ctx, run_id: str, final) -> None:
@@ -460,6 +489,15 @@ def decide(gate_id: str, decision: str, comment: str = "", spec: list[str] = typ
     if run_cap_gate(g["kind"], g.get("artifacts")) and decision == "approve" and parse_budget(comment) is None:
         typer.echo("approving a budget gate needs the new run budget in the comment, e.g. --comment 'budget_usd: 80'")
         raise typer.Exit(1)
+    if decision == "approve_subset" and g["kind"] in ("gate_2_spec_readiness", "escalation"):
+        from .approvals import presented_specs, subset_problems
+        try:
+            problems = subset_problems(presented_specs(cfg.runs_dir, g["run_id"], g["artifacts"]), spec)
+        except ValueError as e:
+            problems = [f"cannot check the selection: {e}"]
+        if problems:
+            typer.echo("cannot approve this selection: " + "; ".join(problems) + ". Select the prerequisites too, or request changes.")
+            raise typer.Exit(1)
     q.record_decision(gate_id, decision, by, comment, spec)
     typer.echo(f"recorded {decision} on {gate_id}")
     if g["kind"] == "budget":

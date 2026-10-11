@@ -119,7 +119,12 @@ orchestrator runs the test plan itself, derives the passing set from its own run
 criterion whose tests it did not collect or did not see pass. Run every command in the spec's test_plan before finishing
 and record the results. For a criterion proved by an e2e entry itself, use `e2e:<zero-based index>` in tests (for example
 `e2e:0` for test_plan.e2e[0]). That entry must declare the criterion in covers_ac and pass in the controller's run,
-including its exact browser evidence when visual; a baseline or an agent's claim never counts. {preview_clause}"""
+including its exact browser evidence when visual; a baseline or an agent's claim never counts. {preview_clause}{guidance_clause}"""
+
+GUIDANCE_CLAUSE = """
+The owner approved this spec at Gate 2 with notes for you: /mnt/session/uploads/gate2_guidance.md. Follow them where they fit
+inside the approved spec. They never change its acceptance criteria, allowed paths or test plan; where a note conflicts
+with the spec, follow the spec and record the conflict in implementation_report.json notes."""
 
 REVIEW_DESCRIPTION = """Review the change for specification {spec_id}. The diff is at /mnt/session/uploads/diff.patch
 (base {base_sha}, head {head_sha}); the repository is cloned at /workspace/repo on branch {branch}.
@@ -751,8 +756,9 @@ def preview_info(ctx: RunContext, branch: str, head_sha: str | None = None) -> d
 
 def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base_branch: str,
                       verifier: LocalVerifier, dependency_specs: dict[str, dict], *, spec_md: str = "",
-                      resume_from: ResumePoint | None = None) -> dict[str, Any]:
-    """Drive one spec through implement/review/judge. Returns the final merge_readiness verdict.
+                      resume_from: ResumePoint | None = None, guidance: str = "") -> dict[str, Any]:
+    """Drive one spec through implement/review/judge. Returns the final merge_readiness verdict. `guidance` is the owner's
+    bounded Gate 2 approval notes for this spec (`runner.record_approval`), uploaded to every implementer round.
 
     `spec_md` is the writer's spec.md for this spec (the runner carries it from Gate 2); the implementer, every
     reviewer pass and the merge judge receive it beside spec.json. `resume_from` continues the loop after a dead
@@ -787,6 +793,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         uploads = {"spec.json": json.dumps(public(spec), indent=2).encode(), **skill_uploads}
         if spec_md:
             uploads["spec.md"] = spec_md.encode()
+        if guidance:
+            uploads["gate2_guidance.md"] = guidance.encode()          # the owner's bounded approval notes; never a spec change
         for dsid, ds in dependency_specs.items():
             uploads[f"dependency_specs/{dsid}.json"] = json.dumps(public(ds), indent=2).encode()
         review_clause, response_clause = "", ""
@@ -816,7 +824,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 stage="implement", uploads=uploads, work_item_id=wid,
                 description=IMPLEMENT_DESCRIPTION.format(spec_id=sid, git=git, review_clause=review_clause, skill_clause=skill_clause,
                                                          spec_md_clause=" (spec.md is the readable form)" if spec_md else "",
-                                                         response_clause=response_clause, preview_clause=preview_clause),
+                                                         response_clause=response_clause, preview_clause=preview_clause,
+                                                         guidance_clause=GUIDANCE_CLAUSE if guidance else ""),
                 rubric_md=ctx.rubric("implementation"), max_iterations=ctx.policy.outcome_max_iterations,
                 budget_usd=ctx.policy.stage_budget_usd["implement"],
                 repository=mount(base_branch if round_no == 1 else branch),

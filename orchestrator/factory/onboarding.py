@@ -573,6 +573,24 @@ class AppOnboarding:
         finally:
             forge.http.close()
 
+    def binding_for(self, target, app_id=None):
+        """The managed-run settings for a change to `target`, on every start path: the named app's (`run_settings`), else
+        the one onboarded app whose repository is `target`'s. None when the repository is not an onboarded app (a new
+        repository the run creates included), so greenfield and non-onboarded runs start as before. An onboarded
+        repository never starts unbound: several apps for it, or one whose setup is not verified, is a 409 saying so."""
+        if app_id:
+            return self.run_settings(app_id, target)
+        url = (target.get("url") or "").removesuffix(".git").rstrip("/").lower()
+        if not url or target.get("create"):
+            return None
+        apps = [a for a in self.list() if a.get("repository_url", "").removesuffix(".git").rstrip("/").lower() == url]
+        if not apps:
+            return None
+        if len(apps) > 1:
+            names = ", ".join(f"{a.get('name') or a['app_id']} ({a['app_id']})" for a in apps)
+            raise HTTPException(409, f"This repository is onboarded as several apps ({names}); start the change from the app you mean")
+        return self.run_settings(apps[0]["app_id"], target)
+
     def run_settings(self, app_id, target):
         """Resolve trusted per-run bindings server-side; client never supplies vault IDs."""
         r = self.get(app_id)

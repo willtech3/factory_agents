@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, SecretStr
 
 from .. import visual
+from ..approvals import presented_specs, subset_problems
 from .. import checks
 from .. import config as cfgmod
 from ..budget import last_pause
@@ -434,6 +435,15 @@ class Console:
             raise HTTPException(400, "request_changes needs a comment; it becomes the agent's feedback")
         if decision == Decision.APPROVE_SUBSET and not body.approved_subset:
             raise HTTPException(400, "approve_subset needs at least one spec")
+        if decision == Decision.APPROVE_SUBSET and rec["kind"] in (GateKind.SPEC_READINESS.value, GateKind.ESCALATION.value):
+            try:                            # the exact specs this gate presented, by the sha256 it showed
+                presented = presented_specs(self.cfg.runs_dir, rec["run_id"], rec["artifacts"])
+            except ValueError as e:
+                raise HTTPException(409, f"cannot check the selection: {e}")
+            problems = subset_problems(presented, body.approved_subset)
+            if problems:
+                raise HTTPException(409, "This selection cannot be approved: " + "; ".join(problems)
+                                    + ". Select the prerequisites too, or use Request changes.")
         if rec["kind"] == GateKind.BUDGET.value and decision == Decision.APPROVE and self._budget_record(rec) is not None:
             self._check_new_budget(rec, parse_budget(body.comments))     # the run cap: approve needs the new budget
         entry = self.queue.record_decision(gate_id, decision.value, body.by or "console", body.comments, body.approved_subset)
@@ -541,9 +551,14 @@ class Console:
         if not design and self.cfg.forge == "github" and target.get("url"):
             # The Console selection is per run; do not inherit a different repository from server defaults.
             repo_env["FORGE_REPO"] = repository_name(target["url"], self.cfg)
-        if body.app_id:
+        binding = None
+        if body.app_id or not design:
+            # Every live start path binds an onboarded repository to its verified hosted setup, server-side: a change to
+            # an onboarded app never runs with local or platform verification because the client did not name the app.
             from ..onboarding import AppOnboarding
-            repo_env.update(AppOnboarding(self.cfg).run_settings(body.app_id, target))
+            binding = AppOnboarding(self.cfg).binding_for(target, body.app_id)
+            if binding:
+                repo_env.update(binding)
         gaps = cfgmod.missing(self.cfg, design_only=design)
         if gaps:
             raise HTTPException(409, f"the orchestrator is not configured for a {body.mode} run: {', '.join(gaps)}")
@@ -554,7 +569,9 @@ class Console:
         with log.open("w") as fh:
             proc = subprocess.Popen(args, cwd=str(Path(__file__).resolve().parents[2]), stdout=fh, stderr=subprocess.STDOUT,
                                     env={**os.environ, **settings_env(body.settings), **repo_env, "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}, start_new_session=True)
-        return {"ok": True, "mode": body.mode, "pid": proc.pid, "log": log.name, "settings": settings_env(body.settings)}
+        settings = {**settings_env(body.settings), **({"FACTORY_PREVIEW": "managed"} if binding else {})}
+        return {"ok": True, "mode": body.mode, "pid": proc.pid, "log": log.name, "settings": settings,
+                "app_id": binding.get("FACTORY_APP_ID") if binding else None, "preview": "managed" if binding else settings.get("FACTORY_PREVIEW")}
 
     def board(self) -> dict[str, Any]:
         """The role-swimlane view across runs: for every run that is not finished (plus finished ones from today), the cards
