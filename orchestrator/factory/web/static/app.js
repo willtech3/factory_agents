@@ -59,16 +59,11 @@
     : f === "active" ? !r.terminal
     : f === "done" ? r.status === "completed"
     : ["failed", "closed", "escalated", "unreadable"].includes(r.status);
-  // "Running" is a claim. A run with no controller lock (started before controllers took one, or written by hand) and no
-  // open agent session, whose log has been quiet for an hour, has nothing known to be moving it: say that instead.
-  const quietRun = r => r.status === "running" && r.controller_alive == null && !r.live_sessions && !!r.updated_at && Date.now() - Date.parse(r.updated_at) > 3600e3;
-  const statusTag = r => quietRun(r)
-    ? el("span", { class: "tag warn", title: "No controller lock and no open agent session" }, "No recent activity")
-    : el("span", { class: `tag ${STATUS_TAG[r.status] || ""}` }, r.status_label || words(r.status || ""));
+  const statusTag = r => el("span", { class: `tag ${STATUS_TAG[r.status] || ""}` }, r.status_label || words(r.status || ""));
   // agent activity (the oldest open session) apart from pipeline events, which a long session does not produce
   const activityLine = r => r.working_since
     ? `${(r.working || []).map(w => CREW_NAME[w] || words(w)).join(", ") || "Agent"} working for ${dur(r.working_since)}`
-    : quietRun(r) ? `nothing recorded for ${dur(r.updated_at)}; no controller or agent session is known to be running` : `last activity ${ago(r.updated_at)}`;
+    : `last activity ${ago(r.updated_at)}`;
   const liveSpendNote = r => r.live_sessions && !r.terminal ? el("div", { class: "explain" }, `excludes ${plural(r.live_sessions, "session")} still running`) : null;
   const modeTag = r => r.mode ? el("span", { class: "tag" }, r.mode === "design" ? "design only" : "live") : null;
   const ITEM_STAGE = {
@@ -378,7 +373,7 @@
   }
 
   // ------------------------------------------------------------------ runs: the history, and the home page
-  const runsKey = runs => JSON.stringify(runs.map(r => [r.run_id, r.status, r.stage, r.updated_at, r.live_sessions, quietRun(r), r.waiting ? [r.waiting.gates, r.waiting.questions] : null]));
+  const runsKey = runs => JSON.stringify(runs.map(r => [r.run_id, r.status, r.stage, r.updated_at, r.live_sessions, r.waiting ? [r.waiting.gates, r.waiting.questions] : null]));
   async function viewRuns() {
     setNav("runs");
     const runs = (await api("/api/runs")).runs;
@@ -545,7 +540,7 @@
       [statusTag(s), modeTag(s),
        el("span", { class: `tag ${b.paused ? "warn" : ""}`, title: s.live_sessions ? `Excludes ${plural(s.live_sessions, "session")} still running` : null },
          `${money(r.cost)}${b.budget_usd != null ? ` of ${money(b.budget_usd)}` : " spent"}${s.live_sessions && !s.terminal ? " so far" : ""}`),
-       !s.terminal && (s.working_since || quietRun(s)) ? el("span", { class: "tag" }, activityLine(s)) : null,
+       !s.terminal && s.working_since ? el("span", { class: "tag" }, activityLine(s)) : null,
        el("span", { class: "tag" }, dur(started, s.ended_at || (TERMINAL[r.stage] || r.stage === "completed" ? r.updated_at : null)))],
       [el("a", { href: "#/runs" }, "Runs"), " / ", el("span", { class: "mono" }, r.run_id)]));
 
@@ -708,12 +703,10 @@
   // A check that did not pass leads with what was observed, and says which part stopped it. The worker's summary is its
   // reading of those observations, so it follows them, labelled; the controller's own reason (a refused or missing report,
   // a check that never ran) is shown as the controller's, since then there are no observations of the app to show.
-  // The controller's own summaries, for evidence recorded before summary_source existed.
-  const CONTROLLER_SUMMARY = /^(No browser evidence returned|Browser evidence unavailable:|Hosted browser check not run:|Browser evidence does not show the requested viewport|Browser media changed after verification)/;
   function observedFailure(evidence) {
     const steps = evidence.steps_observed || [];
     const stopped = steps.filter(s => s.status !== "passed");
-    const byController = evidence.summary_source ? evidence.summary_source === "controller" : CONTROLLER_SUMMARY.test(evidence.summary || "");
+    const byController = evidence.summary_source === "controller";
     const who = byController && !steps.length ? ["Stopped by Factory, not the app. ", "The check did not run or its report was not accepted, so nothing here shows how the app behaved."]
       : byController ? ["Factory did not accept the report. ", "The browser's observations are below, but the report failed Factory's checks, so this check cannot pass."]
       : evidence.status === "failed" ? ["Stopped by the app. ", "A step's observation did not meet what the step required."]
@@ -752,7 +745,7 @@
   }
   function runKey(r) {
     const hb = r.watch && r.watch.heartbeat;
-    return JSON.stringify([r.updated_at, r.stage, r.status, quietRun(r.summary || {}), r.gates.map(g => [g.gate_id, !!g.recorded]), r.questions.map(q => q.question_id),
+    return JSON.stringify([r.updated_at, r.stage, r.status, r.gates.map(g => [g.gate_id, !!g.recorded]), r.questions.map(q => q.question_id),
       hb ? [hb.alive, hb.last_poll_at] : null, (r.browser_checks_pending || []).map(c => c.id), (r.crew || []).map(c => c.state), r.resuming || null]);
   }
   function storyEntries(r) {
@@ -777,7 +770,7 @@
         case "review.response": { const n = {}; for (const d of (p.dispositions || [])) n[d] = (n[d] || 0) + 1;
           E("crew", "Implementer", `Answered review round ${p.round}`, Object.entries(n).map(([d, c]) => `${c} ${words(d)}`).join(", ")); break; }
         case "merge.verdict": E("crew", "Merge judge", `Merge judge: ${words(p.result)}`, item); break;
-        case "cr.opened": E(p.design ? "po" : "crew", p.design ? "Product owner" : "Integrator", p.design ? "Design pull request opened" : "Pull request opened", p.url); break;
+        case "cr.opened": E("crew", "Integrator", "Pull request opened", p.url); break;
         case "cr.merged": E("eng", "Engineer", `Merged${p.id ? ` #${p.id}` : ""}`, p.merge_commit_sha ? `as ${String(p.merge_commit_sha).slice(0, 10)}` : ""); break;
         case "cr.closed": E("eng", "Engineer", "Pull request closed without merging", item); break;
         case "deploy.started": E("ops", "Ops", "Dev deploy started", p.pipeline_url || ""); break;
@@ -926,7 +919,7 @@
       case "review.response": { const n = {}; for (const d of (p.dispositions || [])) n[d] = (n[d] || 0) + 1;
         return [who, { main: `Implementer answered review round ${p.round}`, detail: Object.entries(n).map(([d, c]) => `${c} ${d.replace("_", " ")}`).join(", ") }]; }
       case "merge.verdict": return [who, { main: `Merge judge: ${p.result}`, detail: item }];
-      case "cr.opened": return [who, { main: p.design ? "Design pull request opened" : `Pull request opened for ${item}`, detail: p.url }];
+      case "cr.opened": return [who, { main: `Pull request opened for ${item}`, detail: p.url }];
       case "cr.merged": return ["human", { main: `Merged ${item}${p.id ? ` (#${p.id})` : ""}`, detail: [p.merge_commit_sha ? `as ${String(p.merge_commit_sha).slice(0, 10)}` : "", p.approved === false ? "without an approving review" : ""].filter(Boolean).join(", ") }];
       case "cr.closed": return ["human", { main: `Pull request closed without merging for ${item}${p.id ? ` (#${p.id})` : ""}` }];
       case "deploy.started": return [who, { main: `Dev deploy started for ${item}${p.attempt ? ` (observation ${p.attempt + 1})` : ""}`, detail: p.pipeline_url || (p.pipeline_id ? `pipeline ${p.pipeline_id}` : "no pipeline yet") }];

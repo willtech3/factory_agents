@@ -118,7 +118,7 @@ def _ctx(tmp_path, root, driver, **cfg):
     runs = tmp_path / "runs"
     ctx = RunContext(cfg=make_config(root, runs, **cfg), store=RunStore(runs), driver=driver, queue=InMemoryQueue(),
                      notifier=LogNotifier(), forge=None, policy=Policy(), run_id="run_loop0000001")
-    ctx.event("run.created", {"outcome_id": "o", "title": "t"})
+    ctx.event("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     ctx.event("artifact.produced", {"artifact_type": "decomposition", "revision": 1, "work_items": [{"work_item_id": "wi-det", "depends_on": []}]}, stage="decompose")
     for st in (WorkItemStage.SPEC_DRAFTING, WorkItemStage.SPEC_JUDGING, WorkItemStage.SPEC_APPROVED):
         ctx.event("work_item.stage", {"stage": st.value}, work_item_id="wi-det")
@@ -255,7 +255,7 @@ def test_resume_on_changed_head_rechecks_preserves_proof_and_does_not_reuse_old_
     ctx.store.put_artifact(ctx.run_id, "implement", "spec_det-r1-implementation_report.json", json.dumps(old_report).encode())
     old_proof = ctx.store.put_artifact(ctx.run_id, "implement", "spec_det-r1-test_results.json", b'{"old": true}')
     for i in (1, 2):
-        ctx.store.put_artifact(ctx.run_id, "review", f"spec_det-r1-p{i}-findings.json",
+        ctx.store.put_artifact(ctx.run_id, "review", f"spec_det-r1-baseold-base-headold-candidate-p{i}-findings.json",
                                json.dumps({"diff_ref": {"base_sha": "old-base", "head_sha": "old-candidate"}, "findings": []}).encode())
     verifier = LocalVerifier(str(origin), tmp_path / "runs" / ctx.run_id / "verify")
     verdict = run_implement_one(ctx, _spec(False), str(origin), "main", verifier, {},
@@ -265,5 +265,6 @@ def test_resume_on_changed_head_rechecks_preserves_proof_and_does_not_reuse_old_
     failed = ctx.store.get_json(ctx.run_id, "implement", "spec_det-r1-deterministic_checks.json")
     assert any(c["check"] == "implementation_head" and not c["passed"] for c in failed)
     assert ctx.store.get_artifact(ctx.run_id, "history", f"implement/spec_det-r1-test_results.json/{old_proof}") == b'{"old": true}'
-    assert ctx.store.get_json(ctx.run_id, "review", "spec_det-r1-p1-findings.json")["diff_ref"]["head_sha"] == "old-candidate"
+    old_review = "spec_det-r1-baseold-base-headold-candidate-p1-findings.json"
+    assert ctx.store.get_json(ctx.run_id, "review", old_review)["diff_ref"]["head_sha"] == "old-candidate"
     assert ctx.store.get_json(ctx.run_id, "implement", "spec_det-r1-implementation_report.json") == old_report

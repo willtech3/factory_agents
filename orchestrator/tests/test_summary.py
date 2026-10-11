@@ -19,7 +19,7 @@ HUMAN = {"type": "human", "id": "priya"}
 
 def _run(store, rid, title="Cut churn", *, design_only=False, budget=60.0):
     store.append(rid, "run.created", ACTOR, {"outcome_id": "out_1", "title": title, "forge": "github", "budget_usd": budget,
-                                              "design_only": design_only}, stage="intake")
+                                              "design_only": design_only, "policy": {"preview_mode": "local"}}, stage="intake")
     store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "out_1", "title": title, "statement": "s"}).encode())
     store.append(rid, "stage.entered", ACTOR, {"stage": "decomposing"})
     store.append(rid, "session.started", {"type": "platform"}, {"session_id": "s1", "agent_key": "decomposer", "agent_id": "a", "title": "dec"}, stage="decompose")
@@ -126,7 +126,8 @@ def test_failed_run_names_the_stage_and_the_reason(store):
 
 def test_escalated_and_paused_runs(store):
     rid = "run_escal0000001"
-    store.append(rid, "run.created", ACTOR, {"outcome_id": "out_1", "title": "Cut churn", "budget_usd": 60.0}, stage="intake")
+    store.append(rid, "run.created", ACTOR, {"outcome_id": "out_1", "title": "Cut churn", "budget_usd": 60.0,
+                                              "policy": {"preview_mode": "local"}}, stage="intake")
     store.append(rid, "stage.entered", ACTOR, {"stage": "decomposing"})
     store.append(rid, "run.escalated", ACTOR, {"reason": "decomposition failed deterministic checks twice"}, stage="decompose")
     s = summary_of(store, rid)
@@ -231,21 +232,6 @@ def test_factory_runs_lists_the_history(tmp_path, root):
     assert lines[3].startswith("run_cli000000001 Failed") and lines[4].strip() == "Failed while at Gate 1: stopped by signal 15"
     assert len(run_history_lines(store, cfg.runs_dir, active=True)) == 3
     assert summarize_run(store, cfg.runs_dir, rid)["status"] == "failed"
-
-
-def test_legacy_demo_is_hidden_without_deleting_its_history(tmp_path, root):
-    cfg = make_config(root, tmp_path / 'runs')
-    app = create_app(cfg)
-    store = app.state.console.store
-    _run(store, 'run_real000001', title='Real work')
-    _run(store, 'run_demo000001', title='Fake payment demo')
-    marker = cfg.runs_dir / 'run_demo000001' / 'demo.json'
-    marker.write_text('{}')
-    with TestClient(app) as client:
-        assert [r['run_id'] for r in client.get('/api/runs').json()['runs']] == ['run_real000001']
-        assert all(r['run_id'] != 'run_demo000001' for r in client.get('/api/board').json()['runs'])
-        assert client.get('/api/runs/run_demo000001').status_code == 404
-    assert marker.exists() and (marker.parent / 'events.jsonl').exists()
 
 
 def test_failure_stage_is_the_stage_at_failure_not_after_recovery(store):

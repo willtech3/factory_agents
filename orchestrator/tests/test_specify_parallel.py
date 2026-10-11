@@ -59,7 +59,7 @@ class Driver:
 def _ctx(tmp_path, root, examples, policy):
     ctx = RunContext(cfg=make_config(root, tmp_path), store=RunStore(tmp_path), driver=Driver(examples), queue=InMemoryQueue(),
                      notifier=LogNotifier(), forge=None, policy=policy, run_id="run_parallel0001")
-    ctx.event("run.created", {"outcome_id": "o", "title": "t"})
+    ctx.event("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     ctx.event("stage.entered", {"stage": "decomposing"})
     ctx.event("artifact.produced", {"artifact_type": "decomposition", "revision": 1, "work_items": examples["decomposition"]["work_items"]})
     ctx.event("stage.entered", {"stage": "gate_1_decomposition"})

@@ -33,7 +33,7 @@ from .store import RunStore
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
 
-from .surfaces.filequeue import FileQueue  # noqa: E402  (the `file`/`web` gate surface)
+from .surfaces.filequeue import FileQueue  # noqa: E402  (the `web` gate surface)
 from .browser_worker import cli as browser_cli  # noqa: E402
 
 app.add_typer(browser_cli, name="browser")
@@ -189,7 +189,7 @@ def _context(cfg, outcome: dict, run_id: str, *, forge: bool, design_only: bool,
     from .surfaces.artifact_pages import make_publisher
     from .surfaces.tracker import make_tracker_queue
 
-    cfg, forge_obj, created = _bind_forge(cfg, outcome, forge and not (design_only and cfg.gate_surface != "forge"))
+    cfg, forge_obj, created = _bind_forge(cfg, outcome, forge and not design_only)
     queue, notifier = _queue(cfg), LogNotifier()
     tracker = make_tracker_queue(cfg)
     if tracker is not None:
@@ -370,7 +370,7 @@ def resume(run_id: str, forge: bool = typer.Option(True, help="Talk to the forge
         if new_budget is None:
             typer.echo(f"{outcome_file} has no constraints.budget_usd")
             raise typer.Exit(1)
-    current = st.budget_usd if st.budget_usd is not None else (outcome.get("constraints") or {}).get("budget_usd")
+    current = st.budget_usd
     ctx = _context(cfg, outcome, run_id, forge=forge, design_only=design_only, budget_usd=current)
     try:
         with controller_lock(cfg.runs_dir, run_id):

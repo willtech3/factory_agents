@@ -51,8 +51,8 @@ class ScriptedRun:
         """Create a scripted run: intake, decomposing, and a blocking question from the decomposer."""
         run_id = f"run_{uuid.uuid4().hex[:10]}"
         self._event(run_id, "run.created", {"outcome_id": outcome["outcome_id"], "title": outcome["title"],
-                                            "forge": "scripted", "gate_surface": "web",
-                                            "budget_usd": (outcome.get("constraints") or {}).get("budget_usd")}, stage="intake")
+                                            "forge": "scripted", "gate_surface": "web", "policy": {"preview_mode": "local"},
+                                            "budget_usd": outcome["constraints"]["budget_usd"]}, stage="intake")
         self.store.put_artifact(run_id, "intake", "outcome.json", json.dumps(outcome, indent=2).encode())
         self._event(run_id, "stage.entered", {"stage": RunStage.DECOMPOSING.value}, stage="decompose")
         q = Question(run_id=run_id, asked_by="decomposer", question=QUESTION["question"], why_it_matters=QUESTION["why"],
@@ -162,6 +162,7 @@ class ScriptedRun:
             self._event(run_id, "work_item.stage", {"stage": WorkItemStage.SPEC_JUDGING.value, "spec_id": sid},
                         work_item_id=wid, stage="specify")
             shas[f"{sid}.json"] = self.store.put_artifact(run_id, "specify", f"final-{sid}.json", json.dumps(spec, indent=2).encode())
+            self.store.put_artifact(run_id, "specify", f"final-{sid}.md", spec_markdown(spec).encode(), replace=True)
         verdict = self._adapted_verdict(outcome, dec, specs, rev, feedback)
         shas["verdict.json"] = self.store.put_artifact(run_id, "judge", "final-verdict.json", json.dumps(verdict, indent=2).encode())
         self._event(run_id, "session.finished", {"session_id": f"sess_scripted_judge_r{rev}", "agent_id": "spec_judge (scripted)",

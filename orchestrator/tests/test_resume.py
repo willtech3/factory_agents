@@ -55,7 +55,7 @@ def test_run_resumed_moves_a_failed_run_back_into_implementation():
         seq[0] += 1
         reduce(st, e)
 
-    ev("run.created", {"outcome_id": "o"})
+    ev("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o"})
     ev("stage.entered", {"stage": "decomposing"})
     ev("stage.entered", {"stage": "gate_1_decomposition"})
     ev("stage.entered", {"stage": "specifying"})
@@ -80,16 +80,17 @@ def test_resume_review_cache_is_bound_to_both_base_and_head(tmp_path, root):
     from factory.stages.implement import review_evidence_prefix
     ctx = _ctx(tmp_path, root)
     original = {"diff_ref": {"base_sha": "base1", "head_sha": "head1"}, "findings": []}
-    _put(ctx, "review", "spec_a-r2-p1-findings.json", original)
     prefix, found = review_evidence_prefix(ctx, "spec_a", 2, "p1", "base1", "head1")
-    assert prefix == "spec_a-r2-p1-" and found == original
+    assert prefix == "spec_a-r2-basebase1-headhead1-p1-" and found is None
+    _put(ctx, "review", prefix + "findings.json", original)
+    assert review_evidence_prefix(ctx, "spec_a", 2, "p1", "base1", "head1") == (prefix, original)
     for base, head in [("base2", "head1"), ("base1", "head2")]:
-        prefix, found = review_evidence_prefix(ctx, "spec_a", 2, "p1", base, head)
-        assert found is None and prefix != "spec_a-r2-p1-"
-        fresh = {"diff_ref": {"base_sha": base, "head_sha": head}, "findings": []}
-        _put(ctx, "review", prefix + "findings.json", fresh)
-        assert review_evidence_prefix(ctx, "spec_a", 2, "p1", base, head) == (prefix, fresh)
-    assert ctx.store.get_json(ctx.run_id, "review", "spec_a-r2-p1-findings.json") == original
+        other, found = review_evidence_prefix(ctx, "spec_a", 2, "p1", base, head)
+        assert found is None and other != prefix
+    # a pass saved under this diff's name that reports reading another head is not reused
+    _put(ctx, "review", "spec_a-r3-basebase1-headhead1-p1-findings.json", {"diff_ref": {"base_sha": "base1", "head_sha": "moved"}})
+    assert review_evidence_prefix(ctx, "spec_a", 3, "p1", "base1", "head1")[1] is None
+    assert ctx.store.get_json(ctx.run_id, "review", prefix + "findings.json") == original
 
 
 def test_reentering_the_same_stage_is_a_no_op_not_an_illegal_transition():
@@ -101,7 +102,7 @@ def test_reentering_the_same_stage_is_a_no_op_not_an_illegal_transition():
     def ev(kind, payload, **extra):
         e = RunEvent(run_id="r", seq=seq[0], kind=kind, actor={"type": "system"}, payload=payload, **extra); seq[0] += 1; reduce(st, e)
 
-    ev("run.created", {"outcome_id": "o"})
+    ev("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o"})
     ev("stage.entered", {"stage": "decomposing"})
     ev("artifact.produced", {"artifact_type": "decomposition", "revision": 1, "work_items": [{"work_item_id": "wi-a"}]})
     for s_ in ("spec_drafting", "spec_judging", "spec_approved", "implementing", "reviewing"):

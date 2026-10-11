@@ -51,15 +51,15 @@ def test_run_commands_reports_pytest_node_ids_from_its_own_junit(tmp_path):
     v = _verifier(tmp_path)
     out = v.run_commands(repo, ["python -m pytest -q tests", "echo not-a-test-command"], timeout=120)
     assert out[0]["exit_code"] == 1 and "pytest" not in out[1]
-    assert out[0]["pytest"]["passed"] == ["tests/test_a.py::test_one", "tests/test_a.py::TestK::test_two",
+    assert out[0]["tests"]["passed"] == ["tests/test_a.py::test_one", "tests/test_a.py::TestK::test_two",
                                           "tests/test_a.py::test_p[1]", "tests/test_a.py::test_p[2]"]
-    assert out[0]["pytest"]["failed"] == ["tests/test_a.py::test_three"]
+    assert out[0]["tests"]["failed"] == ["tests/test_a.py::test_three"]
     passed, failed = passed_test_ids(out)
     assert "tests/test_a.py::TestK::test_two" in passed and failed == ["tests/test_a.py::test_three"]
     assert passed_test_ids([out[1]]) is None                               # no pytest ran: nothing to verify with
     # a compound command still gets the report (PYTEST_ADDOPTS reaches the pytest inside it)
     out2 = v.run_commands(repo, ["true && python -m pytest -q tests/test_a.py::test_one"], timeout=120)
-    assert out2[0]["exit_code"] == 0 and out2[0]["pytest"]["passed"] == ["tests/test_a.py::test_one"]
+    assert out2[0]["exit_code"] == 0 and out2[0]["tests"]["passed"] == ["tests/test_a.py::test_one"]
 
 
 def test_collect_test_ids_lists_what_pytest_knows_and_none_elsewhere(tmp_path):

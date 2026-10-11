@@ -26,7 +26,7 @@ def test_event_seqs_are_contiguous_when_threads_append_at_once(tmp_path):
 
     store = RunStore(tmp_path)
     run_id = "run_store000002"
-    store.append(run_id, "run.created", {"type": "orchestrator"}, {"outcome_id": "o"})
+    store.append(run_id, "run.created", {"type": "orchestrator"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o"})
 
     def burst(i: int) -> list[int]:
         return [store.append(run_id, "artifact.produced", {"type": "agent"}, {"artifact_type": "probe", "thread": i}).seq

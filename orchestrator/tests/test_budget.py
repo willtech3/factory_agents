@@ -301,7 +301,9 @@ def test_implementation_pauses_before_the_implementer_and_resumes_from_its_artef
     for s in ("spec_drafting", "spec_judging"):
         ctx.event("work_item.stage", {"stage": s, "spec_id": sid}, work_item_id=wid)
     ctx.event("work_item.stage", {"stage": "spec_approved", "spec_id": sid}, work_item_id=wid, spec_id=sid, actor="human")
-    ctx.store.put_artifact(run_id, "specify", f"final-{sid}.json", json.dumps(spec).encode())
+    sha = ctx.store.put_artifact(run_id, "specify", f"final-{sid}.json", json.dumps(spec).encode())
+    runner.record_approval(ctx, GateDecision(gate_id="gate_2a", decision=Decision.APPROVE, decided_by="will",
+                                             artifact_shas=(sha,)), {sid: spec})
     ctx.event("stage.entered", {"stage": "implementing"})
 
     repo = _git_repo(tmp_path / "clone")
@@ -333,7 +335,7 @@ def test_resumed_rounds_do_not_repeat_item_stage_events(tmp_path, root, examples
     """`enter_item_stage` skips a stage the item is already in: a resumed loop re-walks steps whose outputs it
     reuses, and REVIEWING -> REVIEWING would be an illegal transition on replay."""
     ctx = _ctx(tmp_path, root, None, InMemoryQueue(), budget=100.0, run_id="run_budget00005")
-    ctx.event("run.created", {"outcome_id": "o", "title": "t"})
+    ctx.event("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     ctx.event("artifact.produced", {"artifact_type": "decomposition", "revision": 1, "work_items": examples["decomposition"]["work_items"]})
     wid = "wi-smart-retries"
     for s in ("spec_drafting", "spec_judging", "spec_approved", "implementing"):
@@ -367,6 +369,3 @@ def test_state_tracks_the_budget_through_pause_and_raise():
     assert st.budget_usd == 90.0 and st.stage == RunStage.PAUSED_BUDGET
     ev("run.resumed", {"stage": "decomposing", "from": "paused_budget"})
     assert st.stage == RunStage.DECOMPOSING
-    legacy = RunState(run_id="old")
-    reduce(legacy, RunEvent(run_id="old", seq=0, kind="run.created", actor={"type": "system"}, payload={"outcome_id": "o"}))
-    assert legacy.budget_usd is None                   # logs from before the cap carry no budget

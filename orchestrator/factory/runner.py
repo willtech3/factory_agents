@@ -5,11 +5,10 @@ the Factory Console is derived from the events this file appends.
 
 Gate presentation depends on `cfg.gate_surface` (ADR-0007):
 - every surface gets an artifact page per gate (`surfaces/artifact_pages.py`) when `ctx.pages` is set;
-- `forge`: the design artifacts are also committed to a design branch and opened as a draft change
-  request (PR or MR), so the owner can comment inline; the decision still comes through `ctx.queue`;
-- `tracker`: no design CR; `ctx.tracker` (a `TrackerQueue`, also part of `ctx.queue`) opens the gate
+- nothing is committed to the target repository and no change request is opened before Gate 3 (ADR-0011);
+- `tracker`: `ctx.tracker` (a `TrackerQueue`, also part of `ctx.queue`) opens the gate
   on the run's tracker issue and harvests the decision and comments from there;
-- `file`: pages plus the CLI's file queue only.
+- `web`: pages plus the CLI's file queue, which the Factory Console reads and writes.
 """
 from __future__ import annotations
 
@@ -43,46 +42,16 @@ def new_run_id() -> str:
     return f"run_{uuid.uuid4().hex[:10]}"
 
 
-def _design_change_request(ctx: RunContext, outcome: dict[str, Any], files: dict[str, bytes], title: str
-                           ) -> tuple[int | None, dict[str, str]]:
-    """Commit design artifacts under .factory/runs/<run_id>/ on a branch and open (or update) a draft CR.
-
-    Only for the `forge` gate surface. Returns (cr_id, {artifact_name: url}) so gate notifications can
-    deep-link to the files.
-    """
-    if ctx.forge is None or ctx.cfg.gate_surface != "forge":
-        return None, {}
-    repo = outcome["target_repositories"][0]
-    branch = f"factory/{ctx.run_id}/design"
-    ctx.forge.create_branch(branch, repo["default_branch"])
-    paths = {f".factory/runs/{ctx.run_id}/{name}": content for name, content in files.items()}
-    ctx.forge.commit_files(branch, f"factory({ctx.run_id}): {title}", paths)
-    existing = next((ev.payload for ev in ctx.store.events(ctx.run_id) if ev.kind == "cr.opened" and ev.payload.get("design")), None)
-    if existing:
-        cr_id = existing["id"]
-    else:
-        cr = ctx.forge.create_change_request(source_branch=branch, target_branch=repo["default_branch"],
-                                             title=f"[factory design] {outcome['title']}", description=outcome["statement"],
-                                             labels=["factory", "design", f"run:{ctx.run_id}"],
-                                             reviewers=[outcome["owner"]["handle"]], draft=True)
-        cr_id = cr.id
-        ctx.event("cr.opened", {"id": cr.id, "url": cr.url, "branch": branch, "design": True, "forge": ctx.forge.kind})
-    urls = {name: ctx.forge.file_url(branch, f".factory/runs/{ctx.run_id}/{name}") for name in files}
-    return cr_id, urls
-
-
-def _present(ctx: RunContext, outcome: dict[str, Any], files: dict[str, bytes], title: str, page_name: str,
-             page_html: str, anchors: dict[str, str]) -> tuple[int | None, dict[str, str]]:
-    """Publish the gate's reading surfaces. Returns (design_cr_id, artifact_name -> url)."""
-    urls: dict[str, str] = {}
-    if ctx.pages is not None:
-        page_url = ctx.pages.publish(ctx.run_id, page_name, page_html)
-        ctx.event("artifact.produced", {"artifact_type": "gate_page", "path": f"pages/{page_name}.html", "url": page_url},
-                  stage=page_name)
-        urls = {name: f"{page_url}#{anchors.get(name, 'summary')}" for name in files}
-    cr_id, cr_urls = _design_change_request(ctx, outcome, files, title)
-    urls.update(cr_urls)     # inline-commentable files win over the page when both exist
-    return cr_id, urls
+def _present(ctx: RunContext, files: dict[str, bytes], page_name: str, page_html: str,
+             anchors: dict[str, str]) -> dict[str, str]:
+    """Publish the gate's reading page. Returns artifact_name -> url (empty without a page publisher). Gates 1 and 2
+    are read here and decided on the configured surface; nothing is committed to the target repository (ADR-0011)."""
+    if ctx.pages is None:
+        return {}
+    page_url = ctx.pages.publish(ctx.run_id, page_name, page_html)
+    ctx.event("artifact.produced", {"artifact_type": "gate_page", "path": f"pages/{page_name}.html", "url": page_url},
+              stage=page_name)
+    return {name: f"{page_url}#{anchors.get(name, 'summary')}" for name in files}
 
 
 def policy_snapshot(ctx: RunContext) -> dict[str, Any]:
@@ -120,11 +89,8 @@ def notes_by_item(comments: str, item_ids: list[str]) -> dict[str, str]:
     return out
 
 
-def _feedback(ctx: RunContext, design_cr_id: int | None, d: GateDecision) -> str:
+def _feedback(ctx: RunContext, d: GateDecision) -> str:
     parts = [d.comments] if d.comments.strip() else []
-    if ctx.forge is not None and design_cr_id is not None:
-        parts.append(ctx.forge.render_feedback_md(ctx.forge.change_request_comments(design_cr_id),
-                                                  ctx.forge.change_request_discussions(design_cr_id)))
     if ctx.tracker is not None:
         fb = ctx.tracker.render_feedback_md(d.gate_id)
         if fb and "(no comments)" not in fb:
@@ -165,8 +131,7 @@ def _from_decompose(ctx: RunContext, outcome: dict[str, Any], feedback: str | No
         dec_md = ctx.store.get_artifact(ctx.run_id, "decompose", f"r{decomposition['revision']}-decomposition.md")
         files = {"decomposition.md": dec_md, "decomposition.json": json.dumps(decomposition, indent=2).encode()}
         page = render_gate1_page(ctx.run_id, outcome, decomposition, dec_md.decode(errors="replace"), shas)
-        design_cr_id, urls = _present(ctx, outcome, files, "decomposition", "gate_1", page,
-                                      {"decomposition.md": "full", "decomposition.json": "work-items"})
+        urls = _present(ctx, files, "gate_1", page, {"decomposition.md": "full", "decomposition.json": "work-items"})
         d = gate_1(ctx, outcome, decomposition, shas, urls)
         if d.decision == Decision.APPROVE:
             approval_notes = notes_by_item(d.comments, [w["work_item_id"] for w in decomposition["work_items"]])
@@ -174,7 +139,7 @@ def _from_decompose(ctx: RunContext, outcome: dict[str, Any], feedback: str | No
         if d.decision == Decision.REJECT:
             ctx.event("stage.entered", {"stage": RunStage.CLOSED.value}, stage="gate_1", actor="human")
             return RunStage.CLOSED
-        feedback, prior = _feedback(ctx, design_cr_id, d), decomposition
+        feedback, prior = _feedback(ctx, d), decomposition
     return _from_specify(ctx, outcome, decomposition, approval_notes or None, None)
 
 
@@ -192,12 +157,11 @@ def _from_specify(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[
     while True:
         if pending is not None:
             specs, verdict, spec_md = pending.specs, pending.verdict, pending.spec_md
-            design_cr_id = _design_cr_id(ctx)
             d = wait_for_gate(ctx, pending.gate_id, pending.kind)
             pending = None
         else:
-            specs, verdict, spec_md, design_cr_id, d = _specify_and_gate(ctx, outcome, decomposition, human_comments, prior_specs,
-                                                                         previous_verdict, round_offset)
+            specs, verdict, spec_md, d = _specify_and_gate(ctx, outcome, decomposition, human_comments, prior_specs,
+                                                           previous_verdict, round_offset)
         if d.decision == Decision.REJECT:
             ctx.event("stage.entered", {"stage": RunStage.CLOSED.value}, stage="gate_2", actor="human")
             return RunStage.CLOSED
@@ -215,7 +179,7 @@ def _from_specify(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[
                           work_item_id=specs[sid]["work_item_id"], spec_id=sid, actor="human")
             specs = selected
             break
-        human_comments, prior_specs = _route_gate2_feedback(ctx, design_cr_id, d, specs)
+        human_comments, prior_specs = _route_gate2_feedback(ctx, d, specs)
         previous_verdict, round_offset = verdict, max(int(verdict.get("round") or round_offset + 1), round_offset)
     spec_verdict = verdict
     if ctx.policy.design_only:
@@ -245,12 +209,11 @@ def record_approval(ctx: RunContext, d: GateDecision, approved: dict[str, dict])
 
 
 def approved_record(ctx: RunContext, events: list[Any], specs: dict[str, dict]) -> dict[str, str]:
-    """The guidance a resumed implementation carries, after checking each approved spec is still the approved bytes. Runs
-    approved before approvals were recorded resume without guidance, as they did before."""
+    """The guidance a resumed implementation carries, after checking each approved spec is still the approved bytes."""
     produced = next((ev.payload for ev in reversed(events) if ev.kind == "artifact.produced"
                      and ev.payload.get("artifact_type") == "gate2_approval"), None)
     if produced is None:
-        return {}
+        raise RuntimeError(f"{ctx.run_id} has no recorded Gate 2 approval to resume from")
     record = json.loads(ctx.store.get_artifact(ctx.run_id, "gate_2", Path(produced["path"]).name))
     if set(record["approved"]) != set(specs):
         raise RuntimeError(f"the specs marked approved ({sorted(specs)}) differ from Gate 2 {record['gate_id']}'s approval "
@@ -263,7 +226,7 @@ def approved_record(ctx: RunContext, events: list[Any], specs: dict[str, dict]) 
 
 def _specify_and_gate(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[str, Any], human_comments: dict[str, str] | None,
                       prior_specs: dict[str, dict] | None, previous_verdict: dict[str, Any] | None, round_offset: int
-                      ) -> tuple[dict[str, dict], dict[str, Any], dict[str, str], int | None, GateDecision]:
+                      ) -> tuple[dict[str, dict], dict[str, Any], dict[str, str], GateDecision]:
     """One specification pass and its Gate 2: write and judge the specs, publish them as the gate's `final-*`
     artefacts, present them, and wait for the owner's decision."""
     specs, verdict = run_specify(ctx, outcome, decomposition, human_comments, prior_specs,
@@ -285,27 +248,23 @@ def _specify_and_gate(ctx: RunContext, outcome: dict[str, Any], decomposition: d
     page = render_gate2_page(ctx.run_id, outcome, {sid: public(s) for sid, s in specs.items()}, verdict, spec_shas, spec_md)
     anchors = {f"specs/{sid}.json": f"spec-{sid}" for sid in specs}
     anchors.update({f"specs/{sid}.md": f"spec-{sid}" for sid in specs})
-    design_cr_id, urls = _present(ctx, outcome, files, "specifications", "gate_2", page, anchors)
+    urls = _present(ctx, files, "gate_2", page, anchors)
     urls = {**urls, **{f"{sid}.json": urls.get(f"specs/{sid}.json", "") for sid in specs},
             "verdict.json": urls.get("verdict.json", "")}
     d = gate_2(ctx, outcome, specs, verdict, spec_shas, urls)
-    return specs, verdict, spec_md, design_cr_id, d
+    return specs, verdict, spec_md, d
 
 
-def _route_gate2_feedback(ctx: RunContext, design_cr_id: int | None, d: GateDecision, specs: dict[str, dict]
+def _route_gate2_feedback(ctx: RunContext, d: GateDecision, specs: dict[str, dict]
                           ) -> tuple[dict[str, str], dict[str, dict]]:
     """request_changes at Gate 2: per-item lines (`spec_x: ...` or `wi-x: ...`) go to that item, the rest to every
     item; the writers also get the draft the owner commented on."""
-    fb = _feedback(ctx, design_cr_id, d)
+    fb = _feedback(ctx, d)
     ids = [s["work_item_id"] for s in specs.values()] + list(specs)
     routed = notes_by_item(fb, ids)
     human_comments = {s["work_item_id"]: (routed.get(s["work_item_id"]) or routed.get(sid) or fb) for sid, s in specs.items()}
     prior_specs = {s["work_item_id"]: s for s in specs.values()}
     return human_comments, prior_specs
-
-
-def _design_cr_id(ctx: RunContext) -> int | None:
-    return next((ev.payload["id"] for ev in ctx.store.events(ctx.run_id) if ev.kind == "cr.opened" and ev.payload.get("design")), None)
 
 
 def _decision_from_event(p: dict[str, Any]) -> GateDecision:
@@ -317,16 +276,11 @@ def _decision_from_event(p: dict[str, Any]) -> GateDecision:
 
 def _spec_markdown(ctx: RunContext, spec: dict[str, Any]) -> str:
     """The writer's spec.md for this spec: carried on the object by `run_specify`, else the `final-<spec_id>.md` the
-    runner stored at Gate 2 (what `factory resume` reads), else the latest round in the store, else ''."""
+    runner stored at Gate 2 (what `factory resume` reads; absent when the markdown was empty), else ''."""
     if spec.get("_markdown"):
         return str(spec["_markdown"])
     try:
         return ctx.store.get_artifact(ctx.run_id, "specify", f"final-{spec['spec_id']}.md").decode(errors="replace")
-    except FileNotFoundError:
-        pass
-    try:
-        name = _latest(ctx, "specify", f"{spec['work_item_id']}-", "-spec.md")
-        return ctx.store.get_artifact(ctx.run_id, "specify", name).decode(errors="replace")
     except FileNotFoundError:
         return ""
 
@@ -489,10 +443,10 @@ def _cr_already_open(ctx: RunContext, spec_id: str) -> bool:
 
 
 def _open_change_requests(ctx: RunContext) -> dict[str, int]:
-    """spec_id -> change request id for every (non-design) change request this run has opened."""
+    """spec_id -> change request id for every change request this run has opened."""
     out: dict[str, int] = {}
     for ev in ctx.store.events(ctx.run_id):
-        if ev.kind == "cr.opened" and ev.spec_id and not ev.payload.get("design"):
+        if ev.kind == "cr.opened" and ev.spec_id:
             out[ev.spec_id] = int(ev.payload["id"])
     return out
 
@@ -583,7 +537,7 @@ def controller_lock(runs_dir: Path, run_id: str) -> Iterator[None]:
     """A nonblocking exclusive lock on `runs/<run_id>/controller.lock`, held for the whole resumed drive, so two
     recovering controllers never wait on (and consume) the same pending gate. Re-entrant within one process: the CLI
     takes it before the drive and `resume` finds it held. Raises `RunLocked`, before anything is written, when another
-    process holds it. Controllers started by older code take no lock: stop them first (`run.failed` proves it)."""
+    process holds it."""
     if run_id in _HELD_LOCKS:
         yield
         return
@@ -849,7 +803,7 @@ def budget_decision(ctx: RunContext, st: Any, events: list[Any], budget_usd: flo
 
 
 def _raise_budget(ctx: RunContext, st: Any, new_budget: float, by: str, gate_id: str | None) -> None:
-    previous = st.budget_usd if st.budget_usd is not None else ctx.policy.run_budget_usd
+    previous = st.budget_usd
     ctx.policy = dataclasses.replace(ctx.policy, run_budget_usd=new_budget)
     ctx.event("budget.raised", {"budget_usd": new_budget, "previous_budget_usd": previous, "spent_usd": round(st.list_cost_usd, 2),
                                 "gate_id": gate_id, "decided_by": by}, stage="budget", actor="human")
@@ -870,7 +824,7 @@ def _resume_after_budget_pause(ctx: RunContext, outcome: dict[str, Any], st: Any
     if action == "close":
         ctx.event("stage.entered", {"stage": RunStage.CLOSED.value}, stage="budget", actor="human")
         return RunStage.CLOSED
-    if st.budget_usd is None or new_budget != st.budget_usd:
+    if new_budget != st.budget_usd:
         _raise_budget(ctx, st, new_budget, by=by, gate_id=gate_id)
     else:
         ctx.policy = dataclasses.replace(ctx.policy, run_budget_usd=new_budget)
@@ -910,7 +864,7 @@ def _persisted_specify_rounds(ctx: RunContext, decomposition: dict[str, Any]) ->
 
 def _pending_gate1_feedback(ctx: RunContext, events: list[Any]) -> tuple[str | None, dict[str, Any] | None]:
     """When the pause interrupted a re-decomposition after request-changes at Gate 1: the owner's feedback (gate
-    comments plus design-CR and tracker comments, as `_feedback` builds it) and the decomposition it was about."""
+    comments plus tracker comments, as `_feedback` builds it) and the decomposition it was about."""
     last_dec = next((ev for ev in reversed(events) if ev.kind == "artifact.produced"
                      and ev.payload.get("artifact_type") == "decomposition" and "work_items" in ev.payload), None)
     last_gate = next((ev for ev in reversed(events) if ev.kind == "gate.decided"
@@ -919,7 +873,7 @@ def _pending_gate1_feedback(ctx: RunContext, events: list[Any]) -> tuple[str | N
             or last_gate.payload.get("decision") != Decision.REQUEST_CHANGES.value:
         return None, None
     prior = json.loads(ctx.store.get_artifact(ctx.run_id, "decompose", f"r{last_dec.payload['revision']}-decomposition.json"))
-    return _feedback(ctx, _design_cr_id(ctx), _decision_from_event(last_gate.payload)), prior
+    return _feedback(ctx, _decision_from_event(last_gate.payload)), prior
 
 
 def _pending_specify_inputs(ctx: RunContext, events: list[Any], decomposition: dict[str, Any]
@@ -939,5 +893,5 @@ def _pending_specify_inputs(ctx: RunContext, events: list[Any], decomposition: d
         sids = [n[:-len(".json")] for n in names if n.endswith(".json") and n != "verdict.json"]
         specs = {sid: json.loads(ctx.store.get_artifact(ctx.run_id, "specify", f"final-{sid}.json")) for sid in sids}
         if specs:
-            return _route_gate2_feedback(ctx, _design_cr_id(ctx), _decision_from_event(p), specs)
+            return _route_gate2_feedback(ctx, _decision_from_event(p), specs)
     return None, None

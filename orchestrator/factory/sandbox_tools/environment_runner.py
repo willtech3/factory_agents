@@ -351,8 +351,7 @@ def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: flo
         elif bun_reason:
             row["tests"] = {"framework": "bun", "status": "unsupported", "reason": bun_reason}
         if junit.is_file():
-            row["pytest"] = parse_junit(junit.read_bytes())
-            row.setdefault("tests", {"framework": "pytest", "report": "junit", "status": "reported", **row["pytest"]})
+            row.setdefault("tests", {"framework": "pytest", "report": "junit", "status": "reported", **parse_junit(junit.read_bytes())})
         out["commands"].append(row)
     if change.get("collect_tests"):
         log = logs / "collect.log"
