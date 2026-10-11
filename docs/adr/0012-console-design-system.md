@@ -1,4 +1,4 @@
-# ADR-0011: One design system for the Console, drawn around the line and the crew
+# ADR-0012: One design system for the Console, drawn around the line and the crew
 
 **Status:** accepted · **Date:** 2026-10-11
 

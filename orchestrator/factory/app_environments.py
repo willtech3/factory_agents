@@ -21,11 +21,10 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException
 
-from .test_environments import app_labels, factory_environments, fingerprint, label_environment
+from .test_environments import app_labels, factory_environments, label_environment
 
 # The shared, network-less environment discovery sessions read source in. One per workspace, not one per app.
 DISCOVERY_PROFILE = {"name": "app-discovery", "network": {"allowed_hosts": [], "allow_package_managers": False}}
-DISCOVERY_SHA256 = fingerprint(DISCOVERY_PROFILE)
 NAME = re.compile(r"factory-(?P<stem>.+)-(?P<digest>[0-9a-f]{8})-[0-9a-f]{6}")
 CACHE_SECONDS = 30
 MAX_SESSION_PAGES = 5
@@ -34,13 +33,13 @@ MAX_SESSION_PAGES = 5
 def describe(env, links: dict) -> dict:
     """One environment, attributed to an app by its labels, else by this Console's records, else by its name.
 
-    Definitions created before environments were labelled carry only the recipe name in their own name
+    A definition created without an app (a `factory environment` trial) carries only the recipe name in its own name
     (factory-<recipe>-<fingerprint>-<suffix>); those of one recipe are grouped as one app."""
     meta = dict(env.metadata or {})
     link = links.get(env.id) or {}
     match = NAME.fullmatch(env.name or "")
     digest = meta.get("profile_sha256", "")
-    discovery = meta.get("factory_purpose") == "discovery" or digest == DISCOVERY_SHA256
+    discovery = meta.get("factory_purpose") == "discovery"
     repository = (meta.get("factory_repository") or link.get("repository_url") or "").removesuffix(".git").rstrip("/")
     app_id = meta.get("factory_app_id") or link.get("app_id") or ""
     stem = match["stem"] if match else env.name

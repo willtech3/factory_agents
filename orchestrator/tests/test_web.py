@@ -140,6 +140,15 @@ def test_scripted_run_walks_question_gate1_gate2_to_change_requests(client, sche
         assert checks.schema_valid(ev.to_dict(), schemas_dir / "run_event.schema.json", schemas_dir).passed, ev.kind
 
 
+def test_a_run_stopped_before_run_created_is_not_found_not_a_crash(client):
+    """`factory run` logs `repository.created` for a repository it creates before the runner logs `run.created`."""
+    from factory.store import RunStore
+    RunStore(client.cfg.runs_dir).append("run_beforestart", "repository.created", {"type": "platform"},
+                                         {"url": "https://github.com/me/new", "default_branch": "main"})
+    r = client.get("/api/runs/run_beforestart")
+    assert r.status_code == 404 and "never started" in r.json()["detail"]
+
+
 def test_reject_closes_the_run(client):
     run_id = _seed(client)
     qid = client.get("/api/inbox").json()["questions"][0]["question_id"]
@@ -283,7 +292,7 @@ def test_design_only_flag_and_file_queue_atomic_write(client, tmp_path):
     assert json.loads((tmp_path / "q" / "gates.json").read_text()) == {"a": 1}
     assert not [p for p in (tmp_path / "q").iterdir() if p.name.startswith(".gates")]   # no temp files left behind
     store = client.console.store
-    store.append("run_designonly1", "run.created", {"type": "orchestrator"}, {"outcome_id": "o", "title": "D", "design_only": True})
+    store.append("run_designonly1", "run.created", {"type": "orchestrator"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "D", "design_only": True})
     r = client.get("/api/runs/run_designonly1").json()
     assert r["design_only"] is True
     assert [x for x in client.get("/api/runs").json()["runs"] if x["run_id"] == "run_designonly1"][0]["design_only"] is True
@@ -304,7 +313,7 @@ def test_resume_is_offered_only_for_failed_runs_that_reached_implementation(clie
     store = RunStore(runs_dir)
     rid = "run_deadbeef01"
     actor = {"type": "system", "id": "test"}
-    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "t"})
+    store.append(rid, "run.created", actor, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
     for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness"):
         store.append(rid, "stage.entered", actor, {"stage": stage})
@@ -312,7 +321,7 @@ def test_resume_is_offered_only_for_failed_runs_that_reached_implementation(clie
     # failed before implementation: not resumable
     assert client.get(f"/api/runs/{rid}").json()["resumable"] is False
     rid2 = "run_deadbeef02"
-    store.append(rid2, "run.created", actor, {"outcome_id": "o", "title": "t"})
+    store.append(rid2, "run.created", actor, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     store.put_artifact(rid2, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
     for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness", "implementing"):
         store.append(rid2, "stage.entered", actor, {"stage": stage})
@@ -338,7 +347,7 @@ def test_budget_pause_is_shown_decided_and_resumed_from_the_console(client, monk
     rid = "run_budgetpause01"
     ctx = RunContext(cfg=client.cfg, store=store, driver=None, queue=client.console.queue, notifier=LogNotifier(), forge=None,
                      policy=Policy(run_budget_usd=60.0, stage_budget_usd={"review": 15.0, "security_review": 10.0, "merge_judge": 8.0}), run_id=rid)
-    ctx.event("run.created", {"outcome_id": "o", "title": "Budgeted", "budget_usd": 60.0})
+    ctx.event("run.created", {"outcome_id": "o", "title": "Budgeted", "budget_usd": 60.0, "policy": {"preview_mode": "local"}})
     store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "Budgeted", "statement": "s",
                                                                  "owner": {"name": "P", "handle": "priya"}}).encode())
     for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness", "implementing"):
@@ -415,7 +424,7 @@ def test_console_shows_a_budget_gate(client):
     rid = "run_budget0000a"
     actor = {"type": "orchestrator", "id": "orchestrator"}
     store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
-    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "Budget run"})
+    store.append(rid, "run.created", actor, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "Budget run"})
     for stage in ("decomposing", "gate_1_decomposition", "specifying"):
         store.append(rid, "stage.entered", actor, {"stage": stage})
     store.append(rid, "budget.reached", {"type": "platform", "id": "platform"},
@@ -453,7 +462,7 @@ def test_watch_is_offered_for_live_runs_with_open_pull_requests(client, examples
     store = RunStore(runs_dir)
     rid = "run_watchweb001"
     actor = {"type": "orchestrator", "id": "test"}
-    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "t"})
+    store.append(rid, "run.created", actor, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     store.put_artifact(rid, "intake", "outcome.json", json.dumps(examples["outcome"]).encode())
     store.append(rid, "stage.entered", actor, {"stage": "decomposing"})
     store.append(rid, "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
@@ -497,7 +506,7 @@ def test_recovered_run_displays_effective_hosted_policy(client):
     store = RunStore(client.cfg.runs_dir)
     rid = "run_policyrecovery"
     actor = {"type": "controller"}
-    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "Recovered run", "policy": {
+    store.append(rid, "run.created", actor, {"budget_usd": 60, "outcome_id": "o", "title": "Recovered run", "policy": {
         "preview_mode": "local", "run_budget_usd": 60, "reviewer_passes": 2}})
     store.append(rid, "run.failed", actor, {"reason": "idle stop"})
     store.append(rid, "run.resumed", actor, {"stage": "gate_2_spec_readiness", "preview_mode": "managed",
@@ -520,7 +529,7 @@ def test_crew_roster_board_and_settings_passthrough(client, monkeypatch):
     store = RunStore(client.cfg.runs_dir)
     rid = "run_crew00000001"
     actor = {"type": "system", "id": "test"}
-    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "Crew run", "policy": {"run_budget_usd": 60, "reviewer_passes": 2, "security_review": True}})
+    store.append(rid, "run.created", actor, {"budget_usd": 60, "outcome_id": "o", "title": "Crew run", "policy": {"run_budget_usd": 60, "reviewer_passes": 2, "security_review": True}})
     store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "Crew run", "statement": "s"}).encode())
     store.append(rid, "stage.entered", actor, {"stage": "decomposing"})
     store.append(rid, "session.started", actor, {"session_id": "s1", "agent_key": "decomposer", "agent_id": "a", "title": "decompose"}, stage="decompose")
@@ -586,7 +595,7 @@ def test_resume_refuses_a_second_orchestrator_on_the_same_run(client):
     store = RunStore(client.cfg.runs_dir)
     rid = "run_resume0000ab"
     actor = {"type": "system", "id": "test"}
-    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "t"})
+    store.append(rid, "run.created", actor, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
     for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness", "implementing"):
         store.append(rid, "stage.entered", actor, {"stage": stage})

@@ -251,12 +251,12 @@ class Console:
         return out
 
     def run_detail(self, run_id: str) -> dict[str, Any]:
-        if (not RUN_ID.match(run_id) or not (self.cfg.runs_dir / run_id / "events.jsonl").is_file()
-                or (self.cfg.runs_dir / run_id / "demo.json").is_file()):
+        if not RUN_ID.match(run_id) or not (self.cfg.runs_dir / run_id / "events.jsonl").is_file():
             raise HTTPException(404, f"no run {run_id}")       # checked first: RunStore.events would create the directory
         events = self.store.events(run_id)
-        if not events:
-            raise HTTPException(404, f"no run {run_id}")
+        if not any(ev.kind == "run.created" for ev in events):
+            # empty, or stopped between creating its repository (`repository.created`) and starting (`run.created`)
+            raise HTTPException(404, f"run {run_id} never started")
         st = self.store.state(run_id)
         outcome = None
         try:
@@ -297,8 +297,7 @@ class Console:
         for key in ("open_gate_ids", "open_question_ids"):
             summary.pop(key, None)
         created = next((ev.payload for ev in events if ev.kind == "run.created"), {})
-        policy = dict(created.get("policy") or {"run_budget_usd": ((outcome or {}).get("constraints") or {}).get("budget_usd"),
-                                                "preview_mode": self.cfg.preview_mode, "recorded": False})
+        policy = dict(created["policy"])
         # A controller upgrade can move an existing run to hosted execution at an idle gate.
         # Show the effective settings, keeping the immutable creation event as history.
         for ev in events:
@@ -408,10 +407,9 @@ class Console:
                     s = load(name)
                     if s:
                         specs[s["spec_id"]] = s
-                        # the runner stores the gate's own spec.md as final-<spec_id>.md; older runs only have the rounds
+                        # the runner stores the gate's own spec.md as final-<spec_id>.md (absent when it is empty)
                         final = self.cfg.runs_dir / run_id / "artifacts" / "specify" / f"final-{s['spec_id']}.md"
-                        md = final if final.is_file() else self._latest(run_id, "specify", f"{s['work_item_id']}-r", "-spec.md")
-                        spec_md[s["spec_id"]] = md.read_text(errors="replace") if md else ""
+                        spec_md[s["spec_id"]] = final.read_text(errors="replace") if final.is_file() else ""
             titles = {}
             for ev in events:
                 if ev.kind == "artifact.produced" and ev.payload.get("artifact_type") == "decomposition":
@@ -439,16 +437,6 @@ class Console:
             if p is not None and p.name.startswith("paused-"):
                 return json.loads(p.read_text())
         return None
-
-    def _latest(self, run_id: str, stage: str, prefix: str, suffix: str) -> Path | None:
-        """The highest-numbered `<prefix><n>...<suffix>` artefact (numeric: round 10 after round 9)."""
-        d = self.cfg.runs_dir / run_id / "artifacts" / stage
-        cands = [p for p in d.glob(f"{prefix}*{suffix}") if not p.name.endswith(".sha256")] if d.exists() else []
-
-        def round_of(p: Path) -> int:
-            digits = p.name[len(prefix):-len(suffix)].split("-")[0]
-            return int(digits) if digits.isdigit() else -1
-        return max(cands, key=lambda p: (round_of(p), p.name)) if cands else None
 
     def gate_page(self, gate_id: str) -> str:
         g = self.gate(gate_id)

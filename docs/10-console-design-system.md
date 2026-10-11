@@ -1,6 +1,6 @@
 # The Console design system: the drawn floor
 
-The Factory Console (`orchestrator/factory/web/static/`) is a single page of vanilla JavaScript and one stylesheet. This page is the contract for anyone who adds a screen or a component to it. It is short on purpose: the system is a handful of rules, one model of a run, one stylesheet of tokens and components, and a few JavaScript helpers that every view uses. [ADR-0011](adr/0011-console-design-system.md) records why.
+The Factory Console (`orchestrator/factory/web/static/`) is a single page of vanilla JavaScript and one stylesheet. This page is the contract for anyone who adds a screen or a component to it. It is short on purpose: the system is a handful of rules, one model of a run, one stylesheet of tokens and components, and a few JavaScript helpers that every view uses. [ADR-0012](adr/0012-console-design-system.md) records why.
 
 ## Three questions, in this order
 

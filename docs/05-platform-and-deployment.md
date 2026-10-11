@@ -44,7 +44,7 @@ Promotion beyond `dev` is a human act outside the factory. The outcome's `succes
 
 **Self-hosted GitLab (work).** The instance is not reachable from where this design was written, so:
 
-- Nothing here calls it. `FORGE_URL` (alias `GITLAB_URL`) is the only place the host is configured; the GitLab host in `environments/factory-cloud.yaml` is a commented placeholder.
+- Nothing here calls it. `FORGE_URL` is the only place the host is configured; the GitLab host in `environments/factory-cloud.yaml` is a commented placeholder.
 - The pipeline, jobs, environments, and deployments methods in `forge/gitlab.py` follow the GitLab REST documentation (GitLab 16/17 shapes) and are **marked unverified**. Field names, the environment naming convention for previews (`preview/<branch>` by default, `FACTORY_PREVIEW_ENVIRONMENT_PREFIX` to change it), and whether the deploy job registers `environment:url` are hypotheses until the roadmap spike runs them against the real instance.
 - The pipeline webhook handler normalises the Pipeline Hook payload (and GitHub's `workflow_run` event); the HTTP endpoint belongs to the Factory Console, not this repository.
 - Identity is the platform's: GitLab CI deploys with its WIF binding and service account. The factory holds no GCP credential and needs none.

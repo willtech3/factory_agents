@@ -1,14 +1,13 @@
 """Forge selection and the GitHub client's request shapes, through httpx's MockTransport. No network."""
 import base64
 import json
-from pathlib import Path
 
 import httpx
 import pytest
 from conftest import make_config
 
 from factory import config as cfgmod
-from factory.forge import PIPELINE_TERMINAL, make_forge, parse_pipeline_webhook, render_feedback_md
+from factory.forge import PIPELINE_TERMINAL, make_forge, parse_pipeline_webhook
 from factory.forge.github import BOT_MARKER, GitHubForge
 from factory.forge.gitlab import GitLabForge
 
@@ -63,18 +62,17 @@ def test_make_forge_selects_by_config(tmp_path, root):
         make_forge(make_config(root, tmp_path, forge="bitbucket", forge_token="t"))
 
 
-def test_config_env_aliases_and_defaults(monkeypatch, tmp_path):
-    for k in ("FACTORY_FORGE", "FORGE_URL", "FORGE_TOKEN", "FORGE_REPO", "GITHUB_TOKEN", "GITHUB_REPO", "GITLAB_URL",
-              "GITLAB_TOKEN", "GITLAB_PROJECT", "LINEAR_API_KEY", "FACTORY_GATE_SURFACE", "FACTORY_VAULT_ID", "ANTHROPIC_API_KEY",
-              "ANTHROPIC_WORKSPACE_ID"):
+def test_config_env_and_defaults(monkeypatch, tmp_path):
+    for k in ("FACTORY_FORGE", "FORGE_URL", "FORGE_TOKEN", "FORGE_REPO", "LINEAR_API_KEY", "FACTORY_GATE_SURFACE",
+              "FACTORY_VAULT_ID", "ANTHROPIC_API_KEY", "ANTHROPIC_WORKSPACE_ID"):
         monkeypatch.delenv(k, raising=False)
     nodotenv = tmp_path / "no.env"
-    monkeypatch.setenv("GITHUB_TOKEN", "ghp_x")
-    monkeypatch.setenv("GITHUB_REPO", "will/ledgerline")
+    monkeypatch.setenv("FORGE_TOKEN", "ghp_x")
+    monkeypatch.setenv("FORGE_REPO", "will/ledgerline")
     cfg = cfgmod.load(tmp_path / "no-lock.json", dotenv_path=nodotenv)
     assert cfg.forge == "github" and cfg.forge_url == "https://github.com" and cfg.forge_token == "ghp_x"
     assert cfg.forge_repo == "will/ledgerline" and cfg.repo_url == "https://github.com/will/ledgerline"
-    assert cfg.gate_surface == "forge"
+    assert cfg.gate_surface == "web"     # no design PR in the target repository (ADR-0011)
     gaps = cfgmod.missing(cfg)
     assert not any("FORGE_TOKEN" in g or "FACTORY_VAULT_ID" in g for g in gaps)   # github needs no vault
 
@@ -83,9 +81,9 @@ def test_config_env_aliases_and_defaults(monkeypatch, tmp_path):
     assert any("LINEAR_TEAM_ID" in g for g in cfgmod.missing(cfgmod.load(tmp_path / "no-lock.json", dotenv_path=nodotenv)))
 
     monkeypatch.setenv("FACTORY_FORGE", "gitlab")
-    monkeypatch.setenv("GITLAB_URL", "https://gitlab.example.internal")
-    monkeypatch.setenv("GITLAB_TOKEN", "glpat")
-    monkeypatch.setenv("GITLAB_PROJECT", "group/app")
+    monkeypatch.setenv("FORGE_URL", "https://gitlab.example.internal")
+    monkeypatch.setenv("FORGE_TOKEN", "glpat")
+    monkeypatch.setenv("FORGE_REPO", "group/app")
     cfg = cfgmod.load(tmp_path / "no-lock.json", dotenv_path=nodotenv)
     assert (cfg.forge, cfg.forge_url, cfg.forge_token, cfg.forge_repo) == ("gitlab", "https://gitlab.example.internal", "glpat", "group/app")
     assert any("FACTORY_VAULT_ID" in g for g in cfgmod.missing(cfg))
@@ -95,39 +93,29 @@ def test_config_env_aliases_and_defaults(monkeypatch, tmp_path):
 
 def test_github_commit_files_uses_git_data_api():
     routes = {
-        "GET /repos/will/ledgerline/git/ref/heads/factory/run_1/design": {"object": {"sha": "head1"}},
+        "GET /repos/will/ledgerline/git/ref/heads/main": {"object": {"sha": "head1"}},
         "GET /repos/will/ledgerline/git/commits/head1": {"tree": {"sha": "tree0"}},
         "POST /repos/will/ledgerline/git/blobs": (201, lambda b, p: {"sha": "blob-" + b["content"][:4]}),
         "POST /repos/will/ledgerline/git/trees": (201, {"sha": "tree1"}),
         "POST /repos/will/ledgerline/git/commits": (201, {"sha": "commit1"}),
-        "PATCH /repos/will/ledgerline/git/refs/heads/factory/run_1/design": {"object": {"sha": "commit1"}},
+        "PATCH /repos/will/ledgerline/git/refs/heads/main": {"object": {"sha": "commit1"}},
     }
     f, rec = _forge(routes)
-    sha = f.commit_files("factory/run_1/design", "factory(run_1): decomposition",
-                         {".factory/runs/run_1/decomposition.json": b"{}", ".factory/runs/run_1/decomposition.md": b"# d"})
+    sha = f.commit_files("main", "factory: platform contract skill",
+                         {".claude/skills/platform-contract/SKILL.md": b"# skill", ".github/workflows/preview.yml": b"on: push"})
     assert sha == "commit1"
     methods = [(m, p) for m, p, _, _ in rec.calls]
-    assert methods[0] == ("GET", "/repos/will/ledgerline/git/ref/heads/factory/run_1/design")
+    assert methods[0] == ("GET", "/repos/will/ledgerline/git/ref/heads/main")
     assert methods.count(("POST", "/repos/will/ledgerline/git/blobs")) == 2
     tree_body = next(b for m, p, _, b in rec.calls if p.endswith("/git/trees"))
     assert tree_body["base_tree"] == "tree0"
-    assert {e["path"] for e in tree_body["tree"]} == {".factory/runs/run_1/decomposition.json", ".factory/runs/run_1/decomposition.md"}
+    assert {e["path"] for e in tree_body["tree"]} == {".claude/skills/platform-contract/SKILL.md", ".github/workflows/preview.yml"}
     assert all(e["mode"] == "100644" and e["type"] == "blob" for e in tree_body["tree"])
     blob = next(b for m, p, _, b in rec.calls if p.endswith("/git/blobs"))
-    assert blob["encoding"] == "base64" and base64.b64decode(blob["content"]) in (b"{}", b"# d")
+    assert blob["encoding"] == "base64" and base64.b64decode(blob["content"]) in (b"# skill", b"on: push")
     commit_body = next(b for m, p, _, b in rec.calls if p.endswith("/git/commits") and m == "POST")
-    assert commit_body == {"message": "factory(run_1): decomposition", "tree": "tree1", "parents": ["head1"]}
+    assert commit_body == {"message": "factory: platform contract skill", "tree": "tree1", "parents": ["head1"]}
     assert rec.calls[-1][0] == "PATCH" and rec.calls[-1][3]["sha"] == "commit1"
-    assert f.file_url("factory/run_1/design", ".factory/runs/run_1/decomposition.md") == \
-        "https://github.com/will/ledgerline/blob/factory/run_1/design/.factory/runs/run_1/decomposition.md"
-
-
-def test_github_create_branch_tolerates_existing():
-    routes = {"GET /repos/will/ledgerline/git/ref/heads/main": {"object": {"sha": "m1"}},
-              "POST /repos/will/ledgerline/git/refs": (422, {"message": "Reference already exists"})}
-    f, rec = _forge(routes)
-    f.create_branch("factory/run_1/design", "main")
-    assert rec.calls[-1][3] == {"ref": "refs/heads/factory/run_1/design", "sha": "m1"}
 
 
 def test_github_pull_request_flow():
@@ -142,11 +130,6 @@ def test_github_pull_request_flow():
             {"user": {"login": "will"}, "state": "CHANGES_REQUESTED"},
             {"user": {"login": "will"}, "state": "APPROVED"},
             {"user": {"login": "sam"}, "state": "COMMENTED"}],
-        "GET /repos/will/ledgerline/issues/7/comments": [
-            {"user": {"login": "factory-bot"}, "body": f"{BOT_MARKER}\nhello", "created_at": "t0"},
-            {"user": {"login": "will"}, "body": "Rename the column", "created_at": "t1"}],
-        "GET /repos/will/ledgerline/pulls/7/comments": [
-            {"user": {"login": "will"}, "body": "nit", "path": "specs/spec_x.md", "line": 42}],
         "POST /repos/will/ledgerline/issues/7/comments": (201, {"id": 1}),
     }
     f, rec = _forge(routes)
@@ -159,12 +142,6 @@ def test_github_pull_request_flow():
     st = f.change_request_state(7)
     assert st["state"] == "merged" and st["sha"] == "h7" and st["labels"] == ["factory", "spec:spec_x"]
     assert f.change_request_approved(7) is True       # latest review by will is APPROVED
-    comments = f.change_request_comments(7)
-    assert [c["author"] for c in comments] == ["will"]  # the bot's own comment is skipped
-    disc = f.change_request_discussions(7)
-    assert disc[0]["path"] == "specs/spec_x.md" and disc[0]["line"] == 42
-    md = f.render_feedback_md(comments, disc)
-    assert "`specs/spec_x.md:42`" in md and "Rename the column" in md and md.startswith("# Human feedback from the design PR")
     f.post_comment(7, "Gate opened")
     assert rec.calls[-1][3]["body"].startswith(BOT_MARKER)
 
@@ -229,18 +206,8 @@ def test_parse_pipeline_webhook_dispatches_on_shape():
     assert parse_pipeline_webhook({"object_kind": "merge_request"}) is None
 
 
-def test_shared_feedback_renderer_skips_positioned_notes():
-    md = render_feedback_md([{"author": "a", "body": "top", "position": None}, {"author": "a", "body": "dup", "position": {"x": 1}}],
-                            [{"author": "b", "body": "inline", "path": "f.md", "line": 3}])
-    assert "top" in md and "inline" in md and "dup" not in md
-
-
-def test_old_gitlab_module_is_gone():
-    assert not (Path(__file__).resolve().parents[1] / "factory" / "gitlab.py").exists()
-
-
 def test_dotenv_loader_and_design_only_gaps(monkeypatch, tmp_path):
-    for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_WORKSPACE_ID", "FORGE_TOKEN", "GITHUB_TOKEN", "FORGE_REPO", "GITHUB_REPO", "LINEAR_API_KEY"):
+    for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_WORKSPACE_ID", "FORGE_TOKEN", "FORGE_REPO", "LINEAR_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     env = tmp_path / ".env"
     env.write_text("# comment\nexport ANTHROPIC_API_KEY='sk-test'\nANTHROPIC_WORKSPACE_ID=wrkspc_1\nFORGE_REPO=\"will/app\"\n")

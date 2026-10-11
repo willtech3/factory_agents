@@ -38,7 +38,7 @@ def make_config(root: Path, runs_dir: Path, **overrides):
     from factory.config import Config
 
     base = dict(agents={}, environment_id="", vault_id=None, forge="github", forge_url="https://github.com",
-                forge_token=None, forge_repo="ledgerline/app", gate_surface="file", page_publisher="local",
+                forge_token=None, forge_repo="ledgerline/app", gate_surface="web", page_publisher="local",
                 linear_api_key=None, linear_team_id=None, linear_project_id=None, deploy_workflow=None,
                 service_manifest_path="service_manifest.json", dev_environment_name="dev",
                 preview_environment_prefix="preview/", preview_mode="platform", smoke_commands=(), console_workspace="w", workspace_id=None, runs_dir=runs_dir,

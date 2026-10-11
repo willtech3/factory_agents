@@ -70,7 +70,7 @@ def test_summary_separates_agent_activity_from_pipeline_events(tmp_path):
     """P2: a healthy agent looked idle because "last activity" tracked pipeline events only, and spend left out live work."""
     store, actor = RunStore(tmp_path), {"type": "system", "id": "test"}
     rid = "run_activity0001"
-    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "Activity"})
+    store.append(rid, "run.created", actor, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "Activity"})
     store.append(rid, "session.started", actor, {"session_id": "s1", "agent_key": "implementer", "title": "implement"}, stage="implement")
     started = store.events(rid)[-1].at
     s = summarize(store.events(rid), replay(rid, store.events(rid)))
@@ -85,7 +85,7 @@ def test_sessions_left_by_a_dead_controller_are_not_live_work(tmp_path):
     from factory.web.app import crew_roster
     store, actor = RunStore(tmp_path), {"type": "system", "id": "test"}
     rid = "run_orphaned0001"
-    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "Orphan"})
+    store.append(rid, "run.created", actor, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "Orphan"})
     for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness", "implementing"):
         store.append(rid, "stage.entered", actor, {"stage": stage})
     store.append(rid, "session.started", actor, {"session_id": "old", "agent_key": "implementer", "title": "implement"}, stage="implement")
@@ -223,7 +223,7 @@ def test_outcome_list_without_runs_reads_no_run_log(client, monkeypatch):
             "success_metrics": [{"metric": "Recovered payments", "target": "60%"}], "constraints": {"budget_usd": 60},
             "owner": {"name": "Will", "handle": "willtech3"}, "target_repositories": [{"url": "https://github.com/x/y", "default_branch": "main"}]}
     assert client.post("/api/outcomes", json={"outcome": good}).json()["ok"]
-    RunStore(client.cfg.runs_dir).append("run_reads00000001", "run.created", {"type": "system", "id": "t"}, {"outcome_id": "o", "title": "t"})
+    RunStore(client.cfg.runs_dir).append("run_reads00000001", "run.created", {"type": "system", "id": "t"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     monkeypatch.setattr(RunStore, "events", lambda *a: pytest.fail("read a run log"))
     listed = client.get("/api/outcomes?runs=false").json()["outcomes"]
     assert listed[0]["owner"] == "willtech3" and listed[0]["owner_name"] == "Will" and listed[0]["runs"] == []

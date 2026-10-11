@@ -23,7 +23,6 @@ tools:
         description_markdown: {type: string}
         labels: {type: array, items: {type: string}}
         reviewers: {type: array, items: {type: string}, description: "Forge handles. The outcome owner and the spec's code owners."}
-        design_cr_id: {type: integer, description: "Id of the design change request that holds the decomposition and specs, when the gate surface is the forge; omit otherwise."}
         draft: {type: boolean, default: false}
 metadata:
   factory_role: integrator

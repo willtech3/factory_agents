@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from . import ChangeRequest, PIPELINE_TERMINAL, ref_slug, render_feedback_md
+from . import ChangeRequest, PIPELINE_TERMINAL, ref_slug
 
 BOT_MARKER = "<!-- factory:bot -->"   # prefixed to every comment the orchestrator posts, so it can skip its own
 
@@ -83,13 +83,6 @@ class GitHubForge:
     def _ref_sha(self, ref: str) -> str:
         return self._get(f"/git/ref/heads/{ref}")["object"]["sha"]
 
-    def create_branch(self, branch: str, ref: str) -> None:
-        """POST /git/refs; a 422 means the branch already exists, which is fine."""
-        sha = self._ref_sha(ref)
-        r = self.http.post(self._r("/git/refs"), json={"ref": f"refs/heads/{branch}", "sha": sha})
-        if r.status_code not in (201, 422):
-            r.raise_for_status()
-
     def commit_files(self, branch: str, message: str, files: dict[str, bytes]) -> str:
         """One commit with every file (create or update) on top of the branch head. Returns the new sha."""
         head = self._ref_sha(branch)
@@ -106,9 +99,6 @@ class GitHubForge:
 
     def file_exists(self, branch: str, path: str) -> bool:
         return self.http.get(self._r(f"/contents/{path}"), params={"ref": branch}).status_code == 200
-
-    def file_url(self, branch: str, path: str) -> str:
-        return f"{self.url}/{self.repo}/blob/{branch}/{path}"
 
     # ---- pull requests
     def create_change_request(self, *, source_branch: str, target_branch: str, title: str, description: str,
@@ -142,26 +132,6 @@ class GitHubForge:
                 latest[(rev.get("user") or {}).get("login", "?")] = state
         states = set(latest.values())
         return "APPROVED" in states and "CHANGES_REQUESTED" not in states
-
-    def change_request_comments(self, cr_id: int) -> list[dict[str, Any]]:
-        """Top-level (issue) comments, oldest first, excluding the orchestrator's own."""
-        out = []
-        for c in self._get(f"/issues/{cr_id}/comments", per_page=100):
-            if BOT_MARKER in (c.get("body") or ""):
-                continue
-            out.append({"author": (c.get("user") or {}).get("login", "?"), "body": c.get("body", ""),
-                        "created_at": c.get("created_at"), "position": None})
-        return out
-
-    def change_request_discussions(self, cr_id: int) -> list[dict[str, Any]]:
-        """Inline review comments with path and line (GET /pulls/{n}/comments)."""
-        out = []
-        for c in self._get(f"/pulls/{cr_id}/comments", per_page=100):
-            if BOT_MARKER in (c.get("body") or ""):
-                continue
-            out.append({"author": (c.get("user") or {}).get("login", "?"), "body": c.get("body", ""),
-                        "resolved": None, "path": c.get("path"), "line": c.get("line") or c.get("original_line")})
-        return out
 
     def add_labels(self, cr_id: int, labels: list[str]) -> None:
         self._post(f"/issues/{cr_id}/labels", {"labels": labels})
@@ -253,10 +223,6 @@ class GitHubForge:
     def authenticated_url(self, repo_url: str) -> str:
         """Clone URL for the orchestrator's own checkout. `x-access-token:<token>` is GitHub's documented form."""
         return repo_url.replace("https://", f"https://x-access-token:{self.token}@", 1)
-
-    def render_feedback_md(self, comments: list[dict[str, Any]], discussions: list[dict[str, Any]]) -> str:
-        return render_feedback_md(comments, discussions, title="Human feedback from the design PR")
-
 
 def _normalise_status(d: dict[str, Any]) -> str:
     """GitHub `status` + `conclusion` -> GitLab-style pipeline status (PIPELINE_TERMINAL applies)."""
