@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import anthropic
 
@@ -28,7 +29,7 @@ from .config import Config
 SHORT_CALL_TIMEOUT = 120.0
 
 # A dropped event stream is reopened, not fatal. These are the transport errors httpx and the SDK raise for it.
-import httpx  # noqa: E402
+import httpx
 
 STREAM_RETRYABLE: tuple[type[BaseException], ...] = (httpx.RemoteProtocolError, httpx.ReadError, httpx.ReadTimeout, httpx.ConnectError,
                                                     httpx.WriteError, anthropic.APIConnectionError, anthropic.APITimeoutError)
@@ -58,6 +59,7 @@ class StageResult:
     stop_reason: str | None
     events_seen: int
     custom_tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    finish_recorded: bool = False
 
 
 class SessionDriver:
@@ -190,7 +192,7 @@ class SessionDriver:
             # App test vaults are independent of forge authentication. An explicit []
             # also prevents a test session inheriting the controller's forge vault.
             vault_ids=vault_ids if vault_ids is not None else ([self.cfg.vault_id] if (self.cfg.vault_id and not repository) else None),
-            budget={"type": "limit", "max_list_cost": {"amount": str(int(round(budget_usd * 100))), "currency": "USD"}},
+            budget={"type": "limit", "max_list_cost": {"amount": str(round(budget_usd * 100)), "currency": "USD"}},
             metadata={"run_id": run_id, "stage": stage, **({"work_item_id": work_item_id} if work_item_id else {}),
                       **(metadata or {})},
             initial_events=kickoff,
@@ -210,6 +212,8 @@ class SessionDriver:
         stop_reason: str | None = None
         seen: set[str] = set()
         calls: list[dict[str, Any]] = []
+        tool_results: dict[str, str] = {}
+        acknowledged: set[str] = set()
         handlers = custom_tools or {}
 
         def handle(event: Any) -> bool:
@@ -217,13 +221,18 @@ class SessionDriver:
             nonlocal outcome_result, iterations, stop_reason
             et = event.type
             if et == "agent.custom_tool_use":
+                if event.id in acknowledged:
+                    return False
                 ctx.custom_tool_use_id = event.id
-                handler = handlers.get(event.name)
-                if handler is None:
-                    text = json.dumps({"error": f"tool {event.name} is not available in this stage"})
-                else:
-                    text = handler(dict(event.input), ctx)
-                calls.append({"name": event.name, "input": dict(event.input), "result": text[:2000]})
+                if event.id not in tool_results:
+                    handler = handlers.get(event.name)
+                    if handler is None:
+                        text = json.dumps({"error": f"tool {event.name} is not available in this stage"})
+                    else:
+                        text = handler(dict(event.input), ctx)
+                    tool_results[event.id] = text
+                    calls.append({"name": event.name, "input": dict(event.input), "result": text[:2000]})
+                text = tool_results[event.id]
                 self.client.beta.sessions.events.send(
                     session_id=session.id,
                     events=[{"type": "user.custom_tool_result", "custom_tool_use_id": event.id,
@@ -231,6 +240,8 @@ class SessionDriver:
                     timeout=SHORT_CALL_TIMEOUT,
                 )
             elif et in ("agent.tool_use", "agent.mcp_tool_use") and getattr(event, "evaluated_permission", None) == "ask":
+                if event.id in acknowledged:
+                    return False
                 # Nobody is watching in unattended mode: deny, and tell the agent why so it can adapt.
                 self.client.beta.sessions.events.send(
                     session_id=session.id,
@@ -265,24 +276,36 @@ class SessionDriver:
         while not done:
             try:
                 with self.client.beta.sessions.events.stream(session_id=session.id) as stream:
-                    for ev in self.client.beta.sessions.events.list(session_id=session.id, timeout=SHORT_CALL_TIMEOUT).data:
+                    history = list(self._session_events(session.id))
+                    # A result send may succeed server-side even if its response is lost.
+                    # Reconcile acknowledgements before replaying tool calls in time order.
+                    for ev in history:
+                        if ev.type == "user.custom_tool_result":
+                            acknowledged.add(ev.custom_tool_use_id)
+                        elif ev.type == "user.tool_confirmation":
+                            acknowledged.add(ev.tool_use_id)
+                    for ev in history:
                         if ev.id in seen:
                             continue
+                        terminal = handle(ev)
                         seen.add(ev.id)
-                        if handle(ev):
+                        if terminal:
                             done = True
                             break
                     if not done:
                         for ev in stream:
                             if getattr(ev, "id", None) in seen:
                                 continue
+                            terminal = handle(ev)
                             if getattr(ev, "id", None):
                                 seen.add(ev.id)
-                            if handle(ev):
+                            if terminal:
                                 done = True
                                 break
                 if not done:
-                    done = True         # the stream ended cleanly without an idle event: nothing more will come
+                    # An HTTP stream can end while the session continues. Only a terminal event
+                    # proves completion; reconnect and recover the paginated history otherwise.
+                    raise httpx.RemoteProtocolError("event stream ended before session completion")
             except STREAM_RETRYABLE as e:
                 reconnects += 1
                 if reconnects > STREAM_MAX_RECONNECTS:
@@ -302,8 +325,8 @@ class SessionDriver:
         try:
             amount = final.usage.list_cost.amount  # integer string in cents
             list_cost = int(amount) / 100.0
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError):
+            list_cost = None
 
         outputs = self._fetch_outputs(session.id)
         self.active.pop(session.id, None)
@@ -319,6 +342,15 @@ class SessionDriver:
             events_seen=len(seen),
             custom_tool_calls=calls,
         )
+
+    def _session_events(self, session_id: str):
+        page = self.client.beta.sessions.events.list(session_id=session_id, order="asc", timeout=SHORT_CALL_TIMEOUT)
+        while True:
+            yield from page.data
+            more = page.has_next_page() if hasattr(page, "has_next_page") else getattr(page, "has_more", False)
+            if not more:
+                return
+            page = page.get_next_page()
 
     def _fetch_outputs(self, session_id: str) -> dict[str, bytes]:
         """Download what the session wrote to /mnt/session/outputs/ (brief indexing lag; retry a few times).

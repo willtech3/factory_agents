@@ -6,11 +6,24 @@ always composed in alongside the tracker, so a decision from any side wins (ADR-
 """
 from __future__ import annotations
 
+import fcntl
 import json
+from contextlib import contextmanager
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
-from ..gates import Answer, ArtifactRef, Decision, Gate, GateDecision, GateKind, InMemoryQueue, Question
+from ..gates import (
+    Answer,
+    ArtifactRef,
+    Decision,
+    Gate,
+    GateDecision,
+    GateKind,
+    InMemoryQueue,
+    Question,
+    validate_decision,
+)
 
 
 class FileQueue(InMemoryQueue):
@@ -27,18 +40,34 @@ class FileQueue(InMemoryQueue):
 
     def _save(self, name: str, data: dict) -> None:
         """Write to a temp file and rename, so a poll from the other process never sees a truncated file."""
-        import os, tempfile
+        import os
+        import tempfile
         fd, tmp = tempfile.mkstemp(prefix=f".{name}.", dir=self.root)
         with os.fdopen(fd, "w") as fh:
             fh.write(json.dumps(data, indent=2, default=lambda o: getattr(o, "value", o.__dict__)))
         os.replace(tmp, self.root / name)
 
+    @contextmanager
+    def _writing(self, name: str):
+        # Lock a stable inode, not the JSON file that _save atomically replaces.
+        # A separately opened descriptor also serializes threads and queue instances.
+        with (self.root / f".{name}.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def _put(self, name: str, key: str, entry: dict) -> None:
+        with self._writing(name):
+            data = self._load(name)
+            data[key] = entry
+            self._save(name, data)
+
     # ---- gates
     def open(self, gate: Gate) -> None:
         super().open(gate)
-        d = self._load("gates.json")
-        d[gate.gate_id] = gate_record(gate)
-        self._save("gates.json", d)
+        self._put("gates.json", gate.gate_id, gate_record(gate))
 
     def gate(self, gate_id: str) -> Gate | None:
         """The gate as opened, rebuilt from gates.json when this process did not open it."""
@@ -66,27 +95,27 @@ class FileQueue(InMemoryQueue):
     def record_decision(self, gate_id: str, decision: str, by: str, comments: str = "",
                         approved_subset: list[str] | None = None) -> dict[str, Any]:
         """What `factory decide` and the Console do: bind the hashes the gate showed and persist the decision."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         rec = self._load("gates.json").get(gate_id)
         if rec is None:
             raise KeyError(gate_id)
         entry = {"decision": decision, "decided_by": by, "comments": comments, "approved_subset": approved_subset or [],
                  "artifact_shas": [a["sha256"] for a in rec["artifacts"]],
-                 "decided_at": datetime.now(timezone.utc).isoformat()}
-        d = self._load("decisions.json")
-        d[gate_id] = entry
-        self._save("decisions.json", d)
+                 "decided_at": datetime.now(UTC).isoformat()}
+        validate_decision(gate_from_record(gate_id, rec), GateDecision(
+            gate_id=gate_id, decision=Decision(decision), decided_by=by, comments=comments,
+            approved_subset=tuple(approved_subset or ()), artifact_shas=tuple(entry["artifact_shas"])))
+        self._put("decisions.json", gate_id, entry)
         return entry
 
     # ---- questions
     def ask(self, q: Question) -> None:
         super().ask(q)
-        d = self._load("questions.json")
-        d[q.question_id] = {"run_id": q.run_id, "asked_by": q.asked_by, "question": q.question, "why": q.why_it_matters,
+        entry = {"run_id": q.run_id, "asked_by": q.asked_by, "question": q.question, "why": q.why_it_matters,
                             "default": q.default_if_unanswered, "blocking": q.blocking, "options": list(q.options),
                             "asked_at": q.asked_at, "work_item_id": q.work_item_id}
-        self._save("questions.json", d)
+        self._put("questions.json", q.question_id, entry)
 
     def answer(self, question_id: str) -> Answer | None:
         a = self._load("answers.json").get(question_id)
@@ -94,14 +123,12 @@ class FileQueue(InMemoryQueue):
                       answered_at=a.get("answered_at") or "") if a else None
 
     def record_answer(self, question_id: str, answer: str, by: str) -> dict[str, Any]:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         if question_id not in self._load("questions.json"):
             raise KeyError(question_id)
-        entry = {"answer": answer, "answered_by": by, "answered_at": datetime.now(timezone.utc).isoformat()}
-        d = self._load("answers.json")
-        d[question_id] = entry
-        self._save("answers.json", d)
+        entry = {"answer": answer, "answered_by": by, "answered_at": datetime.now(UTC).isoformat()}
+        self._put("answers.json", question_id, entry)
         return entry
 
     # ---- views
