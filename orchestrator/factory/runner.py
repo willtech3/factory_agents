@@ -391,6 +391,33 @@ def _hms(seconds: int | None) -> str:
     return f"{h}h {m:02d}m {s:02d}s" if h else f"{m}m {s:02d}s"
 
 
+def comparison_branch(ctx: RunContext, repo: dict[str, Any], verifier: LocalVerifier) -> str:
+    """Use the ordinary target, or the owner's recorded and pinned evaluation target."""
+    # A pipeline evaluation may compare an already-merged implementation with its original baseline.
+    # This is an explicit owner override; the approved outcome/spec bytes remain unchanged.
+    recorded = next((e.payload for e in reversed(ctx.store.events(ctx.run_id))
+                     if e.kind == "artifact.produced" and e.payload.get("artifact_type") == "evaluation_target"), None)
+    if recorded:
+        target = (recorded["branch"], recorded["base_sha"])
+        if ctx.evaluation_target and ctx.evaluation_target != target:
+            raise RuntimeError("evaluation target differs from the recorded owner instruction")
+        ctx.evaluation_target = target
+    default_branch = repo["default_branch"]
+    if ctx.evaluation_target:
+        default_branch, pinned_base = ctx.evaluation_target
+        import subprocess
+        checked = verifier.checkout(default_branch)
+        actual = subprocess.run(["git", "rev-parse", "HEAD"], cwd=checked, check=True,
+                                capture_output=True, text=True).stdout.strip()
+        if actual != pinned_base:
+            raise RuntimeError("evaluation comparison branch must remain pinned to the approved baseline")
+        if recorded is None:
+            ctx.event("artifact.produced", {"artifact_type": "evaluation_target", "branch": default_branch,
+                                            "base_sha": pinned_base, "normal_target": repo["default_branch"],
+                                            "purpose": "owner-authorized duplicate pipeline evaluation; draft PR only"}, actor="human")
+    return default_branch
+
+
 def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dict[str, dict], spec_md: dict[str, str],
                             spec_verdict: dict[str, Any] | None, resume: dict[str, ResumePoint] | None = None,
                             guidance: dict[str, str] | None = None) -> RunStage:
@@ -402,6 +429,7 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
         ctx.event("stage.entered", {"stage": RunStage.IMPLEMENTING.value}, stage="implement")
     auth_url = ctx.forge.authenticated_url(repo["url"]) if ctx.forge is not None else repo["url"]
     verifier = LocalVerifier(auth_url, ctx.cfg.runs_dir / ctx.run_id / "verify")
+    default_branch = comparison_branch(ctx, repo, verifier)
     cr_by_spec: dict[str, int] = _open_change_requests(ctx)                       # finished before a resume
     merged_or_open: set[str] = set(cr_by_spec)
     remaining = {sid: s for sid, s in specs.items() if sid not in merged_or_open}
@@ -414,13 +442,13 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
         for spec in ready[: ctx.policy.parallel_implementations]:
             sid = spec["spec_id"]
             deps = {dsid: specs[dsid] for dsid in spec["dependencies"]["specs"] if dsid in specs}
-            base_branch, blocker = base_branch_for(ctx, spec, cr_by_spec, repo["default_branch"])
+            base_branch, blocker = base_branch_for(ctx, spec, cr_by_spec, default_branch)
             if blocker:
                 ctx.event("run.escalated", {"reason": f"{sid}: {blocker}"}, spec_id=sid)
                 ctx.notifier.escalated(ctx.run_id, f"{sid}: {blocker}")
                 remaining.pop(sid)
                 continue
-            if base_branch != repo["default_branch"]:
+            if base_branch != default_branch:
                 ctx.event("artifact.produced", {"artifact_type": "stacked_base", "base_branch": base_branch,
                                                 "note": "the dependency's change request is open but not merged; this item is built on its branch"},
                           work_item_id=spec["work_item_id"], spec_id=sid, stage="implement")

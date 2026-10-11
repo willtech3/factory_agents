@@ -1,6 +1,6 @@
 # {{spec_id}}: {{spec_title}}
 
-> Factory run `{{run_id}}` · outcome: {{outcome_title}} · design record: `.factory/runs/{{run_id}}/` on this branch{{#design_cr_url}} · design change request: {{design_cr_url}}{{/design_cr_url}}{{#tracker_url}} · tracker: {{tracker_url}}{{/tracker_url}}
+> Factory run `{{run_id}}` · outcome: {{outcome_title}} · [approved specification]({{artifact_links.spec_md}}){{#design_cr_url}} · design change request: {{design_cr_url}}{{/design_cr_url}}{{#tracker_url}} · tracker: {{tracker_url}}{{/tracker_url}}
 
 ## Summary
 
@@ -83,7 +83,7 @@ There is no dev deployment in local mode; nothing runs after merge.
 
 Sessions above: ${{sessions_cost_usd}} over {{sessions_duration}}; whole run so far: ${{list_cost_usd}}.
 
-Spec: `.factory/runs/{{run_id}}/specs/{{spec_id}}.md` and `.json`; spec judge verdict: `.factory/runs/{{run_id}}/verdict.json`; merge judge verdict: `.factory/runs/{{run_id}}/evidence/{{spec_id}}/merge_readiness.json` (all committed on this branch by the orchestrator).
+Factory retains the [specification]({{artifact_links.spec_md}}), [spec JSON]({{artifact_links.spec_json}}), [spec judge verdict]({{artifact_links.verdict}}), and [merge judge verdict]({{artifact_links.merge_readiness}}) in its artifact store. Local Console links require the owner’s Factory service. Agent-session links above provide hosted provenance.
 
 ---
 *Opened by the factory integrator. A human must review and approve this change request; the factory never merges.*

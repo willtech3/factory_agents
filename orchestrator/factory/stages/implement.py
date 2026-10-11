@@ -1065,7 +1065,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     # The judge sees the real round (the implementer round whose head it judges; the kickoff and merge_readiness.json
     # used to say "round 1" whatever happened), and its verdict is kept per round.
     prior_verdict = artifact_json_or_none(ctx, "merge_judge", f"{sid}-r{round_no}-merge_readiness.json") if resume_from else None
-    if prior_verdict is not None and prior_verdict.get("_head_sha") == head_sha:
+    if (prior_verdict is not None and prior_verdict.get("_head_sha") == head_sha
+            and prior_verdict.get("_base_sha") == base_sha):
         ctx.event("merge.verdict", {"result": prior_verdict["result"], "round": round_no, "reused": True}, work_item_id=wid, spec_id=sid, actor="agent")
         return prior_verdict      # judged this very head before the orchestrator died or paused
     enter_item_stage(ctx, wid, sid, WorkItemStage.MERGE_JUDGING)

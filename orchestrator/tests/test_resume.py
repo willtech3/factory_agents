@@ -110,3 +110,35 @@ def test_reentering_the_same_stage_is_a_no_op_not_an_illegal_transition():
     assert st.work_items["wi-a"].stage == WorkItemStage.REVIEWING
     ev("stage.entered", {"stage": "decomposing"})                           # run-level same stage: no-op too
     assert st.stage == RunStage.DECOMPOSING
+
+
+def test_evaluation_target_is_pinned_and_survives_resume(tmp_path, root):
+    import subprocess
+    import pytest
+    from types import SimpleNamespace
+    from factory.runner import comparison_branch
+    ctx = _ctx(tmp_path, root)
+    ctx.event('run.created', {'outcome_id': 'o'})
+    work = tmp_path / 'repo'
+    work.mkdir()
+    def git(*args):
+        return subprocess.run(['git', *args], cwd=work, check=True, capture_output=True, text=True).stdout.strip()
+    git('init', '-q', '-b', 'evaluation')
+    git('config', 'user.email', 'test@example.test')
+    git('config', 'user.name', 'test')
+    (work / 'app.txt').write_text('baseline')
+    git('add', '.')
+    git('commit', '-qm', 'baseline')
+    original = git('rev-parse', 'HEAD')
+    verifier = SimpleNamespace(checkout=lambda branch: work)
+    ctx.evaluation_target = ('evaluation', original)
+    assert comparison_branch(ctx, {'default_branch': 'main'}, verifier) == 'evaluation'
+    ctx.evaluation_target = None  # next controller inherits the recorded instruction
+    assert comparison_branch(ctx, {'default_branch': 'main'}, verifier) == 'evaluation'
+    (work / 'app.txt').write_text('moved')
+    git('commit', '-qam', 'moved')
+    with pytest.raises(RuntimeError, match='pinned'):
+        comparison_branch(ctx, {'default_branch': 'main'}, verifier)
+    ctx.evaluation_target = ('main', original)
+    with pytest.raises(RuntimeError, match='differs'):
+        comparison_branch(ctx, {'default_branch': 'main'}, verifier)

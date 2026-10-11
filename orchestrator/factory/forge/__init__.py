@@ -2,7 +2,7 @@
 
 A *change request* (CR) is a GitHub pull request or a GitLab merge request. The orchestrator
 only ever needs the small slice of forge behaviour listed on the `Forge` protocol: branches and
-commits for the design CR and the `.factory/runs/<run_id>/` record, change requests for Gate 3,
+commits for the optional design CR, change requests for Gate 3,
 comments and labels for feedback, and read-only pipeline/deployment lookups for preview and dev
 URLs. Everything forge-specific lives in `forge/github.py` and `forge/gitlab.py`.
 
@@ -45,7 +45,7 @@ class Forge(Protocol):
     def repository_exists(self) -> bool: ...
     def create_repository(self, private: bool = True, description: str = "") -> dict[str, Any]: ...
 
-    # ---- branches and commits (design CR, run record)
+    # ---- branches and commits (optional design CR)
     def create_branch(self, branch: str, ref: str) -> None: ...
     def commit_files(self, branch: str, message: str, files: dict[str, bytes]) -> str: ...
     def file_exists(self, branch: str, path: str) -> bool: ...

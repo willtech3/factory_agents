@@ -13,7 +13,7 @@ Each surface does one job. Reading is separated from deciding so that the thing 
 | **Artifact pages** (`runs/<run_id>/pages/gate_*.html`) | reading | owner, engineers | One self-contained page per gate: judge summary first, goal-coverage matrix, per-spec sections, open questions, the hash list. Local files; publishing as a claude.ai artifact is a stub | built (local) |
 | **Tracker** (Linear by default; Jira stub) | board and record | all | A project per run, an issue per work item whose state mirrors the pipeline, gates as comments with a label, decisions by label plus comment, questions as threaded comments | built, unverified live |
 | **Slack / email** | notifications | owner, engineers | Deep links to the page and the issue; blocking questions; optional approve button for low-risk gates | later (Milestone B) |
-| **Forge change request** (GitHub PR by default, GitLab MR) | from Gate 3 | engineers | Ordinary code review and merge, with the approved spec and verdicts committed next to the code under `.factory/runs/<run_id>/`. Optionally also Gates 1 and 2 as a draft design CR with inline comments (`FACTORY_GATE_SURFACE=forge`) | built, unverified live |
+| **Forge change request** (GitHub PR by default, GitLab MR) | from Gate 3 | engineers | Ordinary code review and merge, with the approved spec and verdicts linked from Factory’s artifact store. Optionally also Gates 1 and 2 as a draft design CR with inline comments (`FACTORY_GATE_SURFACE=forge`) | built, unverified live |
 | **Anthropic Console session viewer** | trace | operator, curious engineers | Full trace of any session: tool calls, grader iterations, cost per thread. Every artifact's `produced_by.session_id` deep-links here | platform |
 | **`ant beta:sessions connect`** | live attach | operator | Attach a terminal to a live session to watch, nudge, or answer a paused tool call | platform |
 
@@ -55,7 +55,7 @@ Specs are implemented in dependency waves: `spec_smart-retries` first, then the 
 If a human is curious or worried, every entry links to the session in the Anthropic Console, where the whole trace is visible. The operator can also attach a terminal.
 
 ### 7. Gate 3: the change request (engineer, 20 to 40 minutes)
-GitHub notifies the code owner of pull request #418, titled `spec_smart-retries: Enable Stripe Smart Retries and record attempts` (on GitLab, a merge request; the forge is configuration). The branch carries the approved spec and both judges' verdicts under `.factory/runs/<run_id>/`, committed by the orchestrator before the PR was opened, so the contract is reviewable next to the code. The description, rendered from `templates/cr_template.md`:
+GitHub notifies the code owner of pull request #418, titled `spec_smart-retries: Enable Stripe Smart Retries and record attempts` (on GitLab, a merge request; the forge is configuration). The PR description links to the approved specification and both judges’ verdicts in Factory’s artifact store, so the contract is reviewable without adding bookkeeping to the implementation branch. The description, rendered from `templates/cr_template.md`:
 
 1. **Summary** by the merge judge: what changed in two sentences; what was contested and how it settled (the concurrency bug the reviewer found, fixed and re-probed 20/20; the nit refuted on project convention); what to read first.
 2. **Decisions needed from you**: none in this case. (When an implementer marks `accepted_risk`, it appears here; that is the one place the human must decide rather than verify.)
