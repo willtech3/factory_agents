@@ -55,7 +55,7 @@
   const STATUS_TAG = { needs_you: "gate", running: "crew", stopped: "bad", paused: "warn", completed: "ok", closed: "", failed: "bad", escalated: "warn", unreadable: "bad" };
   const RUN_FILTERS = [["all", "All"], ["needs_you", "Needs you"], ["active", "In progress"], ["done", "Done"], ["unfinished", "Did not finish"]];
   const runMatches = (r, f) => f === "all" ? true
-    : f === "needs_you" ? (r.status === "needs_you" || r.status === "stopped" || (r.waiting && r.waiting.gates + r.waiting.questions > 0))
+    : f === "needs_you" ? (r.status === "needs_you" || r.status === "stopped" || (r.waiting && r.waiting.gates + r.waiting.questions > 0) || (r.pull_requests || []).some(p => p.stage === "cr_open"))
     : f === "active" ? !r.terminal
     : f === "done" ? r.status === "completed"
     : ["failed", "closed", "escalated", "unreadable"].includes(r.status);
@@ -522,7 +522,7 @@
         el("div", { style: "font-weight:700;font-size:15px;margin:4px 0" }, GATE_NAME[g.kind] || g.kind),
         el("div", { class: "explain" }, (g.summary || "").slice(0, 220)),
         el("a", { class: "btn call", href: `#/gates/${g.gate_id}`, style: "margin-top:10px" }, "Review and decide")));
-    } else {
+    } else if (s.status !== "stopped") {
       turn.append(el("p", { style: "margin:0;font-size:15px" }, r.stage === "completed" ? "Nothing waiting on you here. The pull request is on the code host." : TERMINAL[r.stage] ? `${stageName}. ${s.headline || "Nothing more happens in this run."}` : "Nothing waiting on you."));
     }
     if (s.status === "stopped") turn.append(el("div", { class: "notice bad", style: "margin:0" }, el("b", null, "The controller stopped without recording why. "),
@@ -639,7 +639,7 @@
   }
   function runKey(r) {
     const hb = r.watch && r.watch.heartbeat;
-    return JSON.stringify([r.updated_at, r.stage, r.gates.map(g => [g.gate_id, !!g.recorded]), r.questions.map(q => q.question_id),
+    return JSON.stringify([r.updated_at, r.stage, r.status, r.gates.map(g => [g.gate_id, !!g.recorded]), r.questions.map(q => q.question_id),
       hb ? [hb.alive, hb.last_poll_at] : null, (r.browser_checks_pending || []).map(c => c.id), (r.crew || []).map(c => c.state), r.resuming || null]);
   }
   function storyEntries(r) {

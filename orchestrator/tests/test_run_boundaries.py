@@ -81,7 +81,7 @@ def test_a_selection_must_carry_its_presented_prerequisites():
 
 
 def test_the_console_refuses_a_selection_without_its_prerequisite_and_records_nothing(parked, tmp_path, root):
-    app = create_app(make_config(root, tmp_path / "runs"), demo_thread=False)
+    app = create_app(make_config(root, tmp_path / "runs"))
     client, gate = TestClient(app), parked["gate"]
     r = client.post(f"/api/gates/{gate.gate_id}/decision", json={"decision": "approve_subset", "approved_subset": ["spec_b"]})
     assert r.status_code == 409 and "spec_b depends on spec_a" in r.json()["detail"]
@@ -215,7 +215,7 @@ def console(tmp_path, root, monkeypatch):
     class Proc:
         pid = 4242
     monkeypatch.setattr("factory.web.app.subprocess.Popen", lambda args, **kw: spawned.append({"args": args, "env": kw["env"]}) or Proc())
-    app = create_app(cfg, demo_thread=False)
+    app = create_app(cfg)
     console = app.state.console
     console.outcomes_dir.mkdir(parents=True, exist_ok=True)
     (console.outcomes_dir / "out_evergreen.json").write_text(json.dumps({
