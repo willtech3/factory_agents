@@ -26,6 +26,7 @@ from . import test_environments as te
 from . import visual
 from .budget import reserve_budget
 from .checks import CheckResult
+from .sandbox_tools import environment_runner as er
 
 SETUP_CHECK = "verification_setup"          # the same name LocalVerifier.prepare_environment reports
 ENVIRONMENT_CHECK = "hosted_environment"
@@ -111,7 +112,7 @@ class HostedVerifier:
             return self._finish(spec, branch, record, None, {}, {})
         digest = te.fingerprint(profile)
         app = next((s for s in profile["services"] if s["id"] == "app"), None)
-        base_url = f"http://127.0.0.1:{app['port']}" if app else None
+        base_url = er.app_base_url(app) or None          # the origin the harness gives the app's browser checks too
         requests: dict[int, tuple[Path, dict]] = {}
         blocked: dict[int, str] = {}
         sandbox_entries = []
@@ -143,8 +144,10 @@ class HostedVerifier:
                       "spec_sha256": te.fingerprint({k: v for k, v in spec.items() if not k.startswith("_")}),
                       "environment_id": environment_id, "provider": "anthropic-cloud",
                       "change": {"spec_id": sid, "round": round_no, "commands": list(spec["test_plan"]["commands"]),
-                                 "collect_tests": True, "e2e": sandbox_entries, "command_timeout_seconds": 900}}
+                                 **pytest_collection(spec["test_plan"]["commands"]),
+                                 "e2e": sandbox_entries, "command_timeout_seconds": 900}}
         record["spec_sha256"] = descriptor["spec_sha256"]
+        record["app_base_url"] = base_url
         record["environment_id"] = environment_id
         # late import: the stages package imports this module
         from .stages.common import run_session
@@ -174,6 +177,8 @@ class HostedVerifier:
             record["missing_secrets"] = [str(x) for x in report["missing_secrets"]][:20]
         record.update(bound=bound, phases=[p for p in report.get("phases", []) if isinstance(p, dict)] if bound else [],
                       services=report.get("services", []) if bound else [], harness_status=report.get("status"), harness_reason=report.get("reason"))
+        if bound:
+            record["runtime"] = _runtime(report.get("runtime"))
         if not bound:
             record["detail"] = "the hosted result is missing or not bound to this head, recipe and source archive"
         return self._finish(spec, branch, record, results, requests, blocked, res.outputs)
@@ -209,6 +214,11 @@ class HostedVerifier:
         c = (results or {}).get("collected_tests") if ran else None
         if isinstance(c, dict) and c.get("exit_code") in (0, 5) and isinstance(c.get("node_ids"), list):
             collected = [x for x in c["node_ids"] if isinstance(x, str) and NODE_ID_RE.match(x)]
+        if isinstance(c, dict):              # what pytest collection did, so a Bun-only run never reads as a pytest failure
+            record["collection"] = {"framework": "pytest", "status": str(c.get("status"))[:20],
+                                    **({"exit_code": c["exit_code"]} if isinstance(c.get("exit_code"), int) else {}),
+                                    **({"collected": len(collected)} if collected is not None else {}),
+                                    **({"reason": str(c["reason"])[:300]} if c.get("reason") else {})}
         e2e_by_index = {r.get("index"): r for r in (results or {}).get("e2e", []) if isinstance(r, dict)}
         e2e = []
         for index, entry in _entries(spec):
@@ -273,6 +283,28 @@ class HostedVerifier:
                                           "detail": (record.get("detail") or env_detail)[:500]}, spec_id=sid)
         return HostedRun(setup=setup, environment=environment, commands=commands, e2e=e2e, collected=collected, preview=preview,
                          record={**record, "ready": setup_ok, "environment_ready": env_ok})
+
+
+def pytest_collection(commands: list[str]) -> dict[str, Any]:
+    """Whether the harness collects pytest node ids for this change. Skipped, with the reason recorded, only when every
+    test_plan command is a Bun command and none mentions pytest: Bun has no verified collect-only mode, and its own JUnit
+    reports are the inventory of what exists. Any other plan collects as before, so a pytest suite keeps its existence check."""
+    bun = [c for c in commands if any(er.bun_command(c, Path("/dev/null")))]
+    if commands and len(bun) == len(commands) and not any("pytest" in c for c in commands):
+        return {"collect_tests": False, "collect_skip_reason": "every test_plan command is a Bun command; Bun's own JUnit "
+                                                               "reports list the tests, so pytest is not collected"}
+    return {"collect_tests": True}
+
+
+def _runtime(value: Any) -> dict[str, Any] | None:
+    """The harness's runtime facts (non-secret), kept to known keys: the app's base URL, the readiness probe host, and the
+    compatibility defaults it applied (names, values, whether applied, why)."""
+    if not isinstance(value, dict):
+        return None
+    compat = value.get("compat") if isinstance(value.get("compat"), dict) else {}
+    return {"base_url": str(value.get("base_url") or "")[:200], "health_host": str(value.get("health_host") or "")[:64],
+            "compat": {str(k)[:80]: {"value": str(v.get("value"))[:8], "applied": v.get("applied") is True, "reason": str(v.get("reason") or "")[:200]}
+                       for k, v in list(compat.items())[:8] if isinstance(v, dict) and k == er.NEXT_SYSTEM_TLS}}
 
 
 def _exit_code(r: dict[str, Any]) -> int | None:
