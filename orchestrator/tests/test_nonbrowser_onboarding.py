@@ -245,3 +245,45 @@ def test_a_discovery_that_ends_without_a_plan_says_why_and_the_next_discovery_he
     manager.start(aid, "discover")
     request = json.loads(sent[1]["uploads"]["onboarding-request.json"])
     assert "I was blocked writing start.sh" in request["previous_attempt"]["error"]
+
+
+def test_a_plan_without_a_recipe_stays_in_needs_input_once_its_question_is_answered(monkeypatch, tmp_path, root):
+    """A blocked step yields profile_path:null and a required question. Rediscovery may repeat the answered question;
+    the app must not read setup_ready, because Verify would refuse it with nothing left to answer."""
+    cfg = make_config(root, tmp_path / "runs", gate_surface="web", agents={"app_onboarding": AgentRef(id="agent_onboard", version=1)})
+    manager = AppOnboarding(cfg, client=Client())
+    aid = manager.create(kind="existing", name="Bot", repository_url="https://github.com/example/bot", description="Slack bot",
+                         budget_usd=10)["app_id"]
+    manager.update(aid, answers={"start-blocked": "Yes, finish it"})
+    plan = {"summary": "Slack bot", "app_kind": "api", "journeys": [], "capabilities": [], "profile_path": None, "files": [],
+            "limitations": [], "questions": [{"id": "start-blocked", "prompt": "start.sh was denied. Finish it?", "required": True}]}
+
+    class Driver:
+        def __init__(self, cfg, client=None, on_session_started=None, on_session_finished=None):
+            pass
+
+        def run(self, **kw):
+            return SimpleNamespace(session_id="sesn_d", list_cost_usd=0.5, stop_reason="end_turn",
+                                   outputs={"onboarding-plan.json": json.dumps(plan).encode()})
+
+        def interrupt_active(self):
+            return []
+
+    monkeypatch.setattr(onboarding, "SessionDriver", Driver)
+    monkeypatch.setattr(onboarding, "ensure_environment", lambda *a, **kw: "env_discovery")
+    (tmp_path / "src").mkdir()
+    repo = committed(tmp_path / "src")
+    monkeypatch.setattr(manager, "source", lambda record: repo)
+    monkeypatch.setattr(onboarding.threading, "Thread", lambda target, args, **kw: SimpleNamespace(start=lambda: target(*args)))
+    manager.start(aid, "discover")
+    r = manager.get(aid)
+    assert r["status"] == "needs_input" and "No runnable recipe" in r["phase"]
+
+
+def test_onboarding_drafts_skip_auto_mode_but_its_shell_does_not(root):
+    """write/edit are always_allow (auto mode denied legitimate recipe drafts); bash keeps the server's risk check."""
+    head = (root / "agents/app_onboarding.md").read_text().split("\n---\n", 1)[0]
+    assert "default_config: {enabled: true, permission_policy: {type: auto}}" in head
+    for tool in ("write", "edit"):
+        assert f"- {{name: {tool}, enabled: true, permission_policy: {{type: always_allow}}}}" in head
+    assert "name: bash" not in head

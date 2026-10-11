@@ -12,7 +12,7 @@ tools:
       - {name: web_search, enabled: false}
       # Proposed recipes legitimately generate test secrets, scrub credential variables and send unsigned
       # requests to probe auth. Auto mode denied those drafts as high-risk twice for emoji-smith. Files only
-      # land in the network-less discovery sandbox, and the controller validates every proposal before it runs.
+      # land in the network-less discovery sandbox; a person reviews the plan before Verify runs any of it.
       - {name: write, enabled: true, permission_policy: {type: always_allow}}
       - {name: edit, enabled: true, permission_policy: {type: always_allow}}
 metadata:
