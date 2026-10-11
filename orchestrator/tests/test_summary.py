@@ -98,7 +98,7 @@ def test_design_only_run_reports_approved_specs(store):
     store.append(rid, "run.completed", ACTOR, {"design_only": True, "approved_specs": ["spec_a", "spec_b"]})
     s = summary_of(store, rid)
     assert s["mode"] == "design" and s["status"] == "completed" and s["pull_requests"] == []
-    assert s["headline"] == "Design run: 2 specs approved, nothing built." and s["specs_approved"] == ["spec_a", "spec_b"]
+    assert s["headline"] == "Design run: 2 contracts approved, nothing built." and s["specs_approved"] == ["spec_a", "spec_b"]
 
 
 def test_closed_at_a_gate_quotes_the_rejection(store):
@@ -164,8 +164,8 @@ def test_needs_you_running_and_stopped(store):
     store.append(rid, "session.started", {"type": "platform"}, {"session_id": "w1", "agent_key": "spec_writer", "agent_id": "a", "title": "spec"}, stage="specify")
     store.append(rid, "session.started", {"type": "platform"}, {"session_id": "w2", "agent_key": "spec_writer", "agent_id": "a", "title": "spec"}, stage="specify")
     s = summary_of(store, rid, alive=True)
-    assert s["status"] == "running" and s["headline"] == "Writing and judging the specs; spec writer working." and s["working"] == ["spec_writer"]
-    assert summary_of(store, rid, alive=False)["headline"] == "The controller stopped without recording why, while writing and judging the specs."
+    assert s["status"] == "running" and s["headline"] == "Writing and judging the contracts; spec writer working." and s["working"] == ["spec_writer"]
+    assert summary_of(store, rid, alive=False)["headline"] == "The controller stopped without recording why, while writing and judging the contracts."
 
 
 def test_controller_probe_reads_the_lock_without_creating_it(tmp_path):

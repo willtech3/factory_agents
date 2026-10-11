@@ -24,7 +24,7 @@ STATUS_LABEL = {"needs_you": "Needs you", "running": "Running", "stopped": "Stop
                 "completed": "Done", "closed": "Closed", "failed": "Failed", "escalated": "Escalated"}
 STATUS_ORDER = ["needs_you", "stopped", "paused", "running", "completed", "escalated", "failed", "closed"]
 STAGE_DOING = {"intake": "taking in the outcome", "decomposing": "decomposing the outcome", "gate_1_decomposition": "at Gate 1",
-               "specifying": "writing and judging the specs", "gate_2_spec_readiness": "at Gate 2", "implementing": "building"}
+               "specifying": "writing and judging the contracts", "gate_2_spec_readiness": "at Gate 2", "implementing": "building"}
 GATE_LABEL = {"gate_1_decomposition": "Gate 1", "gate_2_spec_readiness": "Gate 2", "escalation": "the escalation gate",
               "budget": "the budget gate", "deploy_failure": "the deploy-failure gate"}
 PR_STATE = {WorkItemStage.CR_OPEN: "open", WorkItemStage.MERGED: "merged", WorkItemStage.DEPLOYING_DEV: "deploying to dev",
@@ -46,7 +46,7 @@ def summarize(events: list[RunEvent], state: RunState, controller_alive: bool | 
             titles = {w["work_item_id"]: w.get("title", "") for w in ev.payload["work_items"]}
     pull_requests = _pull_requests(events, state, titles)
     decisions = [{"kind": ev.payload.get("kind"), "label": GATE_LABEL.get(ev.payload.get("kind"), ev.payload.get("kind")),
-                  "decision": ev.payload.get("decision"), "by": ev.actor.get("id"), "at": ev.at,
+                  "decision": ev.payload.get("decision"), "by": ev.payload.get("decided_by") or ev.actor.get("id"), "at": ev.at,
                   "comments": ev.payload.get("comments") or "", "approved_subset": list(ev.payload.get("approved_subset") or [])}
                  for ev in events if ev.kind == "gate.decided"]
     answers = sum(1 for ev in events if ev.kind == "question.answered")
@@ -81,7 +81,8 @@ def summarize(events: list[RunEvent], state: RunState, controller_alive: bool | 
         "ended_at": _ended_at(events, state),
         "counts": counts, "pull_requests": [{**p, "stage": p["stage"].value} for p in pull_requests],
         "specs_approved": approved, "decisions": decisions,
-        "failure": failure, "failed_in": failed_in, "escalations": escalations, "pause": pause, "working": working,
+        "failure": failure, "failed_in": failed_in, "escalated_in": _stage_before(events, "run.escalated"),
+        "closed_in": next((ev.payload.get("stage") for ev in reversed(events) if ev.kind == "stage.entered" and ev.payload.get("stage") != RunStage.CLOSED.value), None) if state.stage == RunStage.CLOSED else None, "escalations": escalations, "pause": pause, "working": working,
         "working_since": working_since, "live_sessions": len(live),
         "open_gates": [GATE_LABEL.get(g.get("kind"), g.get("kind")) for g in state.open_gates.values()],
         "open_questions": len(state.open_questions),
@@ -206,7 +207,7 @@ def _headline(r: dict[str, Any], state: RunState) -> str:
     status, c = r["status"], r["counts"]
     if status == "completed":
         if r["design_only"]:
-            return f"Design run: {_plural(c['specs_approved'], 'spec')} approved, nothing built."
+            return f"Design run: {_plural(c['specs_approved'], 'contract')} approved, nothing built."
         prs = r["pull_requests"]
         if not prs:
             return "Completed with no pull requests."

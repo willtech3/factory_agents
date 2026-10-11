@@ -315,11 +315,19 @@ def test_resume_is_offered_only_for_failed_runs_that_reached_implementation(clie
     actor = {"type": "system", "id": "test"}
     store.append(rid, "run.created", actor, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
-    for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness"):
+    for stage in ("decomposing", "gate_1_decomposition", "specifying"):
         store.append(rid, "stage.entered", actor, {"stage": stage})
     store.append(rid, "run.failed", actor, {"reason": "boom"})
-    # failed before implementation: not resumable
+    # failed while specifying, before implementation: not resumable
     assert client.get(f"/api/runs/{rid}").json()["resumable"] is False
+    # a controller stopped while idle at Gate 2 is resumable: runner.resume continues at that same gate
+    rid_g2 = "run_deadbeef03"
+    store.append(rid_g2, "run.created", actor, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
+    store.put_artifact(rid_g2, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
+    for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness"):
+        store.append(rid_g2, "stage.entered", actor, {"stage": stage})
+    store.append(rid_g2, "run.failed", actor, {"reason": "controller stopped"})
+    assert client.get(f"/api/runs/{rid_g2}").json()["resumable"] is True
     rid2 = "run_deadbeef02"
     store.append(rid2, "run.created", actor, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     store.put_artifact(rid2, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
@@ -547,12 +555,23 @@ def test_crew_roster_board_and_settings_passthrough(client, monkeypatch):
     d = client.get(f"/api/runs/{rid}").json()
     assert d["policy"]["run_budget_usd"] == 60 and d["policy"]["security_review"] is True
     assert [c["role"] for c in d["crew"]][:2] == ["decomposer", "spec_writer"]
+    assert d["events"][0]["actor_id"] == "test"       # the story names the person who decided, never "console"
 
     b = client.get("/api/board").json()
     run = next(r for r in b["runs"] if r["run_id"] == rid)
     assert run["column"] == "specify"
     agent_cards = [c for c in run["cards"] if c["kind"] == "agent"]
     assert agent_cards and agent_cards[0]["row"] == "crew" and agent_cards[0]["column"] == "specify" and agent_cards[0]["role"] == "spec_writer"
+    assert run["status"] == "running"
+
+    # a session the orchestrator interrupted on its way out was cut short, not finished: the roster must not say done
+    # the orchestrator records each interrupted session's finish (with its spend) before run.failed names it
+    store.append(rid, "session.finished", actor, {"session_id": "s2", "stop_reason": "interrupted", "outcome_result": "interrupted", "list_cost_usd": 0.4})
+    store.append(rid, "run.failed", actor, {"reason": "boom", "interrupted_sessions": ["s2"]})
+    roster = {r["role"]: r for r in crew_roster(store.events(rid))}
+    assert roster["spec_writer"]["state"] == "interrupted" and roster["spec_writer"]["live_count"] == 0 and roster["spec_writer"]["cost_usd"] == 0.4
+    board = client.get("/api/board").json()
+    assert next(r for r in board["runs"] if r["run_id"] == rid)["status"] == "failed"
 
     assert settings_env({"budget_usd": 45, "security_review": False, "preview": "local", "reviewer_passes": "", "nope": 1}) == {
         "FACTORY_RUN_BUDGET_USD": "45", "FACTORY_SECURITY_REVIEW": "0", "FACTORY_PREVIEW": "local"}

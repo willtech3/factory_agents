@@ -41,43 +41,116 @@
     return data;
   }
 
-  const STAGES = [
-    ["intake", "Outcome", "What the business wants, with metrics."],
-    ["decomposing", "Decomposing", "An agent splits it into work items."],
-    ["gate_1_decomposition", "Gate 1: you", "You approve the shape of the work."],
-    ["specifying", "Specifying", "Agents write a spec per item; a judge checks the set."],
-    ["gate_2_spec_readiness", "Gate 2: you", "You approve the contracts before any code."],
-    ["implementing", "Building", "Agents implement, review, and open pull requests."],
-    ["completed", "Done", "Every item has a pull request for human review."],
+  // The one model of a run (docs/10-console-design-system.md): four phases group seven stations on one line. Every view
+  // that shows where a run is (the Runs list, the run page, the Board, the gate pages) draws from this table and nothing else.
+  const STATIONS = [
+    { key: "intake", label: "Outcome", phase: "plan", who: "Product owner", doing: "The brief, with its metrics." },
+    { key: "decomposing", label: "Decompose", phase: "plan", who: "the crew", role: "decomposer", doing: "The decomposer turns the outcome into work items." },
+    { key: "gate_1_decomposition", label: "Gate 1", phase: "plan", who: "Product owner", gate: "gate_1_decomposition", doing: "A person approves the plan." },
+    { key: "specifying", label: "Specify", phase: "specify", who: "the crew", role: "spec_writer", doing: "Writers draft a contract per item; a judge checks the set." },
+    { key: "gate_2_spec_readiness", label: "Gate 2", phase: "specify", who: "Product owner", gate: "gate_2_spec_readiness", doing: "A person approves the contracts." },
+    { key: "implementing", label: "Build", phase: "build", who: "the crew", role: "implementer", doing: "Implement, review, judge, and open a pull request per item." },
+    { key: "completed", label: "Pull requests", phase: "ship", who: "Engineer", doing: "An engineer reviews and merges; the dev deploy is observed." },
   ];
+  const PHASES = { plan: "Plan", specify: "Specify", build: "Build", ship: "Ship" };
+  const PHASE_DOES = { plan: "outcome, decompose, Gate 1", specify: "contracts, Gate 2", build: "implement, review, judge", ship: "pull requests, dev" };
+  const stationIndex = stage => STATIONS.findIndex(s => s.key === stage);
   const TERMINAL = { closed: "Closed", escalated: "Escalated", failed: "Failed", paused_budget: "Paused at budget" };
-  // run status (summary.py) -> tag colour: orange is a person's turn, clay is the crew, red is something to look into
-  const STATUS_TAG = { needs_you: "gate", running: "crew", stopped: "bad", paused: "warn", completed: "ok", closed: "", failed: "bad", escalated: "warn", unreadable: "bad" };
-  const RUN_FILTERS = [["all", "All"], ["needs_you", "Needs you"], ["active", "In progress"], ["done", "Done"], ["unfinished", "Did not finish"]];
+  const stageLabel = key => TERMINAL[key] || (STATIONS.find(st => st.key === key) || {}).label || words(key);
+  // a terminal or parked run keeps the station it reached; the status says what happened there
+  const stationOf = r => {
+    const i = stationIndex(r.stage);
+    if (i >= 0) return i;
+    if (r.design_only && r.stage === "completed") return 4;   // a design run ends at Gate 2: nothing is built
+    const sm = r.summary || r;
+    const stage = r.pause && r.pause.run_stage ? r.pause.run_stage : r.failed_in || sm.failed_in || sm.escalated_in || sm.closed_in || null;
+    const j = stationIndex(stage);
+    if (j >= 0) return j;
+    if (r.stage === "closed" || r.stage === "escalated") { const d = (r.decisions || []).slice(-1)[0]; const k = stationIndex(d && d.kind); if (k >= 0) return k; }
+    return (r.counts && r.counts.work_items) ? 5 : 1;
+  };
+  const RUN_FILTERS = [["all", "All"], ["needs_you", "Needs you"], ["active", "Open"], ["done", "Done"], ["unfinished", "Did not finish"]];
   const runMatches = (r, f) => f === "all" ? true
     : f === "needs_you" ? (r.status === "needs_you" || r.status === "stopped" || (r.waiting && r.waiting.gates + r.waiting.questions > 0) || (r.pull_requests || []).some(p => p.stage === "cr_open"))
     : f === "active" ? !r.terminal
     : f === "done" ? r.status === "completed"
     : ["failed", "closed", "escalated", "unreadable"].includes(r.status);
-  const statusTag = r => el("span", { class: `tag ${STATUS_TAG[r.status] || ""}` }, r.status_label || words(r.status || ""));
-  // agent activity (the oldest open session) apart from pipeline events, which a long session does not produce
-  const activityLine = r => r.working_since
-    ? `${(r.working || []).map(w => CREW_NAME[w] || words(w)).join(", ") || "Agent"} working for ${dur(r.working_since)}`
-    : `last activity ${ago(r.updated_at)}`;
-  const liveSpendNote = r => r.live_sessions && !r.terminal ? el("div", { class: "explain" }, `excludes ${plural(r.live_sessions, "session")} still running`) : null;
-  const modeTag = r => r.mode ? el("span", { class: "tag" }, r.mode === "design" ? "design only" : "live") : null;
+  const STATUS_TONE = { needs_you: "call", running: "crew", stopped: "bad", paused: "call", completed: "ok", closed: "", failed: "bad", escalated: "warn", unreadable: "bad" };
+  const crewNames = roles => { const n = (roles || []).map(w => CREW_NAME[w] || words(w)); return n.length > 1 ? `${n.slice(0, -1).join(", ")} and ${n[n.length - 1]}` : n[0] || "The crew"; };
+  // in the middle of a sentence the roles are lower case: "the implementer, reviewer and security reviewer"
+  const crewNamesLower = roles => { const n = (roles || []).map(w => (CREW_NAME[w] || words(w)).toLowerCase()); return n.length > 1 ? `the ${n.slice(0, -1).join(", ")} and ${n[n.length - 1]}` : n[0] ? `the ${n[0]}` : "the crew"; };
+  const cap = s => s ? s[0].toUpperCase() + s.slice(1) : s;
+  // actor ids that are not a person's name: the record says "who", the page says the role instead
+  const SYSTEM_ACTORS = new Set(["console", "human", "agent", "platform", "orchestrator", "system", "cli", "file", "tracker", "forge", ""]);
+  const personName = name => name && !SYSTEM_ACTORS.has(String(name).toLowerCase()) ? name : null;
+  const itemShort = id => String(id || "").replace(/^(spec_|wi-)/, "");
+  // a session title names its item by id; people read the item's short name
+  const prettyTitle = t => String(t || "").replace(/\b(spec_|wi-)([A-Za-z0-9-]+)/g, "$2").replace(/\brun_[a-f0-9]+\s*/g, "");
+  // a review round counts its findings either as a total or by severity; an answer either lists dispositions or counts them
+  const findingCount = p => p.count != null ? p.count : ["blocking", "major", "minor", "nit"].reduce((a, k) => a + (p[k] || 0), 0);
+  const dispositionText = p => { const n = {}; for (const d of (p.dispositions || [])) n[d] = (n[d] || 0) + 1; const parts = Object.entries(n).map(([d, c]) => `${c} ${words(d)}`);
+    return parts.length ? parts.join(", ") : [p.fixed != null ? `${p.fixed} fixed` : "", p.refuted ? `${p.refuted} refuted` : "", p.deferred ? `${p.deferred} deferred` : ""].filter(Boolean).join(", "); };
+  // the roles a budget pause names as the next step (budget.py STAGE_LABEL keys)
+  const FORGE_NAME = { github: "GitHub", gitlab: "GitLab" };
+  const NEXT_ROLE = { decompose: "decomposer", specify: "spec_writer", judge: "spec_judge", implement: "implementer", review: "reviewer", security_review: "security_reviewer", merge_judge: "merge_judge", integrate: "integrator" };
+  const gateLabel = kind => ({ gate_1_decomposition: "Gate 1", gate_2_spec_readiness: "Gate 2", escalation: "the escalation gate", budget: "the budget gate", deploy_failure: "the deploy-failure gate" })[kind] || words(kind || "a gate");
+  // The state of a run, written: a bold lead in the tone of the state, then the reason. One sentence on the Runs list, the
+  // same sentence under the title on the run page. Inputs are the summary record (summary.py); nothing here is recorded.
+  function statusSentence(r, long) {
+    const lead = (text, tone) => el("b", { class: tone || "" }, text + " ");
+    const since = r.working_since ? dur(r.working_since) : null;
+    const waitingOn = r.open_gates && r.open_gates.length ? r.open_gates[0] : r.open_questions ? "a question" : null;
+    const waited = r.updated_at ? dur(r.updated_at) : "";
+    const c = r.counts || {};
+    const prsText = () => (r.pull_requests || []).length ? r.headline.replace(/^Completed\.?\s*/, "") : "No pull requests were opened.";
+    if (r.status === "unreadable") return el("span", { class: "s" }, lead("Unreadable.", "bad"), r.headline);
+    switch (r.status) {
+      case "needs_you": {
+        const what = r.open_questions ? (long ? `${cap(crewNamesLower((r.working && r.working.length ? r.working : ["decomposer"]).slice(0, 1)))} is waiting for your answer,` : "A question is waiting for your answer,")
+          : cap(`${waitingOn || "a decision"} is waiting on you,`);
+        return el("span", { class: "s" }, lead(what, "call"), `for ${waited}.`, long && r.open_questions === 0 && c.work_items ? ` ${plural(c.work_items, "work item")} so far.` : "");
+      }
+      case "running": {
+        const st = STATIONS[stationOf(r)] || STATIONS[1];
+        const doing = { decomposing: "Decomposing.", specifying: "Specifying.", implementing: "Building.", intake: "Taking in the outcome." }[r.stage] || `${st.label}.`;
+        const who = r.working && r.working.length ? `${cap(crewNamesLower(r.working))} ${r.working.length > 1 ? "are" : "is"} at work${since ? `, ${since} in` : ""}.` : `Last activity ${ago(r.updated_at)}.`;
+        const prs = (r.pull_requests || []).filter(p => p.state === "open");
+        return el("span", { class: "s" }, lead(doing, "crew"), who, prs.length ? ` ${plural(prs.length, "pull request")} open.` : "");
+      }
+      case "paused": {
+        const p = r.pause || {}, next = p.next || {};
+        if (!p.next) return el("span", { class: "s" }, lead("Paused: a session hit its cap,", "call"), `for ${waited}. Decide its budget gate: run it again with a higher cap, or close the run.`);
+        return el("span", { class: "s" }, lead("Paused at its budget,", "call"), `for ${waited}. ${money(p.spent_usd)} of ${money(p.budget_usd)} spent; ${next.label || "the next step"} needs the cap raised to ${money(p.needed_usd)}, or the run closed.`);
+      }
+      case "stopped": return el("span", { class: "s" }, lead(`Stopped at ${STATIONS[stationOf(r)].label}.`, "bad"), "The controller exited without recording why; a decision here is not picked up until one drives the run again.");
+      case "failed": return el("span", { class: "s" }, lead(`Failed ${({ implementing: "while building", decomposing: "while decomposing", specifying: "while specifying", intake: "while taking in the outcome", gate_1_decomposition: "at Gate 1", gate_2_spec_readiness: "at Gate 2" })[r.failed_in] || "while running"}.`, "bad"), r.failure || "", r.failure ? " " : "", long ? "" : "");
+      case "escalated": return el("span", { class: "s" }, lead(`Escalated from ${STATIONS[stationOf(r)].label}.`, "warn"), (r.escalations || []).join(" ") || r.headline);
+      case "closed": { const d = (r.decisions || []).slice(-1)[0] || {}; return el("span", { class: "s" }, lead(`Closed at ${gateLabel(d.kind)}${personName(d.by) ? ` by ${d.by}` : ""}.`, ""), d.comments ? `“${d.comments}”` : "Nothing more happens in this run."); }
+      case "completed": return el("span", { class: "s" }, lead("Done.", "ok"), r.design_only ? `Design run: ${plural(c.specs_approved, "contract")} approved, nothing built.` : prsText());
+      default: return el("span", { class: "s" }, r.headline || "");
+    }
+  }
+  // the meta line under the sentence: when it started, what it cost, the last thing a person did
+  function metaLine(r) {
+    const parts = [];
+    parts.push(r.terminal ? [`took ${dur(r.started_at, r.ended_at || r.updated_at)}, ended `, timeEl(r.ended_at || r.updated_at)] : ["started ", timeEl(r.started_at)]);
+    if (r.cost_usd != null) parts.push([`${money(r.cost_usd)}${r.budget_usd != null ? ` of ${money(r.budget_usd)}` : ""}${r.terminal ? "" : " so far"}${r.live_sessions && !r.terminal ? `, not counting ${plural(r.live_sessions, "open session")}` : ""}`]);
+    const d = (r.decisions || []).slice(-1)[0];
+    if (d) parts.push([`${cap(gateLabel(d.kind))} ${({ approve: "approved", approve_subset: "approved in part", request_changes: "sent back", reject: "rejected" })[d.decision] || d.decision}${personName(d.by) ? ` by ${d.by}` : ""} `, timeEl(d.at)]);
+    return parts.flatMap((p, i) => i ? [" · ", ...p] : p);
+  }
   const ITEM_STAGE = {
-    pending: "Waiting", spec_drafting: "Spec being written", spec_judging: "Spec being judged", spec_approved: "Spec approved",
+    pending: "Waiting", spec_drafting: "Contract being written", spec_judging: "Contract being judged", spec_approved: "Contract approved",
     implementing: "Implementing", reviewing: "In review", responding: "Responding to review", merge_judging: "Merge judge",
     integrating: "Opening pull request", cr_open: "Pull request open", merged: "Merged", deploying_dev: "Deploying to dev",
     deployed_dev: "Verified in dev", closed: "Closed", escalated: "Escalated", blocked: "Blocked",
   };
-  const GATE_NAME = { gate_1_decomposition: "Gate 1: approve the plan", gate_2_spec_readiness: "Gate 2: approve the contracts",
-    escalation: "Escalation: the judge could not pass the specs", budget: "Budget: raise it or close the run", deploy_failure: "Deploy failure" };
+  const GATE_NAME = { gate_1_decomposition: "Gate 1 · the plan", gate_2_spec_readiness: "Gate 2 · the contracts",
+    escalation: "Escalation · the judge could not pass the contracts", budget: "Budget · raise it or close the run", deploy_failure: "Deploy failure" };
   const GATE_SHORT = { gate_1_decomposition: "Gate 1", gate_2_spec_readiness: "Gate 2", escalation: "Escalation", budget: "Budget", deploy_failure: "Deploy failure" };
   const DECISION_LABEL = { approve: "Approve", approve_subset: "Approve selected", request_changes: "Request changes", reject: "Reject" };
-  const ROLE_NAME = { po: "Product owner", eng: "Engineer", ops: "Ops", crew: "Claude crew" };
-  const ROLE_DOES = { po: "Decides what gets built", eng: "Reviews and merges", ops: "Watches it land", crew: "Does the work between gates" };
+  const ROLE_NAME = { po: "Product owner", eng: "Engineer", ops: "Ops", crew: "The crew" };
+  const ROLE_DOES = { po: "decides what gets built", eng: "reviews and merges", ops: "watches it land", crew: "does the work between gates" };
   const CREW_NAME = { app_onboarding: "App onboarding", codebase_researcher: "Researcher", decomposer: "Decomposer", spec_writer: "Spec writer", spec_judge: "Spec judge", implementer: "Implementer",
     reviewer: "Reviewer", security_reviewer: "Security reviewer", merge_judge: "Merge judge", integrator: "Integrator" };
   const CREW_DOES = { app_onboarding: "Learns how to run and test an app", decomposer: "Outcome into work items", spec_writer: "One contract per item", spec_judge: "Scores the contracts", implementer: "Builds it, tests first",
@@ -110,7 +183,19 @@
     return `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`;
   }
   function clock(iso) { return iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZoneName: "short" }) : ""; }
-  function money(n) { return n == null ? "" : `$${Number(n).toFixed(2)}`; }
+  function fullClock(iso) { return iso ? new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : ""; }
+  // a time is relative on the page and absolute on hover: <time datetime title="Oct 11, 2026, 05:41">4 min ago</time>
+  function timeEl(iso, text) { return el("time", { datetime: iso || null, title: fullClock(iso) }, text != null ? text : ago(iso)); }
+  // cut long agent prose at a sentence boundary, never mid-word, and say that there is more
+  function firstSentences(text, max) {
+    const s = String(text || "").trim();
+    if (s.length <= max) return s;
+    const head = s.slice(0, max);
+    const cut = Math.max(head.lastIndexOf(". "), head.lastIndexOf("! "), head.lastIndexOf("? "));
+    if (cut > max * 0.4) return head.slice(0, cut + 1);
+    return head.replace(/\s+\S*$/, "") + "…";
+  }
+  function money(n) { if (n == null) return ""; const v = Number(n); return Number.isInteger(v) ? `$${v}` : `$${v.toFixed(2)}`; }
   function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
   function words(s) { return String(s ?? "").replace(/_/g, " "); }
   function plural(n, one, many) { return `${n} ${n === 1 ? one : (many || one + "s")}`; }
@@ -123,12 +208,19 @@
     return d;
   }
   function eyesPath(u, ox, oy) { return [3, 6].map(x => `M${(ox + x * u).toFixed(1)} ${(oy + 3 * u).toFixed(1)}h${u}v${u}h-${u}z`).join(" "); }
-  // state: asleep | working | done | blocked | still. size: "l" (72x80) or "s" (44x50)
-  function crewFigure(role, state, size) {
+  // state: asleep | working | done | blocked | still. size: "l" (72x80), "s" (44x50) or "xs" (28x30, the Runs list)
+  const FIG = { l: { u: 6.5, ox: 6.5, oy: 14, w: 72, h: 80 }, s: { u: 4, ox: 4, oy: 9, w: 44, h: 50 }, xs: { u: 2.5, ox: 2.5, oy: 5, w: 28, h: 30 } };
+  function crewFigure(role, state, size, label) {
+    if (size === "xs") {
+      const f = FIG.xs;
+      const node = svg("svg", { class: `crew ${state || "still"}`, width: f.w, height: f.h, viewBox: `0 0 ${f.w} ${f.h}`, role: label ? "img" : null, "aria-label": label || null, "aria-hidden": label ? null : "true" });
+      node.append(svg("path", { d: pixPath(f.u, f.ox, f.oy), fill: "var(--crew)" }), svg("path", { class: "eye", d: eyesPath(f.u, f.ox, f.oy), fill: "#16202A" }));
+      return node;
+    }
     const big = size !== "s";
     const u = big ? 6.5 : 4, ox = big ? 6.5 : 4, oy = big ? 14 : 9;
     const w = big ? 72 : 44, h = big ? 80 : 50;
-    const node = svg("svg", { class: `crew ${state || "asleep"}`, width: w, height: h, viewBox: `0 0 ${w} ${h}`, "aria-hidden": "true" });
+    const node = svg("svg", { class: `crew ${state || "asleep"}`, width: w, height: h, viewBox: `0 0 ${w} ${h}`, role: label ? "img" : null, "aria-label": label || null, "aria-hidden": label ? null : "true" });
     if (state === "asleep") {
       node.append(svg("text", { class: "z", x: big ? 54 : 34, y: big ? 18 : 10, "font-size": big ? 11 : 9, "font-weight": 700, fill: "#5B6B7A", opacity: 0 }, document.createTextNode("z")));
       if (big) node.append(svg("text", { class: "z2", x: 60, y: 10, "font-size": 9, "font-weight": 700, fill: "#5B6B7A", opacity: 0 }, document.createTextNode("z")));
@@ -145,68 +237,84 @@
     const ok = svg("g", { class: "badge-ok" }); ok.append(svg("circle", { cx: bx, cy: by, r: br, fill: "var(--ok)" }), svg("path", { d: big ? "M57.5 22l3 3 6-6" : "M35 13l2 2 4-4", stroke: "#fff", "stroke-width": big ? 2.2 : 1.6, fill: "none", "stroke-linecap": "round", "stroke-linejoin": "round" }));
     const alert = svg("g", { class: "badge-alert" }); alert.append(svg("circle", { cx: bx, cy: by, r: br, fill: "var(--call)" }), svg("rect", { x: bx - 1.2, y: by - 5, width: 2.4, height: 6.5, rx: 1, fill: "#fff" }), svg("circle", { cx: bx, cy: by + 4.2, r: 1.4, fill: "#fff" }));
     node.append(ok, alert);
-    if (big) node.append(svg("rect", { x: 4, y: 70, width: 64, height: 6, rx: 3, fill: "var(--line)" }));
+    return node;
+  }
+  // a person on the line: grey once they decided ("decided"), orange when the decision is theirs now ("you")
+  const HUMAN = ["...111...", "...111...", ".1111111.", "1..111..1", "1..111..1", "...111...", "..11.11..", "..11.11.."];
+  function humanFigure(kind, size, label) {
+    const f = FIG[size] || FIG.s;
+    const node = svg("svg", { class: `human ${kind}`, width: f.w, height: f.h, viewBox: `0 0 ${f.w} ${f.h}`, role: "img", "aria-label": label || (kind === "you" ? "A decision is yours" : "A person decided here") });
+    let d = "";
+    HUMAN.forEach((row, y) => { row.split("").forEach((c, x) => { if (c === "1") d += `M${(f.ox + x * f.u).toFixed(1)} ${(f.oy + y * f.u).toFixed(1)}h${f.u}v${f.u}h-${f.u}z `; }); });
+    node.append(svg("path", { d: d.trim(), fill: kind === "you" ? "var(--call)" : "var(--human)" }));
     return node;
   }
   document.getElementById("brand-mark").append(crewFigure("implementer", "still", "s"));
 
-  // ------------------------------------------------------------------ the line: a compact progress strip with the active station's crew member
-  function lineStrip(r) {
-    const open = (r.gates || []).filter(g => !g.recorded);
+  // ------------------------------------------------------------------ the line: a belt, seven posts, and whoever is at work standing on it
+  // `r` is a summary record (the Runs list, the Board) or a run detail (the run page: it carries crew, gates, questions and
+  // summary). size "full" draws names and a fact under each post; "mini" draws only the belt, the posts and the figure.
+  function lineFacts(r) {
+    const s = r.summary || r, facts = {};
+    const decided = kind => (s.decisions || []).filter(d => d.kind === kind).slice(-1)[0];
+    const crewAt = roles => (r.crew || []).filter(m => roles.includes(m.role) && m.sessions);
+    const sum = ms => ({ n: ms.reduce((a, m) => a + m.sessions, 0), cost: ms.reduce((a, m) => a + (m.cost_usd || 0), 0) });
+    const owner = r.outcome && r.outcome.owner ? (r.outcome.owner.name || r.outcome.owner.handle) : null;
+    facts.intake = `${owner || "written"} · ${ago(s.started_at || r.created_at)}`;
+    const dec = sum(crewAt(["decomposer"])); if (dec.n) facts.decomposing = `${plural(dec.n, "session")} · ${money(dec.cost)}`;
+    const sp = sum(crewAt(["spec_writer", "spec_judge"])); if (sp.n) facts.specifying = `${plural(sp.n, "session")} · ${money(sp.cost)}`;
+    const bd = sum(crewAt(["implementer", "reviewer", "security_reviewer", "merge_judge", "integrator"])); if (bd.n) facts.implementing = `${plural(bd.n, "session")} · ${money(bd.cost)}`;
+    for (const kind of ["gate_1_decomposition", "gate_2_spec_readiness"]) {
+      const d = decided(kind);
+      if (d) facts[kind] = `${(DECISION_LABEL[d.decision] || d.decision).toLowerCase()} · ${ago(d.at)}`;
+    }
+    const prs = s.pull_requests || [];
+    if (prs.length) { const open = prs.filter(p => p.state === "open").length, closed = prs.filter(p => /closed/.test(p.state || "")).length, merged = prs.length - open - closed;
+      facts.completed = [open ? `${open} open` : null, merged ? `${merged} merged` : null, closed ? `${closed} closed` : null].filter(Boolean).join(" · "); }
+    return facts;
+  }
+  function lineStrip(r, size) {
+    const s = r.summary || r;
+    const mini = size === "mini";
     const stage = r.stage;
-    const terminal = TERMINAL[stage];
-    const S = [
-      { key: "intake", lbl: "Outcome", who: "po", d: "The brief" },
-      { key: "decomposing", lbl: "Decompose", who: "crew", d: "Work items", role: "decomposer" },
-      { key: "gate_1_decomposition", lbl: "Plan check", who: "po", d: "Gate 1" },
-      { key: "specifying", lbl: "Specify and judge", who: "crew", d: "Contracts", role: "spec_writer" },
-      { key: "gate_2_spec_readiness", lbl: "Contract check", who: "po", d: "Gate 2" },
-      { key: "implementing", lbl: "Build and review", who: "crew", d: "Branches", role: "implementer" },
-      { key: "completed", lbl: "Pull request", who: "eng", d: "Review and merge" },
-    ];
-    const idx = STAGES.findIndex(s => s[0] === stage);
-    const working = (r.crew || []).filter(c => c.state === "working").map(c => c.role);
+    const parked = stage === "paused_budget" || s.status === "stopped";       // the crew sleeps at the station; the run can continue
+    const terminal = (!!TERMINAL[stage] && !parked) || stage === "completed";
+    const idx = stationOf(s.stage ? s : r);
+    const openGates = (r.gates || []).filter(g => !g.recorded).map(g => g.kind).concat((s.open_gates || []).map(label => ({ "Gate 1": "gate_1_decomposition", "Gate 2": "gate_2_spec_readiness" })[label] || label));
+    const question = (r.questions || []).length > 0 || (s.open_questions || 0) > 0;
+    const working = s.status === "stopped" ? [] : (r.crew || []).filter(c => c.state === "working").map(c => c.role);
+    const workingRoles = working.length ? working : (s.working || []);
+    const moving = !terminal && s.status !== "stopped" && s.status !== "paused" && (workingRoles.length > 0 || s.status === "running");
+    const facts = mini ? {} : lineFacts(r);
     const stations = el("div", { class: "stations" });
-    S.forEach((s, i) => {
-      let cls = `st ${s.who}`;
-      const done = !terminal && i < idx, current = !terminal && i === idx;
-      if (done || (stage === "completed" && i === S.length - 1)) cls += " done";
-      if (current && !r.design_only) cls += " current";
-      const isCall = open.length && ((s.key === "gate_1_decomposition" && open.some(g => g.kind === "gate_1_decomposition")) || (s.key === "gate_2_spec_readiness" && open.some(g => g.kind === "gate_2_spec_readiness")));
-      if (isCall) cls += " call calling";
-      let fig = null;
-      if (current && s.who === "crew") {
-        const role = working.find(w => ["decomposer", "spec_writer", "spec_judge", "implementer", "reviewer", "security_reviewer", "merge_judge", "integrator"].includes(w)) || s.role;
-        fig = el("span", { class: "fig" }, crewFigure(role, working.length ? "working" : "still", "s"));
+    STATIONS.forEach((st, i) => {
+      const done = i < idx || (stage === "completed" && (s.design_only ? i === idx : i === STATIONS.length - 1));
+      const current = i === idx && !(stage === "completed" && (s.design_only || i === STATIONS.length - 1));
+      const isCall = st.gate && openGates.includes(st.gate);
+      const cls = ["st", done ? "done" : current ? "current" : "ahead", isCall ? "call" : ""].filter(Boolean).join(" ");
+      const figs = el("span", { class: "figs" });
+      if (isCall) figs.append(humanFigure("you", mini ? "xs" : "s", `${st.label} is waiting on you`));
+      else if (st.gate && done && !mini) figs.append(humanFigure("decided", "s", facts[st.key] ? `${st.label}: ${facts[st.key]}` : `${st.label} decided`));
+      else if (current && question) {
+        if (!mini && st.role) figs.append(crewFigure(st.role, "asleep", "s", `${CREW_NAME[st.role] || words(st.role)}, paused on a question`));
+        figs.append(humanFigure("you", mini ? "xs" : "s", "A question is waiting for your answer"));
       }
-      stations.append(el("div", { class: cls, title: s.d },
-        el("div", { class: "bar" }), el("span", { class: "n" }, `Station ${i + 1}`), el("span", { class: "lbl" }, s.lbl),
-        el("span", { class: `who ${s.who}` }, isCall ? "Your call" : ROLE_NAME[s.who]), fig));
+      else if (current && st.role && !terminal) {
+        if (mini) figs.append(crewFigure(workingRoles[0] || st.role, workingRoles.length ? "working" : "still", "xs", workingRoles.length ? `${crewNames(workingRoles)} at work` : "The crew is here"));
+        else {
+          const roles = workingRoles.length ? workingRoles.slice(0, 3) : [st.role];
+          roles.forEach((role, k) => figs.append(crewFigure(role, workingRoles.length ? "working" : (parked ? "asleep" : "still"), k === 0 ? "l" : "s", `${CREW_NAME[role] || words(role)}${workingRoles.length ? ", at work" : parked ? ", asleep while the run is parked" : ""}`)));
+          if (workingRoles.length > 3) figs.append(el("span", { class: "muted fs-xs self-center" }, `+${workingRoles.length - 3}`));
+        }
+      }
+      const here = !current ? null : stage === "paused_budget" ? "Paused here" : s.status === "stopped" ? "Stopped here" : stage === "failed" ? "Failed here" : stage === "escalated" ? "Escalated here" : stage === "closed" ? "Closed here" : null;
+      const fact = current && workingRoles.length && st.role
+        ? `${workingRoles.length > 1 ? `${workingRoles.length} at work` : `${CREW_NAME[workingRoles[0]] || words(workingRoles[0])} at work`}${s.working_since ? ` · ${dur(s.working_since)} in` : ""}`
+        : [here, facts[st.key] || ""].filter(Boolean).join(" · ");
+      stations.append(el("div", { class: cls, title: `${st.label}: ${st.doing}` }, figs, el("i", { class: "post" }),
+        mini ? null : el("span", { class: "lbl" }, st.label), mini || !fact ? null : el("span", { class: "d" }, fact)));
     });
-    const belt = el("div", { class: "belt" });
-    return el("div", { class: `line ${terminal || stage === "completed" ? "still" : ""}` }, stations, belt);
-  }
-  function miniSteps(stage) {
-    const idx = STAGES.findIndex(s => s[0] === stage);
-    const terminal = TERMINAL[stage];
-    return el("span", { class: "mini-steps", title: terminal || (STAGES[idx] || [])[1] || stage },
-      STAGES.map((s, i) => el("i", { class: terminal ? (i < 2 ? "done" : "") : i < idx ? "done" : i === idx ? "current" : "" })),
-      terminal ? el("i", { class: "terminal" }) : null);
-  }
-  function stepper(stage, designOnly) {
-    const idx = STAGES.findIndex(s => s[0] === stage);
-    const terminal = TERMINAL[stage];
-    const t = el("div", { class: "stepper", role: "list", "aria-label": "Run stages" });
-    const stages = designOnly ? STAGES.map(s => s[0] === "implementing" ? [s[0], "Building", "Skipped: design run."] : s[0] === "completed" ? [s[0], "Done", "Specs approved; nothing built."] : s) : STAGES;
-    stages.forEach(([key, label, desc], i) => {
-      let cls = "step";
-      if (!terminal && i < idx) cls += " done";
-      else if (!terminal && i === idx) cls += " current";
-      else if (terminal && i < 2) cls += " done";
-      t.append(el("div", { class: cls, role: "listitem" }, el("span", { class: "n" }, i + 1), el("span", { class: "lbl" }, label), el("span", { class: "d" }, desc)));
-    });
-    if (terminal) t.append(el("div", { class: "step terminal", role: "listitem" }, el("span", { class: "lbl" }, terminal)));
-    return t;
+    return el("div", { class: `line ${mini ? "mini" : ""} ${moving ? "" : "still"}`, role: "img", "aria-label": `Station ${idx + 1} of 7: ${STATIONS[idx].label}` }, el("div", { class: "belt" }), stations);
   }
 
   // tiny markdown subset for decomposition.md and spec.md
@@ -243,12 +351,16 @@
 
   function applyTheme(t) { document.documentElement.dataset.theme = t === "dark" ? "dark" : ""; try { localStorage.setItem("factory-theme", t); } catch (e) { /* private window */ } }
   try { applyTheme(localStorage.getItem("factory-theme") || "light"); } catch (e) { applyTheme("light"); }
+  // the crew can be held still from the page itself, for anyone whose system does not ask for reduced motion
+  function applyMotion(off) { document.documentElement.dataset.motion = off ? "off" : ""; try { localStorage.setItem("factory-motion", off ? "off" : "on"); } catch (e) { /* private window */ } }
+  try { applyMotion(localStorage.getItem("factory-motion") === "off"); } catch (e) { /* private window */ }
 
   // what the board says is waiting on a person; the sidebar badge and the board header count the same cards
   const onBoard = b => b.runs.filter(r => !r.terminal || r.cards.length);
   const waitingOf = runs => {
     const cards = runs.flatMap(r => r.cards);
-    return { decisions: cards.filter(c => c.kind === "gate" || c.kind === "question").length, reviews: cards.filter(c => c.kind === "pr").length };
+    const n = k => cards.filter(c => c.kind === k).length;
+    return { gates: n("gate"), questions: n("question"), reviews: n("pr"), total: n("gate") + n("question") + n("pr") };
   };
   const gapsMatching = (gaps, keys) => gaps.filter(g => keys.some(k => g.includes(k)));
   const forgeGapsOf = c => gapsMatching(c.gaps, ["FORGE", "FACTORY_FORGE", "FACTORY_VAULT_ID"]);
@@ -256,14 +368,22 @@
     try {
       const [c, board] = await Promise.all([api("/api/config"), api("/api/board")]);
       state.config = c;
-      const w = waitingOf(onBoard(board)), n = w.decisions + w.reviews;
-      $inboxCount.textContent = n; $inboxCount.classList.toggle("zero", n === 0);
-      const dark = document.documentElement.dataset.theme === "dark";
+      const w = waitingOf(onBoard(board)), n = w.total;
+      $inboxCount.textContent = n; $inboxCount.hidden = n === 0; $inboxCount.classList.toggle("zero", n === 0);
+      $inboxCount.closest("a").setAttribute("aria-label", n ? `Board, ${n} waiting on a person` : "Board");
+      const dark = document.documentElement.dataset.theme === "dark", still = document.documentElement.dataset.motion === "off";
       const forgeOk = !forgeGapsOf(c).length;
+      // rebuilt only when something in it changed: a poll must not recreate the button a person is about to press
+      const footKey = JSON.stringify([c.can_run_design, forgeOk, c.forge, c.forge_repo, dark, still]);
+      if (footKey === state.lastKey.foot) return;
+      state.lastKey.foot = footKey;
+      const pressed = [...$foot.querySelectorAll("button")].indexOf(document.activeElement);   // a button a person just pressed keeps the focus
       $foot.replaceChildren(
         el("b", null, "Crew"), el("span", { class: c.can_run_design ? "" : "warn" }, c.can_run_design ? "ready" : "not configured"),
         el("br"), el("b", null, "Code host"), el("span", { class: forgeOk ? "" : "warn" }, forgeOk ? `${c.forge}${c.forge_repo ? ": " + c.forge_repo : ""}` : "not configured"),
-        el("br"), el("button", { class: "theme", type: "button", onclick: () => { applyTheme(dark ? "light" : "dark"); loadChrome(); } }, dark ? "Light mode" : "Dark mode"));
+        el("br"), el("button", { class: "theme", type: "button", onclick: () => { applyTheme(dark ? "light" : "dark"); loadChrome(); } }, dark ? "Light mode" : "Dark mode"), " ",
+        el("button", { class: "theme", type: "button", onclick: () => { applyMotion(!still); loadChrome(); } }, still ? "Animate" : "Hold still"));
+      if (pressed >= 0) { const b = $foot.querySelectorAll("button")[pressed]; if (b) b.focus(); }
     } catch (e) { $foot.textContent = "Console offline"; }
   }
   function setNav(key) {
@@ -278,17 +398,21 @@
     return !!(a && $main.contains(a) && (a.tagName === "TEXTAREA" || a.tagName === "INPUT" || a.tagName === "SELECT"));
   }
   function refreshWhenChanged(key, fetchKey, render) {
+    const nav = state.nav;   // the page this poll belongs to: a fetch that lands after a route change must not paint
     return async () => {
       if (typing()) return;
       try {
         const k = await fetchKey();
+        if (nav !== state.nav) return;
         if (k !== state.lastKey[key]) { state.lastKey[key] = k; await render(); }
         loadChrome();
-      } catch (e) { /* keep the page */ }
+        delete document.body.dataset.offline;
+      } catch (e) { document.body.dataset.offline = "1"; }   // the page keeps what it showed; app.css says contact is lost
     };
   }
 
   function pageHead(title, sub, actions, crumbs) {
+    document.title = `${title} · Factory`;
     return el("div", { class: "page-head" },
       el("div", null, crumbs ? el("div", { class: "crumbs" }, crumbs) : null, el("h1", null, title), sub ? el("div", { class: "sub" }, sub) : null),
       actions ? el("div", { class: "actions" }, actions) : null);
@@ -298,92 +422,102 @@
       title ? el("div", { class: "card-head" }, el("h2", null, title), meta ? el("span", { class: "meta" }, meta) : null) : null,
       el("div", { class: "card-body" }, body));
   }
-  function roleLegend() {
-    return el("div", { style: "display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center;font-size:14px" },
-      el("span", { class: "role crew" }, el("i"), "Claude crew"),
-      el("span", { class: "role po" }, el("i"), "Product owner decides what is built"),
-      el("span", { class: "role eng" }, el("i"), "Engineer reviews and merges"),
-      el("span", { class: "role ops" }, el("i"), "Ops watches it land"),
-      el("span", { class: "role call", style: "margin-left:auto" }, el("i"), "A human is needed now"));
-  }
-
-  // ------------------------------------------------------------------ the board: columns are the pipeline, rows are who owns the work
+  // ------------------------------------------------------------------ the board: rows are who owns the work, columns are where the run is
+  const BOARD_COLS = ["plan", "specify", "build", "ship"];
+  const boardColumn = col => col === "review" ? "build" : col;     // the server still files reviewers under "review"; Build holds them
   async function viewInbox() {
     setNav("inbox");
+    const nav = state.nav;
     const b = await api("/api/board");
     // a finished run stays on the board while a person still owes it something (a pull request to review, a deploy to watch)
     const live = onBoard(b);
-    const active = live.filter(r => !r.terminal).length, handedOff = live.length - active;
     const w = waitingOf(live);
-    const waitingLabel = [w.decisions ? plural(w.decisions, "decision") : null, w.reviews ? plural(w.reviews, "pull request") : null].filter(Boolean).join(", ");
+    const atWork = live.flatMap(r => r.cards).filter(c => c.kind === "agent").length;
+    const runsAtWork = new Set(live.filter(r => r.cards.some(c => c.kind === "agent")).map(r => r.run_id)).size;
+    const parts = [w.gates ? plural(w.gates, "decision") : null, w.questions ? plural(w.questions, "question") : null, w.reviews ? plural(w.reviews, "pull request") : null].filter(Boolean);
+    const waitingLabel = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0] || "";
     const frag = document.createDocumentFragment();
-    frag.append(pageHead("The board", "Active work and decisions that need you.",
-      [waitingLabel ? el("span", { class: "tag gate" }, `${waitingLabel} waiting`) : el("span", { class: "tag ok" }, "Nothing waiting on a person"),
-       el("a", { class: "btn primary", href: "#/start" }, "Start a run")]));
+    const sub = el("p", { class: "sub" }, waitingLabel ? el("b", { class: "call" }, `${waitingLabel} ${w.total === 1 ? "is" : "are"} waiting on a person.`) : "Nothing is waiting on a person.",
+      atWork ? ` ${plural(atWork, "crew member")} ${atWork === 1 ? "is" : "are"} at work across ${plural(runsAtWork, "run")}.` : "");
+    frag.append(pageHead("Board", sub, [el("a", { class: "btn primary", href: "#/start" }, "Start a run")]));
     if (!live.length) {
       frag.append(card(null, el("div", { class: "empty" }, crewFigure("implementer", "asleep", "l"), el("h3", null, "The floor is quiet"),
         el("div", null, "No run is in progress. Start one from an outcome; the crew wakes up and the board fills in."),
         el("a", { class: "btn primary", href: "#/start" }, "Start a run"))));
     } else {
       const g = el("div", { class: "g" });
-      g.append(el("div"));
-      for (const col of [["plan", "Plan"], ["specify", "Specify"], ["build", "Build"], ["review", "Review"], ["ship", "Ship"]]) g.append(el("div", { class: "colh" }, col[1]));
-      const COLS = { plan: "Plan", specify: "Specify", build: "Build", review: "Review", ship: "Ship" };
-      for (const row of ["po", "eng", "ops", "crew"]) {
+      g.append(el("div", { class: "corner" }));
+      for (const col of BOARD_COLS) g.append(el("div", { class: "colh" }, PHASES[col], " ", el("span", null, PHASE_DOES[col])));
+      const rows = ["po", "eng", "ops", "crew"];
+      rows.forEach((row, ri) => {
         // on a phone the grid stacks: a role, then only its columns that hold cards, each labelled (data-col)
-        const empty = !live.some(r => r.cards.some(c => c.row === row));
-        g.append(el("div", { class: `rowh ${row}${empty ? " empty-row" : ""}` }, el("b", null, ROLE_NAME[row]), el("span", null, ROLE_DOES[row])));
-        for (const col of ["plan", "specify", "build", "review", "ship"]) {
-          const cell = el("div", { class: "cell", dataset: { col: COLS[col] } });
-          for (const r of live) {
-            for (const c of r.cards.filter(c => c.row === row && c.column === col)) cell.append(boardCard(r, c));
-
-          }
+        const cards = live.flatMap(r => r.cards.filter(c => c.row === row).map(c => [r, c]));
+        const last = ri === rows.length - 1 ? " last" : "";
+        const n = row === "crew" ? (cards.length ? `${cards.length} at work` : "") : cards.length ? `${cards.length} waiting` : "";
+        g.append(el("div", { class: `rowh ${row}${cards.length ? "" : " empty-row"}${last}` }, el("b", null, ROLE_NAME[row]), el("span", null, ROLE_DOES[row]), n ? el("span", { class: "n" }, n) : null));
+        for (const col of BOARD_COLS) {
+          const cell = el("div", { class: `cell${last}`, dataset: { col: PHASES[col] } });
+          // a budget or escalation gate belongs where the run stopped, not in a fixed column
+          const columnOf = (r, c) => c.kind === "gate" && (c.title === "budget" || c.title === "escalation") ? boardColumn(r.column) : boardColumn(c.column);
+          for (const [r, c] of cards) if (columnOf(r, c) === col) cell.append(boardCard(r, c));
           g.append(cell);
         }
-      }
-      frag.append(card(null, el("div", { class: "board" }, g, el("div", { class: "legend" }, el("span", null, [active ? `${plural(active, "run")} in progress.` : null, handedOff ? `${plural(handedOff, "finished run")} with pull requests to review.` : null, "Finished runs are under Runs."].filter(Boolean).join(" ")))), null));
+      });
+      frag.append(card(null, el("div", { class: "board" }, g, el("div", { class: "legend" }, "Rows are who owns the work; columns are where the run is. Finished runs leave the board once nobody owes them anything; the full history is under Runs.")), null));
     }
 
-    $main.replaceChildren(frag);
+    if (!paint(frag, nav)) return;
     state.lastKey.inbox = boardKey(b);
     startPoll(refreshWhenChanged("inbox", async () => boardKey(await api("/api/board")), viewInbox), 5000);
   }
-  function boardKey(b) { return JSON.stringify(b.runs.map(r => [r.run_id, r.stage, r.updated_at, r.cards.map(c => [c.kind, c.gate_id || c.question_id || c.role || c.work_item_id])])); }
+  function boardKey(b) { return JSON.stringify([b.runs.some(r => r.cards.some(c => c.kind === "agent")) ? Math.floor(Date.now() / 30000) : 0,
+    b.runs.map(r => [r.run_id, r.stage, r.updated_at, r.cards.map(c => [c.kind, c.gate_id || c.question_id || c.role || c.work_item_id])])]); }
   // Every card names its run as a link, so any card on the board leads to that run's evidence and next action.
   function boardCard(r, c) {
     const run = el("a", { class: "run-link", href: `#/runs/${r.run_id}` }, r.title);
+    // a stopped run's gate or question can be decided, but the decision waits for a controller: say so, and keep the orange for live calls
+    const stopped = r.status === "stopped";
+    const stoppedNote = stopped ? el("span", { class: "since t-bad" }, "The controller is stopped: the decision is recorded and applied once a controller drives the run again.") : null;
     if (c.kind === "agent") {
-      return el("div", { class: "k agent" }, crewFigure(c.role, "working", "s"),
-        el("div", { class: "txt" }, el("span", { class: "t" }, CREW_NAME[c.role] || words(c.role)), el("span", { class: "s" }, run, `, working for ${dur(c.since)}`)));
+      const im = /(spec_|wi-)([A-Za-z0-9-]+)/.exec(c.title || ""), item = im ? im[2] : "";
+      return el("div", { class: "k agent" }, crewFigure(c.role, "working", "s", `${CREW_NAME[c.role] || words(c.role)}, at work`),
+        el("div", { class: "txt" }, el("span", { class: "t" }, CREW_NAME[c.role] || words(c.role)), el("span", { class: "s" }, run),
+          el("span", { class: "since" }, item && item !== c.title ? `${item} · ` : "", c.since ? [dur(c.since), " in"] : "at work")));
     }
     if (c.kind === "gate") {
-      return el("div", { class: "k call calling" }, el("span", { class: "since" }, `Your call since ${clock(c.since)}`), el("span", { class: "t" }, GATE_NAME[c.title] || words(c.title)),
-        el("span", { class: "s" }, run, `. ${(c.summary || "").slice(0, 140)}`), el("a", { class: "btn call", href: `#/gates/${c.gate_id}`, style: "align-self:flex-start" }, "Review and decide"));
+      return el("div", { class: "k call" }, el("span", { class: "t" }, GATE_NAME[c.title] || words(c.title)), el("span", { class: "s" }, run),
+        c.summary ? el("span", { class: "s" }, firstSentences(c.summary, 160)) : null,
+        el("span", { class: "since" }, "waiting ", timeEl(c.since, dur(c.since))), stoppedNote,
+        el("a", { class: stopped ? "btn" : "btn call", href: c.title === "budget" ? `#/runs/${r.run_id}` : `#/gates/${c.gate_id}` }, c.title === "budget" ? "Decide" : "Review and decide"));
     }
     if (c.kind === "question") {
-      return el("div", { class: "k call calling" }, el("span", { class: "since" }, `${c.blocking ? "Agent paused" : "Question"} since ${clock(c.since)}`), el("span", { class: "t" }, c.title),
-        el("span", { class: "s" }, run), el("a", { class: "btn call", href: `#/runs/${r.run_id}#q`, style: "align-self:flex-start" }, "Answer"));
+      return el("div", { class: "k call" }, el("span", { class: "t" }, "A question from the crew"), el("span", { class: "s" }, run), el("span", { class: "s" }, firstSentences(c.title, 160)),
+        el("span", { class: "since" }, c.blocking ? ["the crew has been paused for ", timeEl(c.since, dur(c.since))] : ["asked ", timeEl(c.since)]), stoppedNote,
+        el("a", { class: stopped ? "btn" : "btn call", href: `#/runs/${r.run_id}#q` }, "Answer"));
     }
     if (c.kind === "pr") {
-      return el("div", { class: "k call" }, el("span", { class: "since" }, "Waiting for you"), el("span", { class: "t" }, c.title), el("span", { class: "s" }, run),
-        c.url ? el("a", { class: "btn", href: c.url, target: "_blank", rel: "noopener", style: "align-self:flex-start" }, "Open on the code host") : null);
+      return el("div", { class: "k" }, el("span", { class: "t" }, c.title), el("span", { class: "s" }, run),
+        el("span", { class: "since" }, "waiting for an engineer"),
+        c.url ? el("a", { class: "btn", href: c.url, target: "_blank", rel: "noopener" }, "Open on the code host") : null);
     }
-    return el("div", { class: "k quiet" }, el("span", { class: "run" }, run), el("span", { class: "t" }, c.title));
+    return el("div", { class: "k quiet" }, el("span", { class: "t" }, c.title), el("span", { class: "s" }, run), el("span", { class: "since" }, "nothing to do unless it fails"));
   }
 
   // ------------------------------------------------------------------ runs: the history, and the home page
-  const runsKey = runs => JSON.stringify(runs.map(r => [r.run_id, r.status, r.stage, r.updated_at, r.live_sessions, r.waiting ? [r.waiting.gates, r.waiting.questions] : null]));
+  const runsKey = runs => JSON.stringify([runs.some(r => r.live_sessions && !r.terminal) ? Math.floor(Date.now() / 30000) : 0,
+    runs.map(r => [r.run_id, r.status, r.stage, r.updated_at, r.live_sessions, r.waiting ? [r.waiting.gates, r.waiting.questions] : null])]);
   async function viewRuns() {
     setNav("runs");
+    const nav = state.nav;
     const runs = (await api("/api/runs")).runs;
     const filter = state.runsFilter || "all";
     const shown = runs.filter(r => runMatches(r, filter));
     const needs = runs.filter(r => runMatches(r, "needs_you")).length, active = runs.filter(r => !r.terminal).length;
+    const running = runs.filter(r => r.status === "running").length, paused = runs.filter(r => r.status === "paused").length, finished = runs.filter(r => r.terminal).length;
     const frag = document.createDocumentFragment();
-    frag.append(pageHead("Runs", "Every run of the factory, unfinished ones first: what it was for, where it stands, and what came out of it.",
-      [needs ? el("span", { class: "tag gate" }, `${plural(needs, "run")} waiting on you`) : active ? el("span", { class: "tag crew" }, `${plural(active, "run")} in progress`) : el("span", { class: "tag ok" }, "Nothing waiting on a person"),
-       el("a", { class: "btn primary", href: "#/start" }, "Start a run")]));
+    const sub = el("p", { class: "sub" }, needs ? el("b", { class: "call" }, `${plural(needs, "run")} need${needs === 1 ? "s" : ""} you. `) : active ? "Nothing needs you. " : "",
+      [running ? `${running} ${running === 1 ? "is" : "are"} being worked by the crew` : null, paused ? `${paused} ${paused === 1 ? "is" : "are"} paused` : null, finished ? `${finished} ${finished === 1 ? "has" : "have"} finished` : null].filter(Boolean).join(", ") + (runs.length ? "." : ""));
+    frag.append(pageHead("Runs", runs.length ? sub : "Every run of the factory, unfinished ones first.", [el("a", { class: "btn primary", href: "#/start" }, "Start a run")]));
     if (!runs.length) {
       frag.append(card(null, el("div", { class: "empty" }, crewFigure("decomposer", "asleep", "l"), el("h3", null, "No runs yet"),
         el("div", null, "Start one from an outcome. Every run shows up here with its status and what came out of it, for as long as its event log is kept."),
@@ -392,43 +526,36 @@
       const chips = el("div", { class: "chips", role: "group", "aria-label": "Show runs" }, RUN_FILTERS.map(([key, label]) =>
         el("button", { class: "btn sm", type: "button", "aria-pressed": String(key === filter), onclick: () => { state.runsFilter = key; viewRuns(); } },
           label, " ", el("span", { class: "n" }, String(runs.filter(r => runMatches(r, key)).length)))));
-      const tbl = el("table", { class: "runs" }, el("tr", null, el("th", null, "Outcome"), el("th", null, "Status"), el("th", null, "What came out"), el("th", null, "Spend"), el("th", null, "When")));
+      const list = el("div", { class: "runs-list" });
       for (const r of shown) {
-        const waiting = r.waiting ? r.waiting.gates + r.waiting.questions : 0;
-        const prs = r.pull_requests || [];
-        tbl.append(el("tr", { class: "link", onclick: () => { location.hash = `#/runs/${r.run_id}`; } },
-          el("td", null, el("div", { class: "title" }, el("a", { href: `#/runs/${r.run_id}` }, r.title), modeTag(r)),
-            el("div", { class: "explain mono", style: "font-size:12px" }, r.run_id)),
-          el("td", null, statusTag(r), el("div", { style: "margin-top:6px" }, miniSteps(r.stage)),
-            waiting ? el("div", { class: "explain", style: "color:var(--call-text);font-weight:700" }, `${plural(waiting, "decision")} waiting on you`) : null),
-          el("td", { class: "headline" }, r.headline || "",
-            prs.length ? el("div", { class: "prs" }, prs.map(p => p.url
-              ? el("a", { href: p.url, target: "_blank", rel: "noopener", title: `${p.title || p.work_item_id}: ${p.state}`, onclick: ev => ev.stopPropagation() }, `#${p.cr_id}`, el("span", { class: "explain" }, ` ${p.state}`))
-              : el("span", { class: "explain" }, `${p.work_item_id}: ${p.state}`))) : null),
-          el("td", null, money(r.cost_usd), r.budget_usd != null ? el("span", { class: "explain" }, ` of ${money(r.budget_usd)}`) : null, liveSpendNote(r)),
-          el("td", { class: "explain" }, el("div", { title: r.started_at || "" }, `started ${ago(r.started_at)}`),
-            el("div", null, r.terminal ? `took ${dur(r.started_at, r.ended_at || r.updated_at)}` : activityLine(r)),
-            r.working_since && !r.terminal ? el("div", null, `pipeline step ${ago(r.updated_at)}`) : null)));
+        const prs = (r.pull_requests || []).filter(p => p.url);
+        const sentence = statusSentence(r, false);
+        if (r.status === "completed" && prs.length) sentence.append(" ", el("span", { class: "prs" }, prs.map(p => `#${p.cr_id} ${p.state}`).join(", "), "."));   // no link inside the row's link; the run page has them
+        list.append(el("a", { class: "run-row", href: `#/runs/${r.run_id}`, title: r.run_id }, lineStrip(r, "mini"),
+          el("span", { class: "what" }, el("span", { class: "t" }, r.title, r.design_only ? el("span", { class: "muted" }, " · design run") : null), sentence),
+          el("span", { class: "meta" }, el("span", null, `${money(r.cost_usd)}${r.budget_usd != null ? ` of ${money(r.budget_usd)}` : ""}`),
+            el("span", null, r.terminal ? [`took ${dur(r.started_at, r.ended_at || r.updated_at)} · `, timeEl(r.ended_at || r.updated_at)] : ["started ", timeEl(r.started_at)]))));
       }
-      if (!shown.length) tbl.append(el("tr", null, el("td", { colspan: "5", class: "explain" }, "No run matches this filter.")));
-      frag.append(card(null, el("div", null, chips, tbl)));
+      if (!shown.length) list.append(el("div", { class: "run-row explain" }, "No run matches this filter."));
+      frag.append(card(null, el("div", null, chips, list)), el("p", { class: "runs-foot" }, "Hover a row’s line for the station names and a time for the clock. Run identifiers live on the run page."));
     }
-    $main.replaceChildren(frag);
+    if (!paint(frag, nav)) return;
     state.lastKey.runs = runsKey(runs);
     startPoll(refreshWhenChanged("runs", async () => runsKey((await api("/api/runs")).runs), viewRuns), 5000);
   }
 
   // what a finished (or stopped) run produced, read from its summary: the first card on its page
+  // one grey line while building: every work item and where it is
+  const itemsLine = items => `${plural(items.length, "work item")}: ${items.map(w => `${w.title || itemShort(w.work_item_id)} ${(ITEM_STAGE[w.stage] || words(w.stage)).toLowerCase()}${w.cr_id ? ` #${w.cr_id}` : ""}`).join(" · ")}`;
   function resultCard(r) {
     const s = r.summary;
     const body = el("div", { class: "result" });
-    body.append(el("p", { class: "headline" }, s.headline));
     const facts = el("dl", { class: "kv" });
     const pair = (k, v) => { if (v != null && v !== "") facts.append(el("dt", null, k), el("dd", null, v)); };
-    pair("Mode", s.mode === "design" ? "Design only: real agents through Gate 2, nothing built" : `Live${s.forge ? `, pull requests on ${s.forge}` : ""}`);
+    pair("Mode", s.mode === "design" ? "Design only: real agents through Gate 2, nothing built" : `Live${FORGE_NAME[s.forge] ? `, pull requests on ${FORGE_NAME[s.forge]}` : ""}`);
     pair("Spend", `${money(s.cost_usd)}${s.budget_usd != null ? ` of ${money(s.budget_usd)}` : ""} over ${plural(s.counts.sessions, "agent session")}`);
     pair("Took", s.ended_at ? `${dur(s.started_at, s.ended_at)}, ended ${ago(s.ended_at)}` : `${dur(s.started_at, s.updated_at)} so far`);
-    if (s.failure) pair("Why it failed", s.failure);
+    if (s.failure && !String(s.headline || "").includes(s.failure)) pair("Why it failed", s.failure);
     if (s.escalations && s.escalations.length) pair("Why it escalated", el("ul", null, s.escalations.map(x => el("li", null, x))));
     body.append(facts);
     if (s.pull_requests.length) {
@@ -442,13 +569,13 @@
       body.append(el("h3", null, "Pull requests"), t);
       for (const rec of r.run_records || []) body.append(runRecordBlock(r, rec));
     } else if (s.design_only && s.specs_approved.length) {
-      body.append(el("h3", null, "Specs approved"), el("ul", null, s.specs_approved.map(x => el("li", { class: "mono" }, x))));
+      body.append(el("h3", null, "Contracts approved"), el("ul", null, s.specs_approved.map(x => el("li", { class: "mono" }, x))));
     }
     if (s.decisions.length) {
       body.append(el("h3", null, "Your decisions"), el("ul", null, s.decisions.map(d => el("li", null,
-        el("b", null, `${d.label}: ${DECISION_LABEL[d.decision] || d.decision}`), ` by ${d.by || "console"} at ${clock(d.at)}`,
+        el("b", null, `${d.label}: ${DECISION_LABEL[d.decision] || d.decision}`), personName(d.by) ? ` by ${d.by}, ` : ", ", timeEl(d.at),
         d.approved_subset.length ? ` (${d.approved_subset.join(", ")})` : "",
-        d.comments ? el("div", { class: "explain" }, `“${d.comments.slice(0, 300)}${d.comments.length > 300 ? "…" : ""}”`) : null))));
+        d.comments ? el("div", { class: "explain" }, `“${firstSentences(d.comments, 300)}”`) : null))));
     }
     return card("What came out", body, s.status_label, s.status === "completed" ? "" : "soft");
   }
@@ -466,7 +593,7 @@
       ? el("ul", null, rec.decisions.map(d => el("li", null, d.decision, d.location ? el("span", { class: "explain mono" }, ` ${d.location}`) : null)))
       : el("p", { class: "explain" }, "Nothing."));
     const sz = rec.size || {};
-    if (sz.line) section("Size", el("p", null, sz.line.replace(/\*\*/g, "")), sz.flag ? el("div", { class: "notice warn", style: "margin:0" }, el("b", null, "Over budget. "),
+    if (sz.line) section("Size", el("p", null, sz.line.replace(/\*\*/g, "")), sz.flag ? el("div", { class: "notice warn m-0" }, el("b", null, "Over budget. "),
       "Reported for you to judge; it did not trigger another round.") : null,
       (sz.measured && (sz.measured.files || []).length) ? el("details", null, el("summary", null, `Lines per file (${sz.measured.files.length})`),
         el("ul", null, sz.measured.files.map(f => el("li", { class: "mono" }, `${f.path}: ${f.lines} (${f.kind})`)))) : null);
@@ -508,16 +635,17 @@
 
   function askBlock(q, onDone) {
     const ta = el("textarea", { placeholder: "Your answer", "aria-label": "Your answer" });
-    const status = el("div", { class: "explain" });
+    const status = el("div", { class: "explain", role: "status" });
     const options = el("div", { class: "options" }, q.options.map(o => el("button", { class: "btn sm", type: "button", onclick: () => { ta.value = o; ta.focus(); } }, o)));
-    const send = el("button", { class: "btn call", type: "button", style: "margin-top:8px", onclick: async () => {
+    const send = el("button", { class: "btn call mt-2", type: "button", onclick: async () => {
       if (!ta.value.trim()) { status.textContent = "Type or pick an answer first."; return; }
-      send.disabled = true;
+      send.disabled = true; send.textContent = "Sending…";
       try { await api(`/api/questions/${q.question_id}/answer`, { body: { answer: ta.value.trim(), by: "console" } });
-        box.replaceChildren(el("div", { class: "q" }, q.question), el("div", { class: "done" }, `Answered: ${ta.value.trim()}`),
-          el("div", { class: "explain" }, "The agent continues with your answer."));
+        const done = el("div", { class: "done", tabindex: "-1" }, `Answered: ${ta.value.trim()}`);
+        box.replaceChildren(el("div", { class: "q" }, q.question), done, el("div", { class: "explain" }, "The agent continues with your answer."));
+        done.focus();
         if (onDone) onDone();
-      } catch (e) { status.textContent = e.message; send.disabled = false; }
+      } catch (e) { status.textContent = e.message; send.disabled = false; send.textContent = "Send answer"; }
     } }, "Send answer");
     const box = el("div", { class: "ask", id: "q" },
       el("div", { class: "q" }, q.question),
@@ -530,21 +658,22 @@
   // ------------------------------------------------------------------ the crew view: one run
   async function viewRun(runId) {
     setNav("runs");
+    const nav = state.nav;
     const r = await api(`/api/runs/${runId}`);
+    if ((r.summary || {}).status === "stopped") for (const m of r.crew || []) if (m.state === "working") m.state = "interrupted";   // the controller is gone: nobody is at work
     const frag = document.createDocumentFragment();
-    const stageName = TERMINAL[r.stage] || (STAGES.find(s => s[0] === r.stage) || [])[1] || r.stage;
+    const stageName = stageLabel(r.stage);
     const b = r.budget || {};
     const started = r.created_at;
     const s = r.summary || {};
-    frag.append(pageHead(r.title, r.outcome ? r.outcome.statement.split(". ")[0] + "." : null,
-      [statusTag(s), modeTag(s),
-       el("span", { class: `tag ${b.paused ? "warn" : ""}`, title: s.live_sessions ? `Excludes ${plural(s.live_sessions, "session")} still running` : null },
-         `${money(r.cost)}${b.budget_usd != null ? ` of ${money(b.budget_usd)}` : " spent"}${s.live_sessions && !s.terminal ? " so far" : ""}`),
-       !s.terminal && s.working_since ? el("span", { class: "tag" }, activityLine(s)) : null,
-       el("span", { class: "tag" }, dur(started, s.ended_at || (TERMINAL[r.stage] || r.stage === "completed" ? r.updated_at : null)))],
-      [el("a", { href: "#/runs" }, "Runs"), " / ", el("span", { class: "mono" }, r.run_id)]));
+    const oc = r.outcome && r.outcome.outcome_id ? el("a", { href: `#/outcomes/new?outcome=${encodeURIComponent(r.outcome.outcome_id)}`, title: r.outcome.statement || null }, "Outcome") : null;
+    const head = pageHead(r.title, null, null, [el("a", { href: "#/runs" }, "Runs"), " / ", el("span", { class: "mono" }, r.run_id), r.design_only ? " · design run" : "", oc ? " · " : null, oc]);
+    head.querySelector("div").append(el("div", { class: "now" }, el("p", { class: "sentence" }, statusSentence({ ...s, cost_usd: r.cost }, true)),
+      el("p", { class: "meta" }, ...metaLine({ ...s, cost_usd: r.cost, budget_usd: b.budget_usd != null ? b.budget_usd : s.budget_usd })),
+      r.stage === "implementing" && (r.work_items || []).length ? el("p", { class: "meta" }, itemsLine(r.work_items)) : null));
+    frag.append(head);
 
-    frag.append(card(null, lineStrip(r), null, "soft"));
+    frag.append(el("section", { class: "card line-card" }, lineStrip(r, "full")));
     if (s.terminal || s.status === "stopped") frag.append(resultCard(r));
     else if ((r.run_records || []).length) frag.append(card("What came out so far", el("div", { class: "result" }, r.run_records.map(rec => runRecordBlock(r, rec))), "pull requests opened while the run continues"));
 
@@ -552,59 +681,80 @@
       el("div", null, el("p", null, check.description), el("p", { class: "explain" }, `${check.persona} · ${check.environment.name} · waiting for browser observations and screenshots`))));
     if ((r.visual_evidence || []).length) frag.append(visualEvidenceCard(r));
 
-    // roster
+    // the roster: one row per crew member. One slot, one unit: elapsed time while a member works, cost once it is done.
     const roster = el("div", { class: "roster" });
+    const lastSession = (role) => [...r.events].reverse().find(ev => ev.kind === "session.started" && (ev.payload || {}).agent_key === role);
     for (const m of r.crew || []) {
-      const costTxt = m.cost_usd ? money(m.cost_usd) : (m.state === "working" && m.started_at ? dur(m.started_at) : "");
-      const st = m.state === "working" ? (m.title ? m.title.replace(`${r.run_id} `, "") : "Working") :
-        m.state === "done" ? `Done${m.sessions > 1 ? `, ${plural(m.sessions, "session")}` : ""}` :
-        m.state === "blocked" ? "Stopped at its budget" : crewAsleepText(m.role, r);
-      roster.append(el("div", { class: `m ${m.state}` }, crewFigure(m.role, m.state, "s"),
-        el("div", { class: "txt" }, el("div", { class: "nm" }, el("span", null, CREW_NAME[m.role] || words(m.role)), el("span", null, costTxt)),
-          el("span", { class: "st" }, st))));
+      const right = m.state === "working" && m.started_at ? [dur(m.started_at), " in"] : m.sessions ? money(m.cost_usd) : "";
+      const title = m.title ? m.title.replace(`${r.run_id} `, "") : "";
+      const doneLine = () => {
+        const ls = lastSession(m.role);
+        const when = m.finished_at ? ago(m.finished_at) : ls ? ago(ls.at) : "";
+        const what = { decomposer: "Decomposed the outcome", spec_writer: "Wrote the contracts", spec_judge: "Judged the contracts", implementer: "Built", reviewer: "Reviewed", security_reviewer: "Security review done",
+          merge_judge: "Judged merge readiness", integrator: "Opened the pull request" }[m.role] || "Done";
+        return `${what}${m.sessions > 1 ? ` in ${plural(m.sessions, "session")}` : ""}${when ? `, ${when}` : ""}`;
+      };
+      const st = m.state === "working" ? (prettyTitle(title) || "At work") : m.state === "done" ? doneLine() : m.state === "blocked" ? "Stopped at its own budget cap"
+        : m.state === "interrupted" ? `Cut short by the ${m.interrupted_by === "resume" ? "resume" : "failure"}${m.finished_at ? `, ${ago(m.finished_at)}` : ""}` : crewAsleepText(m.role, r);
+      const figState = m.state === "interrupted" ? "still" : m.state;
+      roster.append(el("div", { class: `m ${m.state}` }, crewFigure(m.role, figState, "s", `${CREW_NAME[m.role] || words(m.role)}: ${m.state === "working" ? "at work" : m.state}`),
+        el("div", { class: "txt" }, el("div", { class: "nm" }, el("span", null, CREW_NAME[m.role] || words(m.role)), el("span", null, right)),
+          el("span", { class: "st", title: title || null }, st))));
     }
     const consoleUrl = sid => state.config && state.config.console_session_url ? state.config.console_session_url.replace("SESSION_ID", sid) : null;
     const liveMember = (r.crew || []).find(m => m.state === "working" && m.session_id);
     const rosterCard = card("The crew", el("div", null, roster,
-      el("p", { class: "explain", style: "margin-top:10px;font-size:12.5px" }, liveMember && consoleUrl(liveMember.session_id) ? [el("a", { href: consoleUrl(liveMember.session_id), target: "_blank", rel: "noopener" }, "Open the live session in the Anthropic Console.")] : null)));
+      liveMember && consoleUrl(liveMember.session_id) ? el("p", { class: "explain roster-foot" }, el("a", { href: consoleUrl(liveMember.session_id), target: "_blank", rel: "noopener" }, `Open the ${(CREW_NAME[liveMember.role] || "live").toLowerCase()}’s live session in the Anthropic Console`)) : null));
 
-    // the story so far
+    // the story so far: newest first, grouped by the station the run was at, each entry a cause or its effect in plain words
     const story = el("div", { class: "story" });
     const entries = storyEntries(r).reverse();
-    for (const e of entries) story.append(el("div", { class: "e" }, el("time", { datetime: e.at, title: e.at }, clock(e.at)),
-      el("div", { class: "rail" }, el("i", { class: e.who }), el("b")),
-      el("div", { class: "body" }, el("div", { class: "t" }, el("span", null, e.title), el("span", { class: `who ${e.who}` }, e.whoLabel)), e.body ? el("div", { class: "d" }, e.body) : null)));
-    const storyCard = card("The story so far", entries.length ? story : el("p", { class: "explain" }, "Nothing has happened yet."), "newest first");
+    let lastGroup = null;
+    for (const e of entries) {
+      if (e.group !== lastGroup) {
+        lastGroup = e.group;
+        const st = STATIONS.find(x => x.key === e.group);
+        story.append(el("div", { class: "grp" }, st ? st.label : words(e.group || "Run"), e.groupNote ? el("span", null, e.groupNote) : null));
+      }
+      story.append(el("div", { class: `e ${e.who === "po" || e.who === "eng" || e.who === "ops" ? "human" : ""}` }, timeEl(e.at),
+        el("div", { class: "body" }, el("div", { class: "t" }, e.title, " ", el("span", { class: `who ${e.who === "call" ? "call" : ""}` }, `· ${e.whoLabel}`)), e.body ? el("div", { class: "d" }, e.body) : null)));
+    }
+    const storyCard = card("The story so far", entries.length ? story : el("p", { class: "explain" }, "Nothing has happened yet."), "newest first · hover a time for the clock");
 
-    // your turn
+    // your turn: what a person owes this run right now, then what comes next for people
     const onCard = g => g.kind === "budget" && b.paused && b.pause;
     const gates = r.gates.filter(g => !g.recorded && !onCard(g)), recorded = r.gates.filter(g => g.recorded && !onCard(g));
     const turn = el("div", { class: "turn" });
     const waiting = gates.length + r.questions.length + (b.paused ? 1 : 0);
-    turn.append(el("div", { class: "dot" }, el("i", { class: waiting ? "on" : "" }), el("h2", { style: "font-size:17px" }, "Your turn")));
+    turn.append(el("h2", null, "Your turn"));
     if (b.paused && b.pause) turn.append(budgetCard(r));
-    if (waiting) {
-      for (const q of r.questions) turn.append(askBlock(q, () => setTimeout(() => viewRun(runId), 1500)));
-      for (const g of gates) turn.append(el("div", { class: "card call", style: "padding:12px" },
-        el("div", { style: "font-size:12px;font-weight:700;color:var(--call-text)" }, `Your call since ${clock(g.opened_at)}`),
-        el("div", { style: "font-weight:700;font-size:15px;margin:4px 0" }, GATE_NAME[g.kind] || g.kind),
-        el("div", { class: "explain" }, (g.summary || "").slice(0, 220)),
-        el("a", { class: "btn call", href: `#/gates/${g.gate_id}`, style: "margin-top:10px" }, "Review and decide")));
-    } else if (s.status !== "stopped") {
-      turn.append(el("p", { style: "margin:0;font-size:15px" }, r.stage === "completed" ? "Nothing waiting on you here. The pull request is on the code host." : TERMINAL[r.stage] ? `${stageName}. ${s.headline || "Nothing more happens in this run."}` : "Nothing waiting on you."));
-    }
-    if (s.status === "stopped") turn.append(el("div", { class: "notice bad", style: "margin:0" }, el("b", null, "The controller stopped without recording why. "),
+    if (s.status === "stopped") turn.append(el("div", { class: "notice bad" }, el("b", null, "The controller stopped without recording why. "),
       "Nothing moves this run, and a decision on its open gate is not picked up, until a controller drives it again."));
-    for (const g of recorded) turn.append(el("div", { class: "notice ok", style: "margin:0" }, el("b", null, `${DECISION_LABEL[g.recorded.decision] || g.recorded.decision} recorded on ${GATE_SHORT[g.kind]}. `), "The run picks it up within seconds. ", el("a", { href: `#/gates/${g.gate_id}` }, "View")));
-    if (!TERMINAL[r.stage]) {
-      const up = el("div", { class: "up" }, el("span", { class: "explain", style: "font-size:12.5px" }, "Coming up for humans"));
-      const pendingGate = r.stage === "decomposing" || r.stage === "intake" ? "approve the plan (Gate 1)" : r.stage === "specifying" ? "approve the contracts (Gate 2)" : null;
-      if (pendingGate) up.append(el("span", null, el("b", { class: "po" }, "Product owner"), `: ${pendingGate}, when the crew is done`));
-      if (!r.design_only) up.append(el("span", null, el("b", { class: "eng" }, "Engineer"), r.stage === "completed" ? ": review and merge the pull request" : ": review the pull request, after Build and Review"));
-      if (r.watch && r.watch.pending && r.watch.pending.length) up.append(el("span", null, "Waiting for merge or deployment."));
-      turn.append(up);
+    if (waiting) {
+      for (const q of r.questions) turn.append(askBlock(q, () => setTimeout(() => { if (location.hash.startsWith(`#/runs/${runId}`)) viewRun(runId); }, 1500)));
+      for (const g of gates) turn.append(el("div", { class: "item" },
+        el("div", { class: "t" }, GATE_NAME[g.kind] || g.kind),
+        el("div", { class: "d" }, firstSentences(g.summary || "", 220)),
+        el("div", { class: "d muted" }, "waiting on you ", timeEl(g.opened_at, dur(g.opened_at))),
+        el("a", { class: "btn call", href: `#/gates/${g.gate_id}` }, "Review and decide")));
+    } else if (s.status !== "stopped") {
+      const openPrs = (r.work_items || []).filter(w => w.stage === "cr_open");
+      const engineerLine = openPrs.length ? ` ${openPrs.map(w => w.cr_id ? `Pull request #${w.cr_id}` : w.title).join(", ")} ${openPrs.length === 1 ? "is" : "are"} waiting on an engineer.` : "";
+      const parkedLine = { failed: r.resumable ? "The run stopped. It can be resumed from where it was." : "The run stopped and cannot be resumed from here.",
+        escalated: "The run is escalated. No gate is open and it cannot be resumed from here; the way forward is a new run from the outcome.", closed: "The run is closed. Nothing more happens in it." }[r.stage];
+      turn.append(el("p", { class: "lead-line" }, r.stage === "completed" ? `Nothing needs you here.${r.design_only ? " Nothing was built; start a full run from the outcome to implement the approved contracts." : engineerLine || " Every pull request is merged or closed."}` : TERMINAL[r.stage] ? (parkedLine || `${stageName}.`) : `Nothing needs you right now.${engineerLine}`));
     }
-    if (r.resumable && r.resuming) turn.append(el("div", { class: "notice info", style: "margin:0" }, el("b", null, "Resuming. "), "The orchestrator is re-checking the branch; this page follows it."));
+    for (const g of recorded) turn.append(el("div", { class: "notice ok" }, el("b", null, `${DECISION_LABEL[g.recorded.decision] || g.recorded.decision} recorded on ${GATE_SHORT[g.kind]}. `), s.status === "stopped" ? "It is applied once a controller drives the run again. " : "The run picks it up within seconds. ", el("a", { href: `#/gates/${g.gate_id}` }, "View")));
+    if (!TERMINAL[r.stage]) {
+      const next = [];
+      if (r.stage === "decomposing" || r.stage === "intake") next.push("the product owner approves the plan at Gate 1, once the decomposer is done");
+      else if (r.stage === "specifying") next.push("the product owner approves the contracts at Gate 2, once the judge passes them");
+      else if (r.stage === "implementing" && !r.design_only) next.push("an engineer reviews each pull request on the code host as it opens");
+      else if (r.stage === "completed" && !r.design_only) next.push("an engineer reviews and merges the pull requests on the code host");
+      if (r.watch && r.watch.pending && r.watch.pending.length) next.push("the factory watches each merge and the dev deploy that follows");
+      if (next.length && !(r.stage === "completed" && !(r.work_items || []).some(w => w.stage === "cr_open"))) turn.append(el("p", { class: "next" }, `Next for a person: ${next.join("; ")}.`));
+    }
+    if (r.resumable && r.resuming) turn.append(el("div", { class: "notice info" }, el("b", null, "Resuming. "), "The controller is re-checking the branch; this page follows it."));
     else if (r.resumable && !b.paused) turn.append(resumeBox(r, runId));
     if (r.watch && (r.watch.pending.length || r.watch.heartbeat)) turn.append(watchBox(r, runId));
     const turnCard = card(null, turn, null, waiting ? "call" : "");
@@ -614,18 +764,18 @@
     const tune = el("div", { class: "tune" });
     const caps = p.stage_budget_usd || {};
     const security = securityReview(p, r);
-    const summary = [p.run_budget_usd ? `$${p.run_budget_usd} cap` : null, p.preview_mode === "local" ? "local previews" : p.preview_mode ? `${p.preview_mode} previews` : null,
-      p.reviewer_passes ? `${p.reviewer_passes} reviewers${security.short}` : null, p.review_max_rounds ? `${p.review_max_rounds} review rounds` : null].filter(Boolean).join(", ");
-    const details = el("div", { class: "tier", hidden: true },
+    const summary = [p.run_budget_usd ? `${money(p.run_budget_usd)} cap` : null, p.preview_mode === "local" ? "local previews" : p.preview_mode ? `${p.preview_mode} previews` : null,
+      p.reviewer_passes ? `${p.reviewer_passes} reviewers${security.short}` : null, p.review_max_rounds ? `${p.review_max_rounds} review rounds` : null].filter(Boolean).join(" · ");
+    const details = el("div", { class: "tier" },
       el("dl", null,
         tunePair("Run budget", p.run_budget_usd ? `$${p.run_budget_usd}` : "from the outcome"), tunePair("Preview", p.preview_mode || "platform"),
         tunePair("Reviewer passes", p.reviewer_passes ?? "default"), tunePair("Review rounds", p.review_max_rounds ?? "default"),
         tunePair("Security reviewer", security.long),
         tunePair("Grader iterations", p.outcome_max_iterations ?? "default"), tunePair("Cap per implementer", caps.implement ? `$${caps.implement}` : "default"),
         tunePair("Cap per judge", caps.judge ? `$${caps.judge}` : "default"), tunePair("Cap per review", caps.review ? `$${caps.review}` : "default")),
-      el("p", { class: "explain", style: "margin:10px 0 0;font-size:12.5px" }, "Settings are fixed for a run once it starts. ", el("a", { href: "#/start" }, "Tune the next run on the Start screen.")));
-    const toggle = el("button", { class: "btn sm", type: "button", onclick: () => { details.hidden = !details.hidden; toggle.textContent = details.hidden ? "Show all" : "Hide"; } }, "Show all");
-    tune.append(el("div", { class: "row" }, el("h2", { style: "font-size:16px" }, "How this run is tuned"), toggle), el("p", { class: "explain", style: "margin:0" }, summary || "Defaults."), details);
+      el("p", { class: "explain tune-foot" }, "Settings are fixed for a run once it starts. ", el("a", { href: "#/start" }, "Tune the next run on the Start screen.")));
+    tune.append(el("div", { class: "row" }, el("h2", null, "How this run is tuned")), el("p", { class: "explain" }, summary || "Defaults."),
+      el("details", { class: "more" }, el("summary", null, "All settings"), details));
     const tuneCard = card(null, tune);
 
     frag.append(el("div", { class: "floor" }, rosterCard, storyCard, el("aside", { class: "stack" }, turnCard, tuneCard)));
@@ -643,19 +793,19 @@
     for (const ev of [...r.events].reverse().slice(0, 120)) {
       const [who, what] = describe(ev);
       const link = what.session_id && consoleUrl(what.session_id) ? el("a", { href: consoleUrl(what.session_id), target: "_blank", rel: "noopener" }, " open in the Anthropic Console") : null;
-      tl.append(el("li", null, el("time", { datetime: ev.at, title: ev.at }, ev.at ? ev.at.slice(11, 19) : ""),
+      tl.append(el("li", null, timeEl(ev.at, ev.at ? new Date(ev.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : ""),
         el("span", null, el("span", { class: who === "human" ? "human" : "" }, what.main), what.detail ? el("span", { class: "detail" }, " ", what.detail) : null, link)));
     }
     const files = el("table", null, el("tr", null, el("th", null, "Stage"), el("th", null, "File"), el("th", null, "Fingerprint")));
     for (const a of r.artifacts) files.append(el("tr", null, el("td", { class: "explain" }, a.stage),
       el("td", null, el("a", { href: `/api/artifacts/${r.run_id}/${a.stage}/${a.name}`, target: "_blank", rel: "noopener" }, a.name)),
       el("td", { class: "explain mono" }, a.sha256 ? a.sha256.slice(0, 12) : "")));
-    const more = el("details", { style: "margin-top:16px" }, el("summary", { class: "explain", style: "cursor:pointer;font-weight:700" }, `Work items (${r.work_items.length}), every event (${r.events.length}) and every file (${r.artifacts.length})`),
-      el("div", { class: "stack", style: "margin-top:12px" }, card("Work items", r.work_items.length ? items : el("p", { class: "explain" }, "Work items appear once the decomposition exists.")),
-        el("div", { class: "grid-2" }, card("Every event", tl, "newest first"), card("Files produced", r.artifacts.length ? files : el("p", { class: "explain" }, "None yet.")))));
+    const more = el("details", { class: "more mt-4" }, el("summary", { class: "explain" }, `Work items (${r.work_items.length}), every event (${r.events.length}) and every file (${r.artifacts.length})`),
+      el("div", { class: "stack mt-3" }, card("Work items", r.work_items.length ? items : el("p", { class: "explain" }, "Work items appear once the decomposition exists.")),
+        el("div", { class: "grid-2" }, card("Every event", tl, "newest first · your clock, date on hover"), card("Files produced", r.artifacts.length ? files : el("p", { class: "explain" }, "None yet.")))));
     frag.append(more);
 
-    $main.replaceChildren(frag);
+    if (!paint(frag, nav)) return;
     if (location.hash.endsWith("#q")) { const q = document.getElementById("q"); if (q) q.scrollIntoView(); }
     const recordAt = location.hash.match(/#record-([^#?]+)$/);
     if (recordAt) { const rec = document.getElementById(`record-${decodeURIComponent(recordAt[1])}`); if (rec) { rec.open = true; setTimeout(() => rec.scrollIntoView(), 0); } }
@@ -711,7 +861,7 @@
       : byController ? ["Factory did not accept the report. ", "The browser's observations are below, but the report failed Factory's checks, so this check cannot pass."]
       : evidence.status === "failed" ? ["Stopped by the app. ", "A step's observation did not meet what the step required."]
       : ["Stopped by the browser check. ", "The worker could not finish every step; read the observations before changing the app."];
-    const out = [el("div", { class: "notice bad", style: "margin:0" }, el("b", null, who[0]), who[1])];
+    const out = [el("div", { class: "notice bad m-0" }, el("b", null, who[0]), who[1])];
     if (byController) out.push(el("p", null, el("b", null, "Factory's reason: "), evidence.summary));
     if (stopped.length) {
       out.push(el("div", null, el("h4", { class: "mini-h" }, "What the browser saw"), el("ol", { class: "observed" }, stopped.map(s =>
@@ -734,10 +884,11 @@
     return { on: false, short: ", no security pass", long: "not deployed: no security pass runs" };
   }
   function crewAsleepText(role, r) {
-    const past = STAGES.findIndex(s => s[0] === r.stage);
+    const past = stationIndex(r.stage);
     const needs = { decomposer: 1, spec_writer: 3, spec_judge: 3, implementer: 5, reviewer: 5, security_reviewer: 5, merge_judge: 5, integrator: 5 }[role] || 0;
     if (role === "security_reviewer" && !securityReview({ ...(r.policy || {}) }, r).on) return (r.policy || {}).security_review === false ? "Off for this run" : "Not deployed: no security pass";
-    if (TERMINAL[r.stage]) return "Not needed";
+    if (r.stage === "paused_budget") { const nx = ((r.summary || {}).pause || {}).next || {}; return NEXT_ROLE[nx.stage] === role ? "Next, once the budget is raised" : "Asleep while the run is paused"; }
+    if (TERMINAL[r.stage] || r.stage === "completed") return "Not used in this run";
     if (r.design_only && needs >= 5) return "Not in a design run";
     const waits = { decomposer: "Waits for the outcome", spec_writer: "Waits for the plan", spec_judge: "Waits for the contracts", implementer: "Waits for the approved contract",
       reviewer: "Waits for a branch", security_reviewer: "Waits for a branch", merge_judge: "Waits for the reviews", integrator: "Waits for the verdict" };
@@ -746,60 +897,98 @@
   function runKey(r) {
     const hb = r.watch && r.watch.heartbeat;
     return JSON.stringify([r.updated_at, r.stage, r.status, r.gates.map(g => [g.gate_id, !!g.recorded]), r.questions.map(q => q.question_id),
-      hb ? [hb.alive, hb.last_poll_at] : null, (r.browser_checks_pending || []).map(c => c.id), (r.crew || []).map(c => c.state), r.resuming || null]);
+      hb ? [hb.alive, hb.last_poll_at] : null, (r.browser_checks_pending || []).map(c => c.id), (r.crew || []).map(c => c.state), r.resuming || null,
+      (r.crew || []).some(c => c.state === "working") ? Math.floor(Date.now() / 30000) : 0]);   // elapsed figures move while a session is open
   }
+  // The story: one entry per event a person would want to read, in plain words, each naming its cause or its effect.
+  // Every entry carries the station the run was at (`group`), so the page can read the story station by station.
+  const EVENT_STATION = { intake: "intake", decompose: "decomposing", gate_1: "gate_1_decomposition", gate_1_decomposition: "gate_1_decomposition",
+    specify: "specifying", judge: "specifying", gate_2: "gate_2_spec_readiness", gate_2_spec_readiness: "gate_2_spec_readiness",
+    implement: "implementing", review: "implementing", merge_judge: "implementing", integrate: "implementing", deploy: "completed" };
   function storyEntries(r) {
     const out = [];
     const title = (r.outcome && r.outcome.title) || r.title;
+    const who = p => p.decided_by || p.answered_by || null;
+    const byName = personName;
+    const openGateIds = new Set((r.gates || []).filter(g => !g.recorded).map(g => g.gate_id));
+    const titled = id => { const w = (r.work_items || []).find(x => itemShort(x.work_item_id) === itemShort(id) || x.spec_id === id); return w && w.title ? w.title : itemShort(id); };
+    const itemName = ev => { const id = ev.spec_id || ev.work_item_id; return id ? titled(id) : ""; };
+    let station = "intake", lastDecision = null;
+    const visited = new Set();
     for (const ev of r.events) {
-      const p = ev.payload || {}, item = ev.spec_id || ev.work_item_id;
-      const E = (who, whoLabel, t, body) => out.push({ at: ev.at, who, whoLabel, title: t, body });
+      const p = ev.payload || {};
+      if (ev.kind === "gate.decided") lastDecision = p.decision;
+      if (ev.kind === "stage.entered" && stationIndex(p.stage) >= 0) {
+        if (visited.has(p.stage) && p.stage !== station) out.push({ at: ev.at, who: "", whoLabel: "Factory", title: `Back to ${stageLabel(p.stage)}`,
+          body: lastDecision === "request_changes" ? "After your request for changes, the crew revises." : "", group: p.stage });
+        visited.add(p.stage); station = p.stage;
+      }
+      else if (ev.kind === "run.completed") station = "completed";
+      else if (EVENT_STATION[ev.stage]) station = EVENT_STATION[ev.stage];
+      const item = itemName(ev);
+      const E = (whoKey, whoLabel, t, body) => out.push({ at: ev.at, who: whoKey, whoLabel, title: t, body, group: station });
       switch (ev.kind) {
-        case "run.created": E("po", "Product owner", "Outcome written", title); break;
+        case "run.created": E("po", byName((r.outcome || {}).owner && r.outcome.owner.name) || "Product owner", "Outcome written", title); break;
         case "repository.created": E("po", "Product owner", "Repository created", `${p.url}${p.workflow_seeded === false ? ". The preview workflow could not be seeded (token scope); local previews do not need it." : ""}`); break;
         case "session.started": { const role = p.agent_key; if (!role || role === "codebase_researcher") break;
-          const what = { decomposer: "Decomposing started", spec_writer: "Writing the contract", spec_judge: "Judging the contract", implementer: "Building started",
-            reviewer: "Reviewing the branch", security_reviewer: "Security review started", merge_judge: "Deciding merge readiness", integrator: "Opening the pull request" }[role] || words(role);
-          E("crew", CREW_NAME[role] || words(role), what, p.title ? p.title.replace(`${r.run_id} `, "") : ""); break; }
-        case "gate.opened": E("call", "Your call", `${GATE_SHORT[p.kind] || p.kind} opened`, (p.summary || "").slice(0, 260)); break;
-        case "gate.decided": E("po", "Product owner", `${GATE_SHORT[p.kind] || p.kind}: ${(DECISION_LABEL[p.decision] || p.decision).toLowerCase()}`, p.comments ? `“${p.comments.slice(0, 240)}${p.comments.length > 240 ? "…" : ""}”` : "No notes."); break;
-        case "question.asked": E("call", "Your call", `The ${words(p.asked_by)} asked a question`, p.question); break;
-        case "question.answered": E("po", "Product owner", "Question answered", p.answer); break;
-        case "judge.verdict": E("crew", "Spec judge", `Spec ${p.result === "pass" ? "passed" : "sent back"} on round ${p.round}`, p.blocking ? `${plural(p.blocking, "blocking issue")}.` : ""); break;
-        case "review.findings": E("crew", "Reviewers", `Review round ${p.round}: ${plural(p.count, "finding")}`, p.blocking ? `${p.blocking} blocking.` : p.count ? "None blocking." : "Nothing to fix."); break;
-        case "review.response": { const n = {}; for (const d of (p.dispositions || [])) n[d] = (n[d] || 0) + 1;
-          E("crew", "Implementer", `Answered review round ${p.round}`, Object.entries(n).map(([d, c]) => `${c} ${words(d)}`).join(", ")); break; }
-        case "merge.verdict": E("crew", "Merge judge", `Merge judge: ${words(p.result)}`, item); break;
-        case "cr.opened": E("crew", "Integrator", "Pull request opened", p.url); break;
-        case "cr.merged": E("eng", "Engineer", `Merged${p.id ? ` #${p.id}` : ""}`, p.merge_commit_sha ? `as ${String(p.merge_commit_sha).slice(0, 10)}` : ""); break;
-        case "cr.closed": E("eng", "Engineer", "Pull request closed without merging", item); break;
-        case "deploy.started": E("ops", "Ops", "Dev deploy started", p.pipeline_url || ""); break;
-        case "deploy.succeeded": E("ops", "Ops", "Dev deploy succeeded", p.environment_url || ""); break;
-        case "deploy.failed": E("ops", "Ops", "Dev deploy failed", p.status ? words(p.status) : ""); break;
-        case "e2e.dev_passed": E("ops", "Ops", "Dev checks passed", ""); break;
-        case "e2e.dev_failed": E("ops", "Ops", "Dev checks failed", ""); break;
-        case "run.escalated": E("call", "Your call", "Escalated", p.reason); break;
-        case "run.failed": E("call", "Your call", "The orchestrator stopped", p.reason); break;
-        case "run.resumed": E("po", "Product owner", "Run resumed", Object.entries(p.points || {}).map(([s, x]) => `${s}: round ${x.round}${x.implementer_done ? ", implementer done" : ""}`).join("; ")); break;
-        case "budget.reached": E("call", "Your call", "Budget reached", p.reason || ""); break;
-        case "run.completed": E("eng", "Engineer", p.design_only ? "Design stages done" : "Done: the pull request is yours", p.design_only ? "Nothing was built; start a full run from the outcome to implement the approved specs." : "Review and merge happen on the code host."); break;
+          const t = String(p.title || "");
+          const tt = t.replace(/\b(spec_|wi-)[A-Za-z0-9-]+/g, "");   // the item id can contain any word
+          const what = /respond|answer/i.test(tt) ? "Answering the review" : /round (\d+)/i.test(tt) && role === "reviewer" ? `Review round ${tt.match(/round (\d+)/i)[1]} started` :
+            { decomposer: "Decomposing started", spec_writer: "Writing a contract", spec_judge: "Judging the contracts", implementer: "Building started",
+              reviewer: "Review started", security_reviewer: "Security review started", merge_judge: "Judging merge readiness", integrator: "Opening the pull request" }[role] || words(role);
+          E("crew", CREW_NAME[role] || words(role), what, item || (t ? t.replace(`${r.run_id} `, "") : "")); break; }
+        case "gate.opened": E(openGateIds.has(p.gate_id) ? "call" : "po", openGateIds.has(p.gate_id) ? "waiting on you" : "for the product owner", `${GATE_SHORT[p.kind] || p.kind} opened`, firstSentences(p.summary || "", 240)); break;
+        case "gate.decided": {
+          const d = DECISION_LABEL[p.decision] || p.decision;
+          const effect = { gate_1_decomposition: { approve: "The crew starts writing the contracts.", request_changes: "The decomposer revises the plan.", reject: "The run closes." },
+            gate_2_spec_readiness: { approve: "Build starts.", approve_subset: "Build starts on the selected contracts.", request_changes: "The writers revise.", reject: "The run closes." },
+            budget: { approve: "The run continues once resumed.", reject: "The run closes." } }[p.kind] || {};
+          E("po", byName(who(p) || ev.actor_id) || "Product owner", `${GATE_SHORT[p.kind] || p.kind}: ${d.toLowerCase()}${p.approved_subset && p.approved_subset.length ? ` (${p.approved_subset.map(itemShort).join(", ")})` : ""}`,
+            `${p.comments ? `“${firstSentences(p.comments, 240)}” ` : ""}${effect[p.decision] || ""}`.trim() || "No notes."); break; }
+        case "question.asked": { const open = (r.questions || []).some(q => q.question_id === p.question_id); E(open ? "call" : "po", open ? "waiting on you" : "for the product owner", `The ${words(p.asked_by)} asked a question`, p.question); break; }
+        case "question.answered": E("po", byName(p.answered_by) || "Product owner", "Question answered", `${p.answer}. The ${words(p.asked_by || "crew")} continues.`); break;
+        case "judge.verdict": E("crew", "Spec judge", p.result === "pass" ? `Contracts passed on round ${p.round}` : `Contracts need revision on round ${p.round}`, p.blocking ? `${plural(p.blocking, "blocking issue")}.` : p.result === "pass" ? "Gate 2 opens next." : ""); break;
+        case "review.findings": { const n = findingCount(p);
+          E("crew", "Reviewer", p.skipped ? `Review round ${p.round} skipped` : `Review round ${p.round}: ${plural(n, "finding")}${p.blocking ? `, ${p.blocking} blocking` : ""}`,
+            p.skipped ? p.skipped : [item, p.summary ? `“${firstSentences(p.summary, 200)}”` : n ? (p.blocking ? "The implementer answers before the merge judge looks." : "None blocking.") : "Nothing to fix."].filter(Boolean).join(". ")); break; }
+        case "review.response": E("crew", "Implementer", `Review round ${p.round} answered`, [item, dispositionText(p)].filter(Boolean).join(": ")); break;
+        case "merge.verdict": E("crew", "Merge judge", `Merge judge: ${words(p.result)}`, [item, p.result === "ready" ? "The integrator opens the pull request." : p.result ? "Not ready." : "", p.summary ? firstSentences(p.summary, 200) : ""].filter(Boolean).join(". ")); break;
+        case "cr.opened": E("crew", "Integrator", `Pull request${p.id ? ` #${p.id}` : ""} opened`, [item, p.url, "Now waiting on an engineer."].filter(Boolean).join(" · ")); break;
+        case "cr.merged": E("eng", "Engineer", `Merged${p.id ? ` #${p.id}` : ""}`, [item, p.merge_commit_sha ? `as ${String(p.merge_commit_sha).slice(0, 10)}` : "", "The dev deploy is watched next."].filter(Boolean).join(" · ")); break;
+        case "cr.closed": E("eng", "Engineer", `Pull request${p.id ? ` #${p.id}` : ""} closed without merging`, item ? `${item} is closed.` : ""); break;
+        case "deploy.started": E("ops", "Ops", "Dev deploy started", [item, p.pipeline_url || ""].filter(Boolean).join(" · ")); break;
+        case "deploy.succeeded": E("ops", "Ops", "Dev deploy succeeded", [item, p.environment_url || "", "The end-to-end checks run next."].filter(Boolean).join(" · ")); break;
+        case "deploy.failed": E("ops", "Ops", "Dev deploy failed", [item, p.status ? words(p.status) : "", "A deploy-failure gate opens."].filter(Boolean).join(" · ")); break;
+        case "e2e.dev_passed": E("ops", "Ops", "Dev checks passed", [item, p.passed != null ? `${p.passed} of ${p.total} passed` : "", item ? `${item} is verified in dev.` : ""].filter(Boolean).join(" · ")); break;
+        case "e2e.dev_failed": E("ops", "Ops", "Dev checks failed", [item, "A deploy-failure gate opens."].filter(Boolean).join(" · ")); break;
+        case "run.escalated": E("", "Factory", "Escalated", `${p.reason || ""} Nothing runs until a person decides.`.trim()); break;
+        case "run.failed": E("", "Factory", "The controller stopped", `${p.reason || "No reason was recorded."}${(p.interrupted_sessions || []).length ? ` ${plural(p.interrupted_sessions.length, "open session")} ${p.interrupted_sessions.length === 1 ? "was" : "were"} cut short.` : ""}`); break;
+        case "run.resumed": E("po", "Product owner", `Run resumed${p.from === "paused_budget" ? " after the budget pause" : ""}`, Object.entries(p.points || {}).map(([s, x]) => `${itemShort(s)}: round ${x.round}${x.implementer_done ? ", implementer done" : ""}`).join("; ") || (p.stage ? `Back into ${stageLabel(p.stage)}.` : "")); break;
+        case "budget.reached": E("", "Factory", p.next ? "Paused at the budget" : "A session hit its cap", p.next ? `${money(p.spent_usd)} of ${money(p.budget_usd)} spent; ${p.next.label || p.next.stage || "the next step"} could cost ${money(p.next.cap_usd)}. Nothing runs until a person decides.` : `${p.title || p.agent_key || "A session"} reached its ${p.budget_usd != null ? money(p.budget_usd) : ""} cap; waiting on a person.`); break;
+        case "budget.raised": E("po", byName(p.decided_by) || "Product owner", `Budget raised to ${money(p.budget_usd)}`, p.previous_budget_usd != null ? `Was ${money(p.previous_budget_usd)}. The run continues.` : "The run continues."); break;
+        case "run.completed": E("eng", p.design_only ? "Product owner" : "Engineer", p.design_only ? "Design run done" : "Done: the pull requests are yours", p.design_only ? "Nothing was built; start a full run from the outcome to implement the approved contracts." : "Review and merge happen on the code host."); break;
         default: break;
       }
     }
+    // a line under each station heading: how long it took and what it cost, from the sessions finished while the run was there
+    const byGroup = {};
+    for (const ev of r.events) {
+      const p = ev.payload || {};
+      if (ev.kind === "session.finished" && EVENT_STATION[ev.stage]) { const g = byGroup[EVENT_STATION[ev.stage]] ||= { n: 0, cost: 0 }; g.n += 1; g.cost += Number(p.list_cost_usd || 0); }
+    }
+    for (const e of out) { const g = byGroup[e.group]; if (g && g.n) e.groupNote = `${plural(g.n, "session")} · ${money(g.cost)}`; }
     return out;
   }
 
   function resumeBox(r, runId) {
-    const why = (r.events || []).slice().reverse().find(e => e.kind === "run.failed");
     const box = el("div", { class: "stack" },
-      el("p", { class: "explain", style: "margin:0" }, "The orchestrator stopped before this run reached a pull request", why && why.payload && why.payload.reason ? `: ${why.payload.reason}` : ".",
-        " Resuming does not repeat finished agent sessions; it re-checks the branch and carries on."),
+      el("p", { class: "explain m-0" }, "Resuming does not repeat finished agent sessions: the controller re-checks the branch and carries on from the station the run reached."),
       el("div", { class: "actions" }, el("button", { class: "btn primary", type: "button", onclick: async (ev) => {
         const b = ev.currentTarget; b.disabled = true; b.textContent = "Resuming…";
         try {
           const res = await api(`/api/runs/${runId}/resume`, { body: {} });
           box.append(el("div", { class: "notice ok" }, el("b", null, "Resumed. "), `The run continues in the background (log ${res.log}). This page follows it.`));
-          setTimeout(() => viewRun(runId), 2500);
+          setTimeout(() => { if (location.hash.startsWith(`#/runs/${runId}`)) viewRun(runId); }, 2500);
         } catch (e) { b.disabled = false; b.textContent = "Resume run"; box.append(el("div", { class: "notice bad" }, String(e.message || e))); }
       } }, "Resume run")));
     return box;
@@ -814,25 +1003,25 @@
       const list = el("ul", { class: "list stacked" });
       for (const wid of w.pending) {
         const x = names[wid] || { work_item_id: wid };
-        list.append(el("li", { style: "padding:10px 0" }, el("span", { class: "tag" }, ITEM_STAGE[x.stage] || words(x.stage || "")),
+        list.append(el("li", null, el("span", { class: "tag" }, ITEM_STAGE[x.stage] || words(x.stage || "")),
           el("div", { class: "main" }, el("div", { class: "title" }, x.title || wid), el("div", { class: "desc" }, stageText[x.stage] || "")),
           x.cr_url ? el("a", { class: "btn sm", href: x.cr_url, target: "_blank", rel: "noopener" }, `Open #${x.cr_id}`) : null));
       }
       box.append(list);
     }
     if (hb && hb.alive) {
-      box.append(el("div", { class: "notice ok", style: "margin:0" }, el("b", null, "Watching. "), `Last checked ${ago(hb.last_poll_at)}.`,
+      box.append(el("div", { class: "notice ok m-0" }, el("b", null, "Watching. "), `Last checked ${ago(hb.last_poll_at)}.`,
         hb.last_tick && hb.last_tick.errors && hb.last_tick.errors.length ? ` Last error: ${hb.last_tick.errors[0].error}` : ""));
     } else if (hb && !w.pending.length) {
-      box.append(el("div", { class: "notice info", style: "margin:0" }, el("b", null, "Watcher finished. "), `Last checked ${ago(hb.last_poll_at)}; nothing is left to watch.`));
+      box.append(el("div", { class: "notice info m-0" }, el("b", null, "Watcher finished. "), `Last checked ${ago(hb.last_poll_at)}; nothing is left to watch.`));
     } else {
-      if (hb) box.append(el("div", { class: "notice info", style: "margin:0" }, el("b", null, "Not watching. "), `The last watcher checked ${ago(hb.last_poll_at)} and is no longer running. Starting it again is safe.`));
+      if (hb) box.append(el("div", { class: "notice info m-0" }, el("b", null, "Not watching. "), `The last watcher checked ${ago(hb.last_poll_at)} and is no longer running. Starting it again is safe.`));
       if (w.watchable) box.append(el("div", { class: "actions" }, el("button", { class: "btn primary", type: "button", onclick: async (ev) => {
         const b = ev.currentTarget; b.disabled = true; b.textContent = "Starting…";
         try {
           const res = await api(`/api/runs/${runId}/watch`, { body: {} });
           box.append(el("div", { class: "notice ok" }, el("b", null, "Watching. "), `The watcher runs in the background (log ${res.log}); this page follows it.`));
-          setTimeout(() => viewRun(runId), 2500);
+          setTimeout(() => { if (location.hash.startsWith(`#/runs/${runId}`)) viewRun(runId); }, 2500);
         } catch (e) { b.disabled = false; b.textContent = "Watch for merges"; box.append(el("div", { class: "notice bad" }, String(e.message || e))); }
       } }, "Watch for merges")));
     }
@@ -847,8 +1036,8 @@
     const recorded = b.decision;
     const box = el("div", { class: "stack" });
     box.append(glance([[money(p.spent_usd), `spent across ${plural(p.sessions_finished || b.sessions || 0, "session")}`],
-      [money(p.budget_usd), "the run's budget", "warn"], [money(next.cap_usd), `next: ${next.label || next.stage} (${plural(next.sessions || 1, "session")}), at most`],
-      [money(needed), "needed to continue", "bad"]]));
+      [money(p.budget_usd), "the run's budget"], [money(next.cap_usd), `next: ${next.label || next.stage} (${plural(next.sessions || 1, "session")}), at most`],
+      [money(needed), "needed to continue"]]));
     box.append(el("p", { class: "explain" }, "Every agent session carries its own hard cap, so the check is spent plus the next step's caps: the run can never go past the budget, and a step is refused before it starts rather than cut off midway. The caps are conservative; a step usually costs less than its cap."));
     const status = el("div");
     const err = el("div", { class: "err", role: "alert" });
@@ -857,8 +1046,8 @@
       try {
         const res = await api(`/api/runs/${r.run_id}/resume`, { body });
         status.replaceChildren(el("div", { class: "notice ok" }, el("b", null, body.budget_usd != null ? `Budget raised to ${money(body.budget_usd)}. ` : "Decision applied. "),
-          `The orchestrator continues in the background (log ${res.log}). This page follows it.`));
-        setTimeout(() => viewRun(r.run_id), 2500);
+          `The controller continues in the background (log ${res.log}). This page follows it.`));
+        setTimeout(() => { if (location.hash.startsWith(`#/runs/${r.run_id}`)) viewRun(r.run_id); }, 2500);
       } catch (e) { btn.disabled = false; btn.textContent = btn.dataset.label; err.textContent = String(e.message || e); }
     }
     if (recorded) {
@@ -867,10 +1056,10 @@
       const apply = el("button", { class: "btn primary", type: "button", dataset: { label: raise ? "Continue the run" : "Close the run" } }, raise ? "Continue the run" : "Close the run");
       apply.onclick = () => go({}, apply, raise ? "Continuing…" : "Closing…");
       box.append(el("div", { class: "notice info" }, el("b", null, raise ? `Raise to ${amount ? money(amount) : "a new budget"} recorded${recorded.decided_by ? " by " + recorded.decided_by : ""}. ` : `Close recorded${recorded.decided_by ? " by " + recorded.decided_by : ""}. `),
-        "The orchestrator is not running while the run is paused; apply the decision to continue."),
+        "The controller is not running while the run is paused; apply the decision to continue."),
         el("div", { class: "actions" }, apply), status, err);
     } else {
-      const input = el("input", { type: "number", min: String(Math.ceil(needed)), step: "1", value: String(Math.ceil(needed)), "aria-label": "New budget in USD", style: "max-width:140px" });
+      const input = el("input", { type: "number", min: String(Math.ceil(needed)), step: "1", value: String(Math.ceil(needed)), "aria-label": "New budget in USD", class: "w-narrow" });
       const raise = el("button", { class: "btn primary", type: "button", dataset: { label: "Raise the budget and continue" } }, "Raise the budget and continue");
       const close = el("button", { class: "btn danger", type: "button", dataset: { label: "Close the run" } }, "Close the run");
       raise.onclick = () => {
@@ -878,15 +1067,15 @@
         if (!(v >= needed)) { err.textContent = `The next step needs at least ${money(needed)}.`; return; }
         go({ budget_usd: v }, raise, "Raising…");
       };
-      const actions = el("div", { class: "actions", style: "align-items:center;gap:10px;flex-wrap:wrap" },
-        el("label", { class: "help", style: "margin:0" }, "New budget in USD"), input, raise, close);
+      const actions = el("div", { class: "actions" },
+        el("label", { class: "help" }, "New budget in USD"), input, raise, close);
       // Closing is two steps, like every gate decision: the confirm appears after a beat where no first button was.
       close.onclick = () => {
         const yes = el("button", { class: "btn danger", type: "button", disabled: true, dataset: { label: "Yes, close the run" } }, "Yes, close the run");
         const cancel = el("button", { class: "btn", type: "button", onclick: () => confirmRow.replaceWith(actions) }, "Cancel");
         const confirmRow = el("div", { class: "confirm" }, el("div", { class: "what" }, "Close this run?"),
           el("div", { class: "explain" }, "Nothing more is built. The work so far stays in the files, and the branch on the code host is left as it is."),
-          el("div", { class: "actions", style: "margin-top:10px" }, yes, cancel));
+          el("div", { class: "actions mt-3" }, yes, cancel));
         yes.onclick = async () => {
           yes.disabled = true; cancel.disabled = true;
           try { await api(`/api/gates/${b.gate_id}/decision`, { body: { decision: "reject", comments: "", by: "console" } }); }
@@ -911,13 +1100,12 @@
       case "repository.created": return [who, { main: "Repository created on the code host", detail: p.url }];
       case "stage.entered": return [who, { main: `Entered ${({ decomposing: "decomposing", gate_1_decomposition: "Gate 1", specifying: "specifying", gate_2_spec_readiness: "Gate 2", implementing: "building", closed: "closed", completed: "completed" })[p.stage] || words(p.stage)}` }];
       case "gate.opened": return [who, { main: `${GATE_SHORT[p.kind] || p.kind} opened`, detail: `${(p.artifacts || []).length} files to approve` }];
-      case "gate.decided": return ["human", { main: `${GATE_SHORT[p.kind] || p.kind}: ${DECISION_LABEL[p.decision] || p.decision}`, detail: p.comments ? `"${p.comments.slice(0, 120)}"` : "" }];
+      case "gate.decided": return ["human", { main: `${GATE_SHORT[p.kind] || p.kind}: ${DECISION_LABEL[p.decision] || p.decision}`, detail: p.comments ? `"${firstSentences(p.comments, 120)}"` : "" }];
       case "question.asked": return [who, { main: `The ${p.asked_by} asked a question`, detail: p.question }];
       case "question.answered": return ["human", { main: "Question answered", detail: p.answer }];
       case "judge.verdict": return [who, { main: `Spec judge round ${p.round}: ${p.result}`, detail: p.blocking ? `${p.blocking} blocking` : "" }];
-      case "review.findings": return [who, { main: `Review round ${p.round}: ${p.count} findings`, detail: item }];
-      case "review.response": { const n = {}; for (const d of (p.dispositions || [])) n[d] = (n[d] || 0) + 1;
-        return [who, { main: `Implementer answered review round ${p.round}`, detail: Object.entries(n).map(([d, c]) => `${c} ${d.replace("_", " ")}`).join(", ") }]; }
+      case "review.findings": return [who, { main: `Review round ${p.round}: ${plural(findingCount(p), "finding")}${p.blocking ? `, ${p.blocking} blocking` : ""}`, detail: item }];
+      case "review.response": return [who, { main: `Implementer answered review round ${p.round}`, detail: dispositionText(p) }];
       case "merge.verdict": return [who, { main: `Merge judge: ${p.result}`, detail: item }];
       case "cr.opened": return [who, { main: `Pull request opened for ${item}`, detail: p.url }];
       case "cr.merged": return ["human", { main: `Merged ${item}${p.id ? ` (#${p.id})` : ""}`, detail: [p.merge_commit_sha ? `as ${String(p.merge_commit_sha).slice(0, 10)}` : "", p.approved === false ? "without an approving review" : ""].filter(Boolean).join(", ") }];
@@ -929,8 +1117,8 @@
       case "e2e.dev_failed": { const n = (p.results || []).length, bad = (p.results || []).filter(x => x.exit_code !== 0).length;
         return [who, { main: `Dev checks failed for ${item}`, detail: n ? `${bad} of ${n} failed on ${p.environment_url || "dev"}` : "" }]; }
       case "session.started": return [who, { main: `Agent session started: ${CREW_NAME[p.agent_key] || p.agent_key || p.agent_id || "agent"}`, detail: p.title || "", session_id: p.session_id }];
-      case "session.finished": return [who, { main: `Agent session finished: ${p.agent_id || "agent"}`, detail: p.list_cost_usd != null ? money(p.list_cost_usd) : "", session_id: p.session_id }];
-      case "work_item.stage": return [who, { main: `${ev.work_item_id}: ${ITEM_STAGE[p.stage] || words(p.stage)}` }];
+      case "session.finished": return [who, { main: `Agent session finished: ${CREW_NAME[p.agent_key] || p.agent_id || "agent"}`, detail: p.list_cost_usd != null ? money(p.list_cost_usd) : "", session_id: p.session_id }];
+      case "work_item.stage": return [who, { main: `${itemShort(ev.work_item_id)}: ${ITEM_STAGE[p.stage] || words(p.stage)}` }];
       case "run.escalated": return [who, { main: "Escalated", detail: p.reason }];
       case "run.completed": return [who, { main: p.design_only ? "Design stages completed" : "Run completed", detail: (p.specs_with_change_requests || p.approved_specs || []).join(", ") }];
       case "run.failed": return [who, { main: "Run failed", detail: p.reason }];
@@ -949,6 +1137,7 @@
   // ------------------------------------------------------------------ start a run: three guardrails visible, the rest two clicks away
   async function viewStart(params) {
     setNav("start");
+    const nav = state.nav;
     const [outs, cfg] = await Promise.all([api("/api/outcomes"), state.config || api("/api/config")]);
     state.config = cfg;
     let app = null, appNotice = null, apps = [];
@@ -979,7 +1168,7 @@
         el("span", { class: "txt" }, el("b", null, o.title || o.outcome_id), el("span", null, `${o.runs.length ? plural(o.runs.length, "run") + " so far." : "No runs yet."}${o.owner ? " Owner " + o.owner + "." : ""}`)));
       choiceNodes.push(n); choices.append(n);
     }
-    const newOutcome = el("a", { class: "btn sm", style:"margin-top:12px", href: `#/outcomes/new${app ? '?app=' + encodeURIComponent(app.app_id) : ''}` }, "New outcome");
+    const newOutcome = el("a", { class: "btn sm mt-3", href: `#/outcomes/new${app ? '?app=' + encodeURIComponent(app.app_id) : ''}` }, "New outcome");
     const whatCard = card("1. Outcome", el("div", null, appOutcomes.length ? choices : el("p", { class: "explain" }, "Describe the change you want to make."), newOutcome));
 
     // 2. where: browse the repositories visible to the configured GitHub account. An onboarded app's repository binds to
@@ -992,8 +1181,8 @@
     const newName = el("input", { type: "url", placeholder: "https://github.com/you/factory-new-app", "aria-label": "New repository URL" });
     const searchRepos = el("input", { type: "search", placeholder: "Filter by owner or repository name", "aria-label": "Filter repositories" });
     const repoSelect = el("select", { "aria-label": "GitHub repository" }, el("option", { value: "" }, "Choose a repository"));
-    const repoStatus = el("p", { class: "explain", role: "status", "aria-live": "polite", style: "margin:0" });
-    const repoDetails = el("p", { class: "explain", style: "margin:0" });
+    const repoStatus = el("p", { class: "explain m-0", role: "status", "aria-live": "polite" });
+    const repoDetails = el("p", { class: "explain m-0" });
     const renderRepos = () => {
       const query = searchRepos.value.trim().toLowerCase();
       const rows = repositories.filter(r => r.full_name.toLowerCase().includes(query) || r.url === repoUrl.value);
@@ -1043,8 +1232,8 @@
       renderRepos(); syncRepoChoice();
       if (!app) { whereSummary.textContent = repo.url ? `${repoName(repo.url)} · ${repo.default_branch || "main"}` : "Choose a repository"; whereDetails.open = !repo.url; }
     };
-    const whereSummary = el("p", {class:"mono", style:"margin:0"});
-    const whereDetails = el("details", null, el("summary", null, "Change repository"), el("div", {class:"stack", style:"margin-top:12px"}, existingChoice, newChoice));
+    const whereSummary = el("p", {class:"mono m-0"});
+    const whereDetails = el("details", null, el("summary", null, "Change repository"), el("div", {class:"stack mt-3"}, existingChoice, newChoice));
     const whereCard = app ? card("2. Repository", el("div", {class:"stack"},
       el("a", {href:app.repository_url, target:"_blank", rel:"noopener"}, repoName(app.repository_url)),
       el("p", {class:"explain"}, `Base branch: ${app.default_branch || 'main'}. Uses this app's verified hosted setup.`)))
@@ -1055,7 +1244,7 @@
     const budget = el("input", { type: "number", min: "1", step: "1", value: 60 });
     const hostedOption = el("option", { value: "managed", selected: !!app, hidden: !app }, "Hosted sandbox · verified app setup");
     const preview = el("select", { disabled: !!app }, hostedOption, el("option", { value: "local", selected: !app }, "Local (this computer)"), el("option", { value: "platform" }, "Deployed preview"));
-    const previewHelp = el("span", { class: "h" }, app ? "Application, database and browser tests run in a fresh hosted sandbox." : "Local runs app commands on this computer. Platform uses the repository deploy workflow.");
+    const previewHelp = el("span", { class: "h" }, app ? "Application, database and browser tests run in a fresh hosted sandbox." : "Local runs app commands on this computer. Deployed preview uses the repository's deploy workflow.");
     const syncBinding = () => {
       if (app) return;
       const url = repoNew.checked ? "" : repoUrl.value.trim();
@@ -1063,17 +1252,17 @@
       bound = matches.length === 1 ? matches[0] : null;
       hostedOption.hidden = !bound; preview.disabled = !!bound;
       if (bound) preview.value = "managed"; else if (preview.value === "managed") preview.value = "local";
-      previewHelp.textContent = bound ? "This repository is an onboarded app: live runs verify in its hosted sandbox." : "Local runs app commands on this computer. Platform uses the repository deploy workflow.";
+      previewHelp.textContent = bound ? "This repository is an onboarded app: live runs verify in its hosted sandbox." : "Local runs app commands on this computer. Deployed preview uses the repository's deploy workflow.";
       const ready = bound && ["ready", "ready_limited"].includes(bound.status);
-      bindNote.replaceChildren(...(matches.length > 1 ? [el("div", { class: "notice bad", style: "margin:0" }, el("b", null, "Several apps use this repository. "),
+      bindNote.replaceChildren(...(matches.length > 1 ? [el("div", { class: "notice bad m-0" }, el("b", null, "Several apps use this repository. "),
           `A live run must name one: start it from the app you mean (${matches.map(a => a.name || a.app_id).join(", ")}) under Apps.`)]
-        : bound && ready ? [el("div", { class: "notice info", style: "margin:0" }, el("b", null, `Onboarded app: ${bound.name || bound.app_id}. `),
+        : bound && ready ? [el("div", { class: "notice info m-0" }, el("b", null, `Onboarded app: ${bound.name || bound.app_id}. `),
           "A live run uses its verified hosted setup; local and platform previews are not offered for it.")]
-        : bound ? [el("div", { class: "notice bad", style: "margin:0" }, el("b", null, `Onboarded app ${bound.name || bound.app_id} is not ready (${words(bound.status)}). `),
+        : bound ? [el("div", { class: "notice bad m-0" }, el("b", null, `Onboarded app ${bound.name || bound.app_id} is not ready (${words(bound.status)}). `),
           "Verify its setup on the app page before a live run; a design-only run still works.")] : []));
     };
     const whoBox = el("div", { class: "who" });
-    const editOutcome = el("a", {href:"#/outcomes", style:"font-size:13px"}, "Edit outcome");
+    const editOutcome = el("a", {href:"#/outcomes", class:"fs-sm"}, "Edit outcome");
     const syncWho = () => { const ow = (outcome && outcome.owner) || {}; whoBox.replaceChildren(
       el("span", null, ow.name || ow.handle || "Set an owner on the outcome"));
       editOutcome.href = outcomeId ? `#/outcomes/new?outcome=${encodeURIComponent(outcomeId)}` : "#/outcomes"; };
@@ -1090,7 +1279,7 @@
       el("label", null, "Reviewer passes", passes), el("label", null, "Maximum review rounds", rounds),
       el("label", null, "Grader iterations", iterations),
       el("div", null, el("label", {class:"check"}, security, "Security review"),
-        securityReady ? null : el("p", { class: "explain", id: "security-unavailable", style: "margin:4px 0 0;font-size:12.5px" }, "Unavailable: no security reviewer agent is deployed in this workspace, so no security pass runs. The general reviewers still run."))));
+        securityReady ? null : el("p", { class: "explain m-0 mt-1 fs-sm", id: "security-unavailable" }, "Unavailable: no security reviewer agent is deployed in this workspace, so no security pass runs. The general reviewers still run."))));
     const guardsCard = card("3. Budget and review", el("div", {class:"stack"}, guards, advanced));
 
     // summary + start
@@ -1124,23 +1313,24 @@
       if (!outcomeId) { notice.append(el("div", { class: "notice bad" }, "Pick an outcome first.")); return; }
       if (params.get("app") && !app) { notice.append(el("div", {class:"notice bad"}, "The app could not be loaded. Return to Apps before continuing.")); return; }
       if (app && (repoNew.checked || normRepo(repoUrl.value) !== normRepo(app.repository_url))) { notice.append(el("div", {class:"notice bad"}, "This setup belongs to a different repository. Open the matching app or start a separate run.")); return; }
-      btn.disabled = true;
+      const was = btn.textContent; startBtn.disabled = designBtn.disabled = true; btn.textContent = "Starting…";
       try {
         await saveRepo();
         const s = await api("/api/runs", { body: { outcome_id: outcomeId, app_id: app ? app.app_id : (mode === "live" && bound ? bound.app_id : undefined), mode, settings: settings() } });
         if (s.run_id) location.hash = `#/runs/${s.run_id}`;
         else { notice.append(el("div", { class: "notice ok" }, el("b", null, "Run started. "), "The crew is waking up; the run appears under Runs within a minute.")); setTimeout(() => { location.hash = "#/runs"; }, 4000); }
-      } catch (e) { notice.append(el("div", { class: "notice bad" }, e.message)); btn.disabled = false; }
+      } catch (e) { notice.append(el("div", { class: "notice bad" }, e.message)); btn.textContent = was; startBtn.disabled = !cfg.can_run_live; designBtn.disabled = !cfg.can_run_design; }
     }
-    const startBtn = el("button", { class: "btn call", type: "button", style: "min-height:48px;font-size:16px", disabled: !cfg.can_run_live, title: cfg.can_run_live ? "" : "Needs the code host configured; see Settings", onclick: ev => go("live", ev.currentTarget) }, "Start the run");
-    const designBtn = el("button", { class: "btn", type: "button", disabled: !cfg.can_run_design, title: cfg.can_run_design ? "" : "Needs the crew and API key; see Settings", onclick: ev => go("design", ev.currentTarget) }, "Design only: stop after Gate 2");
+    const startBtn = el("button", { class: "btn primary lg", type: "button", disabled: !cfg.can_run_live, onclick: ev => go("live", ev.currentTarget) }, "Start the run");
+    const designBtn = el("button", { class: "btn", type: "button", disabled: !cfg.can_run_design, onclick: ev => go("design", ev.currentTarget) }, "Design only: stop after Gate 2");
     const aside = el("aside", null,
       card("This run", el("div", { class: "stack" }, summary, el("div", { class: "btn-col" }, startBtn, designBtn), notice,
-        el("p", { class: "explain", style: "margin:0;font-size:12.5px" }, "Design only stops after contract approval."),
-        (!cfg.can_run_live || !cfg.can_run_design) ? el("p", { class: "explain", style: "margin:0;font-size:12.5px" }, el("a", { href: "#/settings" }, "What is missing to run")) : null)));
+        el("p", { class: "explain m-0 fs-sm" }, "Design only stops after contract approval."),
+        !cfg.can_run_live ? el("p", { class: "explain m-0 fs-sm" }, `Starting a run needs ${(cfg.gaps || []).join("; ") || "the crew and the code host"}. `, el("a", { href: "#/settings" }, "Settings")) : null,
+        !cfg.can_run_design && cfg.can_run_live ? el("p", { class: "explain m-0 fs-sm" }, `A design run needs ${(cfg.design_gaps || []).join("; ")}. `, el("a", { href: "#/settings" }, "Settings")) : null)));
 
     frag.append(el("div", { class: "start" }, el("main", null, whatCard, whereCard, guardsCard), aside));
-    $main.replaceChildren(frag);
+    if (!paint(frag, nav)) return;
     stopPoll();
     if (outcomeId) await pickOutcome(outcomeId); else { syncRepo(); syncWho(); syncSummary(); }
     syncWho();
@@ -1157,13 +1347,21 @@
   // ------------------------------------------------------------------ gate review
   async function viewGate(gateId) {
     setNav("inbox");
+    const nav = state.nav;
     const g = await api(`/api/gates/${gateId}`);
     const rec = g.gate, rv = g.review;
     const notes = new Map();
     const picks = new Map();
     const frag = document.createDocumentFragment();
-    frag.append(pageHead(rec.kind === "budget" && !rv.budget ? "Session limit: continue or stop" : GATE_NAME[rec.kind] || rec.kind, g.run_title, rec.kind === "budget" ? null : [el("a", { class: "btn", href: `/gates/${gateId}/page`, target: "_blank", rel: "noopener" }, "Open as a page")],
-      [el("a", { href: "#/inbox" }, "Board"), " / ", el("a", { href: `#/runs/${g.run_id}` }, g.run_title), " / opened ", ago(rec.opened_at)]));
+    const head = pageHead(rec.kind === "budget" && !rv.budget ? "Session limit: continue or stop" : GATE_NAME[rec.kind] || rec.kind, null, rec.kind === "budget" ? null : [el("a", { class: "btn", href: `/gates/${gateId}/page`, target: "_blank", rel: "noopener" }, "Open as a page")],
+      [el("a", { href: "#/board" }, "Board"), " / ", el("a", { href: `#/runs/${g.run_id}` }, g.run_title)]);
+    // the same sentence and line as the run page, so the person deciding sees where the run is and who waits on whom
+    if (g.summary) head.querySelector("div").append(el("div", { class: "now" }, el("p", { class: "sentence" }, statusSentence(g.summary, true)), el("p", { class: "meta" }, ...metaLine(g.summary))));
+    frag.append(head);
+    try {
+      const run = await api(`/api/runs/${g.run_id}`);
+      frag.append(el("section", { class: "card line-card" }, lineStrip(run, "full")));
+    } catch (e) { /* the gate is readable without the line */ }
 
     const doc = el("div", { class: "stack" });
     const prev = rv.previous_decisions || [];
@@ -1179,7 +1377,7 @@
 
     const decide = buildDecide(g, notes, picks);
     frag.append(el("div", { class: "review" }, doc, decide.node));
-    $main.replaceChildren(frag);
+    if (!paint(frag, nav)) return;
     startPoll(async () => { try { decide.update(await api(`/api/gates/${gateId}`)); } catch (e) { /* keep */ } }, 4000);
   }
 
@@ -1187,22 +1385,24 @@
     return el("div", { class: "glance" }, items.map(([v, k, cls]) => el("div", { class: "g" }, el("div", { class: `v ${cls || ""}` }, v), el("div", { class: "k" }, k))));
   }
   function checklist(rows) {
+    // a reading aid for the reviewer: each line is a real label, so the text toggles the box and a screen reader names it
     return el("ul", { class: "checklist" }, rows.map(([t, d]) => {
-      const cb = el("input", { type: "checkbox", "aria-label": t });
-      return el("li", null, cb, el("div", null, el("div", { class: "t" }, t), el("div", { class: "d" }, d)));
+      const cb = el("input", { type: "checkbox" });
+      return el("li", null, el("label", { class: "check-row" }, cb, el("span", null, el("span", { class: "t" }, t), el("span", { class: "d" }, d))));
     }));
   }
   function summaryCard(label, text) {
+    if (String(text || "").length <= 1200) return el("div", { class: "summary-card" }, el("h2", null, label), el("div", { class: "text" }, text));   // short enough to read whole
     const body = el("div", { class: "text clamp" }, text);
-    const more = el("button", { class: "btn sm more", type: "button", onclick: () => { body.classList.toggle("clamp"); more.textContent = body.classList.contains("clamp") ? "Read the whole summary" : "Show less"; } }, "Read the whole summary");
+    const more = el("button", { class: "btn sm more", type: "button", "aria-expanded": "false", onclick: () => { body.classList.toggle("clamp"); const open = !body.classList.contains("clamp"); more.textContent = open ? "Show less" : "Read the whole summary"; more.setAttribute("aria-expanded", String(open)); } }, "Read the whole summary");
     const node = el("div", { class: "summary-card" }, el("h2", null, label), body, more);
-    requestAnimationFrame(() => { if (body.scrollHeight <= body.clientHeight + 4) { body.classList.remove("clamp"); more.remove(); } });
+    (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => { if (body.scrollHeight <= body.clientHeight + 4) { body.classList.remove("clamp"); more.remove(); } });
     return node;
   }
   function noteField(id, placeholder, notes) {
-    const ta = el("textarea", { placeholder, "aria-label": `Note on ${id}` });
+    const ta = el("textarea", { placeholder, rows: "1", "aria-label": `Note on ${id}` });
     notes.set(id, ta);
-    return el("div", { class: "note" }, el("label", null, "Your note on this item (goes to the agent: as feedback with Request changes, as guidance with Approve)"), ta);
+    return el("div", { class: "note" }, el("label", null, "Your note on this item"), ta);
   }
   function waves(items) {
     const byId = Object.fromEntries(items.map(w => [w.work_item_id, w]));
@@ -1235,18 +1435,19 @@
       ["Items that need your judgement", judgement.length ? `${judgement.map(w => w.title).join("; ")}. Read these closely: they contain a product decision.` : "None flagged."],
       ["Scope", `${(d.explicitly_out_of_scope || []).length} things are explicitly out of scope. Make sure nothing you expected is there.`],
       ["Open questions and their defaults", openQ.length ? `${openQ.length} questions will use their default unless you say otherwise in a note.` : "None."],
-    ])));
+    ]), "for your own reading; nothing is recorded"));
 
     const tbl = el("table", { class: "coverage" }, el("tr", null, el("th", null, "Success metric"), el("th", null, "Target"), el("th", null, "Work items that move it"), el("th", null, "Why")));
     for (const m of (metrics.length ? metrics : Object.keys(cov))) {
       const c = cov[m] || {}; const ids = c.work_item_ids || [];
       const target = ((o.success_metrics || []).find(x => x.metric === m) || {}).target || "";
-      tbl.append(el("tr", null, el("td", null, el("b", null, m)), el("td", null, target), el("td", { class: ids.length ? "ok" : "gap" }, ids.length ? ids.join(", ") : "nothing"), el("td", null, c.rationale || "")));
+      tbl.append(el("tr", null, el("td", null, el("b", null, m)), el("td", null, target), ids.length ? el("td", { class: "mono explain" }, ids.join(", ")) : el("td", { class: "gap" }, "nothing"), el("td", null, c.rationale || "")));
     }
     doc.append(card("Metric coverage", tbl));
 
     const lvl = waves(items);
     const ordered = [...items].sort((a, b) => (lvl[a.work_item_id] - lvl[b.work_item_id]) || items.indexOf(a) - items.indexOf(b));
+    const titleOf = id => (items.find(x => x.work_item_id === id) || {}).title || id;
     const wrap = el("div");
     ordered.forEach((w, i) => {
       wrap.append(el("div", { class: "item-card", id: `wi-${w.work_item_id}` },
@@ -1257,7 +1458,7 @@
           el("div", { class: "intent" }, w.intent),
           el("div", { class: "facts" },
             el("span", null, el("b", null, "Moves: "), (w.contributes_to_metrics || []).join("; ") || "no metric"),
-            el("span", null, el("b", null, "After: "), (w.depends_on || []).join(", ") || "nothing, can start first")),
+            el("span", null, el("b", null, "After: "), (w.depends_on || []).map(titleOf).join("; ") || "nothing, can start first")),
           (w.touches || []).length ? el("details", null, el("summary", null, "Where it touches the code"), el("div", null, el("ul", { class: "paths" }, w.touches.map(t => el("li", null, typeof t === "string" ? t : JSON.stringify(t)))))) : null,
           noteField(w.work_item_id, "What should change about this item?", notes))));
     });
@@ -1268,7 +1469,7 @@
     if ((d.explicitly_out_of_scope || []).length) rest.append(el("div", null, el("h3", null, "Explicitly out of scope"), el("ul", { class: "reading" }, d.explicitly_out_of_scope.map(x => el("li", null, x)))));
     if ((d.assumptions || []).length || (d.risks || []).length) rest.append(el("div", null, el("h3", null, "Assumptions and risks"), el("ul", { class: "reading" }, [...(d.assumptions || []), ...(d.risks || [])].map(x => el("li", null, typeof x === "string" ? x : (x.risk || x.description || JSON.stringify(x)))))));
     if ((rv.checks || []).length) rest.append(el("div", null, el("h3", null, "Automatic checks"), el("ul", { class: "reading" }, rv.checks.map(c => el("li", null, el("span", { class: `tag ${c.passed ? "ok" : "bad"}` }, c.passed ? "passed" : "failed"), " ", el("code", null, c.check.split(":")[0]), " ", c.detail)))));
-    if (rv.decomposition_md) rest.append(el("details", null, el("summary", { class: "explain", style: "cursor:pointer" }, "The full document the agent wrote (decomposition.md)"), el("div", { class: "reading", html: md(rv.decomposition_md) })));
+    if (rv.decomposition_md) rest.append(el("details", null, el("summary", { class: "explain" }, "The full document the agent wrote (decomposition.md)"), el("div", { class: "reading", html: md(rv.decomposition_md) })));
     doc.append(card("Questions, scope, and checks", rest));
   }
 
@@ -1280,7 +1481,8 @@
     const sev = s => allIssues.filter(i => i.severity === s).length;
     const userVisible = Object.values(specs).flatMap(s => s.acceptance_criteria || []).filter(a => a.user_visible).length;
     const totalAC = Object.values(specs).flatMap(s => s.acceptance_criteria || []).length;
-    const notCovered = (v.goal_coverage || []).filter(g => g.assessment !== "covered");
+    const byPeople = (v.goal_coverage || []).filter(g => g.assessment === "not_measurable_by_code");   // closed by sign-off, by design (docs/03)
+    const notCovered = (v.goal_coverage || []).filter(g => g.assessment !== "covered" && g.assessment !== "not_measurable_by_code");
     const openQ = Object.values(specs).flatMap(s => (s.open_questions || []).map(q => ({ ...q, sid: s.spec_id })));
 
     // The decision first, in product terms: the judge's call, what each contract changes, what is left out, and what is
@@ -1291,8 +1493,7 @@
       : blockingN ? ["bad", `The judge flagged ${plural(blockingN, "blocking issue")}.`, " Request changes unless you accept them as they stand."]
       : ["warn", `The judge's verdict is ${words(ov.result || "missing")}.`, " Read what it flagged before approving."];
     const jump = sid => () => { const node = document.getElementById(`spec-${sid}`); if (node) { node.scrollIntoView({ block: "start" }); node.querySelector("summary, textarea")?.focus({ preventScroll: true }); } };
-    const firstSentence = text => { const parts = String(text || "").split(/\.\s/), s = parts.length > 1 ? `${parts[0]}.` : parts[0];
-      return s.length > 220 ? `${s.slice(0, 220).replace(/\s+\S*$/, "")}…` : s; };
+    const firstSentence = text => firstSentences(text, 220);
     // what the whole change leaves out: a non-goal that names a contract of this set is covered there, not excluded
     const excludedBy = new Map();
     for (const s of Object.values(specs)) for (const x of s.non_goals || []) {
@@ -1301,7 +1502,7 @@
     }
     const excluded = [...excludedBy].map(([x, ss]) => ({ x, s: { title: ss.map(s => s.title || s.spec_id).join(", ") } }));
     doc.append(card("The decision in brief", el("div", { class: "stack brief" },
-      el("p", { class: `call ${call[0]}`, style: "margin:0" }, el("b", null, call[1]), call[2]),
+      el("p", { class: `call ${call[0]}` }, el("b", null, call[1]), call[2]),
       el("div", null, el("h3", { class: "mini-h" }, "What changes"), el("ol", { class: "brief-list" }, Object.entries(specs).map(([sid, s]) => {
         const ps = issuesBy[sid] || { issues: [] }, acs = s.acceptance_criteria || [];
         const b = (ps.issues || []).filter(x => x.severity === "blocking").length;
@@ -1311,17 +1512,17 @@
       }))),
       excluded.length ? el("div", null, el("h3", { class: "mini-h" }, "Left out on purpose"), el("ul", { class: "brief-list" },
         excluded.slice(0, 6).map(({ x, s }) => el("li", null, x, el("span", { class: "explain" }, ` (${s.title || s.spec_id})`)))),
-        excluded.length > 6 ? el("p", { class: "explain", style: "margin:4px 0 0" }, `and ${excluded.length - 6} more under the contracts below.`) : null) : null,
+        excluded.length > 6 ? el("p", { class: "explain m-0 mt-1" }, `and ${excluded.length - 6} more under the contracts below.`) : null) : null,
       el("div", null, el("h3", { class: "mini-h" }, "Still undecided"), openQ.length
         ? el("ul", { class: "brief-list" }, openQ.map(q => el("li", null, q.question, el("span", { class: "explain" }, ` Default if you say nothing: ${q.default_if_unanswered || "none"}.`))))
-        : el("p", { class: "explain", style: "margin:0" }, "No open questions in the contracts.")))));
+        : el("p", { class: "explain m-0" }, "No open questions in the contracts.")))));
 
     doc.append(card("What you are deciding", el("div", { class: "stack" },
       el("p", { class: "explain" }, el("strong", null, "The crew wrote one contract per work item; an independent judge checked the set. "), "A contract is what an agent will build to: acceptance criteria, interfaces, and which files it may touch. Approving a contract starts its implementation."),
       summaryCard("The judge's summary", ov.summary_for_human || ""),
       glance([[words(ov.result), "judge's verdict", ov.result === "pass" ? "ok" : "warn"], [Object.keys(specs).length, "contracts"],
-        [`${totalAC} (${userVisible} user-visible)`, "acceptance criteria"], [sev("blocking") ? `${sev("blocking")} blocking` : sev("major") ? `${sev("major")} major` : allIssues.length, "issues the judge flagged", sev("blocking") ? "bad" : sev("major") ? "warn" : ""],
-        [`${(v.goal_coverage || []).length - notCovered.length}/${(v.goal_coverage || []).length}`, "metrics covered by criteria", notCovered.length ? "warn" : "ok"]]))));
+        [totalAC, `acceptance criteria · ${userVisible} user-visible`], [sev("blocking") ? `${sev("blocking")} blocking` : sev("major") ? `${sev("major")} major` : allIssues.length, "issues the judge flagged", sev("blocking") ? "bad" : sev("major") ? "warn" : ""],
+        [`${(v.goal_coverage || []).length - notCovered.length}/${(v.goal_coverage || []).length}`, byPeople.length ? `metrics covered · ${byPeople.length} measured by people` : "metrics covered by criteria", notCovered.length ? "warn" : "ok"]]))));
 
     doc.append(card("What to check", checklist([
       ["The judge's verdict and anything it flagged", allIssues.length ? `${allIssues.length} issues, listed across the set and under each contract. Blocking ones should be resolved before you approve.` : "The judge found nothing outstanding."],
@@ -1329,10 +1530,12 @@
       ["Product decisions hiding in the criteria", "Customer-facing wording, limits, timings, and defaults in a criterion are decisions you are making by approving."],
       ["Where each agent may change code", "Each contract lists allowed paths. If one reaches into something it should not, request changes."],
       ["Open questions and their defaults", openQ.length ? `${openQ.length} questions across the contracts will use their defaults unless you say otherwise.` : "None."],
-    ])));
+    ]), "for your own reading; nothing is recorded"));
 
+    const byContract = acs => { const m = {}; for (const x of acs || []) { const [sid, ac] = String(x).split("/"); (m[sid] = m[sid] || []).push(ac || x); }
+      return Object.entries(m).map(([sid, list]) => `${(specs[sid] || {}).title || sid}: ${list.join(", ")}`).join(" · "); };
     const gc = el("table", { class: "coverage" }, el("tr", null, el("th", null, "Success metric"), el("th", null, "Covered?"), el("th", null, "By which criteria"), el("th", null, "Judge's note")));
-    for (const g of v.goal_coverage || []) gc.append(el("tr", null, el("td", null, el("b", null, g.metric)), el("td", { class: g.assessment === "covered" ? "ok" : "gap" }, words(g.assessment)), el("td", { class: "mono explain" }, (g.covering_acs || []).join(", ")), el("td", null, g.note || "")));
+    for (const g of v.goal_coverage || []) gc.append(el("tr", null, el("td", null, el("b", null, g.metric)), el("td", { class: g.assessment === "covered" ? "ok" : g.assessment === "not_measurable_by_code" ? "" : "gap" }, g.assessment === "not_measurable_by_code" ? "measured by people" : words(g.assessment)), el("td", { class: "explain" }, byContract(g.covering_acs)), el("td", null, g.note || "")));
     const coh = Object.entries(v.coherence || {}).flatMap(([bucket, items]) => (items || []).map(it => ({ bucket, it })));
     doc.append(card("Metrics and how the contracts fit together", el("div", { class: "stack" }, gc,
       coh.length ? el("div", null, el("h3", null, "Across the set"), el("ul", { class: "reading" }, coh.map(({ bucket, it }) => el("li", null,
@@ -1348,30 +1551,35 @@
       // each box is named for its contract, so a list of them reads as a list of choices, not one label repeated
       const cb = el("input", { type: "checkbox", checked: true });
       picks.set(sid, cb);
+      cb.addEventListener("change", () => {   // a contract others build on goes with them: unselecting it unselects them, selecting one selects what it needs
+        const sync = (ocb, on) => { if (ocb && ocb.checked !== on) { ocb.checked = on; ocb.dispatchEvent(new Event("change")); } };
+        if (!cb.checked) Object.entries(specs).forEach(([oid, o]) => { if (((o.dependencies || {}).specs || []).includes(sid)) sync(picks.get(oid), false); });
+        else ((s.dependencies || {}).specs || []).forEach(dep => sync(picks.get(dep), true));
+      });
       const acs = s.acceptance_criteria || [];
       const uv = acs.filter(a => a.user_visible).length;
       const blocking = (ps.issues || []).filter(x => x.severity === "blocking").length;
       const acTable = el("table", null, el("tr", null, el("th", null, "Criterion"), el("th", null, "Given, when, then"), el("th", null, "Verified by")));
       for (const ac of acs) acTable.append(el("tr", { class: "ac-row" },
-        el("td", null, el("code", null, ac.ac_id), el("div", null, el("span", { class: `tag ${ac.user_visible ? "gate" : ""}` }, ac.user_visible ? "user-visible" : "internal"))),
+        el("td", null, el("code", null, ac.ac_id), el("div", null, el("span", { class: "tag" }, ac.user_visible ? "user-visible" : "internal"))),
         el("td", { class: "gwt" }, el("b", null, "Given"), ac.given, " ", el("b", null, "When"), ac.when, " ", el("b", null, "Then"), ac.then),
         el("td", null, words(ac.verification))));
       const issues = (ps.issues || []).map(x => el("div", { class: "issue" }, el("span", { class: `sev ${x.severity}` }, x.severity), x.description, x.suggested_resolution ? el("div", { class: "fix" }, "Suggested: " + x.suggested_resolution) : null));
       const tp = s.test_plan || {};
       wrap.append(el("div", { class: "item-card", id: `spec-${sid}` },
         el("div", { class: "ih" }, el("span", { class: "num" }, i + 1), el("span", { class: "t" }, s.title), el("span", { class: "id" }, sid),
-          el("span", { class: "right" }, blocking ? el("span", { class: "tag bad" }, `${blocking} blocking`) : (ps.issues || []).length ? el("span", { class: "tag warn" }, plural((ps.issues || []).length, "issue")) : el("span", { class: "tag ok" }, "no issues"),
+          el("span", { class: "right" }, blocking ? el("span", { class: "tag bad" }, `${blocking} blocking`) : (ps.issues || []).length ? el("span", { class: "tag warn" }, plural((ps.issues || []).length, "issue")) : null,
             subsetAllowed ? el("label", { class: "pick" }, cb, "Approve this contract", el("span", { class: "sr-only" }, `(${s.title || sid})`)) : null)),
         el("div", { class: "ib" },
           el("div", { class: "intent" }, s.goal),
           el("div", { class: "facts" }, el("span", null, el("b", null, `${acs.length} criteria`), `, ${uv} user-visible`), el("span", null, el("b", null, "Size: "), s.estimated_size || "?"),
-            el("span", null, el("b", null, "After: "), ((s.dependencies || {}).specs || []).join(", ") || "nothing"), el("span", null, el("b", null, "May edit: "), plural((s.allowed_paths || []).length, "path"))),
-          issues.length ? el("div", null, el("h3", { style: "font-size:13px;margin:8px 0 4px" }, "What the judge flagged"), ...issues) : null,
+            el("span", null, el("b", null, "After: "), ((s.dependencies || {}).specs || []).map(d => (specs[d] || {}).title || d).join("; ") || "nothing"), el("span", null, el("b", null, "May edit: "), plural((s.allowed_paths || []).length, "path"))),
+          issues.length ? el("div", null, el("h3", { class: "sub-h" }, "What the judge flagged"), ...issues) : null,
           el("details", { open: !several }, el("summary", null, `Acceptance criteria (${acs.length}, ${uv} user-visible)`), el("div", null, acTable)),
           el("details", null, el("summary", null, `Interfaces (${(s.interfaces || []).length}), allowed paths (${(s.allowed_paths || []).length}), test plan`), el("div", null,
             (s.interfaces || []).length ? el("ul", { class: "reading" }, s.interfaces.map(x => el("li", null, el("code", null, x.name), ` ${words(x.kind)}, ${x.change}`, el("pre", { class: "block" }, x.definition)))) : null,
-            el("h3", { style: "font-size:13px;margin:8px 0 4px" }, "Allowed paths"), el("ul", { class: "paths" }, (s.allowed_paths || []).map(p => el("li", null, p))),
-            el("h3", { style: "font-size:13px;margin:8px 0 4px" }, "Test plan"), el("ul", { class: "paths" }, (tp.commands || []).map(c => el("li", null, c))),
+            el("h3", { class: "sub-h" }, "Allowed paths"), el("ul", { class: "paths" }, (s.allowed_paths || []).map(p => el("li", null, p))),
+            el("h3", { class: "sub-h" }, "Test plan"), el("ul", { class: "paths" }, (tp.commands || []).map(c => el("li", null, c))),
             (tp.e2e || []).length ? el("ul", { class: "paths" }, tp.e2e.map(e => el("li", null, `${e.command}  (${e.target}, covers ${(e.covers_ac || []).join(", ")})`))) : null)),
           (s.open_questions || []).length ? el("details", null, el("summary", null, `Open questions (${s.open_questions.length})`), el("div", null, el("ul", { class: "reading" }, s.open_questions.map(q => el("li", null, q.question, el("div", { class: "explain" }, `Default: ${q.default_if_unanswered || "none"}`)))))) : null,
           rv.spec_md[sid] ? el("details", null, el("summary", null, "The contract as the agent wrote it"), el("div", { class: "reading", html: md(rv.spec_md[sid]) })) : null,
@@ -1389,10 +1597,11 @@
     doc.append(card("What you are deciding", el("div", { class: "stack" },
       el("p", { class: "explain" }, el("strong", null, "The run stopped before starting an agent session that could take it past its budget. "),
         "Nothing is running. Approve with a new budget to continue from exactly where it stopped, or reject to close the run; the work so far stays in the files either way."),
-      glance([[money(p.spent_usd), `spent across ${plural(p.sessions_finished || 0, "session")}`], [money(p.budget_usd), "the run's budget", "warn"],
-        [money(next.cap_usd), `next: ${next.label || next.stage} (${plural(next.sessions || 1, "session")}), at most`], [money(p.needed_usd), "needed to continue", "bad"]]),
+      glance([[money(p.spent_usd), `spent across ${plural(p.sessions_finished || 0, "session")}`], [money(p.budget_usd), "the run's budget"],
+        [money(next.cap_usd), `next: ${next.label || next.stage} (${plural(next.sessions || 1, "session")}), at most`], [money(p.needed_usd), "needed to continue"]]),
       el("p", { class: "explain" }, `Paused in the ${words(p.run_stage || "")} stage. Every session carries its own hard cap, so the check is spent plus the next step's caps: the run can never go past the budget. A step usually costs less than its cap.`),
-      el("p", { class: "explain" }, "The decision is applied by the orchestrator when the run is continued: from the ", el("a", { href: `#/runs/${g.run_id}` }, "run page"), ", or with ", el("code", null, `factory resume ${g.run_id}`), "."))));
+      g.resumable === false ? el("p", { class: "explain" }, "This run cannot be driven again from here, so a decision recorded now is not applied. Start a new run from the outcome.")
+          : el("p", { class: "explain" }, "The decision is applied by the controller when the run is continued: from the ", el("a", { href: `#/runs/${g.run_id}` }, "run page"), ", or with ", el("code", null, `factory resume ${g.run_id}`), "."))));
   }
 
   function renderDeploy(doc, rv, rec) {
@@ -1406,12 +1615,14 @@
     const comment = el("textarea", { id: "decide-comment", placeholder: rec.options.includes("request_changes") ? "Required for Request changes; optional otherwise." : "Optional note about your decision." });
     const status = el("div");
     const error = el("div", { class: "err", role: "alert" });
-    const counts = el("div", { class: "explain", style: "margin-top:6px" });
-    const confirmBox = el("div", { class: "confirm", hidden: true });
+    const counts = el("div", { class: "explain mt-2" });
+    const confirmBox = el("div", { class: "confirm", hidden: true, role: "group", "aria-labelledby": "confirm-what" });
+    let armed = null;
 
     const isBudget = rec.kind === "budget" && !!(g.review || {}).budget;
+    const label = opt => isBudget && opt === "approve" ? "Raise the budget and continue" : isBudget && opt === "reject" ? "Close the run" : DECISION_LABEL[opt] || opt;
     const needed = isBudget ? Number(((g.review || {}).budget || {}).needed_usd || 0) : 0;
-    const budgetInput = isBudget ? el("input", { id: "decide-budget", type: "number", min: String(Math.ceil(needed)), step: "1", value: String(Math.ceil(needed)), "aria-label": "New budget in USD", style: "max-width:140px" }) : null;
+    const budgetInput = isBudget ? el("input", { id: "decide-budget", type: "number", min: String(Math.ceil(needed)), step: "1", value: String(Math.ceil(needed)), "aria-label": "New budget in USD", class: "w-narrow" }) : null;
     const composeComments = () => {
       const lines = [];
       if (isBudget && budgetInput.value) lines.push(`budget_usd: ${Number(budgetInput.value)}`);
@@ -1423,11 +1634,10 @@
     const refresh = () => {
       const n = [...notes.values()].filter(ta => ta.value.trim()).length;
       const picked = picks.size ? subset().length : null;
-      counts.textContent = [n ? `${plural(n, "note")} on items will be sent with Request changes` : "", picked !== null ? `${picked} of ${picks.size} contracts selected` : ""].filter(Boolean).join(". ");
+      counts.textContent = [n ? `${plural(n, "note")} on items go with your decision` : "", picked !== null ? `${picked} of ${picks.size} contracts selected${picked < picks.size ? "; a contract that builds on an unselected one goes with it" : ""}` : ""].filter(Boolean).join(". ");
       buttons.forEach(b => {
         if (b.dataset.decision === "approve_subset") b.hidden = picked === picks.size;
         if (b.dataset.decision === "approve" && picks.size) b.hidden = picked !== picks.size;
-        if (b.dataset.decision === "request_changes") b.disabled = !composeComments();
       });
     };
     notes.forEach(ta => ta.addEventListener("input", refresh));
@@ -1446,22 +1656,29 @@
       consequences.reject = "Stop this run without accepting the unfinished session output.";
     }
     const buttons = rec.options.map(opt => el("button", { class: `btn block ${opt === "approve" || opt === "approve_subset" ? "approve" : opt === "request_changes" ? "changes" : "danger"}`,
-      type: "button", dataset: { decision: opt }, onclick: () => arm(opt) }, DECISION_LABEL[opt] || opt));
+      type: "button", dataset: { decision: opt }, onclick: () => arm(opt) }, label(opt)));
 
     function arm(opt) {
       error.textContent = "";
       const comments = composeComments();
-      if (opt === "request_changes" && !comments) { error.textContent = "Say what should change first."; return; }
+      if (opt === "request_changes" && !comments) { error.textContent = "Say what should change first."; comment.focus(); return; }
       if (isBudget && opt === "approve" && !(Number(budgetInput.value) >= needed)) { error.textContent = `The next step needs at least ${money(needed)}.`; return; }
       buttons.forEach(b => b.hidden = true);
-      const go = el("button", { class: `btn block ${opt === "reject" ? "danger" : opt === "request_changes" ? "changes" : "approve"}`, type: "button", disabled: true, onclick: () => decide(opt, comments) }, `Yes, ${(DECISION_LABEL[opt] || opt).toLowerCase()}`);
-      confirmBox.replaceChildren(el("div", { class: "what" }, `${DECISION_LABEL[opt] || opt}?`),
-        el("div", { class: "explain" }, consequences[opt] || ""),
-        el("div", { class: "btn-col", style: "margin-top:10px" }, go, el("button", { class: "btn block", type: "button", onclick: disarm }, "Cancel")));
+      armed = opt;
+      // the comment and the notes are read again when the decision is confirmed, so an edit made after arming is never lost
+      const go = el("button", { class: `btn block ${opt === "reject" ? "danger" : opt === "request_changes" ? "changes" : "approve"}`, type: "button", disabled: true, "aria-describedby": "confirm-why", onclick: () => decide(opt, composeComments() || comments) }, `Yes, ${label(opt).toLowerCase()}`);
+      confirmBox.replaceChildren(el("div", { class: "what", id: "confirm-what" }, `${label(opt)}?`),
+        el("div", { class: "explain", id: "confirm-why" }, consequences[opt] || ""),
+        el("div", { class: "btn-col mt-3" }, go, el("button", { class: "btn block", type: "button", onclick: disarm }, "Cancel")));
       confirmBox.hidden = false;
       setTimeout(() => { go.disabled = false; go.focus(); }, 600);
     }
-    function disarm() { confirmBox.hidden = true; buttons.forEach(b => b.hidden = false); refresh(); }
+    function disarm() {
+      const was = armed; armed = null; confirmBox.hidden = true; buttons.forEach(b => b.hidden = false); refresh();
+      const back = Array.from(buttons).find(b => b.dataset.decision === was); if (back && !back.hidden) back.focus();   // Cancel returns focus where it came from
+    }
+    // changing which contracts are selected while a decision is armed changes what the decision means: start over
+    picks.forEach(cb => cb.addEventListener("change", () => { if (armed) disarm(); }));
     async function decide(opt, comments) {
       confirmBox.querySelectorAll("button").forEach(b => b.disabled = true);
       try {
@@ -1472,33 +1689,44 @@
     }
     function cls(d) { return d === "request_changes" ? "changes" : d === "reject" ? "reject" : "ok"; }
     function showRecorded(d) {
-      status.replaceChildren(el("div", { class: `recorded ${cls(d.decision)}` }, el("b", null, `${DECISION_LABEL[d.decision] || d.decision} recorded`),
-        `${ago(d.decided_at)}. ${isBudget ? "The run is parked: continue it from its page to apply the decision. " : "The run picks it up within a few seconds. "}`,
+      status.replaceChildren(el("div", { class: `recorded ${cls(d.decision)}`, role: "status", tabindex: "-1" }, el("b", null, `${DECISION_LABEL[d.decision] || d.decision} recorded`),
+        `${ago(d.decided_at)}. ${g.run_status === "stopped" ? (g.resumable ? `Nothing applies it until a controller drives this run again (factory resume ${g.run_id}). ` : "Nothing applies it: this run cannot be driven again from here. Start a new run from the outcome. ") : isBudget ? "The run is parked: continue it from its page to apply the decision. " : "The run picks it up within a few seconds. "}`,
         el("a", { href: `#/runs/${g.run_id}` }, isBudget ? "Go to the run" : "Back to the run")));
       form.hidden = true;
+      const line = status.querySelector(".recorded"); if (line) line.focus();   // a screen reader hears the outcome
     }
     function showDecided(p) {
       status.replaceChildren(el("div", { class: `recorded ${cls(p.decision)}` }, el("b", null, `${DECISION_LABEL[p.decision] || p.decision}, applied`),
-        "The run has moved on. ", el("a", { href: `#/runs/${g.run_id}` }, "See where it is now."), p.comments ? el("div", { class: "explain", style: "margin-top:6px" }, `“${p.comments}”`) : null));
+        "The run has moved on. ", el("a", { href: `#/runs/${g.run_id}` }, "See where it is now."), p.comments ? el("div", { class: "explain mt-2" }, `“${p.comments}”`) : null));
       form.hidden = true;
     }
 
     const form = el("div", null,
-      isBudget ? el("div", { style: "margin-bottom:10px" }, el("label", { for: "decide-budget" }, "New budget in USD"), budgetInput) : null,
+      isBudget ? el("div", { class: "mb-3" }, el("label", { for: "decide-budget" }, "New budget in USD"), budgetInput) : null,
       el("label", { for: "decide-comment" }, "Your comment"), comment, counts,
-      confirmBox, el("div", { class: "btn-col", style: "margin-top:12px" }, buttons), error,
-      rec.artifacts.length ? el("details", null, el("summary", null, "Artifacts tied to this decision"),
+      isBudget ? null : el("p", { class: "explain m-0 fs-sm" }, "Notes on items go to the agent: as feedback with Request changes, as guidance with Approve."),
+      confirmBox, el("div", { class: "btn-col mt-3" }, buttons), error,
+      rec.artifacts.length ? el("details", null, el("summary", null, `Bound to the ${plural(rec.artifacts.length, "file")} you are reading`),
+        el("p", { class: "explain m-0" }, "Your decision is recorded with these fingerprints. If a file no longer matches them when the run picks the decision up, the decision is refused and you are asked to look again."),
         el("ul", { class: "files" }, rec.artifacts.map(a => el("li", null, el("span", null, a.name), el("code", { title: a.sha256 }, a.sha256.slice(0, 10)))))) : null);
-    const node = el("aside", { class: "decide" }, card("Your call", el("div", null, status, form), null, "call"));
+    // a stopped run's decision is recorded but not picked up: say so before the buttons, not after
+    const stoppedNote = g.run_status === "stopped" ? el("div", { class: "notice bad m-0 mb-3" }, el("b", null, "The controller is stopped. "),
+      "Your decision is recorded here and applied once a controller drives the run again (", el("code", null, `factory resume ${g.run_id}`), ").") : null;
+    const node = el("aside", { class: "decide" }, card("Your call", el("div", null, stoppedNote, status, form), null, "call"));
     if (g.decided) showDecided(g.decided);
     else if (rec.recorded) showRecorded(rec.recorded);
     refresh();
-    return { node, update(fresh) { if (fresh.decided) showDecided(fresh.decided); } };
+    return { node, update(fresh) {
+      // decided elsewhere (the CLI, another tab): the page stops offering the buttons as soon as the poll sees it
+      if (fresh.decided) showDecided(fresh.decided);
+      else if (fresh.gate && fresh.gate.recorded && !form.hidden) showRecorded(fresh.gate.recorded);
+    } };
   }
 
   // ------------------------------------------------------------------ outcomes
   async function viewOutcomes() {
     setNav("outcomes");
+    const nav = state.nav;
     const [outs, cfg] = [(await api("/api/outcomes")).outcomes, state.config || await api("/api/config")];
     const frag = document.createDocumentFragment();
     frag.append(pageHead("Outcomes", "Saved briefs for new runs.",
@@ -1515,12 +1743,13 @@
       }
       frag.append(card("Saved outcomes", list, plural(outs.length, "outcome")));
     }
-    $main.replaceChildren(frag);
+    if (!paint(frag, nav)) return;
     stopPoll();
   }
 
   async function viewOutcomeForm(params) {
     setNav("outcomes");
+    const nav = state.nav;
     const t = (await api("/api/outcomes/template")).outcome;
     const cfg = state.config || await api("/api/config");
     let o = JSON.parse(JSON.stringify(t)); delete o._example;
@@ -1549,7 +1778,7 @@
     const f = {};
     let controlSeq = 0;
     const labelControl = (label, input) => { input.id = input.id || `fc-${++controlSeq}`;
-      return el("div", {class:"field-label"}, el("label", {class:"help", for: input.id}, label), input); };
+      return el("div", { class: "field-label" }, el("label", { class: "lab", for: input.id }, label), input); };
     const field = (key, label, help, input) => { f[key] = input; input.id = `f-${key}`; return el("div", { class: "field" }, el("label", { class: "lab", for: input.id }, label), help ? el("p", { class: "help" }, help) : null, input); };
     const statement = el("textarea", { class: "big" }); statement.value = o.statement || "";
     form.append(card("The outcome", el("div", null,
@@ -1581,7 +1810,7 @@
     f.deadline = el("input", { type: "date", value: c.deadline || "" });
     form.append(el("details", { class: "card optional-fields", open: !!((c.must_not || []).length || (c.compliance || []).length || c.deadline) }, el("summary", null, "Constraints and default budget"), el("div", {class:"card-body"},
       el("div", { class: "grid2" }, labelControl("Must not (one per line)", f.must_not), labelControl("Compliance (one per line)", f.compliance)),
-      el("div", { class: "grid2", style: "margin-top:10px" }, labelControl("Budget in USD for agent spend", f.budget), labelControl("Deadline", f.deadline)))));
+      el("div", { class: "grid2 mt-3" }, labelControl("Budget in USD for agent spend", f.budget), labelControl("Deadline", f.deadline)))));
 
     const repo = (o.target_repositories || [{}])[0] || {};
     f.repo = el("input", { type: "text", value: repo.url || "", placeholder: "https://github.com/you/app" });
@@ -1595,13 +1824,13 @@
     const repoFields = el("div", null, labelControl("HTTPS URL", f.repo),
       el("details", {open: !!(repo.create || (repo.paths_in_scope || []).length || (repo.default_branch && repo.default_branch !== "main"))}, el("summary", null, "Branch, scope and repository creation"),
         labelControl("Default branch", f.branch),
-        el("div", { class: "grid2", style: "margin-top:10px" },
-          el("label", { class: "pick", style: "font-weight:500" }, f.create, "Create this repository if it does not exist"), visibilityField),
+        el("div", { class: "grid2 mt-3" },
+          el("label", { class: "pick" }, f.create, "Create this repository if it does not exist"), visibilityField),
         labelControl("Allowed paths (optional, one per line)", f.paths)));
     // From an onboarded app the repository is already known: say so, and keep the fields one click away.
     const fromApp = app && normRepo(repo.url) === normRepo(app.repository_url);
     form.append(card("Repository", fromApp
-      ? el("div", null, el("p", { style: "margin:0 0 8px" }, "From the app ", el("a", { href: appHref(app.app_id) }, app.name || app.app_id), ": ",
+      ? el("div", null, el("p", { class: "mb-2" }, "From the app ", el("a", { href: appHref(app.app_id) }, app.name || app.app_id), ": ",
           el("span", { class: "mono" }, repoName(repo.url)), ` · ${repo.default_branch || "main"}`),
         el("details", null, el("summary", null, "Use a different repository or limit the paths"), repoFields))
       : el("div", null, el("p", { class: "help" }, "The repository this outcome applies to."), repoFields)));
@@ -1610,7 +1839,7 @@
     f.oname = el("input", { type: "text", value: ow.name || "", autocomplete: "name" }); f.ohandle = el("input", { type: "text", value: ow.handle || "", placeholder: "your GitHub login" });
     const ownerFields = el("div", { class: "grid2" }, labelControl("Name", f.oname), labelControl("Code host handle", f.ohandle));
     form.append(card("Owner (who decides the gates)", ownerFrom
-      ? el("div", null, el("p", { style: "margin:0 0 8px" }, el("b", null, ow.name), ow.handle ? ` (${ow.handle})` : "", el("span", { class: "explain" }, `, as on “${ownerFrom}”.`)),
+      ? el("div", null, el("p", { class: "mb-2" }, el("b", null, ow.name), ow.handle ? ` (${ow.handle})` : "", el("span", { class: "explain" }, `, as on “${ownerFrom}”.`)),
         el("details", null, el("summary", null, "Change the owner"), ownerFields))
       : ownerFields));
 
@@ -1696,15 +1925,16 @@
       }
     }
     const saveBtn = el("button", { class: "btn primary", type: "button", onclick: save }, "Save");
-    const startLink = el("button", { class: "btn call", type: "button", onclick: async () => { const r = await save(); if (r) location.hash = `#/start?outcome=${savedId}${appQuery}`; } }, "Save and start a run");
+    const startLink = el("button", { class: "btn primary", hidden: !(cfg.can_run_live || cfg.can_run_design), type: "button", onclick: async () => { const r = await save(); if (r) location.hash = `#/start?outcome=${savedId}${appQuery}`; } }, "Save and start a run");
     form.append(card("Save", el("div", null, notice, el("div", { class: "startbar" }, saveBtn, el("span", { class: "spacer" }), startLink))));
     frag.append(form);
-    $main.replaceChildren(frag);
+    if (!paint(frag, nav)) return;
     stopPoll();
   }
 
   // ------------------------------------------------------------------ apps: learn once how to build, run and test an app, then runs use it
   const APP_STATUS = {
+    verified: ["Verified", "The setup ran green in the hosted environment.", "ok"],   // records from before ready / ready_limited
     connected: ["Connected", "Added. Discovery has not run yet.", ""],
     discovering: ["Discovering", null, "crew"],
     needs_input: ["Needs your input", "Discovery stopped at questions only you can answer.", "gate"],
@@ -1735,7 +1965,7 @@
     const [label, text, cls] = APP_STATUS[a.status] || [words(a.status), "", ""];
     const discovering = a.kind === "greenfield" ? "An agent is proposing a scaffold and test setup from your description."
       : "An agent is reading the committed source and the existing test setup.";
-    return { label, text: text || discovering, cls };
+    return { label, text: text || (APP_BUSY.has(a.status) ? discovering : ""), cls };
   }
   function appStatusTag(a) { const s = appStatusText(a); return el("span", { class: `tag ${s.cls}` }, s.label); }
   function appMoney(a) { return `${money(a.spent_usd || 0)} of ${money(a.budget_usd)}`; }
@@ -1751,11 +1981,12 @@
 
   async function viewApps() {
     setNav("apps");
+    const nav = state.nav;
     const apps = (await api("/api/apps")).apps || [];
     const frag = document.createDocumentFragment();
     frag.append(pageHead("Apps", "Repositories and their verified test setups.",
       [el("a", { class: "btn primary", href: "#/apps/new" }, "Add an app")]));
-    const cloudBox = el("div", { role: "status", "aria-live": "polite" }, el("p", { class: "explain", style: "margin:0" }, "Reading the workspace's execution environments…"));
+    const cloudBox = el("div", { role: "status", "aria-live": "polite" }, el("p", { class: "explain m-0" }, "Reading the workspace's execution environments…"));
     const cloudCard = card("Elsewhere in the workspace", cloudBox, "execution environments this Console does not hold");
     // One row per app: where onboarding stands, the setup pull request, and its hosted environment once the workspace answers.
     const envCells = new Map();
@@ -1769,7 +2000,7 @@
         const envCell = el("td", { class: "explain" }, a.environment_id ? el("span", { class: "mono" }, a.environment_id) : "None until verified");
         envCells.set(a.app_id, envCell);
         tbl.append(el("tr", { class: "link", onclick: () => { location.hash = appHref(a.app_id); } },
-          el("td", null, el("div", { class: "title" }, el("a", { href: appHref(a.app_id) }, a.name || a.app_id), el("span", { class: "tag" }, appKind(a.kind))),
+          el("td", null, el("div", { class: "title" }, el("a", { href: appHref(a.app_id) }, a.name || a.app_id), " · ", el("span", { class: "tag" }, appKind(a.kind))),
             el("div", { class: "explain mono" }, repoName(a.repository_url))),
           el("td", null, appStatusTag(a), a.phase ? el("div", { class: "explain" }, a.phase) : null),
           envCell, el("td", null, appMoney(a)), el("td", { class: "explain" }, ago(a.updated_at))));
@@ -1777,7 +2008,7 @@
       frag.append(card("On this Console", tbl, plural(apps.length, "app")), cloudCard);
     }
 
-    $main.replaceChildren(frag);
+    if (!paint(frag, nav)) return;
     const showLocal = local => {
       for (const [id, cell] of envCells) {
         const a = apps.find(x => x.app_id === id);
@@ -1801,16 +2032,16 @@
   function twoStep(label, confirmLabel, run, cls) {
     const line = el("span", { class: "explain", role: "status", "aria-live": "polite" });
     const first = el("button", { class: `btn ${cls || "sm"}`, type: "button" }, label);
-    const yes = el("button", { class: `btn call ${cls || "sm"}`, type: "button" }, confirmLabel);
+    const yes = el("button", { class: `btn danger ${cls || "sm"}`, type: "button" }, confirmLabel);
     const no = el("button", { class: `btn ${cls || "sm"}`, type: "button" }, "Cancel");
-    const confirmBox = el("span", { hidden: true, style: "display:inline-flex;gap:6px;flex-wrap:wrap" }, yes, no);
-    first.onclick = () => { first.hidden = true; confirmBox.hidden = false; yes.focus(); };
+    const confirmBox = el("span", { class: "row-gap", hidden: true }, yes, no);
+    first.onclick = () => { first.hidden = true; confirmBox.hidden = false; yes.disabled = true; setTimeout(() => { yes.disabled = false; yes.focus(); }, 600); };
     no.onclick = () => { confirmBox.hidden = true; first.hidden = false; first.focus(); };
     yes.onclick = async () => {
       yes.disabled = no.disabled = true; line.textContent = "Working…";
       try { await run(); } catch (e) { line.textContent = e.message; yes.disabled = no.disabled = false; }
     };
-    return el("span", { style: "display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap" }, first, confirmBox, line);
+    return el("span", { class: "row-gap" }, first, confirmBox, line);
   }
 
   // The apps' execution environments as the shared Anthropic workspace holds them: one per onboarded app, whichever
@@ -1819,10 +2050,10 @@
   // environment of a local app that could be archived.
   function cloudEnvironments(box, v, showLocal) {
     const reload = async refresh => cloudEnvironments(box, await api(`/api/apps/environments${refresh ? "?refresh=true" : ""}`), showLocal);
-    if (!v.configured) { box.replaceChildren(el("p", { class: "explain", style: "margin:0" }, v.error)); return; }
+    if (!v.configured) { box.replaceChildren(el("p", { class: "explain m-0" }, v.error)); return; }
     const again = el("button", { class: "btn sm", type: "button" }, "Check again");
     again.onclick = async () => { again.disabled = true; try { await reload(true); } catch (e) { again.disabled = false; again.textContent = `Check again (${e.message})`; } };
-    const parts = [el("p", { class: "explain", style: "margin:0 0 10px" },
+    const parts = [el("p", { class: "explain mb-3" },
       "Each onboarded app runs its hosted checks in one execution environment in the Anthropic workspace (Claude Console, Environments). Every Console and checkout using this workspace sees the same apps. ",
       v.checked_at ? `Checked ${ago(v.checked_at) || "just now"}. ` : "", again)];
     if (v.error) parts.push(el("div", { class: "notice bad" }, v.error));
@@ -1850,29 +2081,29 @@
           el("td", null, /^https:\/\//.test(e.console_url || "") ? el("a", { class: "mono", href: e.console_url, target: "_blank", rel: "noopener" }, e.name) : el("span", { class: "mono" }, e.name),
             el("div", { class: "explain" }, `Created ${ago(e.created_at) || "just now"}`, a.leftover_count ? ` · ${plural(a.leftover_count, "older one")} below` : "")),
           el("td", null, el("span", { class: `tag ${here ? "ok" : ""}` }, here ? "On this Console" : "Onboarded elsewhere"),
-            e.verified_at ? el("span", { class: "tag ok" }, `Verified ${ago(e.verified_at)}`) : null,
-            e.in_use ? el("span", { class: "tag crew" }, "Session running") : null),
-          el("td", null, el("div", { style: "display:flex;flex-direction:column;align-items:flex-start;gap:6px" }, actions))));
+            e.verified_at ? [" · ", el("span", { class: "tag ok" }, `Verified ${ago(e.verified_at)}`)] : null,
+            e.in_use ? [" · ", el("span", { class: "tag crew" }, "Session running")] : null),
+          el("td", null, el("div", { class: "btn-col fit" }, actions))));
       }
       parts.push(tbl);
       if (apps.some(a => !a.local_app_id)) {
-        parts.push(el("p", { class: "explain", style: "margin:10px 0 0;font-size:12.5px" },
+        parts.push(el("p", { class: "explain m-0 mt-3 fs-sm" },
           "Apps onboarded elsewhere keep their plan, evidence and test credentials on the Console that onboarded them. To request changes from here, onboard the app on this Console: an unchanged recipe reuses its environment, so the app still has one."));
       }
     } else if (!v.error) {
-      parts.push(el("p", { class: "explain", style: "margin:0" }, all.length ? "Every app with an execution environment in this workspace is listed above."
+      parts.push(el("p", { class: "explain m-0" }, all.length ? "Every app with an execution environment in this workspace is listed above."
         : "No app has an execution environment in this workspace yet. Verifying an app's setup creates one."));
     }
     if (v.discovery) {
-      parts.push(el("p", { class: "explain", style: "margin:10px 0 0;font-size:12.5px" }, "Discovery reads source in one shared, network-less environment: ",
+      parts.push(el("p", { class: "explain m-0 mt-3 fs-sm" }, "Discovery reads source in one shared, network-less environment: ",
         el("a", { class: "mono", href: v.discovery.console_url, target: "_blank", rel: "noopener" }, v.discovery.name), "."));
     }
     const retire = v.retire || [];
     if (retire.length) {
-      const list = el("ul", { class: "facts", style: "margin:8px 0" }, retire.map(e => el("li", null, el("span", { class: "mono" }, e.name), " · ",
+      const list = el("ul", { class: "facts mt-2 mb-2" }, retire.map(e => el("li", null, el("span", { class: "mono" }, e.name), " · ",
         e.reason === "duplicate" ? "a duplicate of " : "replaced by ", el("span", { class: "mono" }, e.replaced_by_name),
         e.purpose === "discovery" ? " (discovery)" : e.app_name ? ` (${e.app_name})` : "")));
-      parts.push(el("div", { class: "notice warn", style: "margin-top:12px" },
+      parts.push(el("div", { class: "notice warn mt-3" },
         el("b", null, `${plural(retire.length, "environment")} left over from earlier attempts. `),
         "An app needs one execution environment. These hold older recipes or copies of the same one, and no session is running in them. Archived environments stay listed under Archived in the Claude Console; no new session starts in them. Repositories are not touched.",
         list, twoStep(`Archive ${plural(retire.length, "leftover")}`, `Confirm: archive ${retire.length}`, async () => {
@@ -1889,8 +2120,8 @@
     let repositories = [], nextPage = 1;
     const search = el("input", { type: "search", id: "app-repo-search", placeholder: "Filter by owner or repository name", autocomplete: "off" });
     const select = el("select", { id: "app-repo-select" }, el("option", { value: "" }, "Choose a repository"));
-    const status = el("p", { class: "explain", role: "status", "aria-live": "polite", style: "margin:0" }, "Loading GitHub repositories…");
-    const details = el("p", { class: "explain", style: "margin:0" });
+    const status = el("p", { class: "explain m-0", role: "status", "aria-live": "polite" }, "Loading GitHub repositories…");
+    const details = el("p", { class: "explain m-0" });
     const typed = el("input", { type: "url", id: "app-repo-url", placeholder: "https://github.com/owner/app", autocomplete: "off", spellcheck: "false" });
     const manual = el("details", null, el("summary", null, "Enter a repository URL instead"),
       el("label", { class: "lab", for: "app-repo-url" }, "Repository URL"), el("p", { class: "help" }, "HTTPS form: https://github.com/owner/name"), typed);
@@ -1945,6 +2176,7 @@
 
   async function viewAppNew() {
     setNav("apps");
+    const nav = state.nav;
     stopPoll();
     const cfg = state.config || await api("/api/config");
     state.config = cfg;
@@ -1978,7 +2210,7 @@
       el("div", null, el("label", { class: "lab", for: "app-new-owner" }, "Account"), newOwner),
       el("div", null, el("label", { class: "lab", for: "app-new-repo" }, "Repository name"), newRepo));
     const newPanel = el("div", { class: "stack", hidden: true },
-      el("p", { class: "help", style: "margin:0" }, "Where the new private repository will live. Nothing is created now; it is created when you publish the setup, after you review it."),
+      el("p", { class: "help m-0" }, "Where the new private repository will live. Nothing is created now; it is created when you publish the setup, after you review it."),
       ownerRow, newManual);
     const refreshOwners = () => {
       const list = picker.owners(), keep = newOwner.value;
@@ -2043,7 +2275,7 @@
       if (kindNew.checked && !newRepoTouched) newRepo.value = slug(name.value);
       const b = body();
       const dup = b.repository_url ? known.filter(a => normRepo(a.repository_url) === normRepo(b.repository_url)) : [];
-      dupNote.replaceChildren(...(dup.length ? [el("div", { class: "notice warn", style: "margin:0" },
+      dupNote.replaceChildren(...(dup.length ? [el("div", { class: "notice warn m-0" },
         el("b", null, b.kind === "greenfield" ? "That repository is already an app here: " : "Already onboarded here as "),
         ...dup.flatMap((a, i) => [i ? ", " : "", el("a", { href: appHref(a.app_id) }, a.name || a.app_id), ` (${appStatusText(a).label.toLowerCase()})`]), ". ",
         b.kind === "greenfield" ? "Choose another name for the new repository." : "Open it to verify again or request a change. A second app for the same repository makes every change run name which app it means.")] : []));
@@ -2054,7 +2286,7 @@
         el("li", null, `Discovery starts at once and is charged to the ${b.budget_usd > 0 ? money(b.budget_usd) : "$0"} budget`),
         el("li", null, "Verification and publishing wait for your click"));
     }
-    const addBtn = el("button", { class: "btn call", type: "button", style: "min-height:48px;font-size:16px" }, "Add the app and start discovery");
+    const addBtn = el("button", { class: "btn primary lg", type: "button" }, "Add the app and start discovery");
     addBtn.onclick = async () => {
       notice.replaceChildren();
       const b = body(), bad = problems(b);
@@ -2073,10 +2305,10 @@
     };
     const aside = el("aside", null,
       card("When you click", el("div", { class: "stack" }, summary, addBtn,
-        el("p", { class: "explain", style: "margin:0;font-size:12.5px" }, "This starts a charged agent session. It reads or proposes code only; it changes nothing in the repository."), notice)),
+        el("p", { class: "explain m-0 fs-sm" }, "This starts a charged agent session. It reads or proposes code only; it changes nothing in the repository."), notice)),
       onboardingFacts());
     frag.append(el("div", { class: "start" }, el("div", { class: "start-main" }, whichCard, aboutCard, budgetCard), aside));
-    $main.replaceChildren(frag);
+    if (!paint(frag, nav)) return;
     // From "Onboard on this Console" on an app found in the workspace: its repository and name, nothing else.
     const prefill = state.appPrefill;
     state.appPrefill = null;
@@ -2127,15 +2359,15 @@
     return el("div", { class: "app-status" },
       el("div", { class: "head" }, crewFigure(appAgentRole(a), appAgentState(a), "s"),
         el("div", null, el("div", { class: "label" }, s.label), el("div", { class: "phase" }, a.phase || s.text))),
-      a.phase && a.phase !== s.text ? el("p", { class: "explain", style: "margin:8px 0 0" }, s.text) : null,
-      el("p", { class: "explain", style: "margin:8px 0 0;font-size:12.5px" }, `Updated ${ago(a.updated_at) || "just now"}.`),
+      a.phase && a.phase !== s.text ? el("p", { class: "explain m-0 mt-2" }, s.text) : null,
+      el("p", { class: "explain m-0 mt-2 fs-sm" }, `Updated ${ago(a.updated_at) || "just now"}.`),
       el("dl", { class: "kv app-money" }, el("dt", null, "Budget"), el("dd", null, money(a.budget_usd)), el("dt", null, "Spent"), el("dd", null, money(a.spent_usd || 0)),
         el("dt", null, "Available"), el("dd", null, appLeft(a))),
       a.reserved_usd ? el("p", { class: "explain" }, `${money(a.reserved_usd)} is reserved for the current session.`) : null,
       a.cost_warning ? el("p", { class: "notice warn" }, a.cost_warning) : null,
       a.cleanup_warning ? el("p", { class: "notice warn" }, a.cleanup_warning) : null,
       (a.sessions || []).length ? el("div", null, el("h3", { class: "mini-h" }, "Charged sessions"), sessions)
-        : el("p", { class: "explain", style: "margin:8px 0 0;font-size:12.5px" }, "No agent session has run yet."));
+        : el("p", { class: "explain m-0 mt-2 fs-sm" }, "No agent session has run yet."));
   }
   function capabilityList(plan) {
     const ul = el("ul", { class: "caps" });
@@ -2190,7 +2422,7 @@
       else media = null;
       const recording = ["mp4", "webm", "gif"].includes(x);
       const figure = el("figure", null, media, el("figcaption", null,
-        recording && journeys.length ? el("b", { style: "display:block" }, journeys.join(" · ")) : null,
+        recording && journeys.length ? el("b", null, journeys.join(" · ")) : null,
         recording && v.status ? el("span", null, `${words(v.status)}${v.head_sha ? ` · snapshot ${String(v.head_sha).slice(0, 10)}` : ""} · `) : null,
         el("a", { href: url, target: "_blank", rel: "noopener" }, nm)));
       if (recording) videos.append(figure);
@@ -2205,6 +2437,7 @@
 
   async function viewApp(appId) {
     setNav("apps");
+    const nav = state.nav;
     let app = await api(appPath(appId));
     const drafts = (state.appDrafts = state.appDrafts || {})[appId] || (state.appDrafts[appId] = {});
     const statusBox = el("div", { role: "status", "aria-live": "polite" });
@@ -2218,11 +2451,11 @@
     const busy = () => APP_BUSY.has(app.status);
     const act = async (btn, line, call) => {
       btn.disabled = true; line.textContent = "Working…";
-      try { const a = await call(); line.textContent = ""; paint(a && a.app_id ? a : await api(appPath(appId))); }
+      try { const a = await call(); line.textContent = ""; show(a && a.app_id ? a : await api(appPath(appId))); }
       catch (e) { line.textContent = e.status === 409 ? `The agent is already working on this app; the page follows it. (${e.message})` : e.message; btn.disabled = false; if (e.status === 409) tick(); }
     };
     const actionLine = () => el("p", { class: "explain action-line", role: "status", "aria-live": "polite" });
-    const charged = text => el("p", { class: "explain", style: "margin:6px 0 0;font-size:12.5px" }, text);
+    const charged = text => el("p", { class: "explain m-0 mt-2 fs-sm" }, text);
 
     function sections(a) {
       const out = [];
@@ -2239,7 +2472,7 @@
       // discover: started automatically after adding; offered again when idle
       if (!plan || a.status === "connected" || a.status === "failed") {
         const line = actionLine();
-        const btn = el("button", { class: "btn call", type: "button", disabled: busy() }, plan ? "Discover again" : "Start discovery");
+        const btn = el("button", { class: "btn primary", type: "button", disabled: busy() }, plan ? "Discover again" : "Start discovery");
         btn.onclick = () => act(btn, line, () => api(`${appPath(appId)}/discover`, { body: {} }));
         out.push(card("Discover the setup", el("div", null,
           el("p", null, a.status === "discovering" ? appStatusText(a).text : a.kind === "greenfield"
@@ -2251,7 +2484,7 @@
         const feedback = el("textarea", {id:"setup-feedback", placeholder:"Describe what should change. Never paste credentials here."});
         feedback.value = drafts.feedback ?? a.feedback ?? "";
         feedback.oninput = () => { drafts.feedback = feedback.value; };
-        const line = actionLine(), btn = el("button", {class:"btn call",type:"button"}, "Revise this setup");
+        const line = actionLine(), btn = el("button", { class: "btn primary", type: "button" }, "Revise this setup");
         btn.onclick = () => {
           if (!feedback.value.trim()) { line.textContent = "Describe the change first."; return; }
           act(btn,line,async () => {
@@ -2274,7 +2507,7 @@
       }));
       const files = el("div", { class: "files-list" }, (plan.files || []).map(f => el("details", null, el("summary", null, el("span", { class: "mono" }, f.path)), el("pre", null, f.content || ""))));
       const tech = el("details", { class: "tech" }, el("summary", null, "Technical details: the test recipe, the files it proposes, and the raw plan"),
-        el("dl", { class: "kv", style: "margin-top:10px" }, el("dt", null, "Plan fingerprint"), el("dd", { class: "mono" }, a.plan_sha256 || "out of date until discovery runs again"),
+        el("dl", { class: "kv mt-3" }, el("dt", null, "Plan fingerprint"), el("dd", { class: "mono" }, a.plan_sha256 || "out of date until discovery runs again"),
           el("dt", null, "Source commit inspected"), el("dd", { class: "mono" }, a.source_sha || "not known yet"),
           el("dt", null, "Test recipe file"), el("dd", { class: "mono" }, plan.profile_path || "none yet")),
         (plan.files || []).length ? el("div", null, el("h3", { class: "mini-h" }, `Proposed files (${(plan.files || []).length})`), files) : null,
@@ -2282,9 +2515,9 @@
         el("details", null, el("summary", null, "Raw plan JSON"), el("pre", null, JSON.stringify(plan, null, 2))));
       const explanation = plan.summary || "No summary given.";
       const firstParagraph = explanation.split(/\n\s*\n/)[0];
-      const excerpt = firstParagraph.length > 420 ? `${firstParagraph.slice(0, 420).replace(/\s+\S*$/, "")}…` : firstParagraph;
+      const excerpt = firstSentences(firstParagraph, 420);
       out.push(card("Discovery notes", el("div", { class: "stack" },
-        !a.plan_sha256 ? el("div", { class: "notice info", style: "margin:0" }, el("b", null, "This plan is out of date. "), "Your answers are saved. Verification and publishing wait until discovery runs again with them.") : null,
+        !a.plan_sha256 ? el("div", { class: "notice info m-0" }, el("b", null, "This plan is out of date. "), "Your answers are saved. Verification and publishing wait until discovery runs again with them.") : null,
         a.verification ? el("p", {class:"explain"}, "Written before verification. The evidence above records what actually ran; these notes describe the proposed scope and its limits.") : null,
         el("p", { class: "lead" }, excerpt),
         explanation !== excerpt ? el("details", null, el("summary", null, "Read the agent’s full setup explanation"), el("p", {class:"reading"}, explanation)) : null,
@@ -2309,7 +2542,7 @@
         const missing = () => fields.filter(f => f.q.required && !f.ta.value.trim()).map(f => f.q.prompt);
         const line = actionLine();
         const saveBtn = el("button", { class: "btn", type: "button", disabled: busy() }, "Save answers");
-        const againBtn = el("button", { class: "btn call", type: "button", disabled: busy() }, "Save and discover again");
+        const againBtn = el("button", { class: "btn primary", type: "button", disabled: busy() }, "Save and discover again");
         const save = async () => { const r = await api(`${appPath(appId)}/answers`, { body: { answers: collect() } }); fields.forEach(f => { delete drafts[f.q.id]; }); return r; };
         saveBtn.onclick = () => act(saveBtn, line, save);
         againBtn.onclick = () => {
@@ -2339,8 +2572,8 @@
           return el("div", { class: "secret" },
             el("div", { class: "row" }, el("span", { class: "mono" }, sec.name), el("span", { class: `tag ${sec.required ? "gate" : ""}` }, sec.required ? "required" : "optional"),
               el("span", { class: `tag ${st === "configured" ? "ok" : "warn"}` }, st ? words(st) : "not stored")),
-            el("p", { class: "explain", style: "margin:0" }, sec.purpose ? `Unlocks: ${sec.purpose}` : "The recipe does not say what this unlocks."),
-            el("p", { class: "explain", style: "margin:0" }, sec.hosts.length ? `Sent only to ${sec.hosts.join(", ")}${sec.injection ? `, in the request ${sec.injection.replace(/-/g, " ")}` : ""}.` : "The recipe declares no host for this key."),
+            el("p", { class: "explain m-0" }, sec.purpose ? `Unlocks: ${sec.purpose}` : "The recipe does not say what this unlocks."),
+            el("p", { class: "explain m-0" }, sec.hosts.length ? `Sent only to ${sec.hosts.join(", ")}${sec.injection ? `, in the request ${sec.injection.replace(/-/g, " ")}` : ""}.` : "The recipe declares no host for this key."),
             el("label", { class: "lab", for: `secret-${sec.name}` }, `Test value for ${sec.name}`),
             el("div", { class: "row" }, input, btn), line);
         });
@@ -2378,10 +2611,10 @@
           v.phases ? el("ul", {class:"plain-list"}, v.phases.map(p => el("li", null, `${words(p.phase)}: ${words(p.status)}${p.seconds != null ? ` · ${p.seconds}s` : ""}${p.exit_code ? ` · exit ${p.exit_code}` : ""}${p.reason ? ` · ${words(p.reason)}` : ""}`))) : null,
           readiness(v),
           (v.checks || []).length ? el("div", null, el("h3", { class: "mini-h" }, "Functional checks"), checkList(v)) : null,
-          v.diagnosis && v.diagnosis.summary ? el("div", { class: "notice info", style: "margin:0" },
+          v.diagnosis && v.diagnosis.summary ? el("div", { class: "notice info m-0" },
             el("b", null, `Sandbox agent’s diagnosis${v.diagnosis.phase ? ` (${words(v.diagnosis.phase)})` : ""}: `), v.diagnosis.summary,
-            el("p", { class: "explain", style: "margin:6px 0 0" }, "Written by the agent after reading the sandbox logs. It explains the failure; it is not evidence.")) : null,
-          uncovered.length ? el("div", { class: "notice info", style: "margin:0" }, el("b", null, "Not covered by this verification: "),
+            el("p", { class: "explain m-0 mt-2" }, "Written by the agent after reading the sandbox logs. It explains the failure; it is not evidence.")) : null,
+          uncovered.length ? el("div", { class: "notice info m-0" }, el("b", null, "Not covered by this verification: "),
             uncovered.map(c => `${c.label || c.id}${c.limitation ? ` (${c.limitation})` : ""}`).join("; "),
             v.status === "passed" && !stale ? ". The app is ready only for the verified journeys." : ". This attempt does not establish readiness for the current setup.") : null,
           (a.evidence || []).length ? evidenceGallery(a) : el("p", { class: "explain" }, (v.checks || []).length ? "This recipe produces no media; its checks above are the evidence." : "No media was accepted from this verification."),
@@ -2397,16 +2630,16 @@
         const first = el("button", { class: "btn primary", type: "button", disabled: busy() || !a.plan_sha256 }, label);
         const sha = a.plan_sha256;
         first.onclick = () => { confirmBox.hidden = false; first.hidden = true; confirmBtn.focus(); };
-        const confirmBtn = el("button", { class: "btn call", type: "button" }, `Confirm: ${label.toLowerCase()}`);
+        const confirmBtn = el("button", { class: "btn primary", type: "button" }, `Confirm: ${label.toLowerCase()}`);
         const cancel = el("button", { class: "btn", type: "button", onclick: () => { confirmBox.hidden = true; first.hidden = false; first.focus(); } }, "Cancel");
         confirmBtn.onclick = () => act(confirmBtn, line, () => api(`${appPath(appId)}/publish`, { body: { plan_sha256: sha } }));
-        confirmBox.append(el("p", { style: "margin:0 0 8px;font-weight:700" }, a.kind === "greenfield"
+        confirmBox.append(el("p", { class: "what" }, a.kind === "greenfield"
           ? `This creates the private repository ${repoName(a.repository_url)} and opens a pull request with the setup.`
           : `This opens a pull request on ${repoName(a.repository_url)} with the setup files.`),
           el("p", { class: "explain" }, "Nothing is merged. An engineer reviews and merges the pull request."), el("div", { class: "startbar" }, confirmBtn, cancel));
         const change = a.kind === "existing" || a.pr_url
           ? el("div", null, el("a", { class: "btn", href: `#/start?app=${encodeURIComponent(a.app_id)}` }, "Request a change"),
-            el("p", { class: "explain", style: "margin:6px 0 0;font-size:12.5px" }, "Starts a normal run on this app's repository. You still approve the plan and the contracts."))
+            el("p", { class: "explain m-0 mt-2 fs-sm" }, "Starts a normal run on this app's repository. You still approve the plan and the contracts."))
           : el("p", { class: "explain" }, "Requesting changes opens once the repository exists, after you publish.");
         out.push(card("Setup pull request", el("div", { class: "stack" },
           a.pr_url && /^https:\/\//.test(a.pr_url) ? el("p", null, el("a", { href: a.pr_url, target: "_blank", rel: "noopener" }, "Open the setup pull request"),
@@ -2420,8 +2653,8 @@
       return out;
     }
     function sourceDetails(a) {
-      return el("details", { class: "tech card", style: "padding:12px 18px" }, el("summary", null, "Technical details: repository, branch and commit"),
-        el("dl", { class: "kv", style: "margin-top:10px" },
+      return el("details", { class: "tech card" }, el("summary", null, "Technical details: repository, branch and commit"),
+        el("dl", { class: "kv mt-3" },
           el("dt", null, "Repository"), el("dd", { class: "mono" }, a.repository_url || "not given"),
           el("dt", null, "Source branch or commit"), el("dd", { class: "mono" }, a.revision || "the default branch"),
           el("dt", null, "Default branch"), el("dd", { class: "mono" }, a.default_branch || "not known until discovery reads the repository"),
@@ -2431,10 +2664,10 @@
           el("dt", null, "App id"), el("dd", { class: "mono" }, a.app_id)));
     }
 
-    function paint(a) {
+    function show(a) {
       app = a; pending = null; updateBar.hidden = true;
-      headBox.replaceChildren(pageHead(a.name || a.app_id, a.description || null,
-        [el("span", { class: "tag" }, appKind(a.kind)), appStatusTag(a), el("span", { class: "tag" }, appMoney(a))],
+      headBox.replaceChildren(pageHead(a.name || a.app_id, [appKind(a.kind), a.description].filter(Boolean).join(" · ") || null,
+        null,
         [el("a", { href: "#/apps" }, "Apps"), " / ", el("span", { class: "mono" }, repoName(a.repository_url) || a.app_id)]), card(null, appStepper(a), null, "soft"));
       statusBox.replaceChildren(appStatusBody(a));
       body.replaceChildren(...sections(a));
@@ -2452,23 +2685,24 @@
       if (dirty()) {
         pending = a;
         updateBar.replaceChildren(el("b", null, `Now: ${appStatusText(a).label}. `), "Your typing is kept; the rest of the page updates when you are ready. ",
-          el("button", { class: "btn sm", type: "button", onclick: () => paint(pending || a) }, "Show the update"));
+          el("button", { class: "btn sm", type: "button", onclick: () => show(pending || a) }, "Show the update"));
         updateBar.hidden = false;
         state.lastKey.app = appKey(a);
         return;
       }
-      paint(a);
+      show(a);
     }
     function schedule() { startPoll(tick, busy() ? 3000 : 12000); }
 
     const aside = el("aside", null, card("Agent status", statusBox));
-    $main.replaceChildren(headBox, updateBar, el("div", { class: "start" }, body, aside));
-    paint(app);
+    if (!paint([headBox, updateBar, el("div", { class: "start" }, body, aside)], nav)) return;
+    show(app);
   }
 
   // ------------------------------------------------------------------ settings
   async function viewSettings() {
     setNav("settings");
+    const nav = state.nav;
     const [c, logs] = await Promise.all([api("/api/config"), api("/api/logs")]);
     state.config = c;
     const frag = document.createDocumentFragment();
@@ -2476,14 +2710,14 @@
     const platformGaps = gapsMatching(c.design_gaps, ["agent:", "environment_id", "ANTHROPIC_API_KEY"]);
     const forgeGaps = forgeGapsOf(c);
     const surfaceGaps = gapsMatching(c.gaps, ["LINEAR", "FACTORY_GATE_SURFACE", "FACTORY_PAGE_PUBLISHER"]);
-    const r = (title, ok, desc, gaps, how, label) => el("div", { class: "r" }, el("h3", null, title), el("div", { class: `status ${ok ? "ok" : "warn"}` }, ok ? "Ready" : (label || "Not configured")),
-      el("p", { class: "explain", style: "margin-top:6px" }, desc), gaps.length ? el("ul", null, gaps.map(x => el("li", null, x))) : null, !ok && how ? el("p", { class: "explain" }, how) : null);
-    const agentsCard = r("The crew and the platform", !platformGaps.length, "The agents and the sandbox environment in your Console workspace, plus the API key the orchestrator uses to start sessions.", platformGaps, "Run `ant apply agents environments` once and put ANTHROPIC_API_KEY (and ANTHROPIC_WORKSPACE_ID if the key is not workspace-scoped) in .env at the repository root.", "Checking...");
+    const r = (title, ok, desc, gaps, how, label) => el("div", { class: "r" }, el("h3", null, title), el("div", { class: `tag ${ok ? "ok" : "warn"}` }, ok ? "Ready" : (label || "Not configured")),
+      el("p", { class: "explain mt-2" }, desc), gaps.length ? el("ul", null, gaps.map(x => el("li", null, x))) : null, !ok && how ? el("p", { class: "explain" }, how) : null);
+    const agentsCard = r("The crew and the platform", !platformGaps.length, "The agents and the sandbox environment in your Console workspace, plus the API key the controller uses to start sessions.", platformGaps, el("span", null, "Run ", el("code", null, "ant apply agents environments"), " once and put ", el("code", null, "ANTHROPIC_API_KEY"), " (and ", el("code", null, "ANTHROPIC_WORKSPACE_ID"), " if the key is not workspace-scoped) in ", el("code", null, ".env"), " at the repository root."), "Checking...");
     frag.append(card("Readiness", el("div", { class: "readiness" },
       agentsCard,
       r("Code host", !forgeGaps.length, `Where the code lives and pull requests are opened (${c.forge}). Needed for full runs, not for design runs.`, forgeGaps, "Export FORGE_TOKEN (a GitHub token with repo and workflow scopes); FORGE_REPO may stay unset, it follows the outcome."),
       r("Decisions", !surfaceGaps.length, `Where gate decisions are read from: ${c.gate_surface === "tracker" ? "Linear and this Console" : "this Console and the CLI"}.`, surfaceGaps, null))));
-    const platformBox = el("div", null, el("p", { class: "explain" }, "Checking the platform..."));
+    const platformBox = el("div", { class: "platform" }, el("p", { class: "explain" }, "Checking the platform..."));
     frag.append(card("On the platform", platformBox, "live check of the agents in claude-lock.json and the last sessions"));
     api("/api/platform").then(p => {
       const st = agentsCard.querySelector(".status");
@@ -2493,32 +2727,47 @@
       if (p.error) parts.push(el("div", { class: "notice bad" }, el("b", null, "Cannot reach the agents. "), p.error));
       if (p.agents && p.agents.length) {
         const t = el("table", null, el("tr", null, el("th", null, "Agent"), el("th", null, "Id"), el("th", null, "On the platform")));
-        for (const a of p.agents) t.append(el("tr", null, el("td", null, el("span", { style: "display:inline-flex;align-items:center;gap:8px" }, crewFigure(a.key, "still", "s"), CREW_NAME[a.key] || a.key)), el("td", { class: "mono explain" }, a.id), el("td", null, el("span", { class: `tag ${a.found ? "ok" : "bad"}` }, a.found ? `found${a.name ? ": " + a.name : ""}` : "missing"))));
+        for (const a of p.agents) t.append(el("tr", null, el("td", null, el("span", { class: "row-gap" }, crewFigure(a.key, "still", "s"), CREW_NAME[a.key] || a.key)), el("td", { class: "mono explain" }, a.id), el("td", null, el("span", { class: `tag ${a.found ? "ok" : "bad"}` }, a.found ? `found${a.name ? ": " + a.name : ""}` : "missing"))));
         parts.push(el("details", {open: !p.ok}, el("summary", null, `${p.agents.length} configured agents`), t));
       }
       if (p.sessions && p.sessions.length) {
         const t = el("table", { class: "platform-sessions" }, el("tr", null, el("th", null, "Session"), el("th", null, "Status"), el("th", null, "Run"), el("th", null, "Created")));
         for (const s of p.sessions) t.append(el("tr", null, el("td", null, el("a", { href: s.url, target: "_blank", rel: "noopener" }, s.title || s.id)), el("td", null, el("span", { class: "tag" }, s.status || "?")),
           el("td", null, s.local_url ? el("a", { href: s.local_url }, s.run_id) : el("span", { class: "explain", title: s.run_id ? "Not stored on this Console; open the platform session for its trace." : "" }, s.run_id || "not a factory run")), el("td", { class: "explain" }, s.created_at ? ago(s.created_at) : "")));
-        parts.push(el("h3", { style: "font-size:13px;margin:14px 0 6px" }, "Recent sessions in the workspace"), t);
+        parts.push(el("h3", null, "Recent sessions in the workspace"), t);
       } else if (!p.error) parts.push(el("p", { class: "explain" }, p.sessions_error ? `Sessions could not be listed: ${p.sessions_error}` : "No sessions yet. Start a design run to see the decomposer appear here and in the Anthropic Console."));
       platformBox.replaceChildren(...parts);
     }).catch(e => platformBox.replaceChildren(el("div", { class: "notice bad" }, e.message)));
     frag.append(el("details", {class:"card optional-fields"}, el("summary", null, "Local storage and workspace"), el("dl", { class: "kv" }, el("dt", null, "Path"), el("dd", { class: "mono" }, c.runs_dir), el("dt", null, "Decisions"), el("dd", null, "Written to _queue/ under it; a running orchestrator polls that directory."), el("dt", null, "Workspace"), el("dd", null, c.workspace_id ? el("span", { class: "mono" }, c.workspace_id) : el("span", { class: "explain" }, "ANTHROPIC_WORKSPACE_ID not set (needed when the API key is not scoped to a workspace)")))));
     if (logs.logs.length) {
-      const body = el("div", { class: "stack" }, logs.logs.map(l => el("div", null, el("div", { class: "title" }, el("span", { class: "mono" }, l.name), l.run_id ? el("a", { href: `#/runs/${l.run_id}` }, l.run_id) : el("span", { class: "tag" }, "no run id yet"), el("span", { class: "explain" }, ago(l.modified_at))),
+      const body = el("div", { class: "stack" }, logs.logs.map(l => el("div", null, el("div", { class: "title" }, el("span", { class: "mono" }, l.name), " · ", l.run_id ? el("a", { href: `#/runs/${l.run_id}` }, l.run_id) : el("span", { class: "tag" }, "no run id yet"), " · ", el("span", { class: "explain" }, ago(l.modified_at))),
         el("pre", { class: "log" }, l.tail))));
       frag.append(el("details", {class:"card optional-fields"}, el("summary", null, "Orchestrator logs"), el("div",{class:"card-body"},body)));
     }
-    $main.replaceChildren(frag);
-    startPoll(viewSettings, 30000);
+    if (!paint(frag, nav)) return;
+    state.lastKey.settings = settingsKey(c, logs);
+    startPoll(refreshWhenChanged("settings", async () => { const [c2, l2] = await Promise.all([api("/api/config"), api("/api/logs")]); return settingsKey(c2, l2); }, viewSettings), 30000);
   }
+  const settingsKey = (c, logs) => JSON.stringify([c.gaps, c.design_gaps, c.forge, c.forge_repo, (logs.logs || []).map(l => [l.name, l.modified_at, l.bytes])]);
 
   // ------------------------------------------------------------------ router
+  // The page is swapped only by the navigation that asked for it: a slow fetch from an earlier click, or a poll that fires
+  // after the person moved on, never paints over the current page. Open folds survive a re-render of the same page.
+  function paint(frag, nav) {
+    if (nav && nav !== state.nav) return false;   // a stale render: the caller stops too, so it never touches the polls
+    const foldName = sm => sm.textContent.trim().replace(/\s*\([^)]*\)/g, "");   // 'Work items (4)…' keeps its state when the count moves
+    const open = new Set([...$main.querySelectorAll("details[open] > summary")].map(foldName));
+    $main.replaceChildren(...(Array.isArray(frag) ? frag : [frag]));
+    if (nav && nav.fresh) { nav.fresh = false; const h1 = $main.querySelector("h1"); if (h1) { h1.tabIndex = -1; h1.focus({ preventScroll: true }); } }   // a route change, not a poll: move the reader to the new title
+    if (open.size) $main.querySelectorAll("details > summary").forEach(s => { if (open.has(foldName(s))) s.parentElement.open = true; });
+    return true;
+  }
   async function route() {
     const hash = location.hash || "#/runs";
     const [path, query] = hash.slice(1).split("?");
     const params = new URLSearchParams(query || "");
+    const nav = state.nav = { fresh: true };
+    document.body.dataset.loading = "1";
     loadChrome();
     try {
       if (path === "/" || path === "" || path === "/runs") await viewRuns();
@@ -2527,18 +2776,26 @@
       else if (path.startsWith("/gates/")) await viewGate(path.slice(7));
       else if (path === "/start") await viewStart(params);
       else if (path === "/outcomes") await viewOutcomes();
-      else if (path === "/outcomes/new") await viewOutcomeForm(params);
+      else if (path === "/outcomes/new" || path.startsWith("/outcomes/")) await viewOutcomeForm(path === "/outcomes/new" ? params : new URLSearchParams({ ...Object.fromEntries(params), outcome: decodeURIComponent(path.slice(10)) }));
       else if (path === "/apps") await viewApps();
       else if (path === "/apps/new") await viewAppNew();
       else if (path.startsWith("/apps/")) await viewApp(decodeURIComponent(path.slice(6)));
       else if (path === "/settings") await viewSettings();
-      else { $main.replaceChildren(card(null, el("div", { class: "empty" }, el("h3", null, "No such page"), el("a", { class: "btn", href: "#/runs" }, "Back to the runs")))); stopPoll(); }
+      else { setNav(null); paint(card(null, el("div", { class: "empty" }, el("h3", null, "No such page"), backToRuns())), nav); stopPoll(); }
     } catch (e) {
+      if (nav !== state.nav) return;
       stopPoll();
-      $main.replaceChildren(pageHead("Something did not load"), card(null, el("div", { class: "empty" }, el("div", null, e.message), el("a", { class: "btn", href: "#/runs" }, "Back to the runs"))));
+      const frag = document.createDocumentFragment();
+      frag.append(pageHead("Something did not load"), card(null, el("div", { class: "empty" }, el("div", null, e.message), backToRuns())));
+      if (!paint(frag, nav)) return;
+    } finally {
+      if (nav === state.nav) delete document.body.dataset.loading;
     }
-    window.scrollTo(0, 0);
+    if (nav !== state.nav) return;
+    if (!/#(q|record-[^#?]+)$/.test(hash)) window.scrollTo(0, 0);      // a link to a question or a run record scrolls to it instead
   }
+  // the link works even when the hash is already #/runs (no hashchange fires then)
+  const backToRuns = () => el("a", { class: "btn", href: "#/runs", onclick: ev => { if (location.hash === "#/runs") { ev.preventDefault(); route(); } } }, "Back to the runs");
   window.addEventListener("hashchange", route);
   loadChrome().then(route);
 })();

@@ -63,17 +63,19 @@ def make_publisher(cfg: "Config") -> PagePublisher:
 
 # ------------------------------------------------------------------------------------------ rendering
 
+# The same inks and rules as the Console (web/static/app.css, docs/10-console-design-system.md), with system fonts so the
+# page stays a single self-contained file: paper, hairlines, tone inks as text, no pills, no coloured bars.
 _CSS = """
-:root{--fg:#1b1b1b;--bg:#fff;--muted:#5f6368;--line:#e3e3e3;--ok:#1a7f37;--warn:#9a6700;--bad:#b42318;--soft:#f6f7f9;--link:#1d4ed8;--visited:#6b21a8}
-@media(prefers-color-scheme:dark){:root{--fg:#e8e8e8;--bg:#121212;--muted:#9aa0a6;--line:#2c2c2c;--soft:#1c1c1c;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--link:#8ab4f8;--visited:#c58af9}}
+:root{--text:#16202A;--bg:#FFFFFF;--text-3:#5B6B7A;--line:#D7DDE4;--hair:#EEF1F4;--ok-text:#166534;--warn-text:#92400E;--bad-text:#B91C1C;--surface-2:#F6F8FA;--link:#1D4ED8;--visited:#6B21A8}
+@media(prefers-color-scheme:dark){:root{--text:#E8ECF0;--bg:#171D24;--text-3:#8E9AA6;--line:#2A343F;--hair:#222B35;--surface-2:#1E262F;--ok-text:#86EFAC;--warn-text:#FCD34D;--bad-text:#FCA5A5;--link:#8AB4F8;--visited:#C58AF9}}
 a{color:var(--link)}a:visited{color:var(--visited)}a:focus-visible{outline:2px solid currentColor;outline-offset:2px}
-body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--fg);background:var(--bg);margin:0;padding:24px 16px;max-width:1040px;margin-inline:auto}
-h1{font-size:1.6rem;margin:.2em 0}h2{font-size:1.2rem;margin-top:2em;border-bottom:1px solid var(--line);padding-bottom:.2em}h3{font-size:1.05rem;margin-top:1.4em}
-table{border-collapse:collapse;width:100%;margin:.6em 0;font-size:.92em}th,td{border:1px solid var(--line);padding:6px 8px;vertical-align:top;text-align:left}th{background:var(--soft)}
-code{font:.88em ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--soft);padding:1px 4px;border-radius:3px}pre{background:var(--soft);padding:10px;overflow:auto;border-radius:6px}
-.summary{background:var(--soft);border-left:4px solid var(--ok);padding:12px 16px;border-radius:6px;white-space:pre-wrap}.summary.warn{border-color:var(--warn)}
-.muted{color:var(--muted)}.pill{display:inline-block;padding:0 8px;border-radius:999px;font-size:.8em;border:1px solid var(--line)}
-.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}nav a{margin-right:12px}.sha{font:.8em ui-monospace,monospace;word-break:break-all}
+body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;color:var(--text);background:var(--bg);margin:0;padding:24px 16px;max-width:1040px;margin-inline:auto}
+h1{font-size:1.7rem;margin:.2em 0;letter-spacing:-.02em}h2{font-size:1.15rem;margin-top:2em;border-top:1px solid var(--text);padding-top:.6em}h3{font-size:1rem;margin-top:1.4em}
+table{border-collapse:collapse;width:100%;margin:.6em 0;font-size:.92em}th,td{border-bottom:1px solid var(--hair);padding:7px 10px;vertical-align:top;text-align:left}th{color:var(--text-3);font-size:.85em}
+code{font:.88em ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--surface-2);padding:1px 4px;border-radius:3px}pre{background:var(--surface-2);padding:10px;overflow:auto;border-radius:6px}
+.summary{background:var(--surface-2);padding:12px 16px;border-radius:6px;white-space:pre-wrap}.summary.warn{color:var(--text)}
+.muted{color:var(--text-3)}.tag{display:inline;font-size:.85em;font-weight:700;color:var(--text-3)}.tag.bad{color:var(--bad-text)}
+.ok{color:var(--ok-text)}.bad{color:var(--bad-text)}.warn{color:var(--warn-text)}nav a{margin-right:12px}.sha{font:.8em ui-monospace,monospace;word-break:break-all}
 details{margin:.4em 0}summary{cursor:pointer}
 """
 
@@ -225,7 +227,7 @@ def render_gate1_page(run_id: str, outcome: dict[str, Any], decomposition: dict[
             + (f"<h2 id=\"full\">decomposition.md</h2>{md_to_html(decomposition_md)}" if decomposition_md else ""))
     nav = [("summary", "Summary"), ("coverage", "Coverage"), ("work-items", "Work items"), ("questions", "Questions"),
            ("artifacts", "Artifacts")] + ([("full", "Full text")] if decomposition_md else [])
-    return _page(f"Gate 1 · {outcome.get('title', run_id)}", f"Decomposition review · run {run_id}", nav, body)
+    return _page(f"Gate 1 · {outcome.get('title', run_id)}", f"Gate 1 · the plan · {run_id}", nav, body)
 
 
 def render_gate2_page(run_id: str, outcome: dict[str, Any], specs: dict[str, dict[str, Any]], verdict: dict[str, Any],
@@ -290,4 +292,4 @@ def render_gate2_page(run_id: str, outcome: dict[str, Any], specs: dict[str, dic
             f"<h2 id=\"coverage\">Goal coverage</h2><table><tr><th>Metric</th><th>Assessment</th><th>Covering acceptance criteria</th><th>Note</th></tr>{gc_rows}</table>"
             + (f"<h2 id=\"coherence\">Coherence</h2>{coh_html}" if coh_html else "")
             + spec_sections + _questions_section(all_questions, "Open questions across specs") + _artifacts_section(shas))
-    return _page(f"Gate 2 · {outcome.get('title', run_id)}", f"Specification readiness · run {run_id}", nav, body)
+    return _page(f"Gate 2 · {outcome.get('title', run_id)}", f"Gate 2 · the contracts · {run_id}", nav, body)
