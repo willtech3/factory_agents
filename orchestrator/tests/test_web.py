@@ -315,11 +315,19 @@ def test_resume_is_offered_only_for_failed_runs_that_reached_implementation(clie
     actor = {"type": "system", "id": "test"}
     store.append(rid, "run.created", actor, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     store.put_artifact(rid, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
-    for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness"):
+    for stage in ("decomposing", "gate_1_decomposition", "specifying"):
         store.append(rid, "stage.entered", actor, {"stage": stage})
     store.append(rid, "run.failed", actor, {"reason": "boom"})
-    # failed before implementation: not resumable
+    # failed while specifying, before implementation: not resumable
     assert client.get(f"/api/runs/{rid}").json()["resumable"] is False
+    # a controller stopped while idle at Gate 2 is resumable: runner.resume continues at that same gate
+    rid_g2 = "run_deadbeef03"
+    store.append(rid_g2, "run.created", actor, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
+    store.put_artifact(rid_g2, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())
+    for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness"):
+        store.append(rid_g2, "stage.entered", actor, {"stage": stage})
+    store.append(rid_g2, "run.failed", actor, {"reason": "controller stopped"})
+    assert client.get(f"/api/runs/{rid_g2}").json()["resumable"] is True
     rid2 = "run_deadbeef02"
     store.append(rid2, "run.created", actor, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     store.put_artifact(rid2, "intake", "outcome.json", json.dumps({"outcome_id": "o", "title": "t", "statement": "s"}).encode())

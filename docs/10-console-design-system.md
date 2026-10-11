@@ -6,13 +6,13 @@ The Factory Console (`orchestrator/factory/web/static/`) is a single page of van
 
 Every screen answers these at a glance, top to bottom, and keeps everything else one hover or one fold away:
 
-1. **Where is the run?** One line with seven stations. The same line, in three sizes, on the Runs list, the run page, and the Board.
-2. **Who is working, and why is the run in this state?** The animated crew figures stand on the line at the current station. A written sentence names them, the item, and how long they have been at it. The story reads cause then effect, station by station.
+1. **Where is the run?** One line with seven stations. The same line, full on the run and gate pages and in miniature on every Runs row; the Board's columns are its four phases.
+2. **Who is working, and why is the run in this state?** The animated crew figures stand on the line at the current station. A written sentence names them and how long they have been at it; while the run builds, a second line lists the work items and where each is. The story reads cause then effect, station by station.
 3. **What does it need from me?** Orange ink appears only where a person must act: the figure that stands for you at an open gate, the "waiting on you" lead of a sentence, the one orange button.
 
 ## The one model of a run
 
-Four phases group seven stations. The Board's columns are the phases; the line shows the stations; a gate is a station a person owns. `STATIONS` in `app.js` is the only place these names live.
+Four phases group seven stations. The Board's columns are the phases; the line shows the stations; a gate is a station a person owns. `STATIONS` in `app.js` holds the stations' keys, names, owners and descriptions and `PHASES` the four phases; a gate's long, short and sentence forms live in `GATE_NAME`, `GATE_SHORT` and `gateLabel()`, and `summary.py`'s `GATE_LABEL` must change in step with them.
 
 | Phase | Station | Key | Who |
 |---|---|---|---|
@@ -26,20 +26,20 @@ Four phases group seven stations. The Board's columns are the phases; the line s
 
 Parked and terminal states (paused at budget, stopped, failed, escalated, done, closed) are never an eighth station. The line keeps the station the run reached; the sentence says what happened there (`stationOf()` finds it from the summary).
 
-**Vocabulary.** One word per concept, everywhere: *Gate 1* and *Gate 2* (never "Station 3", "Plan check", "Contract check"); *the crew* for the agents together and the role name for a member (Decomposer, Spec writer, Spec judge, Implementer, Reviewer, Security reviewer, Merge judge, Integrator); *session* only inside folds; *pull request*; *work item* before Gate 2 and *contract* at and after it; *Needs you* for the status, *Your turn* for the panel; *Done* (never "completed") in anything a person reads; *Board* for the page and its route.
+**Vocabulary.** One word per concept, everywhere: *Gate 1* and *Gate 2* (never "Station 3", "Plan check", "Contract check"); *the crew* for the agents together and the role name for a member (Decomposer, Spec writer, Spec judge, Implementer, Reviewer, Security reviewer, Merge judge, Integrator); *session* for one unit of a crew member's work (counted next to cost; the raw list stays in the fold); *pull request*; *work item* for the unit of work and *contract* for the specification an agent builds to; *Needs you* for the status, *Your turn* for the panel; *Done* (never "completed") in anything a person reads; *Board* for the page and its route.
 
 ## Rules of the look
 
 - **Paper on the floor.** Sections are white paper (`.card`) on the cool floor (`--bg`), no border. Inside paper, groups are separated by hairlines (`--hair`), never by boxes inside boxes.
 - **No pills, badges, chips, or coloured bars.** A status is a word in ink (`.tag` is plain bold text; its tone classes only colour it). Nothing is drawn behind a label. No coloured left or top borders.
 - **No role colours.** "Product owner", "Engineer", "Ops" are words. The crew is told apart by its figure, not by a hue.
-- **One meaning per ink.** Orange (`--call-text`, `--call-solid`, the `you` figure) means a person is needed now and nothing else. Clay (`--crew`, `--crew-text`) is the crew. Green, amber and red inks (`--ok-text`, `--warn-text`, `--bad-text`) are text only, for done, parked, and broken. Every ink is at least 4.5:1 on paper in both themes; `tests/test_experience_review.py` checks the status inks.
+- **One meaning per ink.** Orange (`--call-text`, `--call-solid`, the `you` figure) means a person is needed now and nothing else. Clay (`--crew`, `--crew-text`) is the crew. Green, amber and red inks (`--ok-text`, `--warn-text`, `--bad-text`) are text only, for done, parked, and broken. Every text ink (`--text` to `--text-3`, `--link`, the `*-text` tones) is at least 4.5:1 on every ground in both themes and the figure fills (`--call`, `--crew`, `--human`) at least 3:1; `tests/test_experience_review.py` checks every one. `--text-4` is for what is ahead or disabled, never for reading.
 - **Status is written, not coded.** A run's state is a sentence in the display face with a bold lead (`statusSentence()`), then a grey meta line (`metaLine()`). Never a bare "30 s" or an absolute clock time without a relative one.
-- **Times are relative on the page, absolute on hover.** Use `timeEl(iso, text?)`; it renders `<time datetime title="…">4 min ago</time>`.
+- **Times are relative on the page, absolute on hover.** Use `timeEl(iso, text?)`; it renders `<time datetime title="…">4 min ago</time>`. The one place with a clock on the page is the raw event fold, which shows the viewer's clock with the date on hover.
 - **One slot, one unit.** A row's right-hand figure is elapsed time while a crew member works and cost once it is done, never both in the same slot.
 - **Nothing is cut mid-word.** Long agent prose goes through `firstSentences(text, max)`, which ends at a sentence or adds an ellipsis at a word boundary, and the whole text stays one fold or one link away.
 - **Monospace is for identifiers.** Run ids, spec ids, hashes, commands. Never for labels.
-- **Motion carries meaning.** The belt moves and the figures bob and tap only while the crew works. The one exception is the blink: an awake figure blinks every few seconds, asleep ones do not. Everything respects `prefers-reduced-motion`.
+- **Motion carries meaning.** The belt moves and the figures bob and tap only while the crew works. Awake figures blink and sleeping ones breathe their z's; the figure that stands for you bobs because it is waiting; a recorded decision pops once. Nothing else moves. Everything respects `prefers-reduced-motion`, and the sidebar's Hold still switch stops it all.
 
 ## Tokens (`app.css`, section 1)
 
@@ -76,7 +76,7 @@ Dark mode redefines the same names under `html[data-theme="dark"]`, the fills (`
 | The line | `.line` (`.belt`, `.stations > .st.done/.current/.ahead/.call` with `.figs`, `.post`, `.lbl`, `.d`), `.line.mini` | `lineStrip(record, "full" or "mini")`; the figures stand in `.figs` |
 | Crew figure | `svg.crew` with states `asleep working done blocked still` | `crewFigure(role, state, "l" / "s" / "xs", label)`; a `label` makes it `role="img"` |
 | Human figure | `svg.human.you` / `svg.human.decided` | `humanFigure(kind, size, label)` |
-| Roster | `.roster > .m.working/.done/.asleep/.blocked` | figure, name, one line, elapsed or cost |
+| Roster | `.roster > .m.working/.done/.asleep/.blocked/.interrupted` | figure, name, one line, elapsed or cost; five states, `interrupted` for a session the controller cut short |
 | Story | `.story > .grp` and `.e` (`time`, `.body .t .who`, `.d`) | `storyEntries(run)` returns entries with `group` = station key |
 | Your turn | `.turn` with `.lead-line`, `.next`, `.item` | sentences and hairlines; one button per item |
 | Board | `.board .g` (150px + four phase columns), `.colh`, `.rowh`, `.cell`, `.k` / `.k.agent` | rows are owners, columns are phases |
@@ -86,7 +86,7 @@ Dark mode redefines the same names under `html[data-theme="dark"]`, the fills (`
 
 ## Helpers (`app.js`, the top of the file)
 
-`el(tag, attrs, …children)` builds DOM; never `innerHTML` for agent text. `timeEl(iso, text?)`, `ago(iso)`, `dur(from, to)`, `money(n)`, `plural(n, one, many)`, `firstSentences(text, max)`, `crewNames(roles)`, `crewNamesLower(roles)`, `personName(actorId)` (hides `console`, `human` and other system actor ids), `gateLabel(kind)`, `stationOf(summary)`, `lineStrip(record, size)`, `crewFigure(…)`, `humanFigure(…)`, `statusSentence(summary, long)`, `metaLine(summary)`. New wording for an event kind goes into `storyEntries()` (the story) and `describe()` (the raw event list); both name the cause or the effect in plain words.
+`el(tag, attrs, …children)` builds DOM; agent-written markdown goes through `md()` (which escapes) before the `html:` attribute, never raw. `timeEl(iso, text?)`, `ago(iso)`, `dur(from, to)`, `money(n)`, `plural(n, one, many)`, `firstSentences(text, max)`, `crewNames(roles)`, `crewNamesLower(roles)`, `personName(actorId)` (hides `console`, `human` and other system actor ids), `gateLabel(kind)`, `stationOf(summary)`, `lineStrip(record, size)`, `crewFigure(…)`, `humanFigure(…)`, `statusSentence(summary, long)`, `metaLine(summary)`. New wording for an event kind goes into `storyEntries()` (the story) and `describe()` (the raw event list); both name the cause or the effect in plain words.
 
 ## Adding a screen
 

@@ -61,7 +61,9 @@
   const stationOf = r => {
     const i = stationIndex(r.stage);
     if (i >= 0) return i;
-    const stage = r.pause && r.pause.run_stage ? r.pause.run_stage : r.failed_in || (r.summary && r.summary.failed_in) || null;
+    if (r.design_only && r.stage === "completed") return 4;   // a design run ends at Gate 2: nothing is built
+    const sm = r.summary || r;
+    const stage = r.pause && r.pause.run_stage ? r.pause.run_stage : r.failed_in || sm.failed_in || sm.escalated_in || sm.closed_in || null;
     const j = stationIndex(stage);
     if (j >= 0) return j;
     if (r.stage === "closed" || r.stage === "escalated") { const d = (r.decisions || []).slice(-1)[0]; const k = stationIndex(d && d.kind); if (k >= 0) return k; }
@@ -105,7 +107,7 @@
     switch (r.status) {
       case "needs_you": {
         const what = r.open_questions ? (long ? `${cap(crewNamesLower((r.working && r.working.length ? r.working : ["decomposer"]).slice(0, 1)))} is waiting for your answer,` : "A question is waiting for your answer,")
-          : `${waitingOn || "A decision"} is waiting on you,`;
+          : cap(`${waitingOn || "a decision"} is waiting on you,`);
         return el("span", { class: "s" }, lead(what, "call"), `for ${waited}.`, long && r.open_questions === 0 && c.work_items ? ` ${plural(c.work_items, "work item")} so far.` : "");
       }
       case "running": {
@@ -117,10 +119,11 @@
       }
       case "paused": {
         const p = r.pause || {}, next = p.next || {};
+        if (!p.next) return el("span", { class: "s" }, lead("Paused: a session hit its cap,", "call"), `for ${waited}. Decide its budget gate: run it again with a higher cap, or close the run.`);
         return el("span", { class: "s" }, lead("Paused at its budget,", "call"), `for ${waited}. ${money(p.spent_usd)} of ${money(p.budget_usd)} spent; ${next.label || "the next step"} needs the cap raised to ${money(p.needed_usd)}, or the run closed.`);
       }
       case "stopped": return el("span", { class: "s" }, lead(`Stopped at ${STATIONS[stationOf(r)].label}.`, "bad"), "The controller exited without recording why; a decision here is not picked up until one drives the run again.");
-      case "failed": return el("span", { class: "s" }, lead(`Failed while ${r.failed_in === "implementing" ? "building" : r.failed_in ? words(r.failed_in) : "running"}.`, "bad"), r.failure || "", r.failure ? " " : "", long ? "" : "");
+      case "failed": return el("span", { class: "s" }, lead(`Failed ${({ implementing: "while building", decomposing: "while decomposing", specifying: "while specifying", intake: "while taking in the outcome", gate_1_decomposition: "at Gate 1", gate_2_spec_readiness: "at Gate 2" })[r.failed_in] || "while running"}.`, "bad"), r.failure || "", r.failure ? " " : "", long ? "" : "");
       case "escalated": return el("span", { class: "s" }, lead(`Escalated from ${STATIONS[stationOf(r)].label}.`, "warn"), (r.escalations || []).join(" ") || r.headline);
       case "closed": { const d = (r.decisions || []).slice(-1)[0] || {}; return el("span", { class: "s" }, lead(`Closed at ${gateLabel(d.kind)}${personName(d.by) ? ` by ${d.by}` : ""}.`, ""), d.comments ? `“${d.comments}”` : "Nothing more happens in this run."); }
       case "completed": return el("span", { class: "s" }, lead("Done.", "ok"), r.design_only ? `Design run: ${plural(c.specs_approved, "contract")} approved, nothing built.` : prsText());
@@ -266,7 +269,8 @@
       if (d) facts[kind] = `${(DECISION_LABEL[d.decision] || d.decision).toLowerCase()} · ${ago(d.at)}`;
     }
     const prs = s.pull_requests || [];
-    if (prs.length) { const open = prs.filter(p => p.state === "open").length, merged = prs.length - open; facts.completed = [open ? `${open} open` : null, merged ? `${merged} merged` : null].filter(Boolean).join(" · "); }
+    if (prs.length) { const open = prs.filter(p => p.state === "open").length, closed = prs.filter(p => /closed/.test(p.state || "")).length, merged = prs.length - open - closed;
+      facts.completed = [open ? `${open} open` : null, merged ? `${merged} merged` : null, closed ? `${closed} closed` : null].filter(Boolean).join(" · "); }
     return facts;
   }
   function lineStrip(r, size) {
@@ -284,8 +288,8 @@
     const facts = mini ? {} : lineFacts(r);
     const stations = el("div", { class: "stations" });
     STATIONS.forEach((st, i) => {
-      const done = i < idx || (stage === "completed" && i === STATIONS.length - 1);
-      const current = i === idx && !(stage === "completed" && i === STATIONS.length - 1);
+      const done = i < idx || (stage === "completed" && (s.design_only ? i === idx : i === STATIONS.length - 1));
+      const current = i === idx && !(stage === "completed" && (s.design_only || i === STATIONS.length - 1));
       const isCall = st.gate && openGates.includes(st.gate);
       const cls = ["st", done ? "done" : current ? "current" : "ahead", isCall ? "call" : ""].filter(Boolean).join(" ");
       const figs = el("span", { class: "figs" });
@@ -475,7 +479,7 @@
     const stopped = r.status === "stopped";
     const stoppedNote = stopped ? el("span", { class: "since t-bad" }, "The controller is stopped: the decision is recorded and applied once a controller drives the run again.") : null;
     if (c.kind === "agent") {
-      const item = itemShort((c.title || "").replace(/^.*?(spec_|wi-)/, "$1").split(/[ ,]/)[0]);
+      const im = /(spec_|wi-)([A-Za-z0-9-]+)/.exec(c.title || ""), item = im ? im[2] : "";
       return el("div", { class: "k agent" }, crewFigure(c.role, "working", "s", `${CREW_NAME[c.role] || words(c.role)}, at work`),
         el("div", { class: "txt" }, el("span", { class: "t" }, CREW_NAME[c.role] || words(c.role)), el("span", { class: "s" }, run),
           el("span", { class: "since" }, item && item !== c.title ? `${item} · ` : "", c.since ? [dur(c.since), " in"] : "at work")));
@@ -636,7 +640,7 @@
         return `${what}${m.sessions > 1 ? ` in ${plural(m.sessions, "session")}` : ""}${when ? `, ${when}` : ""}`;
       };
       const st = m.state === "working" ? (prettyTitle(title) || "At work") : m.state === "done" ? doneLine() : m.state === "blocked" ? "Stopped at its own budget cap"
-        : m.state === "interrupted" ? `Cut short by the ${s.status === "failed" ? "failure" : "resume"}${m.finished_at ? `, ${ago(m.finished_at)}` : ""}` : crewAsleepText(m.role, r);
+        : m.state === "interrupted" ? `Cut short by the ${m.interrupted_by === "resume" ? "resume" : "failure"}${m.finished_at ? `, ${ago(m.finished_at)}` : ""}` : crewAsleepText(m.role, r);
       const figState = m.state === "interrupted" ? "still" : m.state;
       roster.append(el("div", { class: `m ${m.state}` }, crewFigure(m.role, figState, "s", `${CREW_NAME[m.role] || words(m.role)}: ${m.state === "working" ? "at work" : m.state}`),
         el("div", { class: "txt" }, el("div", { class: "nm" }, el("span", null, CREW_NAME[m.role] || words(m.role)), el("span", null, right)),
@@ -683,7 +687,7 @@
       const engineerLine = openPrs.length ? ` ${openPrs.map(w => w.cr_id ? `Pull request #${w.cr_id}` : w.title).join(", ")} ${openPrs.length === 1 ? "is" : "are"} waiting on an engineer.` : "";
       const parkedLine = { failed: r.resumable ? "The run stopped. It can be resumed from where it was." : "The run stopped and cannot be resumed from here.",
         escalated: "The run is escalated. No gate is open and it cannot be resumed from here; the way forward is a new run from the outcome.", closed: "The run is closed. Nothing more happens in it." }[r.stage];
-      turn.append(el("p", { class: "lead-line" }, r.stage === "completed" ? `Nothing needs you here.${engineerLine || " The pull requests are on the code host."}` : TERMINAL[r.stage] ? (parkedLine || `${stageName}.`) : `Nothing needs you right now.${engineerLine}`));
+      turn.append(el("p", { class: "lead-line" }, r.stage === "completed" ? `Nothing needs you here.${r.design_only ? " Nothing was built; start a full run from the outcome to implement the approved contracts." : engineerLine || " Every pull request is merged or closed."}` : TERMINAL[r.stage] ? (parkedLine || `${stageName}.`) : `Nothing needs you right now.${engineerLine}`));
     }
     for (const g of recorded) turn.append(el("div", { class: "notice ok" }, el("b", null, `${DECISION_LABEL[g.recorded.decision] || g.recorded.decision} recorded on ${GATE_SHORT[g.kind]}. `), s.status === "stopped" ? "It is applied once a controller drives the run again. " : "The run picks it up within seconds. ", el("a", { href: `#/gates/${g.gate_id}` }, "View")));
     if (!TERMINAL[r.stage]) {
@@ -693,7 +697,7 @@
       else if (r.stage === "implementing" && !r.design_only) next.push("an engineer reviews each pull request on the code host as it opens");
       else if (r.stage === "completed" && !r.design_only) next.push("an engineer reviews and merges the pull requests on the code host");
       if (r.watch && r.watch.pending && r.watch.pending.length) next.push("the factory watches each merge and the dev deploy that follows");
-      if (next.length) turn.append(el("p", { class: "next" }, `Next for a person: ${next.join("; ")}.`));
+      if (next.length && !(r.stage === "completed" && !(r.work_items || []).some(w => w.stage === "cr_open"))) turn.append(el("p", { class: "next" }, `Next for a person: ${next.join("; ")}.`));
     }
     if (r.resumable && r.resuming) turn.append(el("div", { class: "notice info" }, el("b", null, "Resuming. "), "The controller is re-checking the branch; this page follows it."));
     else if (r.resumable && !b.paused) turn.append(resumeBox(r, runId));
@@ -871,7 +875,8 @@
         case "repository.created": E("po", "Product owner", "Repository created", `${p.url}${p.workflow_seeded === false ? ". The preview workflow could not be seeded (token scope); local previews do not need it." : ""}`); break;
         case "session.started": { const role = p.agent_key; if (!role || role === "codebase_researcher") break;
           const t = String(p.title || "");
-          const what = /respond|answer/i.test(t) ? "Answering the review" : /round (\d+)/i.test(t) && role === "reviewer" ? `Review round ${t.match(/round (\d+)/i)[1]} started` :
+          const tt = t.replace(/\b(spec_|wi-)[A-Za-z0-9-]+/g, "");   // the item id can contain any word
+          const what = /respond|answer/i.test(tt) ? "Answering the review" : /round (\d+)/i.test(tt) && role === "reviewer" ? `Review round ${tt.match(/round (\d+)/i)[1]} started` :
             { decomposer: "Decomposing started", spec_writer: "Writing a contract", spec_judge: "Judging the contracts", implementer: "Building started",
               reviewer: "Review started", security_reviewer: "Security review started", merge_judge: "Judging merge readiness", integrator: "Opening the pull request" }[role] || words(role);
           E("crew", CREW_NAME[role] || words(role), what, item || (t ? t.replace(`${r.run_id} `, "") : "")); break; }
@@ -885,12 +890,12 @@
             `${p.comments ? `“${firstSentences(p.comments, 240)}” ` : ""}${effect[p.decision] || ""}`.trim() || "No notes."); break; }
         case "question.asked": { const open = (r.questions || []).some(q => q.question_id === p.question_id); E(open ? "call" : "po", open ? "waiting on you" : "for the product owner", `The ${words(p.asked_by)} asked a question`, p.question); break; }
         case "question.answered": E("po", byName(p.answered_by) || "Product owner", "Question answered", `${p.answer}. The ${words(p.asked_by || "crew")} continues.`); break;
-        case "judge.verdict": E("crew", "Spec judge", p.result === "pass" ? `Contracts passed on round ${p.round}` : `Contracts sent back on round ${p.round}`, p.blocking ? `${plural(p.blocking, "blocking issue")} to fix.` : p.result === "pass" ? "Gate 2 opens next." : ""); break;
+        case "judge.verdict": E("crew", "Spec judge", p.result === "pass" ? `Contracts passed on round ${p.round}` : `Contracts need revision on round ${p.round}`, p.blocking ? `${plural(p.blocking, "blocking issue")}.` : p.result === "pass" ? "Gate 2 opens next." : ""); break;
         case "review.findings": { const n = findingCount(p);
           E("crew", "Reviewer", p.skipped ? `Review round ${p.round} skipped` : `Review round ${p.round}: ${plural(n, "finding")}${p.blocking ? `, ${p.blocking} blocking` : ""}`,
             p.skipped ? p.skipped : [item, p.summary ? `“${firstSentences(p.summary, 200)}”` : n ? (p.blocking ? "The implementer answers before the merge judge looks." : "None blocking.") : "Nothing to fix."].filter(Boolean).join(". ")); break; }
         case "review.response": E("crew", "Implementer", `Review round ${p.round} answered`, [item, dispositionText(p)].filter(Boolean).join(": ")); break;
-        case "merge.verdict": E("crew", "Merge judge", `Merge judge: ${words(p.result)}`, [item, p.result === "ready" ? "The integrator opens the pull request." : p.result ? "Another round." : "", p.summary ? firstSentences(p.summary, 200) : ""].filter(Boolean).join(". ")); break;
+        case "merge.verdict": E("crew", "Merge judge", `Merge judge: ${words(p.result)}`, [item, p.result === "ready" ? "The integrator opens the pull request." : p.result ? "Not ready." : "", p.summary ? firstSentences(p.summary, 200) : ""].filter(Boolean).join(". ")); break;
         case "cr.opened": E("crew", "Integrator", `Pull request${p.id ? ` #${p.id}` : ""} opened`, [item, p.url, "Now waiting on an engineer."].filter(Boolean).join(" · ")); break;
         case "cr.merged": E("eng", "Engineer", `Merged${p.id ? ` #${p.id}` : ""}`, [item, p.merge_commit_sha ? `as ${String(p.merge_commit_sha).slice(0, 10)}` : "", "The dev deploy is watched next."].filter(Boolean).join(" · ")); break;
         case "cr.closed": E("eng", "Engineer", `Pull request${p.id ? ` #${p.id}` : ""} closed without merging`, item ? `${item} is closed.` : ""); break;
@@ -1538,7 +1543,8 @@
       glance([[money(p.spent_usd), `spent across ${plural(p.sessions_finished || 0, "session")}`], [money(p.budget_usd), "the run's budget"],
         [money(next.cap_usd), `next: ${next.label || next.stage} (${plural(next.sessions || 1, "session")}), at most`], [money(p.needed_usd), "needed to continue"]]),
       el("p", { class: "explain" }, `Paused in the ${words(p.run_stage || "")} stage. Every session carries its own hard cap, so the check is spent plus the next step's caps: the run can never go past the budget. A step usually costs less than its cap.`),
-      el("p", { class: "explain" }, "The decision is applied by the controller when the run is continued: from the ", el("a", { href: `#/runs/${g.run_id}` }, "run page"), ", or with ", el("code", null, `factory resume ${g.run_id}`), "."))));
+      g.resumable === false ? el("p", { class: "explain" }, "This run cannot be driven again from here, so a decision recorded now is not applied. Start a new run from the outcome.")
+          : el("p", { class: "explain" }, "The decision is applied by the controller when the run is continued: from the ", el("a", { href: `#/runs/${g.run_id}` }, "run page"), ", or with ", el("code", null, `factory resume ${g.run_id}`), "."))));
   }
 
   function renderDeploy(doc, rv, rec) {
@@ -1627,7 +1633,7 @@
     function cls(d) { return d === "request_changes" ? "changes" : d === "reject" ? "reject" : "ok"; }
     function showRecorded(d) {
       status.replaceChildren(el("div", { class: `recorded ${cls(d.decision)}`, role: "status", tabindex: "-1" }, el("b", null, `${DECISION_LABEL[d.decision] || d.decision} recorded`),
-        `${ago(d.decided_at)}. ${g.run_status === "stopped" ? `Nothing applies it until a controller drives this run again (factory resume ${g.run_id}). ` : isBudget ? "The run is parked: continue it from its page to apply the decision. " : "The run picks it up within a few seconds. "}`,
+        `${ago(d.decided_at)}. ${g.run_status === "stopped" ? (g.resumable ? `Nothing applies it until a controller drives this run again (factory resume ${g.run_id}). ` : "Nothing applies it: this run cannot be driven again from here. Start a new run from the outcome. ") : isBudget ? "The run is parked: continue it from its page to apply the decision. " : "The run picks it up within a few seconds. "}`,
         el("a", { href: `#/runs/${g.run_id}` }, isBudget ? "Go to the run" : "Back to the run")));
       form.hidden = true;
       const line = status.querySelector(".recorded"); if (line) line.focus();   // a screen reader hears the outcome

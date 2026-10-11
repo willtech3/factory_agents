@@ -140,9 +140,19 @@ def local_activity_url(runs_dir: Path, activity_id: str | None) -> str | None:
     return None
 
 
+def _resumable_after_failure(st, events) -> bool:
+    """`factory resume` continues a failed run from its artefacts when it reached the build, or when it died while idle at
+    Gate 2 (runner.stopped_at_gate2): the sentence and the Resume button follow what resume accepts."""
+    if st.stage != RunStage.FAILED:
+        return False
+    last = next((ev.payload.get("stage") for ev in reversed(events) if ev.kind == "stage.entered"), None)
+    return last == RunStage.GATE_2_SPEC_READINESS.value or any(
+        ev.kind == "stage.entered" and ev.payload.get("stage") == "implementing" for ev in events)
+
+
 def crew_roster(events) -> list[dict[str, Any]]:
-    """One row per crew role from the run's session events: state (asleep, working, done), the live or last session,
-    sessions so far, cost so far."""
+    """One row per crew role from the run's session events: state (asleep, working, done, blocked, or interrupted when the
+    controller cut the session short, with interrupted_by failure|resume), the live or last session, sessions so far, cost so far."""
     by_role: dict[str, dict[str, Any]] = {r: {"role": r, "sessions": 0, "cost_usd": 0.0, "state": "asleep", "title": None,
                                                "started_at": None, "finished_at": None, "session_id": None, "live": []} for r in CREW_ROLES}
     started: dict[str, dict[str, Any]] = {}
@@ -169,6 +179,8 @@ def crew_roster(events) -> list[dict[str, Any]]:
             row["finished_at"] = ev.at
             cut = p.get("stop_reason") in ("interrupted", "unreachable") or p.get("outcome_result") == "interrupted"   # the controller stopped it on its way out
             row["state"] = "working" if row["live"] else ("blocked" if p.get("stop_reason") in ("budget_reached",) else "interrupted" if cut else "done")
+            if cut and not row["live"]:
+                row["interrupted_by"] = "failure"
         elif ev.kind == "run.resumed":
             # a resume starts new sessions; whatever its dead predecessor left open was cut short, not finished
             for row in by_role.values():
@@ -176,6 +188,7 @@ def crew_roster(events) -> list[dict[str, Any]]:
                     row["live"].clear()
                     row["finished_at"] = ev.at
                     row["state"] = "interrupted"
+                    row["interrupted_by"] = "resume"
         elif ev.kind == "run.failed":
             # sessions the orchestrator interrupted on its way out never get a session.finished of their own: they were
             # cut short, and the Console must not show them as done
@@ -186,6 +199,7 @@ def crew_roster(events) -> list[dict[str, Any]]:
                     row["live"].remove(sid)
                     row["finished_at"] = ev.at
                     row["state"] = "working" if row["live"] else "interrupted"
+                    row["interrupted_by"] = "failure"
     for row in by_role.values():
         row["cost_usd"] = round(row["cost_usd"], 2)
         row["live_count"] = len(row.pop("live"))
@@ -293,9 +307,7 @@ class Console:
         # one session hit its own cap is still being driven: its orchestrator waits on that gate, so nothing to resume.
         budget = self._budget(st, events, gates)
         paused = budget["paused"]
-        resumable = paused or (
-            st.stage == RunStage.FAILED
-            and any(ev.kind == "stage.entered" and ev.payload.get("stage") == "implementing" for ev in events))
+        resumable = paused or _resumable_after_failure(st, events)
         # Gate 3 and Stage 5 are followed by `factory watch`, a separate process; its heartbeat says whether one is running.
         pending = [wi.work_item_id for wi in pending_work_items(st)]
         watch = {"pending": pending, "watchable": bool(pending), "heartbeat": watcher_heartbeat(self.cfg.runs_dir, run_id)}
@@ -365,6 +377,13 @@ class Console:
         return {"gates": gates, "questions": questions}
 
     # ---- gates
+    def _gate_resumable(self, run_id: str, st, events) -> bool:
+        """Whether a decision recorded on this stopped run can ever be applied (see run_detail)."""
+        try:
+            return self._budget(st, events, self.queue.open_gates())["paused"] or _resumable_after_failure(st, events)
+        except Exception:  # noqa: BLE001 - a gate page must render even when the budget record is unreadable
+            return False
+
     def gate(self, gate_id: str) -> dict[str, Any]:
         rec = self.queue.open_gates().get(gate_id)
         if rec is None:
@@ -378,7 +397,7 @@ class Console:
         for key in ("open_gate_ids", "open_question_ids"):
             summary.pop(key, None)
         return {"gate": rec, "run_id": run_id, "run_title": self._title(run_id, events), "run_stage": st.stage.value,
-                "run_status": summary["status"], "summary": summary,
+                "run_status": summary["status"], "summary": summary, "resumable": self._gate_resumable(run_id, st, events),
                 "decided": decided, "review": self._review(run_id, rec, events)}
 
     def _review(self, run_id: str, rec: dict[str, Any], events) -> dict[str, Any]:
