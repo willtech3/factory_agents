@@ -14,6 +14,10 @@ from factory.sandbox_tools.environment_runner import check_evidence
 from factory.web.app import create_app
 
 
+MANIFEST = {"service": "example", "runtime": {"kind": "python", "version": "3.12", "entrypoint": "uvicorn app:app --port 8000", "port": 8000},
+            "health": {"path": "/health"}, "env": [], "test_environment": {"profile": "test_environment.json"}}
+
+
 @pytest.fixture
 def manager(tmp_path, root):
     return AppOnboarding(make_config(root, tmp_path / 'runs', gate_surface='web'))
@@ -45,6 +49,7 @@ def test_creation_has_no_execution_and_budget_and_host_validation(manager):
 
 
 def test_plan_scope_and_profile_validation(plan,tmp_path,root):
+    (tmp_path/'service_manifest.json').write_text(json.dumps(MANIFEST))
     got=validate_plan(plan,'existing',tmp_path,root/'schemas')
     assert got['profile']['runtime']=='linux'
     plan['files'].append({'path':'src/auth.py','content':'disabled'})
@@ -187,6 +192,10 @@ def test_run_binding_uses_only_verified_recipe_and_explicit_test_vaults(manager,
     profile['name']='changed'
     with pytest.raises(HTTPException) as exc: manager.run_settings(aid,target)
     assert exc.value.status_code==409 and 'base branch' in exc.value.detail
+    profile['name']=json.loads(plan['files'][0]['content'])['name']
+    fake.file_exists=lambda ref,path:path!='service_manifest.json'      # an app built before the Factory
+    with pytest.raises(HTTPException) as exc: manager.run_settings(aid,target)
+    assert exc.value.status_code==409 and 'has no service_manifest.json' in exc.value.detail
 
 
 def test_setup_feedback_invalidates_review_and_preserves_previous_proposal(manager,plan):
@@ -223,7 +232,7 @@ def test_a_root_recipe_cannot_silently_override_an_existing_manifest_pointer(pla
 def test_greenfield_recipe_and_proposed_manifest_must_agree(plan,tmp_path,root):
     path='verification/profile.json'
     plan['profile_path']=path; plan['files'][0]['path']=path
-    plan['files'].append({'path':'service_manifest.json','content':json.dumps({'test_environment':{'profile':path}})})
+    plan['files'].append({'path':'service_manifest.json','content':json.dumps({**MANIFEST,'test_environment':{'profile':path}})})
     assert validate_plan(plan,'greenfield',tmp_path,root/'schemas')['profile_path']==path
 
 
@@ -250,3 +259,17 @@ def test_a_reonboarded_plan_publishes_after_the_last_setup_pr(manager,plan,monke
     manager.update(aid,status='ready',pr_plan_sha256=None,pr_state='merged')   # a record from before pr_plan_sha256
     manager.start(aid,'publish',sha)
     assert started==['publish','publish']
+
+
+def test_an_app_without_a_manifest_proposes_one_and_never_edits_an_existing_one(plan,tmp_path,root):
+    """Apps built before the Factory rarely have the manifest manifest_valid needs, and only onboarding may add it."""
+    with pytest.raises(ValueError,match='has no service_manifest.json'):
+        validate_plan(plan,'existing',tmp_path,root/'schemas')
+    plan['files'].append({'path':'service_manifest.json','content':json.dumps({'test_environment':{'profile':'test_environment.json'}})})
+    with pytest.raises(ValueError,match="'service' is a required property"):
+        validate_plan(plan,'existing',tmp_path,root/'schemas')
+    plan['files'][-1]['content']=json.dumps(MANIFEST)
+    assert validate_plan(plan,'existing',tmp_path,root/'schemas')['profile_path']=='test_environment.json'
+    (tmp_path/'service_manifest.json').write_text(json.dumps(MANIFEST))
+    with pytest.raises(ValueError,match='cannot change the existing service_manifest.json'):
+        validate_plan(plan,'existing',tmp_path,root/'schemas')
