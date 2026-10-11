@@ -409,11 +409,15 @@ class AppOnboarding:
                    "evidence": ("Browser journeys only for an app with a browser UI; hosted browser permission does not make "
                                 "every app a browser test. APIs, bots, webhooks, workers, CLIs and libraries use functional "
                                 "verification checks."),
-                   "previous_attempt": previous_attempt, "feedback": r.get("feedback", ""),
+                   "feedback": r.get("feedback", ""), "previous_attempt": previous_attempt,
                    "instructions": "Inspect source only and propose a setup. No execution, external access or readiness claims."}
         repair = (" previous_attempt.verification records the first failed phase, service readiness, each check's "
                   "observation and the sandbox agent's diagnosis; fix those causes before anything else."
                   if (previous_attempt or {}).get("verification") else "")
+        # The request carries the whole previous plan, so a first read of it is cut off and a trailing field is never
+        # seen (live emoji-smith: the owner's requested check change was ignored). The owner's words go in the task itself.
+        if r.get("feedback"):
+            repair += " The owner's feedback for this attempt, which comes before reusing the previous plan: " + r["feedback"]
         driver = SessionDriver(self.cfg, client=self.client,
             on_session_started=lambda x: self._started(app_id, x), on_session_finished=lambda x: self._finished(app_id, x))
         # Discovery needs no outbound network or credentials: one shared limited environment, not one per app.

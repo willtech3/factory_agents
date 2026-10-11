@@ -287,3 +287,37 @@ def test_onboarding_drafts_skip_auto_mode_but_its_shell_does_not(root):
     for tool in ("write", "edit"):
         assert f"- {{name: {tool}, enabled: true, permission_policy: {{type: always_allow}}}}" in head
     assert "name: bash" not in head
+
+
+def test_owner_feedback_is_in_the_task_not_only_in_the_request(monkeypatch, tmp_path, root):
+    """Live emoji-smith: feedback sat after a 30 kB previous plan in onboarding-request.json, the agent's first read was
+    cut off, and the requested change was never seen. The feedback now leads the request and is in the task itself."""
+    cfg = make_config(root, tmp_path / "runs", gate_surface="web", agents={"app_onboarding": AgentRef(id="agent_onboard", version=1)})
+    manager = AppOnboarding(cfg, client=Client())
+    aid = manager.create(kind="existing", name="Bot", repository_url="https://github.com/example/bot", description="Slack bot",
+                         budget_usd=10)["app_id"]
+    manager.feedback(aid, "Assert OPENAI_IMAGE_MODEL instead of the literal model name")
+    sent = {}
+
+    class Driver:
+        def __init__(self, cfg, client=None, on_session_started=None, on_session_finished=None):
+            pass
+
+        def run(self, **kw):
+            sent.update(kw)
+            return SimpleNamespace(session_id="sesn_d", list_cost_usd=0.5, stop_reason="end_turn", outputs={}, last_message="")
+
+        def interrupt_active(self):
+            return []
+
+    monkeypatch.setattr(onboarding, "SessionDriver", Driver)
+    monkeypatch.setattr(onboarding, "ensure_environment", lambda *a, **kw: "env_discovery")
+    (tmp_path / "src").mkdir()
+    repo = committed(tmp_path / "src")
+    monkeypatch.setattr(manager, "source", lambda record: repo)
+    monkeypatch.setattr(onboarding.threading, "Thread", lambda target, args, **kw: SimpleNamespace(start=lambda: target(*args)))
+    manager.start(aid, "discover")
+    assert "Assert OPENAI_IMAGE_MODEL instead of the literal model name" in sent["description"]
+    request = json.loads(sent["uploads"]["onboarding-request.json"])
+    keys = list(request)
+    assert keys.index("feedback") < keys.index("previous_attempt")
