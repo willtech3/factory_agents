@@ -13,11 +13,95 @@ This document describes what happens between a human submitting an outcome and t
 | **Preview environment** | The per-branch deployment the platform's CI creates for every branch. The end-to-end surface for implementer, reviewer, and the orchestrator's verification. |
 | **Platform contract** | The skill (owned by the platform team; `skills/platform-contract/SKILL.md` is a placeholder) that says what the platform provides, what the app must define (a service manifest at a fixed path), and what agents must never touch. |
 | **Stage session** | One Managed Agents session with one agent, one job, its own context and budget. |
-| **Gate** | A point where a human decision is required before the run continues. Bound to artifact hashes. Read on an artifact page; decided on the gate surface (tracker, CLI, or forge; [ADR-0007](adr/0007-pluggable-gate-surfaces.md)). |
+| **Gate** | A point where a human decision is required before the run continues. Bound to artifact hashes. Read on an artifact page; decided on the gate surface (the Factory Console, the CLI, or the tracker; [ADR-0007](adr/0007-pluggable-gate-surfaces.md)). Nothing reaches the target repository before Gate 3 ([ADR-0011](adr/0011-no-design-change-requests.md)). |
 | **Change request (CR)** | A GitHub pull request or a GitLab merge request; the forge is pluggable ([ADR-0008](adr/0008-pluggable-forge-github-default.md)). |
 | **Deterministic check** | A computation the orchestrator performs that no agent can override. |
 
 **Security pass.** Beside the general adversarial passes, one Security reviewer session (Fable 5.1) reviews the same diff for trust boundaries, attacker-controlled input, authorisation, secrets and dependencies, with the orchestrator's deterministic pre-checks (`security_prechecks.json`: secret scan over the added lines, dependency audit and SAST when the host has the tools) as inputs. Its findings merge with the others, tagged `pass: security`; a committed credential is a merge check (`secret_scan`) nobody can override; a reproduced security, concurrency or data-integrity finding stands whatever severity it was given. `FACTORY_SECURITY_REVIEW=0` turns the pass off.
+
+## The path of a run
+
+Two processes carry a run. `factory run` (`runner.run`; the Console starts the same command) drives it from intake until every approved spec has a change request, and records `run.completed`. `factory watch` (`watcher.py`; the Console's **Watch** button) takes over from there: it follows each change request through human review and merge, then observes the deploy to `dev`. So a `completed` run has not necessarily merged or deployed anything. Each node names the function that does the step; paths are relative to `orchestrator/factory/`.
+
+```mermaid
+flowchart TD
+  start(["Console: Start a run / Request a change<br/>or factory run outcome.json"]) --> bind{"Target repository is an onboarded app?<br/>onboarding.binding_for"}
+  bind -- "yes" --> managed["Preview mode forced to managed,<br/>bound to the app's verified recipe and test vaults"]
+  bind -- "no, a new repository, or design-only" --> asis["Preview mode as configured<br/>(local or platform)"]
+  managed --> intake
+  asis --> intake
+  intake["Stage 0 · runner.run<br/>run.created, intake/outcome.json,<br/>tracker registration when Linear is configured"] --> dec
+
+  subgraph S1["Stage 1 + Gate 1 · runner._from_decompose"]
+    dec["stages/decompose.py::run_decompose<br/>decomposer session, outcome grader ≤ 4 iterations,<br/>codebase_researcher threads, ask_human"] --> dchk["Deterministic checks:<br/>schema, DAG acyclic, metric coverage"]
+    dchk --> g1page["gate_1.html rendered; Gate 1 opens on the surface,<br/>bound to the artifact sha256s"]
+    g1page --> g1{"Owner decides"}
+    g1 -- "request_changes<br/>(feedback.md, revision + 1)" --> dec
+  end
+  g1 -- "reject" --> closed(["closed"])
+  g1 -- "approve (+ notes per work item)" --> sw
+
+  subgraph S2["Stage 2 + Gate 2 · runner._from_specify"]
+    sw["stages/specify.py::run_specify<br/>spec_writer sessions in parallel (≤ 8),<br/>each sees the whole decomposition"] --> schk["Checks: schema, traceability, e2e_coverage<br/>(failures become blocking issues)"]
+    schk --> judge["One spec_judge session over the whole set"]
+    judge -- "revise: only the affected specs, ≤ 3 rounds" --> sw
+    judge -- "pass, escalate, or rounds used up" --> g2page["specify/final-&lt;spec&gt;.json stored, gate_2.html rendered;<br/>Gate 2 (or the escalation gate) opens"]
+    g2page --> g2{"Owner decides"}
+    g2 -- "request_changes<br/>(notes routed per spec)" --> sw
+  end
+  g2 -- "reject" --> closed
+  g2 -- "approve / approve_subset<br/>(must include every prerequisite)" --> rec["runner.record_approval<br/>gate_2/approval-&lt;gate&gt;.json:<br/>approved spec hashes + owner guidance"]
+  rec --> design{"design-only?"}
+  design -- "yes" --> done1(["completed; no repository touched"])
+  design -- "no" --> waves
+
+  subgraph S34["Stages 3–4 · runner.implement_and_integrate"]
+    waves["Specs whose dependencies have a change request,<br/>up to parallel_implementations per pass, one after another.<br/>Base: default branch, or the dependency's branch<br/>while its change request is open (runner.base_branch_for)"] --> impl["stages/implement.py::run_implement_one<br/>(next diagram)"]
+    impl --> mj{"Merge judge verdict"}
+    mj -- "another_round, escalate, or blocked.md" --> esc(["run.escalated for that spec"])
+    mj -- "ready" --> integ["stages/integrate.py::run_integrate<br/>head must equal the judged sha; no extra commit.<br/>run record stored; description rendered from cr_template.md<br/>and linted; the integrator sends it with open_change_request"]
+    integ --> pr["The orchestrator's tool handler checks the branches<br/>and opens the change request with its own token<br/>→ cr.opened, item cr_open"]
+  end
+  pr --> runDone(["run.completed<br/>(every approved spec has a change request)"])
+
+  subgraph S5["Gate 3 + Stage 5 · factory watch (watcher.py)"]
+    watch["Poll each open change request through the Forge protocol"] --> g3{"Human code review on the forge"}
+    g3 -- "closed" --> wclosed(["item closed"])
+    g3 -- "merged" --> dep["stages/deploy_observe.py<br/>find the pipeline for the merge commit, wait for the dev deploy,<br/>run the spec's e2e entries against the dev URL"]
+    dep -- "passed" --> dev(["deployed_dev"])
+    dep -- "pipeline or e2e failed" --> df{"DEPLOY_FAILURE gate"}
+    df -- "request_changes" --> reimpl(["back to implementing on a fresh branch"])
+    df -- "approve: the platform's fault" --> dep
+    df -- "reject" --> wclosed
+  end
+  pr -.-> watch
+```
+
+### One spec through Stage 3
+
+`run_implement_one` loops implementer rounds until nothing stands, then runs the merge judge once. Rounds 1 to `review_max_rounds` (2) are each reviewed; round 3 is the implementer's last response and goes straight to the judge.
+
+```mermaid
+flowchart TD
+  r0(["Round n"]) --> imp["implementer session on factory/&lt;run&gt;/&lt;spec&gt;<br/>uploads: spec.json and spec.md, Gate 2 guidance, dependency specs,<br/>preview.json, findings.json from round 2"]
+  imp -- "blocked.md" --> blk(["escalate"])
+  imp --> ver{"Authoritative verification of head_sha<br/>by the orchestrator"}
+  ver -- "managed" --> hv["hosted_verifier.py::HostedVerifier<br/>fresh hosted sandbox from the app's recipe:<br/>test_plan commands + e2e"]
+  ver -- "local" --> lv["LocalVerifier: per-run environment, test_plan commands;<br/>LocalPreview from the manifest + e2e"]
+  ver -- "platform" --> pv["wait_for_preview: URL from the forge's<br/>deployment record, then e2e against it"]
+  hv --> det
+  lv --> det
+  pv --> det
+  det["checks.py::run_all_for_merge<br/>scope, protected tests, test weakening, criterion→test mapping,<br/>command results, manifest, e2e_coverage, e2e_preview"] --> last{"Last round, or a DET-only response<br/>whose checks now pass?"}
+  last -- "yes" --> judge
+  last -- "no" --> rev["In parallel: reviewer_passes (2) fresh reviewer sessions<br/>+ one security_reviewer when enabled"]
+  rev --> merge["merge_findings: dedupe by location, strictest wins;<br/>failed checks added as DET-* findings"]
+  merge --> stand{"Findings standing,<br/>or a check failed?"}
+  stand -- "no" --> judge
+  stand -- "yes: responding" --> r0
+  judge["merge_judge session: re-runs reproductions,<br/>records a verdict per acceptance criterion"] --> force["A check failed and the verdict is ready?<br/>→ forced to another_round"]
+  force --> out(["merge_readiness verdict"])
+```
 
 ## Stage by stage
 
@@ -34,7 +118,7 @@ The decomposer decomposes only as much as reviewability needs: one work item whe
 Outputs: `decomposition.json`, `decomposition.md`. Deterministic checks: schema, DAG acyclic, every success metric covered or explicitly marked not movable by code, and `size_budget` (no item estimated above size M; see **Size** below). One automatic retry on failure, then escalation.
 
 ### Gate 1: Decomposition review
-The orchestrator renders `gate_1.html` (summary, metric coverage, work-item table, open questions, the full markdown, the artifact hashes) and opens the gate on the configured surface: a comment with the summary, links, and sha256 list on the run's tracker issue (default), or a **draft design change request** holding the files under `.factory/runs/<run_id>/` on a `factory/<run_id>/design` branch (`FACTORY_GATE_SURFACE=forge`). The owner reads the summary (under 150 lines), the work-item table, coverage, out-of-scope, and open questions. Decision options: approve, request changes (comments, from the tracker, the CLI, or inline on the design CR, become `feedback.md` for a re-run with `revision + 1`), reject (closes the run).
+The orchestrator renders `gate_1.html` (summary, metric coverage, work-item table, open questions, the full markdown, the artifact hashes) and opens the gate on the configured surface: a comment with the summary, links, and sha256 list on the run's tracker issue when Linear is configured, otherwise in the Factory Console and the CLI's file queue. The owner reads the summary (under 150 lines), the work-item table, coverage, out-of-scope, and open questions. Decision options: approve, request changes (comments, from the Console, the CLI, or the tracker, become `feedback.md` for a re-run with `revision + 1`), reject (closes the run).
 
 ### Stage 2: Specify
 One `spec_writer` session per work item with `rubrics/spec.md` as its outcome rubric, all at once (`Policy.parallel_spec_writers`, default 8). Each writer gets the whole decomposition so it knows what its siblings will do; interface mismatches between siblings are the judge's job to catch and route back, which is cheaper than serialising writers along the dependency chain (`Policy.spec_waves` restores waves). Then **one** `spec_judge` session receives the entire set, normalised to JSON (no prose rendering, so formatting cannot bias it), plus the rubric, outcome, and decomposition. It scores every criterion per spec with evidence and judges set-level coherence: interface mismatches, overlaps, gaps, ordering, contradictions, and a goal-coverage matrix mapping each success metric to the acceptance criteria that move it.
@@ -44,10 +128,10 @@ Verdict `pass` goes to Gate 2. `revise` routes issues back to the owning specs o
 Deterministic checks before the judge spends tokens: schema validity, traceability to the decomposition, `size_budget` (the spec's `estimated_lines` is at size M or below and matches `estimated_size`), `criteria_describe_product` (no criterion names the factory's evidence protocol; a criterion is product behaviour, rubric S13), and `e2e_coverage` (every `user_visible` criterion has a `test_plan.e2e` entry). Failures are injected into the verdict as blocking issues. The judge additionally scores S11 (deployable through the platform contract; manifest present and valid), S12 (end-to-end coverage, with honest `user_visible` flags) and S13 (criteria describe the product a user, operator or caller observes, not the evidence that proves it; [post-mortem 2026-10-11](postmortems/2026-10-11-evergreen-frontier-models-pr.md) §2).
 
 ### Gate 2: Specification readiness
-`gate_2.html` is rendered (judge summary first, goal-coverage matrix, a section per spec, open questions, hashes) and the gate opens on the surface; with the forge surface the design CR is updated with `specs/*.json`, `specs/*.md`, and `verdict.json`. The owner sees the judge's `summary_for_human` first, then the goal-coverage matrix, then per-spec issues. Options: approve all, approve a subset, request changes, reject. Only a subset's selected specs are built, and the selection must include every prerequisite the gate presented. The Console, `factory decide` and the runner all refuse a selection that leaves one out. The specs left out are not built in this run and are not sent back to a writer; request changes to have them revised. Approval marks each spec `SPEC_APPROVED` and binds the decision to the artifact hashes. The owner's approval notes travel to the implementers as bounded per-spec guidance (`gate_2/approval-<gate_id>.json`, which also records the approved spec hashes). The notes never change a spec, and a resumed implementation refuses a spec whose bytes differ from what was approved.
+`gate_2.html` is rendered (judge summary first, goal-coverage matrix, a section per spec, open questions, hashes) and the gate opens on the surface. The owner sees the judge's `summary_for_human` first, then the goal-coverage matrix, then per-spec issues. Options: approve all, approve a subset, request changes, reject. Only a subset's selected specs are built, and the selection must include every prerequisite the gate presented. The Console, `factory decide` and the runner all refuse a selection that leaves one out. The specs left out are not built in this run and are not sent back to a writer; request changes to have them revised. Approval marks each spec `SPEC_APPROVED` and binds the decision to the artifact hashes. The owner's approval notes travel to the implementers as bounded per-spec guidance (`gate_2/approval-<gate_id>.json`, which also records the approved spec hashes). The notes never change a spec, and a resumed implementation refuses a spec whose bytes differ from what was approved.
 
 ### Stage 3: Implement, review, judge (per spec)
-Specs are scheduled in dependency waves; up to `parallel_implementations` run at once, each on its own branch `factory/<run_id>/<spec_id>` cut from the default branch (or from the dependency's branch when stacked).
+Specs are scheduled in dependency waves; each pass takes up to `parallel_implementations` ready specs and implements them one after another, each on its own branch `factory/<run_id>/<spec_id>` cut from the default branch (or from the dependency's branch when stacked).
 
 1. **Implementer** session, outcome rubric `rubrics/implementation.md`. Gets the repository the forge's way (GitHub: mounted at `/workspace/repo` through the native `github_repository` resource, token injected by Anthropic's git proxy; GitLab: clones with the vault credential of ADR-0003), works in vertical slices with a test checkpoint each, commits per slice with the criteria covered, pushes. The push triggers the platform's pipeline, which deploys the branch to its preview environment; the session's `preview.json` (read by the orchestrator from the forge's workflow-run and deployment records) carries the URL, and the implementer must run every `test_plan.e2e` entry against it and record the results. Writes `implementation_report.json`. May write `blocked.md` instead, which escalates.
 2. **Authoritative verification** by the orchestrator (in production: a CI job on the branch): checkout `head_sha`, build the per-run virtual environment from the repository (the manifest's `runtime.setup`, else `pyproject.toml`; the check `verification_setup`), run `test_plan.commands` in it (each command in its own process group, killed when it ends), compute the diff, read the preview URL for `head_sha` from the forge's deployment record (the platform's CI deploys the factory branch and records the Deployment; the orchestrator never derives the URL from an agent's report) or, with `FACTORY_PREVIEW=local`, start the service from the manifest entrypoint itself, run `test_plan.e2e` against it (`LocalVerifier.run_e2e`), and run the deterministic checks (scope, protected tests, test weakening, criterion-to-test mapping, command results, `e2e_coverage`, `manifest_valid`, `e2e_preview`). An e2e entry that could not run counts as failed. Results are stored and later handed to the merge judge verbatim.
@@ -91,14 +175,14 @@ Work items have their own state (`pending → spec_drafting → spec_judging →
 | Spec judge rounds | 3 | Then escalate. |
 | Review rounds | 2 | One fresh review per round. |
 | Reviewer passes | 2 | Independent copies, merged. |
-| Parallel implementations | 3 | Separate branches; serial merge via Gate 3. |
+| Parallel implementations | 3 | Ready specs taken per scheduling pass; they are implemented one after another, on separate branches, and merge serially via Gate 3. |
 | Preview wait | 30 min | How long authoritative verification waits for the platform's pipeline to deploy `head_sha` to its preview before `e2e_preview` fails closed. |
 | Dev pipeline timeout | 60 min | Stage 5: how long the orchestrator watches the dev pipeline before opening a `DEPLOY_FAILURE` gate. |
 | Size budget | XS ≤ 50, S ≤ 150, M ≤ 400 hand-written lines | `FACTORY_SIZE_BUDGET` (`Policy.size_budget_lines`). See **Size**. |
 
 ## Size
 
-A change's size is its hand-written changed lines (added plus removed), tests included. Generated files are excluded: a path marked `linguist-generated` in the repository's `.gitattributes`, a lockfile, or a path the spec declares in `regenerated` with the command that rewrites it (`orchestrator/factory/size.py`; [post-mortem 2026-10-11](postmortems/2026-10-11-evergreen-frontier-models-pr.md) §3). The budget is enforced when planning: the decomposer gives every item `estimated_lines` and splits anything above M, putting a refresh that rewrites a large generated file in its own item that lands first unless it is small; the spec writer estimates again and the spec judge (rubric S5) and the `size_budget` pre-check reject a spec above M. At merge, the `size_budget` check reports hand-written lines (app and tests) and generated lines against the spec's estimate. Going over budget is a flag shown in the run record and in the pull request's size line ("N hand-written lines (app X, tests Y); G generated lines in <files>, regenerated by `<command>`"); the check always passes, so it never triggers another round. App onboarding lists the generated files it finds and asks the owner to mark them `linguist-generated` (existing-app onboarding cannot write `.gitattributes` itself).
+A change's size is its hand-written changed lines (added plus removed), tests included. Generated files are excluded: a path git reports as `linguist-generated` at the head (`git check-attr`, so nested `.gitattributes` files count), a lockfile, or a path the spec declares in `regenerated` with the command that rewrites it (`orchestrator/factory/size.py`; [post-mortem 2026-10-11](postmortems/2026-10-11-evergreen-frontier-models-pr.md) §3). The budget is enforced when planning: the decomposer gives every item `estimated_lines` and splits anything above M, putting a refresh that rewrites a large generated file in its own item that lands first unless it is small; the spec writer estimates again and the spec judge (rubric S5) and the `size_budget` pre-check reject a spec above M. At merge, the `size_budget` check reports hand-written lines (app and tests) and generated lines against the spec's estimate. Going over budget is a flag shown in the run record and in the pull request's size line ("N hand-written lines (app X, tests Y); G generated lines in <files>, regenerated by `<command>`"); the check always passes, so it never triggers another round. App onboarding lists the generated files it finds and asks the owner to mark them `linguist-generated`; existing-app onboarding cannot write `.gitattributes`, so it states the lines to add as a limitation instead.
 
 ## Failure handling
 
@@ -113,7 +197,7 @@ A change's size is its hand-written changed lines (added plus removed), tests in
   - every presented artefact (`specify/final-<spec_id>.json`, `judge/final-verdict.json`) still has exactly the sha256 the gate showed;
   - the gate surface's record matches the logged `gate.opened`.
 
-  The resumed controller records `run.resumed` with the gate, its hashes and the preview configuration. It waits for the owner's decision, which the surface validates against those hashes as always, and runs no agent until then. approve, approve_subset, request_changes (the next specification round, numbered after every stored round) and reject then follow the usual Gate 2 path. A decided gate, a stop that interrupted a session, a missing or changed artefact, a changed gate record, or a `--budget` change is refused, and the refusal writes nothing. `--preview managed` also needs the approved recipe fingerprint (`--test-profile-sha256`) and valid managed settings. Once a run has been resumed in managed mode, it refuses any later resume without managed mode. Each `factory resume` holds a nonblocking per-run lock (`runs/<run>/controller.lock`) for its whole drive, and a second one is refused. Controllers started by older code take no lock, so stop them first. Decisions must come from the Console or `factory decide`, because a tracker queue knows only the gates its own process opened.
+  The resumed controller records `run.resumed` with the gate, its hashes and the preview configuration. It waits for the owner's decision, which the surface validates against those hashes as always, and runs no agent until then. approve, approve_subset, request_changes (the next specification round, numbered after every stored round) and reject then follow the usual Gate 2 path. A decided gate, a stop that interrupted a session, a missing or changed artefact, a changed gate record, or a `--budget` change is refused, and the refusal writes nothing. `--preview managed` also needs the approved recipe fingerprint (`--test-profile-sha256`) and valid managed settings. Once a run has been resumed in managed mode, it refuses any later resume without managed mode. Each `factory resume` holds a nonblocking per-run lock (`runs/<run>/controller.lock`) for its whole drive, and a second one is refused. Decisions must come from the Console or `factory decide`, because a tracker queue knows only the gates its own process opened.
 - **No preview for the branch:** `preview.json` reports `pending` or `failed`; agents run `local` e2e entries meanwhile, and the orchestrator's `e2e_preview` check fails closed until the platform's pipeline has deployed `head_sha`. A persistent platform failure is a `blocked.md` from the implementer, not something it works around.
 - **Dev deploy or dev e2e failure after merge:** `DEPLOY_FAILURE` gate (Stage 5) with the log excerpt; back to `IMPLEMENTING` on a fresh branch, re-observe, or close.
 

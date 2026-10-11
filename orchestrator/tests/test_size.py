@@ -1,4 +1,6 @@
 """Size counts hand-written lines: tests included, generated files excluded (post-mortem 2026-10-11 §3)."""
+import subprocess
+
 import pytest
 
 from factory import checks, size
@@ -12,8 +14,9 @@ BUDGET = size.DEFAULT_BUDGET
 def test_budget_parsing_and_bands():
     assert size.parse_budget(None) == {"XS": 50, "S": 150, "M": 400}
     assert size.parse_budget("XS=30, s=100,M=300") == {"XS": 30, "S": 100, "M": 300}
-    with pytest.raises(ValueError):
-        size.parse_budget("S=500")
+    for bad in ("S=500", "S=1.5e2", "S=", "L=900", "M=400x"):
+        with pytest.raises(ValueError):
+            size.parse_budget(bad)
     assert [size.size_for(n, BUDGET) for n in (0, 50, 51, 150, 400, 401)] == ["XS", "XS", "S", "S", "M", "L"]
 
 
@@ -29,6 +32,40 @@ def test_gitattributes_lockfiles_and_spec_declared_regeneration():
     # a lockfile counts as generated unless .gitattributes says otherwise
     assert (m["app"], m["tests"], m["hand_written"]) == (71 + 2100, 532, 2703) and m["commands"] == ["bun run catalog:refresh"]
     assert {f["path"] for f in size.measure(STATS)["generated_files"]} == {"bun.lock"}
+    # git's pattern rules: a pattern ending in "/" matches no file, a leading "/" anchors at the root
+    assert size.measure(STATS, gitattributes="catalog-watch/ linguist-generated\n/report.md linguist-generated\n")["generated"] == 2100
+
+
+def _git(repo, *args):
+    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def test_measured_from_git_itself(tmp_path):
+    """Nested .gitattributes, renames and odd paths come from git (check-attr --source, numstat -z), not a re-parse."""
+    repo = tmp_path / "repo"
+    (repo / "api").mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com"), _git(repo, "config", "user.name", "t")
+    (repo / "api" / "old.ts").write_text("".join(f"line {i}\n" for i in range(20)))
+    _git(repo, "add", "."), _git(repo, "commit", "-qm", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "api" / ".gitattributes").write_text("*.gen.ts linguist-generated\n")
+    (repo / "api" / "client.gen.ts").write_text("x\n" * 300)
+    (repo / "notes with tab\t.md").write_text("a\nb\n")
+    _git(repo, "mv", "api/old.ts", "api/new.ts")
+    (repo / "api" / "new.ts").write_text("".join(f"line {i}\n" for i in range(20)) + "added\n")
+    _git(repo, "add", "."), _git(repo, "commit", "-qm", "head")
+    stats, m = size.measure_repo(repo, base, _git(repo, "rev-parse", "HEAD"))
+    assert {f["path"] for f in stats["files"]} == {"api/.gitattributes", "api/client.gen.ts", "api/new.ts", "notes with tab\t.md"}
+    assert [f["path"] for f in m["generated_files"]] == ["api/client.gen.ts"] and m["generated"] == 300
+    assert m["hand_written"] == 1 + 1 + 2
+
+
+def test_integral_float_estimates_count():
+    assert size.whole(900.0) == 900 and size.whole(True) is None and size.whole(1.5) is None
+    assert size.estimate_of({"estimated_lines": {"hand_written": 120.0}}) == 120
+    dec = {"work_items": [{"work_item_id": "wi-b", "size": "M", "estimated_lines": 900.0}]}
+    assert "wi-b (900 lines)" in checks.decomposition_size(dec, BUDGET).detail
 
 
 def test_size_line_and_flag():
@@ -68,11 +105,18 @@ def test_merge_check_reports_and_never_fails(examples):
 
 def test_onboarding_asks_to_mark_generated_files(tmp_path, root):
     from factory.onboarding import GENERATED_QUESTION, generated_files_question
-    plan = {"questions": [], "files": [], "generated_files": [
-        {"path": "catalog-watch/openrouter-models.json", "evidence": "written by scripts/catalog.ts", "regenerated_by": "bun run catalog:refresh"}]}
-    asked = generated_files_question(plan, "existing")["questions"][0]
+    plan = {"questions": [], "files": [], "limitations": [], "generated_files": [
+        {"path": "catalog-watch/openrouter-models.json", "evidence": "written by scripts/catalog.ts " + "x" * 400,
+         "regenerated_by": "bun run catalog:refresh"}]}
+    asked = generated_files_question(plan, "greenfield")["questions"][0]
     assert asked["id"] == GENERATED_QUESTION and asked["required"] is False
-    assert "catalog-watch/openrouter-models.json linguist-generated=true" in asked["prompt"] and "cannot change .gitattributes" in asked["prompt"]
+    assert "catalog-watch/openrouter-models.json linguist-generated=true" in asked["prompt"] and "x" * 101 not in asked["prompt"]
     marked = {**plan, "files": [{"path": ".gitattributes", "content": "catalog-watch/*.json linguist-generated\n"}]}
     assert generated_files_question(marked, "greenfield")["questions"] == []
-    assert generated_files_question(marked, "existing")["questions"][0]["id"] == GENERATED_QUESTION
+    # existing-app onboarding cannot write .gitattributes and nothing would act on an answer: a stated limitation
+    existing = generated_files_question(plan, "existing")
+    assert existing["questions"] == [] and "cannot change .gitattributes" in existing["limitations"][0]
+    many = {**plan, "generated_files": [{"path": f"gen/{i:02}.json", "evidence": "e" * 300} for i in range(20)]}
+    prompt = generated_files_question(many, "greenfield")["questions"][0]["prompt"]
+    assert "gen/11.json linguist-generated=true" in prompt and "and 8 more" in prompt and len(prompt) <= 2000
+

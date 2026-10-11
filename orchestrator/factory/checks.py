@@ -228,9 +228,9 @@ def metric_coverage(outcome: dict[str, Any], decomposition: dict[str, Any]) -> C
 def decomposition_size(decomposition: dict[str, Any], budget: dict[str, int]) -> CheckResult:
     """No work item is estimated above size M: hand-written lines, tests included, generated files excluded
     (size.py; post-mortem 2026-10-11 §3). An item above M is split before anyone specifies it."""
-    from .size import size_for
-    over = [f"{w['work_item_id']} ({w['estimated_lines']} lines)" for w in decomposition.get("work_items", [])
-            if isinstance(w.get("estimated_lines"), int) and size_for(w["estimated_lines"], budget) == "L"]
+    from .size import size_for, whole
+    over = [f"{w['work_item_id']} ({whole(w.get('estimated_lines'))} lines)" for w in decomposition.get("work_items", [])
+            if whole(w.get("estimated_lines")) is not None and size_for(whole(w["estimated_lines"]), budget) == "L"]
     big = [w["work_item_id"] for w in decomposition.get("work_items", []) if w.get("size") == "L"]
     problems = ([f"estimated above size M (≤ {budget['M']} hand-written lines); split them: {over}"] if over else []) + \
                ([f"sized L; split them: {big}"] if big else [])
