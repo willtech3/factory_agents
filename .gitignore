@@ -9,7 +9,7 @@ __pycache__/
 # Orchestrator runtime state
 runs/
 evals/results/
-# the sh -> bash 4+ symlink the local verifier creates on macOS
+# the verifier's sh -> bash 4+ shim belongs under a run's verify dir; a test that leaks it here fails (tests/conftest.py)
 orchestrator/shell-shim/
 
 # Secrets never belong here; ant apply's lock file does and must be committed.
