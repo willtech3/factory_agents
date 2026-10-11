@@ -45,9 +45,9 @@ Every introduced or changed interface has a signature, schema fragment, or examp
 - 3: as 2, and notes an existing test the implementer must keep green.
 
 ## S7. Test plan is executable
-`test_plan.commands` are test, build or lint runs the repository supports, runnable at any commit of the implementer's branch; a shell assertion that a file exists or that a docstring or README contains text (`test -f`, `grep`) is not a command but a `static_check` criterion. `new_tests` cover every criterion with `automated_test`.
+`test_plan.commands` are test, build or lint runs the repository supports, runnable at any commit of the implementer's branch; a shell assertion that a file exists or that a docstring or README contains text (`test -f`, `grep`) is not a command but a `static_check` criterion. `new_tests` cover every criterion with `automated_test`. The planned tests are proportionate: the ones a maintainer would keep, each behaviour and boundary once. This is judgement, not a ratio of test lines to code lines (post-mortem 2026-10-11 §2: 71 lines of product change came with 1,024 lines of tests and fixture).
 - 0: a command does not exist or is a file-existence or text assertion, or a criterion has no planned test.
-- 1: commands exist; mapping incomplete.
+- 1: commands exist; mapping incomplete, or the planned tests are far heavier than the behaviour (a suite per criterion, tests of test helpers).
 - 2: every automated criterion maps to a planned test.
 - 3: as 2, and names the fixture or harness the tests should reuse.
 
@@ -84,3 +84,9 @@ Every acceptance criterion with `user_visible: true` is covered by at least one 
 - 1: covered, but an entry's command would not fail if the criterion were unmet (asserts only a 200), or a `local` stand-in has no `verification_note`.
 - 2: every user-visible criterion covered by a command that fails when the behaviour is wrong: a `preview` entry where one run can observe it, otherwise a `local` entry plus the `verification_note`.
 - 3: as 2, with a `local` counterpart for every `preview` entry so the implementer can iterate before the preview deploys.
+
+## S13. Criteria describe the product, not the proof
+Each acceptance criterion is behaviour a user, an operator or a caller of the app can observe through the app. The evidence the factory collects to prove it is not a criterion: the browser evidence format or its count of screenshots and recordings, a test harness's classification of its own outcomes (blocked versus failed), redaction of test credentials, the shape of an evidence file, or "values derive from captured evidence". A capture that proves provenance (the raw API response behind derived data) is a run artifact, planned as a committed fixture only when a product test reads it. Post-mortem 2026-10-11 §2: two criteria about one feature's browser test (its `result.json` and media, its status classifier) turned review onto the test, and every contested finding of that run was about the test's own plumbing. The orchestrator's `criteria_describe_product` pre-check refuses a criterion that names the evidence protocol itself (`FACTORY_*` variables, `viewport_observed`).
+- 0: a criterion is about the factory's evidence or a test's own mechanics, or the plan commits a provenance capture no product test reads.
+- 2: every criterion is product behaviour someone can observe.
+- 3: as 2, and each criterion says who observes it (user, operator, caller).

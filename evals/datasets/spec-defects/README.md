@@ -19,6 +19,7 @@ Labelled specifications for evaluating the **Spec Judge**: does it catch planted
 | GRD | `context` cites a path that does not exist in the repo | S6 |
 | TST | a test plan command that does not exist, or a criterion without a planned test | S7 |
 | DEP | `dependencies.specs` contradicts the decomposition's `depends_on` | S8 |
+| PRF | a criterion about the proof, not the product: the browser evidence format, a test's own blocked/failed classifier, or "values derive from captured evidence" (post-mortem 2026-10-11 §2) | S13 |
 | MIS | set-level: spec A produces `billing.retries_exhausted`, spec B consumes `billing.final_failure` | coherence.interface_mismatches |
 | OVL | set-level: two specs modify the same file with no declared dependency | coherence.overlaps |
 | GAP | set-level: a decomposition work item has no spec | coherence.gaps |
