@@ -1,6 +1,6 @@
 # Running the factory end to end with a personal GitHub repo and a personal Linear workspace
 
-This is the first real run. It uses the defaults the orchestrator now has: GitHub as the forge ([ADR-0008](adr/0008-pluggable-forge-github-default.md)) and Linear as the gate surface ([ADR-0007](adr/0007-pluggable-gate-surfaces.md)). Nothing in this repository has been run against the live platform, GitHub, or Linear yet; this guide is also the verification plan. Expect field-name surprises in `sessions.py`, `forge/github.py`, and `surfaces/tracker.py`, and fix them as you go.
+This is the first real run. It uses the defaults the orchestrator now has: GitHub as the forge ([ADR-0008](adr/0008-pluggable-forge-github-default.md)) and Linear as the gate surface ([ADR-0007](adr/0007-pluggable-gate-surfaces.md)). The platform and GitHub paths have run live (2026-10-10, see the [post-mortem](postmortems/2026-10-10-first-live-runs.md)); those runs decided gates in the Console (`FACTORY_GATE_SURFACE=web`), so the Linear surface has not been confirmed live. Expect field-name surprises in `surfaces/tracker.py` and fix them as you go.
 
 What you need: an Anthropic Console account with Managed Agents access, a personal GitHub account, a personal Linear workspace (free tier is fine), Python 3.11+, git, and the `ant` CLI (`brew install anthropics/tap/ant`; version 1.30 or later for `ant apply`).
 
@@ -86,7 +86,7 @@ Then:
 cd orchestrator && .venv/bin/factory doctor
 ```
 
-It prints the agent ids, the environment, `forge github https://github.com <you>/<repo> token=set`, `gate surface tracker`, a live `platform` line saying how many of the eight agents were found on the platform, and `ok`. Anything missing is listed by variable name, separately for a full run and for a design-only run.
+It prints the agent ids, the environment, `forge github https://github.com <you>/<repo> token=set`, `gate surface tracker`, a live `platform` line saying how many of the agents in `claude-lock.json` were found on the platform, and `ok`. Anything missing is listed by variable name, separately for a full run and for a design-only run.
 
 ## 6. Run
 

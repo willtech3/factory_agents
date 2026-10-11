@@ -64,8 +64,9 @@ def make_publisher(cfg: "Config") -> PagePublisher:
 # ------------------------------------------------------------------------------------------ rendering
 
 _CSS = """
-:root{--fg:#1b1b1b;--bg:#fff;--muted:#5f6368;--line:#e3e3e3;--ok:#1a7f37;--warn:#9a6700;--bad:#b42318;--soft:#f6f7f9}
-@media(prefers-color-scheme:dark){:root{--fg:#e8e8e8;--bg:#121212;--muted:#9aa0a6;--line:#2c2c2c;--soft:#1c1c1c}}
+:root{--fg:#1b1b1b;--bg:#fff;--muted:#5f6368;--line:#e3e3e3;--ok:#1a7f37;--warn:#9a6700;--bad:#b42318;--soft:#f6f7f9;--link:#1d4ed8;--visited:#6b21a8}
+@media(prefers-color-scheme:dark){:root{--fg:#e8e8e8;--bg:#121212;--muted:#9aa0a6;--line:#2c2c2c;--soft:#1c1c1c;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--link:#8ab4f8;--visited:#c58af9}}
+a{color:var(--link)}a:visited{color:var(--visited)}a:focus-visible{outline:2px solid currentColor;outline-offset:2px}
 body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--fg);background:var(--bg);margin:0;padding:24px 16px;max-width:1040px;margin-inline:auto}
 h1{font-size:1.6rem;margin:.2em 0}h2{font-size:1.2rem;margin-top:2em;border-bottom:1px solid var(--line);padding-bottom:.2em}h3{font-size:1.05rem;margin-top:1.4em}
 table{border-collapse:collapse;width:100%;margin:.6em 0;font-size:.92em}th,td{border:1px solid var(--line);padding:6px 8px;vertical-align:top;text-align:left}th{background:var(--soft)}

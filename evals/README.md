@@ -20,7 +20,6 @@ evals/
   graders/
     deterministic.py        wraps orchestrator/factory/checks.py for eval use
     stochastic.py           LLM judge with N votes, position swap, bootstrap CI, kappa
-    reviewer_paired.py      paired discrimination for the reviewer (clean vs planted-defect)
   run_eval.py               runs one stage over one dataset for one agent version; writes results/<timestamp>/
   results/                  gitignored
 ```

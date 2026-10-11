@@ -45,6 +45,10 @@ def list_repositories(cfg: Config, page: int) -> dict:
                 'full_name': item['full_name'], 'url': item['html_url'],
                 'default_branch': item.get('default_branch') or 'main',
                 'private': bool(item.get('private')), 'selectable': reason is None, 'unavailable_reason': reason,
+                # a new repository can be created under the connection's own account or an organisation, never
+                # under another person's account it merely collaborates on (the add-app form reads these)
+                'owner_type': (item.get('owner') or {}).get('type'),
+                'admin': bool((item.get('permissions') or {}).get('admin')),
             })
         return {'repositories': repositories, 'next_page': page + 1 if 'next' in response.links else None}
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
