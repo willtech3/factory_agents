@@ -91,7 +91,10 @@ class RunStore:
         return replay(run_id, self.events(run_id))
 
     def list_runs(self) -> Iterable[str]:
-        return sorted(p.name for p in self.root.iterdir() if (p / "events.jsonl").exists())
+        # Old Console versions persisted synthetic demos alongside real runs. Keep
+        # their files recoverable without reclassifying them as live work after upgrade.
+        return sorted(p.name for p in self.root.iterdir()
+                      if (p / "events.jsonl").exists() and not (p / "demo.json").is_file())
 
     # ----- artifacts -----
     def artifact_path(self, run_id: str, stage: str, name: str) -> Path:

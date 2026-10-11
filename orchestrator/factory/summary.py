@@ -150,13 +150,15 @@ def _by_stage(state: RunState) -> dict[str, int]:
 
 def _stage_before(events: list[RunEvent], kind: str) -> str | None:
     """The stage the run was in when `kind` was last recorded (the last stage.entered before it)."""
-    stage = None
+    stage = at_event = None
     for ev in events:
         if ev.kind == "stage.entered" and ev.payload.get("stage") != RunStage.CLOSED.value:
             stage = ev.payload.get("stage")
         elif ev.kind == "run.resumed" and ev.payload.get("stage"):
             stage = ev.payload["stage"]
-    return stage if any(ev.kind == kind for ev in events) else None
+        if ev.kind == kind:
+            at_event = stage
+    return at_event
 
 
 def _ended_at(events: list[RunEvent], state: RunState) -> str | None:
