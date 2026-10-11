@@ -9,11 +9,11 @@ Stage names here are the ones the UX and docs use. Keep them in sync with
 """
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
-import uuid
 
 
 class RunStage(str, Enum):
@@ -138,7 +138,7 @@ class RunEvent:
     stage: str | None = None
     work_item_id: str | None = None
     spec_id: str | None = None
-    at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     event_id: str = field(default_factory=lambda: f"evt_{uuid.uuid4().hex[:12]}")
 
     def to_dict(self) -> dict[str, Any]:
@@ -225,6 +225,9 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
         # emitted by persist_outputs for decomposition.json / decomposition.md) are informational only.
         state.decomposition_revision = p["revision"]
         # (Re)register work items; a re-decomposition replaces pending items but keeps merged ones.
+        current_ids = {item["work_item_id"] for item in p["work_items"]}
+        state.work_items = {wid: wi for wid, wi in state.work_items.items()
+                            if wid in current_ids or wi.stage in MERGED_STAGES | {WorkItemStage.CR_OPEN}}
         for item in p["work_items"]:
             existing = state.work_items.get(item["work_item_id"])
             if existing is None or existing.stage not in MERGED_STAGES | {WorkItemStage.CR_OPEN}:
