@@ -32,12 +32,24 @@ def _integrate(tmp_path, root, examples, *, evaluation=False, extra_files=None):
     rows = case.browser_evidence(ctx, tmp_path, spec, head)
 
     ctx.forge, api = github(created)
+    target = "main"
     if evaluation:
-        ctx.evaluation_target = ("main", base)
-        ctx.event("artifact.produced", {"artifact_type": "evaluation_target", "branch": "main", "base_sha": base, "normal_target": "main"})
+        # As in a real evaluation: the copy is cut from the original baseline, pinned on its own branch, while the
+        # original change already reached main as a squash, without the files the copy adds (`extra_files`).
+        target = "eval-baseline"
+        case.git(work, "push", "-q", "origin", f"{base}:refs/heads/{target}")
+        case.git(work, "checkout", "-q", "-b", "original", base)
+        case.git(work, "checkout", head, "--", ".")
+        for path in extra_files or {}:
+            case.git(work, "rm", "-q", "-f", path)
+        case.git(work, "commit", "-q", "-m", "Squash of the original change")
+        case.git(work, "push", "-q", "origin", "HEAD:main")
+        case.git(work, "checkout", "-q", case.BRANCH)
+        ctx.evaluation_target = (target, base)
+        ctx.event("artifact.produced", {"artifact_type": "evaluation_target", "branch": target, "base_sha": base, "normal_target": "main"})
     verifier = type("Verifier", (), {"checkout": staticmethod(lambda b: (case.git(work, "checkout", "-q", b), work)[1])})()
     run_integrate(ctx, spec, case.verdict(base, head), case.findings(), case.response(), case.test_results(rows, head),
-                  case.run_summary(), "main", verifier=verifier)
+                  case.run_summary(), target, verifier=verifier)
     ctx.event("run.completed", {"specs_with_change_requests": [case.SPEC_ID]})
     ctx.api_calls = api.calls
     return ctx, created[0], head
@@ -126,6 +138,6 @@ def test_an_evaluation_copy_says_what_it_holds_beyond_main(tmp_path, root, examp
                           extra_files={"verification/frontier-models/browser_journey.py": "print('old runner')\n"})
     first, second = cr["description"].splitlines()[:2]
     assert "do not merge" in first and first.count(". ") == 0
-    assert second.startswith("> Beyond the current `main` it holds 6 files, +6239 / −2461: `catalog-watch/openrouter-models.json`")
-    assert "and 1 more." in second             # the controller's banner may name any path; only the integrator's text is linted
+    # only what main lacks: the original change reached main through other commits, so it counts as nothing
+    assert second == "> Beyond the current `main` it holds 1 file, +1 / −0: `verification/frontier-models/browser_journey.py` (+1 / −0)."
     assert len(cr["description"].rstrip("\n").splitlines()) <= 60 and cr["draft"] is True

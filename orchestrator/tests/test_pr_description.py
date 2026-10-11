@@ -63,5 +63,13 @@ def test_paths_and_commands_name_the_app_but_still_carry_no_ids_and_the_banner_c
     body = _body(what="Renames `src/journey/steps.ts` and runs `bun test tests/recipe.test.ts`.")
     assert pd.lint(body, record_url=URL) == []
     assert any("AC-3" in p for p in pd.lint(_body(what="Covers `AC-3`."), record_url=URL))
+    # an app's own paths, commands and keys are not factory ids, first person, or links to the owner's machine
+    app = _body(what="Starts at `spec/spec_helper.rb` and `src/components/wi-fi-status.tsx`; run `python -I -m pytest -k spec_parser` "
+                     "or `BASE_URL=http://localhost:3000 bun test`. Ctrl+I opens the panel and the button reads \"I agree\".")
+    assert pd.lint(app, record_url=URL) == []
+    assert any("first-person" in p for p in pd.lint(_body(what="Tests pass; I viewed the page."), record_url=URL))
+    assert any("session id" in p for p in pd.lint(_body(what="See `sesn_01abc`."), record_url=URL))
+    console = URL.split("/#/")[0]
+    assert any("owner's machine" in p for p in pd.lint(_body(what=f"Logs at `{console}/api/runs`."), record_url=URL))
     assert pd.lint(_body(), record_url=URL, reserved_lines=60 - len(_body().splitlines())) == []
     assert any("lines" in p for p in pd.lint(_body(), record_url=URL, reserved_lines=61 - len(_body().splitlines())))

@@ -17,7 +17,7 @@ Commits are ordered slices of roughly 100 to 200 changed lines, each naming the 
 - 3: as 2, with structural (refactor) commits separated from behavioural ones.
 
 ## I6. No scope creep
-No behaviour changed, dependency added, configuration introduced, or abstraction created that no criterion requires. A committed provenance capture or evidence file no product test reads, and test code for the factory's own verification, are scope creep (post-mortem 2026-10-11 §2).
+No behaviour changed, dependency added, configuration introduced, or abstraction created that no criterion requires. A committed provenance capture or evidence file no product test reads, and test code about the factory's evidence (tests of a browser runner, its step classifier or its redaction), are scope creep (post-mortem 2026-10-11 §2); a browser command or recipe baseline the approved spec plans is not.
 - 0: a new dependency or public interface the spec did not ask for.
 - 1: small unrequested changes with a stated reason.
 - 2: changes map to criteria.

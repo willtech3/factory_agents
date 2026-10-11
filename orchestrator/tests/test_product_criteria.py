@@ -20,6 +20,11 @@ def test_product_behaviour_passes_even_when_it_mentions_files_or_screens():
     assert checks.criteria_describe_product(_spec(
         "the export button writes result.json with one row per conversation",
         "the screenshot tool saves a PNG of the visible chat")).passed
+    # the app's own names and words are product, not the factory's protocol
+    assert checks.criteria_describe_product(_spec(
+        "calling factory_reset() empties the model cache",
+        "a request with FACTORY_ID set is tagged with that id",
+        "the settings page shows the evidence directory the user chose")).passed
 
 
 def test_specify_refuses_it_before_the_judge(tmp_path, root, examples):
