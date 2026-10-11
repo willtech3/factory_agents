@@ -5,13 +5,13 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-
 from conftest import make_config
+from test_session_stream import FakeStream, Page, ev
+
 from factory.config import AgentRef
 from factory.gates import Decision, Gate, GateKind, Question
 from factory.sessions import SessionDriver
 from factory.surfaces.filequeue import FileQueue
-from test_session_stream import FakeStream, Page, ev
 
 
 def _queue_burst(root, worker):
@@ -132,7 +132,8 @@ def test_result_accepted_before_disconnect_is_not_sent_again(tmp_path, root, mon
 
 
 def test_accepted_iteration_cutoff_counts_each_session_once(tmp_path, root, examples):
-    from test_session_cutoff import _ctx, Driver, AutoQueue
+    from test_session_cutoff import AutoQueue, Driver, _ctx
+
     from factory.stages.specify import run_specify
     ctx = _ctx(tmp_path, root, examples, Driver(examples, judge_truncations=0, writer_iterations_exhausted=True),
                AutoQueue(Decision.APPROVE))
@@ -142,9 +143,23 @@ def test_accepted_iteration_cutoff_counts_each_session_once(tmp_path, root, exam
     assert st.list_cost_usd == pytest.approx(4 * 1.2 + 2)
 
 
+def test_missing_output_still_records_session_spend(tmp_path, root, examples):
+    from test_session_cutoff import AutoQueue, _ctx, _result
+
+    from factory.stages.specify import run_specify
+    result = _result({"spec.json": json.dumps(examples["spec_smart_retries"]).encode()})
+    ctx = _ctx(tmp_path, root, examples, SimpleNamespace(run=lambda **kw: result), AutoQueue(Decision.APPROVE))
+    decomposition = {**examples["decomposition"], "work_items": examples["decomposition"]["work_items"][:1]}
+    with pytest.raises(RuntimeError, match="no spec.md"):
+        run_specify(ctx, examples["outcome"], decomposition)
+    assert ctx.store.state(ctx.run_id).sessions_finished == 1
+    assert ctx.store.state(ctx.run_id).list_cost_usd == .5
+
+
 @pytest.mark.parametrize("blocking", [False, True])
 def test_defaulted_questions_do_not_remain_waiting(tmp_path, root, examples, blocking):
-    from test_session_cutoff import _ctx, Driver, AutoQueue
+    from test_session_cutoff import AutoQueue, Driver, _ctx
+
     from factory.sessions import SessionContext
     from factory.stages.common import make_ask_human
     ctx = _ctx(tmp_path, root, examples, Driver(examples), AutoQueue(Decision.APPROVE))
@@ -165,8 +180,9 @@ def test_new_decomposition_removes_superseded_pending_items():
 
 @pytest.mark.parametrize("stop, outcome", [("terminated", None), ("end_turn", "interrupted"), ("end_turn", "failed")])
 def test_interrupted_session_outputs_never_advance_the_pipeline(tmp_path, root, examples, stop, outcome):
-    from test_session_cutoff import _ctx, _result, AutoQueue
-    from factory.stages.common import run_session, SessionTruncated
+    from test_session_cutoff import AutoQueue, _ctx, _result
+
+    from factory.stages.common import SessionTruncated, run_session
     result = _result({"spec.json": b"{}"}, stop_reason=stop, outcome_result=outcome)
     ctx = _ctx(tmp_path, root, examples, SimpleNamespace(run=lambda **kw: result), AutoQueue(Decision.APPROVE))
     with pytest.raises(SessionTruncated, match="did not finish"):
@@ -177,8 +193,9 @@ def test_interrupted_session_outputs_never_advance_the_pipeline(tmp_path, root, 
 
 def test_nested_evidence_downloads_and_cannot_escape_artifact_root(tmp_path, root):
     from fastapi.testclient import TestClient
-    from factory.web.app import create_app
+
     from factory.store import RunStore
+    from factory.web.app import create_app
     cfg = make_config(root, tmp_path)
     store = RunStore(cfg.runs_dir)
     store.put_artifact("run_test0001", "review", "probes/nested/output.txt", b"probe output")
@@ -187,3 +204,17 @@ def test_nested_evidence_downloads_and_cannot_escape_artifact_root(tmp_path, roo
         response = client.get("/api/artifacts/run_test0001/review/probes/nested/output.txt")
         assert response.status_code == 200 and response.text == "probe output"
         assert client.get("/api/artifacts/run_test0001/review/%2E%2E/%2E%2E/private.txt").status_code == 404
+
+
+def test_workspace_activity_links_require_a_local_record(tmp_path):
+    from factory.web.app import local_activity_url
+    assert local_activity_url(tmp_path, "run_test0001") is None
+    run = tmp_path / "run_test0001"
+    run.mkdir()
+    (run / "events.jsonl").write_text("")
+    assert local_activity_url(tmp_path, "run_test0001") == "#/runs/run_test0001"
+    app = tmp_path / "_apps" / "app_123456789abc"
+    app.mkdir(parents=True)
+    (app / "app.json").write_text("{}")
+    assert local_activity_url(tmp_path, app.name) == "#/apps/app_123456789abc"
+    assert local_activity_url(tmp_path, "../run_test0001") is None

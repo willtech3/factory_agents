@@ -24,7 +24,7 @@ from ..forge import Forge
 from ..sessions import SessionContext
 from ..state import WorkItemStage
 from . import RunContext
-from .common import enter_item_stage, persist_outputs, platform_skill, public, require_json, run_session
+from .common import enter_item_stage, persist_outputs, platform_skill, public, run_session
 
 INTEGRATE_DESCRIPTION = """Open the change request (pull request or merge request) for specification {spec_id}.
 Inputs are under /mnt/session/uploads/ (spec.json, merge_readiness.json, findings.json, review_response.json,
@@ -56,28 +56,41 @@ def commit_run_record(repo: Path, run_id: str, spec: dict[str, Any], spec_md: st
              paths["merge_readiness"]: json.dumps(public(merge_verdict), indent=2, sort_keys=True) + "\n"}
     if spec_verdict is not None:
         files[paths["verdict"]] = json.dumps(spec_verdict, indent=2, sort_keys=True) + "\n"
+    judged = merge_verdict.get("_head_sha")
+    head = _git(repo, "rev-parse", "HEAD").strip()
+    if judged and head != judged:
+        # A retry may find our already-pushed record commit. Any other branch movement
+        # requires another review; instructions to the integrator are not a check.
+        changed = set(_git(repo, "diff", "--name-only", judged, head).splitlines())
+        same_record = bool(changed) and changed <= set(files) and all(
+            (repo / rel).is_file() and (repo / rel).read_text() == content for rel, content in files.items())
+        if not same_record:
+            raise RuntimeError("implementation branch changed after the merge judgement; review the new head first")
     for rel, content in files.items():
         target = repo / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
-    _git(repo, "add", "-A", "--", ".factory")
-    if not _git(repo, "status", "--porcelain", "--", ".factory").strip():
+    _git(repo, "add", "--", *files)
+    if not _git(repo, "status", "--porcelain", "--", *files).strip():
         return _git(repo, "rev-parse", "HEAD").strip()
     when = (merge_verdict.get("produced_by") or {}).get("produced_at") or "2026-01-01T00:00:00+00:00"
     env = {**os.environ, "GIT_AUTHOR_NAME": RECORD_AUTHOR[0], "GIT_AUTHOR_EMAIL": RECORD_AUTHOR[1],
            "GIT_COMMITTER_NAME": RECORD_AUTHOR[0], "GIT_COMMITTER_EMAIL": RECORD_AUTHOR[1],
            "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when}
     msg = f"factory({run_id}): record approved spec and verdicts for {sid}\n\nJudged head: {merge_verdict.get('_head_sha', '')}"
-    subprocess.run(["git", "commit", "-q", "-m", msg], cwd=repo, env=env, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "commit", "-q", "--only", "-m", msg, "--", *files], cwd=repo, env=env, check=True, capture_output=True, text=True)
     if push:
         _git(repo, "push", "-q", remote, f"HEAD:{merge_verdict.get('_branch') or _git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').strip()}")
     return _git(repo, "rev-parse", "HEAD").strip()
 
 
-def make_open_change_request(ctx: RunContext, forge: Forge, spec_id: str, work_item_id: str, expected_branch: str):
+def make_open_change_request(ctx: RunContext, forge: Forge, spec_id: str, work_item_id: str, expected_branch: str,
+                             expected_target: str):
     def handler(tool_input: dict[str, Any], sctx: SessionContext) -> str:
         if tool_input["source_branch"] != expected_branch:
             return json.dumps({"error": f"source_branch must be {expected_branch}"})
+        if tool_input["target_branch"] != expected_target:
+            return json.dumps({"error": f"target_branch must be {expected_target}"})
         cr = forge.create_change_request(
             source_branch=tool_input["source_branch"], target_branch=tool_input["target_branch"],
             title=tool_input["title"][:120], description=tool_input["description_markdown"],
@@ -131,10 +144,17 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
                                                  git=ctx.forge.sandbox_git_instructions(ctx.cfg.repo_url, base_branch, branch, read_only=True),
                                                  preview_mode=ctx.cfg.preview_mode, skill_clause=skill_clause),
         rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["integrate"],
-        custom_tools={"open_change_request": make_open_change_request(ctx, ctx.forge, sid, wid, branch)},
+        custom_tools={"open_change_request": make_open_change_request(ctx, ctx.forge, sid, wid, branch, base_branch)},
         repository=ctx.forge.session_repository_resource(ctx.cfg.repo_url, branch),
     )
-    cr = require_json(res, "cr.json")
+    # The forge result, not an agent-authored cr.json, proves that a PR exists.
+    opened = next((ev.payload for ev in reversed(ctx.store.events(ctx.run_id))
+                   if ev.kind == "cr.opened" and ev.spec_id == sid and ev.payload.get("branch") == branch), None)
+    if opened is None:
+        persist_outputs(ctx, "integrate", res, prefix=f"{sid}-unconfirmed-{res.session_id}-", work_item_id=wid, spec_id=sid)
+        raise RuntimeError(f"integrator session {res.session_id} did not open a change request for {sid}")
+    cr = {"id": opened["id"], "url": opened["url"], "web_url": opened["url"], "iid": opened["id"]}
+    res.outputs["cr.json"] = json.dumps(cr, indent=2).encode()
     persist_outputs(ctx, "integrate", res, prefix=f"{sid}-", work_item_id=wid, spec_id=sid)
     ctx.event("work_item.stage", {"stage": WorkItemStage.CR_OPEN.value, "cr_id": cr.get("id", cr.get("iid"))},
               work_item_id=wid, spec_id=sid)

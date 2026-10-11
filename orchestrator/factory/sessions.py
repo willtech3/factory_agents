@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import anthropic
 
@@ -28,7 +29,7 @@ from .config import Config
 SHORT_CALL_TIMEOUT = 120.0
 
 # A dropped event stream is reopened, not fatal. These are the transport errors httpx and the SDK raise for it.
-import httpx  # noqa: E402
+import httpx
 
 STREAM_RETRYABLE: tuple[type[BaseException], ...] = (httpx.RemoteProtocolError, httpx.ReadError, httpx.ReadTimeout, httpx.ConnectError,
                                                     httpx.WriteError, anthropic.APIConnectionError, anthropic.APITimeoutError)
@@ -191,7 +192,7 @@ class SessionDriver:
             # App test vaults are independent of forge authentication. An explicit []
             # also prevents a test session inheriting the controller's forge vault.
             vault_ids=vault_ids if vault_ids is not None else ([self.cfg.vault_id] if (self.cfg.vault_id and not repository) else None),
-            budget={"type": "limit", "max_list_cost": {"amount": str(int(round(budget_usd * 100))), "currency": "USD"}},
+            budget={"type": "limit", "max_list_cost": {"amount": str(round(budget_usd * 100)), "currency": "USD"}},
             metadata={"run_id": run_id, "stage": stage, **({"work_item_id": work_item_id} if work_item_id else {}),
                       **(metadata or {})},
             initial_events=kickoff,
@@ -324,8 +325,8 @@ class SessionDriver:
         try:
             amount = final.usage.list_cost.amount  # integer string in cents
             list_cost = int(amount) / 100.0
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError):
+            list_cost = None
 
         outputs = self._fetch_outputs(session.id)
         self.active.pop(session.id, None)

@@ -6,13 +6,24 @@ always composed in alongside the tracker, so a decision from any side wins (ADR-
 """
 from __future__ import annotations
 
-import json
 import fcntl
+import json
 from contextlib import contextmanager
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
-from ..gates import Answer, ArtifactRef, Decision, Gate, GateDecision, GateKind, InMemoryQueue, Question, validate_decision
+from ..gates import (
+    Answer,
+    ArtifactRef,
+    Decision,
+    Gate,
+    GateDecision,
+    GateKind,
+    InMemoryQueue,
+    Question,
+    validate_decision,
+)
 
 
 class FileQueue(InMemoryQueue):
@@ -29,7 +40,8 @@ class FileQueue(InMemoryQueue):
 
     def _save(self, name: str, data: dict) -> None:
         """Write to a temp file and rename, so a poll from the other process never sees a truncated file."""
-        import os, tempfile
+        import os
+        import tempfile
         fd, tmp = tempfile.mkstemp(prefix=f".{name}.", dir=self.root)
         with os.fdopen(fd, "w") as fh:
             fh.write(json.dumps(data, indent=2, default=lambda o: getattr(o, "value", o.__dict__)))
@@ -83,14 +95,14 @@ class FileQueue(InMemoryQueue):
     def record_decision(self, gate_id: str, decision: str, by: str, comments: str = "",
                         approved_subset: list[str] | None = None) -> dict[str, Any]:
         """What `factory decide` and the Console do: bind the hashes the gate showed and persist the decision."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         rec = self._load("gates.json").get(gate_id)
         if rec is None:
             raise KeyError(gate_id)
         entry = {"decision": decision, "decided_by": by, "comments": comments, "approved_subset": approved_subset or [],
                  "artifact_shas": [a["sha256"] for a in rec["artifacts"]],
-                 "decided_at": datetime.now(timezone.utc).isoformat()}
+                 "decided_at": datetime.now(UTC).isoformat()}
         validate_decision(gate_from_record(gate_id, rec), GateDecision(
             gate_id=gate_id, decision=Decision(decision), decided_by=by, comments=comments,
             approved_subset=tuple(approved_subset or ()), artifact_shas=tuple(entry["artifact_shas"])))
@@ -111,11 +123,11 @@ class FileQueue(InMemoryQueue):
                       answered_at=a.get("answered_at") or "") if a else None
 
     def record_answer(self, question_id: str, answer: str, by: str) -> dict[str, Any]:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         if question_id not in self._load("questions.json"):
             raise KeyError(question_id)
-        entry = {"answer": answer, "answered_by": by, "answered_at": datetime.now(timezone.utc).isoformat()}
+        entry = {"answer": answer, "answered_by": by, "answered_at": datetime.now(UTC).isoformat()}
         self._put("answers.json", question_id, entry)
         return entry
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,7 @@ def run_session(ctx: RunContext, *, stage: str, prefix: str = "", spec_id: str |
     `SessionTruncated`. Before this, live run 1's cut-off judge verdict drove a writer round and a decomposer that
     exhausted its grader would have reached Gate 1 unflagged."""
     res = ctx.driver.run(stage=stage, **kw)
+    record_session_finished(ctx, stage, res, work_item_id=kw.get("work_item_id"), spec_id=spec_id)
     if res.stop_reason in {"terminated", "interrupted", "unreachable"} or res.outcome_result in {"interrupted", "failed"}:
         persist_outputs(ctx, stage, res, prefix=f"{prefix}unfinished{attempt}-",
                         work_item_id=kw.get("work_item_id"), spec_id=spec_id)
@@ -133,12 +135,12 @@ def enter_item_stage(ctx: RunContext, work_item_id: str, spec_id: str | None, st
 
 
 def provenance(ctx: RunContext, res: StageResult, agent_name: str, model: str, inputs: dict[str, str]) -> dict[str, Any]:
-    from datetime import datetime, timezone
+    from datetime import datetime
     return {
         "agent_name": agent_name, "agent_id": res.agent_id, "agent_version": res.agent_version or 1,
         "session_id": res.session_id, "thread_id": None, "model": model, "effort": None,
         "outcome_iterations": res.outcome_iterations or None, "list_cost_usd": res.list_cost_usd,
-        "produced_at": datetime.now(timezone.utc).isoformat(),
+        "produced_at": datetime.now(UTC).isoformat(),
         "inputs": [{"artifact": k, "sha256": v} for k, v in inputs.items()],
     }
 
@@ -212,6 +214,13 @@ def persist_outputs(ctx: RunContext, stage: str, res: StageResult, prefix: str =
         shas[name] = ctx.store.put_artifact(ctx.run_id, stage, prefix + name, content)
         ctx.event("artifact.produced", {"artifact_type": Path(name).stem, "path": f"{stage}/{prefix}{name}",
                                         "sha256": shas[name]}, stage=stage, work_item_id=work_item_id, spec_id=spec_id)
+    record_session_finished(ctx, stage, res, work_item_id=work_item_id, spec_id=spec_id)
+    return shas
+
+
+def record_session_finished(ctx: RunContext, stage: str, res: StageResult, *, work_item_id: str | None = None,
+                            spec_id: str | None = None) -> None:
+    """Charge returned sessions before parsing outputs, including missing/malformed artifacts."""
     # A truncated result is saved before its gate, then saved under the normal prefix
     # if the owner accepts it. Both artifact sets are useful; the spend is counted once.
     if not getattr(res, "finish_recorded", False):
@@ -221,7 +230,6 @@ def persist_outputs(ctx: RunContext, stage: str, res: StageResult, prefix: str =
                                    "outcome_iterations": res.outcome_iterations},
                   stage=stage, actor="platform", work_item_id=work_item_id, spec_id=spec_id)
         res.finish_recorded = True
-    return shas
 
 
 def stamp_provenance(artifact: dict[str, Any], ctx: RunContext, res: StageResult, agent_name: str, model: str,

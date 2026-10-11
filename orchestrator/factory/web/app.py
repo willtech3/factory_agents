@@ -128,6 +128,17 @@ def settings_env(settings: dict[str, Any]) -> dict[str, str]:
     return out
 
 
+def local_activity_url(runs_dir: Path, activity_id: str | None) -> str | None:
+    """Workspace sessions outlive local checkouts; only link to records this Console can open."""
+    if not isinstance(activity_id, str):
+        return None
+    if RUN_ID.fullmatch(activity_id) and (runs_dir / activity_id / "events.jsonl").is_file():
+        return f"#/runs/{activity_id}"
+    if re.fullmatch(r"app_[a-f0-9]{12}", activity_id) and (runs_dir / "_apps" / activity_id / "app.json").is_file():
+        return f"#/apps/{activity_id}"
+    return None
+
+
 def crew_roster(events) -> list[dict[str, Any]]:
     """One row per crew role from the run's session events: state (asleep, working, done), the live or last session,
     sessions so far, cost so far."""
@@ -721,8 +732,10 @@ class Console:
                 page = client.beta.sessions.list(limit=25)
                 for s in list(getattr(page, "data", None) or []):     # one page: iterating the cursor would walk the whole history
                     meta = getattr(s, "metadata", None) or {}
+                    activity_id = meta.get("run_id") if isinstance(meta, dict) else None
                     out["sessions"].append({"id": s.id, "status": getattr(s, "status", None), "title": getattr(s, "title", None),
-                                            "created_at": str(getattr(s, "created_at", "") or ""), "run_id": meta.get("run_id") if isinstance(meta, dict) else None,
+                                            "created_at": str(getattr(s, "created_at", "") or ""), "run_id": activity_id,
+                                            "local_url": local_activity_url(self.cfg.runs_dir, activity_id),
                                             "stage": meta.get("stage") if isinstance(meta, dict) else None,
                                             "url": self.cfg.console_session_url(s.id)})
             except Exception as e:  # noqa: BLE001

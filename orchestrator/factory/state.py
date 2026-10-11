@@ -9,11 +9,11 @@ Stage names here are the ones the UX and docs use. Keep them in sync with
 """
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
-import uuid
 
 
 class RunStage(str, Enum):
@@ -138,7 +138,7 @@ class RunEvent:
     stage: str | None = None
     work_item_id: str | None = None
     spec_id: str | None = None
-    at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     event_id: str = field(default_factory=lambda: f"evt_{uuid.uuid4().hex[:12]}")
 
     def to_dict(self) -> dict[str, Any]:
