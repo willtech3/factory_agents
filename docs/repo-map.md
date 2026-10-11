@@ -96,6 +96,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 | `approvals.py` | What a Gate 2 approval may select, and how the owner's notes are routed to each spec |
 | `budget.py` | Run budget enforcement. Pauses before the session that would exceed `constraints.budget_usd` |
 | `pr_description.py` | Renders the change request description from `templates/cr_template.md` and lints it (60 lines, no factory ids, vocabulary, costs or local links; post-mortem 2026-10-11) |
+| `pr_media.py` | Chooses the up to three screenshots and one demo a change request may show (passed, approved head, requested viewport, no credential seen) |
 | `run_record.py` | Builds the per-spec run record (criteria, findings, checks, media, cost) that the PR links and the Console shows |
 | `size.py` | Counts a change's hand-written lines (tests included; linguist-generated files, lockfiles and spec-declared regenerated files excluded) against the size budget |
 | `summary.py` | Derives each run's status, headline and results for the run history (`factory runs`, the Console's Runs page) |
@@ -126,6 +127,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 | `browser_worker.py` | `factory browser ...`: lets an interactive Claude Code session with Claude in Chrome answer visual-check requests |
 | `sandbox_tools/validate.py` | Uploaded into every agent session so agents can validate their own artifacts. Never imported by the controller |
 | `sandbox_tools/environment_runner.py` | Uploaded into hosted verification sandboxes. It is the lifecycle harness that runs the recipe |
+| `sandbox_tools/browser_runner.py` | Uploaded beside the harness when a change has `factory:journey` entries: the factory's own Playwright runner that executes a change's hash-bound journey (blocked versus failed, credential hygiene) |
 
 **Apps**
 

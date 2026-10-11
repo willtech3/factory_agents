@@ -42,6 +42,10 @@ MEDIA_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".webm", ".mp4", ".gif"}
 MAX_NODE_IDS = 20000
 BUN_ID_RE = re.compile(r"^[^\n]+?\.[cm]?[jt]sx?::[^\n]+$")   # file::describe > ... > test name
 SHELL_OPERATOR = re.compile(r"^[();<>|&]+$")
+# A `factory:journey <name>` e2e entry runs the factory's own browser runner on the journey the controller uploaded and
+# bound by hash; no browser code from the repository runs (post-mortem 2026-10-11 §1). -E, not -I: PYTHONPATH is ignored,
+# and a script run by path never imports from the checkout, but the sandbox's user site-packages (Playwright) stay usable.
+JOURNEY_COMMAND = "python3 -E {runner} --journey {journey}"
 
 
 def digest(value: dict) -> str:
@@ -239,8 +243,12 @@ def node_id_of(file, classname: str, name: str) -> str:
 
 
 def copy_entry_evidence(index: int, directory: Path, outputs: Path, report: dict) -> list[str]:
-    """A visual entry's result.json and media, as e2e-<index>-<name>; links, odd names and oversize files stay behind."""
+    """A visual entry's result.json and media, as e2e-<index>-<name>; links, odd names and oversize files stay behind.
+    Without a result.json nothing is copied: media no report accounts for (a runner that crashed or was killed) may
+    still show what its credential check would have deleted."""
     names = []
+    if not (directory / "result.json").is_file() or (directory / "result.json").is_symlink():
+        return names
     for p in sorted(directory.iterdir()):
         if p.name == "request.json" or p.is_symlink() or not p.is_file():
             continue
@@ -302,8 +310,23 @@ def sandbox_env(base: dict, profile: dict, request: dict, repo: Path, evidence: 
     return env, {"base_url": env["BASE_URL"], "health_host": HEALTH_HOST, "compat": compat}
 
 
+def journey_command(entry: dict, uploads: Path) -> tuple[str | None, str | None]:
+    """(command, reason) for a journey entry: the runner on the uploaded journey when it is there and hashes to what the
+    controller bound, else the reason it cannot run. (None, None) for any other entry."""
+    journey = entry.get("journey")
+    if not journey:
+        return None, None
+    path = uploads / "journeys" / f"{journey['name']}.json"
+    runner = uploads / "tools" / "browser_runner.py"
+    if not path.is_file() or path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != journey.get("sha256"):
+        return None, "the journey is missing or differs from the one the controller bound"
+    if not runner.is_file():
+        return None, "the factory browser runner was not uploaded"
+    return JOURNEY_COMMAND.format(runner=shlex.quote(str(runner)), journey=shlex.quote(str(path))), None
+
+
 def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: float, logs: Path, evidence: Path,
-               work: Path, outputs: Path, report: dict) -> None:
+               work: Path, outputs: Path, report: dict, uploads: Path = UPLOADS) -> None:
     phases = report["phases"]
     out = {"commands": [], "collected_tests": None, "e2e": [], "baseline": None, "app_ready": False}
     report["change"] = {**change, "results": out}
@@ -365,13 +388,21 @@ def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: flo
         if not ready and (entry.get("target", "preview") == "preview" or entry.get("visual_request")):
             out["e2e"].append({"index": index, "status": "not_run", "reason": "the app did not start or its services did not become ready"})
             continue
+        executed, refused = journey_command(entry, uploads)
+        if refused:
+            out["e2e"].append({"index": index, "status": "not_run", "reason": refused})
+            continue
         directory = work / f"e2e-{index}"
         directory.mkdir()
         entry_env = {**env, "FACTORY_EVIDENCE_DIR": str(directory)}      # never the baseline's evidence directory
+        if executed:
+            entry_env.update(FACTORY_SECRET_NAMES=",".join(s["name"] for s in profile["secrets"]),
+                             FACTORY_REQUIRED_SECRETS=",".join(s["name"] for s in profile["secrets"] if s["required"]),
+                             FACTORY_RECORD_DEMO="1" if (profile.get("browser") or {}).get("record_demo", True) else "0")
         if entry.get("visual_request"):
             (directory / "request.json").write_text(json.dumps(entry["visual_request"]))
             entry_env["FACTORY_VISUAL_REQUEST"] = str(directory / "request.json")
-        result = command(entry["command"], repo, entry_env, min(per_command, deadline - time.monotonic()), logs / f"e2e-{index}.log")
+        result = command(executed or entry["command"], repo, entry_env, min(per_command, deadline - time.monotonic()), logs / f"e2e-{index}.log")
         row = {"index": index, "command": entry["command"], "target": entry.get("target", "preview"), **result}
         if entry.get("visual_request"):
             row["files"] = copy_entry_evidence(index, directory, outputs, report)
@@ -413,7 +444,7 @@ def run(uploads: Path = UPLOADS, outputs: Path = OUTPUTS) -> dict:
             report["missing_secrets"] = missing
             return report
         if request.get("change"):
-            run_change(profile, request["change"], repo, env, deadline, logs, evidence, work, outputs, report)
+            run_change(profile, request["change"], repo, env, deadline, logs, evidence, work, outputs, report, uploads)
             return report
         for phase in ("prepare", "start", "seed", "verify"):
             if phase == "seed":

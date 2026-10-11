@@ -23,6 +23,16 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 @dataclass
+class Media:
+    """One file to show in a change request description: a screenshot or the demo, already validated by the controller."""
+    name: str
+    content: bytes
+    mime_type: str
+    alt: str
+    role: str                 # "screenshot" | "demo"
+
+
+@dataclass
 class ChangeRequest:
     id: int                   # PR number (GitHub) or MR iid (GitLab)
     url: str
@@ -70,6 +80,12 @@ class Forge(Protocol):
     def sandbox_git_instructions(self, repo_url: str, base_branch: str, branch: str, read_only: bool = False) -> str: ...
     # read_only: the clause for reviewers, the merge judge and the integrator, who read the branch and never commit or push
     def authenticated_url(self, repo_url: str) -> str: ...   # for the orchestrator's own clone (LocalVerifier)
+
+    # ---- media in a change request description without media in its diff (post-mortem 2026-10-11)
+    def publish_media(self, folder: str, items: list[Media]) -> str: ...
+    # Markdown that shows `items` in a description: inline images, and the demo inline where the forge plays it (GitLab
+    # uploads) or as a link where it does not (a video on GitHub outside its own attachments). Nothing lands on the
+    # change's branch or the default branch.
 
 
 def parse_pipeline_webhook(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -192,5 +208,5 @@ def ref_slug(ref: str) -> str:
     return slug[:63].rstrip("-")
 
 
-__all__ = ["ChangeRequest", "Forge", "PIPELINE_TERMINAL", "ensure_repository", "make_forge", "parse_pipeline_webhook",
+__all__ = ["ChangeRequest", "Forge", "Media", "PIPELINE_TERMINAL", "ensure_repository", "make_forge", "parse_pipeline_webhook",
            "ref_slug", "repo_from_url"]

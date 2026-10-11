@@ -15,6 +15,7 @@ from factory import visual
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/k9sAAAAASUVORK5CYII=')
 WEBM = b"\x1aE\xdf\xa3" + b"\x00" * 64
+GIF = b"GIF89a" + b"\x00" * 64
 SPEC_ID, WORK_ITEM = "spec_frontier-models", "wi-frontier-models"
 BRANCH = "factory/run_budget000001/spec_frontier-models"
 JOURNEYS = {"desktop-pointer": (1440, 900), "desktop-keyboard": (1440, 900), "mobile-touch": (390, 844)}
@@ -64,7 +65,7 @@ def repository(tmp_path: Path, extra_files: dict[str, str] | None = None) -> tup
 def spec() -> dict[str, Any]:
     criteria = [{"ac_id": f"AC-{i}", "given": f"given {i}", "when": f"when {i}", "then": f"then {i}", "verification": "automated_test",
                  "user_visible": i >= 9, **({"surface": "ui"} if i >= 9 else {})} for i in range(1, 13)]
-    e2e = [{"command": f"factory:browser --journey {name}", "target": "preview", "description": f"Pick and chat ({name})",
+    e2e = [{"command": f"factory:journey {name}", "target": "preview", "description": f"Pick and chat ({name})",
             "covers_ac": ["AC-9", "AC-12"] if name == "desktop-pointer" else ["AC-10"] if name == "desktop-keyboard" else ["AC-11"],
             "visual": {"persona": "Chat member", "viewport": {"width": w, "height": h},
                        "steps": ["Open the picker", "Select Claude Haiku 5.5", "Send and watch the reply stream"],
@@ -140,21 +141,22 @@ def run_summary() -> dict[str, Any]:
 
 def browser_evidence(ctx: Any, tmp_path: Path, the_spec: dict[str, Any], head: str) -> list[dict[str, Any]]:
     """Three passing browser checks through the controller's own protocol (request, report, collect, persist), each with
-    two screenshots and a demo, as the hosted harness hands them back."""
+    two screenshots and a GIF demo, as the factory's browser runner hands them back from the hosted sandbox."""
     rows = []
     for entry in the_spec["test_plan"]["e2e"]:
         directory, request = visual.new_request(tmp_path / "verify", tmp_path, head, "http://localhost:3000", entry)
         (directory / "picker.png").write_bytes(PNG)
         (directory / "reply.png").write_bytes(PNG)
-        (directory / "demo.webm").write_bytes(WEBM)
+        (directory / "demo.gif").write_bytes(GIF)
         (directory / "result.json").write_text(json.dumps({
-            "request_id": request["id"], "head_sha": head, "status": "passed", "runner": "factory browser runner",
+            "request_id": request["id"], "head_sha": head, "status": "passed", "runner": "factory browser runner (Playwright, Chromium)",
+            "secret_seen": False,
             "summary": "Haiku 5.5 selected; the reply streamed and survived a reload.",
             "viewport_observed": entry["visual"]["viewport"],
             "steps": [{"status": "passed", "observation": f"observed: {s}"} for s in entry["visual"]["steps"]],
             "media": [{"file": "picker.png", "role": "screenshot", "caption": "The picker lists the new models"},
                       {"file": "reply.png", "role": "screenshot", "caption": "The streamed reply"},
-                      {"file": "demo.webm", "role": "demo", "caption": "Picking a model and chatting"}]}))
+                      {"file": "demo.gif", "role": "demo", "caption": "Picking a model and chatting"}]}))
         evidence = visual.collect(directory, request, 0)
         assert evidence["status"] == "passed", evidence["summary"]
         rows.append({"command": entry["command"], "target": "preview", "covers_ac": entry["covers_ac"], "exit_code": 0,

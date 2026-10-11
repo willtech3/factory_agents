@@ -14,7 +14,7 @@ from typing import Any
 
 STAGE = "integrate"
 ENVIRONMENT_KEYS = ("mode", "host", "status", "head_sha", "session_id", "environment_id", "profile_path", "profile_sha256",
-                    "app_base_url", "installer", "python", "install", "detail")
+                    "app_base_url", "installer", "python", "install", "detail", "journeys")
 
 
 def name(spec_id: str) -> str:
@@ -78,7 +78,7 @@ def settled_findings(findings: dict[str, Any], response: dict[str, Any], verdict
         answer = answered.get(fid) or {}
         disposition = answer.get("disposition")
         out.append({"finding_id": fid, "severity": f.get("severity"), "category": f.get("category"), "claim": f.get("claim"),
-                    "pass": f.get("pass"), "disposition": disposition, "explanation": answer.get("explanation"),
+                    "pass": f.get("pass"), "target": f.get("target", "change"), "disposition": disposition, "explanation": answer.get("explanation"),
                     "final_status": f.get("status"), "judge_assessment": judged.get(fid),
                     "contested": disposition in ("refuted", "accepted_risk") or f.get("status") in ("upheld", "withdrawn")})
     return out

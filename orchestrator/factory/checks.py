@@ -413,6 +413,22 @@ def _test_passed(test_id: str, passed: set[str], collected: set[str] | None) -> 
     return bool(under) and all(c in passed for c in under)
 
 
+PROOF_CODE = re.compile(r"\bFACTORY_(?:VISUAL_REQUEST|EVIDENCE_DIR)\b")
+
+
+def factory_proof_in_diff(added_lines_by_file: dict[str, list[str]]) -> CheckResult:
+    """The change adds no code that answers the factory's evidence protocol. Browser checks run through the factory's
+    own runner on a journey that is a run artifact (`factory:journey <name>`); a UI change's pull request adds no
+    browser-test files (post-mortem 2026-10-11 §1: a 71-line change shipped with a 1,860-line runner written for it).
+    A repository's own end-to-end suite, which maintainers keep, is unaffected: only code that reads the factory's
+    request or writes its evidence directory is refused."""
+    hits = sorted({f for f, lines in added_lines_by_file.items() if any(PROOF_CODE.search(ln) for ln in lines)})
+    return CheckResult("factory_proof_in_diff", not hits,
+                       "no code answering the factory's evidence protocol" if not hits else
+                       f"files answering the factory's evidence protocol (FACTORY_VISUAL_REQUEST / FACTORY_EVIDENCE_DIR): {hits}; "
+                       "write the steps as a journey under /mnt/session/outputs/journeys/ and remove these files", {"files": hits})
+
+
 def secret_scan(added_lines_by_file: dict[str, list[str]]) -> CheckResult:
     """No high-confidence credential in the added lines. A hit is blocking whatever a reviewer thinks."""
     from .security import secret_scan as scan
@@ -524,6 +540,7 @@ def run_all_for_merge(
         e2e_coverage(spec),
         visual_passed(spec, e2e_results or []),
         secret_scan(added_lines_by_file),
+        factory_proof_in_diff(added_lines_by_file),
     ]
     if manifest_path is not None and schema_dir is not None:
         out.append(manifest_valid(manifest_path, schema_dir))
