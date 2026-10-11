@@ -205,11 +205,12 @@ def _from_specify(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[
                 # The decision surfaces refuse such a selection; one that still arrives never starts any implementation.
                 raise RuntimeError(f"Gate 2 {d.gate_id}: the approved selection is not dependency-valid ({'; '.join(problems)}); "
                                    f"nothing was implemented")
+            selected = {sid: s for sid, s in specs.items() if sid in approved}
+            guidance = record_approval(ctx, d, selected)
             for sid in sorted(approved):
                 ctx.event("work_item.stage", {"stage": WorkItemStage.SPEC_APPROVED.value, "spec_id": sid},
                           work_item_id=specs[sid]["work_item_id"], spec_id=sid, actor="human")
-            specs = {sid: s for sid, s in specs.items() if sid in approved}
-            guidance = record_approval(ctx, d, specs)
+            specs = selected
             break
         human_comments, prior_specs = _route_gate2_feedback(ctx, design_cr_id, d, specs)
         previous_verdict, round_offset = verdict, max(int(verdict.get("round") or round_offset + 1), round_offset)
@@ -226,9 +227,12 @@ def record_approval(ctx: RunContext, d: GateDecision, approved: dict[str, dict])
     """Keep what Gate 2 approved and the owner's notes with it: the sha256 of each approved spec as stored for the gate
     (`specify/final-<spec_id>.json`) and the bounded per-spec guidance from the decision's comments. The implementer gets
     the guidance; a resume re-reads both and refuses a spec whose bytes no longer match what was approved."""
+    hashes = {sid: hashlib.sha256(ctx.store.get_artifact(ctx.run_id, "specify", f"final-{sid}.json")).hexdigest()
+              for sid in sorted(approved)}
+    if any(sha not in d.artifact_shas for sha in hashes.values()):
+        raise RuntimeError(f"Gate 2 {d.gate_id}: stored specs no longer match the approved artifacts")
     record = {"gate_id": d.gate_id, "decision": d.decision.value, "decided_by": d.decided_by,
-              "approved": {sid: hashlib.sha256(ctx.store.get_artifact(ctx.run_id, "specify", f"final-{sid}.json")).hexdigest()
-                           for sid in sorted(approved)},
+              "approved": hashes,
               "guidance": approval_guidance(d.comments, approved)}
     name = f"approval-{d.gate_id}.json"
     ctx.store.put_artifact(ctx.run_id, "gate_2", name, json.dumps(record, indent=2).encode())

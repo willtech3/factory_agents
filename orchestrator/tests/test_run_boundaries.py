@@ -291,3 +291,22 @@ def test_the_cli_binds_the_same_way_and_refuses_an_explicit_local_preview(tmp_pa
     monkeypatch.setattr(AppOnboarding, "binding_for", lambda self, target, app_id=None: (_ for _ in ()).throw(HTTPException(409, "several apps")))
     with pytest.raises(cli.typer.Exit):
         cli._bind_onboarded_app(cfg, outcome, explicit_preview=None)
+
+
+def test_notes_for_unselected_contracts_do_not_become_general_guidance():
+    selected = {"spec_a": dependent_specs()["spec_a"]}
+    notes = approval_guidance("spec_b: change the unrelated picker\nwi-b: remove the old menu\nkeep it small", selected)
+    assert "picker" not in notes["spec_a"] and "menu" not in notes["spec_a"]
+    assert "keep it small" in notes["spec_a"]
+
+
+def test_recording_approval_refuses_bytes_changed_since_the_gate(parked, tmp_path, root):
+    from factory.gates import Decision, GateDecision
+    ctx = tgr.context(tmp_path, root, design_only=False)
+    gate = parked["gate"]
+    d = GateDecision(gate_id=gate.gate_id, decision=Decision.APPROVE, decided_by="owner",
+                     artifact_shas=tuple(parked["shas"].values()))
+    path = tmp_path / "runs" / RUN / "artifacts" / "specify" / "final-spec_a.json"
+    path.write_text(path.read_text() + " ")
+    with pytest.raises(RuntimeError, match="approved artifacts"):
+        runner.record_approval(ctx, d, dependent_specs())

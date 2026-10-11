@@ -63,6 +63,10 @@ def approval_guidance(comments: str, specs: dict[str, dict[str, Any]]) -> dict[s
         if sep and target:
             if rest.strip():
                 addressed[target].append(rest.strip())
+        elif sep and head.strip().startswith(("spec_", "wi-")):
+            # Notes addressed to an unselected contract must not become instructions
+            # for every selected contract after approve_subset narrows the set.
+            continue
         else:
             general.append(line)
     out = {}
