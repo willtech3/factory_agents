@@ -13,6 +13,21 @@
     "limitations"
   ],
   "properties": {
+    "generated_files": {
+      "type": "array",
+      "maxItems": 30,
+      "description": "Committed files that tools write (a catalog snapshot, a generated client, a compiled bundle) and that are not yet marked linguist-generated in .gitattributes. The pull-request size budget excludes generated files, so the controller asks the owner to mark them. Post-mortem 2026-10-11 §3.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "evidence"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "maxLength": 240, "description": "A path or a .gitattributes glob." },
+          "evidence": { "type": "string", "maxLength": 300, "description": "Why it is generated, e.g. the script that writes it." },
+          "regenerated_by": { "type": "string", "maxLength": 200, "description": "The repository command that regenerates it, when there is one." }
+        }
+      }
+    },
     "summary": {
       "type": "string",
       "minLength": 1,

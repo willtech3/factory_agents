@@ -73,6 +73,8 @@ def spec() -> dict[str, Any]:
     return {"spec_id": SPEC_ID, "work_item_id": WORK_ITEM, "title": "Add source-backed frontier models to the picker",
             "goal": "Users can pick Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and GPT-6.1 Sol, with limits and prices from the catalog.",
             "acceptance_criteria": criteria, "allowed_paths": ["src/lib/models.ts", "tests/**", "catalog-watch/**"],
+            "estimated_size": "S", "estimated_lines": {"hand_written": 120, "app": 70, "tests": 50},
+            "regenerated": [{"paths": ["catalog-watch/openrouter-models.json", "catalog-watch/report.md"], "command": "bun run catalog:refresh"}],
             "test_plan": {"commands": ["bun test tests/models.test.ts", "bun run lint", "bunx tsc --noEmit"], "e2e": e2e}}
 
 

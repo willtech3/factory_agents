@@ -15,6 +15,8 @@ The App Onboarding managed agent reads pinned committed source, dependency decla
 
 A Slack bot, webhook, worker, CLI or library uses functional checks, not a browser. Hosted browser permission does not make every app a browser test, and the sandbox session is told about browsers only for a browser recipe. The verify command runs a script proposed under `verification/factory-onboarding/`. It exercises real behaviour with synthetic inputs, such as signed requests to the running service, the CLI on fixtures or the public API, and writes `verification-result.json` with an observation per check. Nothing in a proposal runs before verification, so discovery installs dependencies the way the repository's CI does. Other lockfiles and scripts can be stale. Services start so that cloud SDK clients need no real credentials, using emulator hosts or fakes the code supports.
 
+The agent also lists committed files that tools write (a data snapshot, a generated client) and that `.gitattributes` does not mark `linguist-generated`, in `generated_files`. The controller turns them into a question asking the owner to mark them, because a pull request's size budget counts only hand-written lines ([01-pipeline.md](01-pipeline.md#size)). Existing-app onboarding cannot write `.gitattributes` itself; a greenfield scaffold may propose it.
+
 Specialized native/mobile/GPU runtimes must report unsupported capabilities. A browser test does not stand in for an unavailable native test. Onboarding cannot promise universal one-click setup: some applications need a test identity, an isolated service or a repository-approved adapter.
 
 ## Where execution happens

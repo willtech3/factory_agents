@@ -127,8 +127,10 @@ def _policy(outcome: dict, design_only: bool, budget_usd: float | None = None):
     """Loop limits and budgets. The run budget is the outcome's `constraints.budget_usd` (default $150) and is
     enforced before every session (`budget.py`); `budget_usd` replaces it on a resume whose log carries a raised cap.
     FACTORY_BUDGET_SCALE (e.g. 0.4) scales every per-stage cap for cheap first runs, never below the stage's observed
-    median session (`Policy.stage_budget_floor_usd`)."""
+    median session (`Policy.stage_budget_floor_usd`). FACTORY_SIZE_BUDGET (e.g. "XS=50,S=150,M=400") sets the
+    hand-written line budget per size (`size.py`)."""
     import os
+    from .size import parse_budget
     from .state import Policy
     scale = float(os.environ.get("FACTORY_BUDGET_SCALE", "1") or 1)
     base = Policy()
@@ -141,7 +143,8 @@ def _policy(outcome: dict, design_only: bool, budget_usd: float | None = None):
                   security_review=os.environ.get("FACTORY_SECURITY_REVIEW", "1").lower() not in ("0", "false", "no", "off"),
                   review_max_rounds=knob("FACTORY_REVIEW_MAX_ROUNDS", base.review_max_rounds),
                   parallel_implementations=knob("FACTORY_PARALLEL_IMPLEMENTATIONS", base.parallel_implementations),
-                  outcome_max_iterations=knob("FACTORY_OUTCOME_MAX_ITERATIONS", base.outcome_max_iterations))
+                  outcome_max_iterations=knob("FACTORY_OUTCOME_MAX_ITERATIONS", base.outcome_max_iterations),
+                  size_budget_lines=parse_budget(os.environ.get("FACTORY_SIZE_BUDGET")))
 
 
 def _queue(cfg) -> FileQueue:

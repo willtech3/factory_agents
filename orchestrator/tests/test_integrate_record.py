@@ -77,9 +77,10 @@ def test_integration_keeps_artifacts_external_and_candidate_unchanged(tmp_path, 
     record = ctx.store.get_json(ctx.run_id, 'integrate', f"{spec['spec_id']}-run_record.json")
     assert '/api/artifacts/' in record['artifact_links']['spec_json'] and record['head_sha'] == judged
     assert record['pull_request']['url'] == 'https://example.test/pull/42'
-    assert record['size']['files'] == [{'path': 'retry.py', 'added': 1, 'removed': 0}]
+    assert record['size']['diff']['files'] == [{'path': 'retry.py', 'added': 1, 'removed': 0}]
+    assert record['size']['measured']['hand_written'] == 1 and record['size']['flag'] is None
     opened = ctx.store.get_artifact(ctx.run_id, 'integrate', f"{spec['spec_id']}-pr_description.md").decode()
-    assert '1 changed lines in 1 file (+1 / −0).' in opened and f"#record-{spec['spec_id']}" in opened
+    assert '1 hand-written lines (app 1, tests 0); no generated files. Estimated 320 (M;' in opened and f"#record-{spec['spec_id']}" in opened
 
 
 def test_moved_branch_must_be_reviewed_again(tmp_path, root, examples):

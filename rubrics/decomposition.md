@@ -10,10 +10,10 @@ Every success metric in `outcome.json` appears in `coverage` with at least one w
 - 3: as 2, and the summary says which items matter most for each metric.
 
 ## D2. Right-sized decomposition
-There are as few work items as reviewability allows: one item when the outcome is one coherent change a reviewer can approve as a single pull request; more only where parts must be approved or landed separately or an item would exceed size M. Every item is a change to the product with a testable behaviour (vertical slice), not a layer, an investigation, or a documentation rider.
+There are as few work items as reviewability allows: one item when the outcome is one coherent change a reviewer can approve as a single pull request; more only where parts must be approved or landed separately or an item would exceed size M. Size is `estimated_lines`: hand-written changed lines, tests included, generated files excluded, against the run's budget (default XS ≤ 50, S ≤ 150, M ≤ 400). A refresh that rewrites a large generated file is its own item that lands first, unless it is small (post-mortem 2026-10-11 §3). Every item is a change to the product with a testable behaviour (vertical slice), not a layer, an investigation, or a documentation rider.
 - 0: an item is not a change to the product (a "confirm current behaviour", "baseline", "investigate", or docs-only item when docs are not the outcome), or an item is a horizontal layer ("all database changes").
 - 1: more items than a reviewer needs (a change a single reviewer would approve as one pull request is split into several), or an L item with no stated reason it cannot be split.
-- 2: as few items as can each be reviewed as one change, all XS to M, each with an intent a tester could check.
+- 2: as few items as can each be reviewed as one change, all XS to M by a plausible `estimated_lines`, large regenerated data in its own item, each with an intent a tester could check.
 - 3: as 2, and the summary says why this count and not fewer.
 
 ## D3. Dependency graph

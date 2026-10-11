@@ -31,8 +31,8 @@ Every introduced or changed interface has a signature, schema fragment, or examp
 - 3: as 2, and backwards-compatibility behaviour is stated.
 
 ## S5. Scope is bounded
-`allowed_paths` is tight (no repository-wide globs), excludes existing tests unless the item is about them, and `non_goals` names adjacent work deliberately excluded.
-- 0: `allowed_paths` contains `**` at the root or includes existing test files without reason.
+`allowed_paths` is tight (no repository-wide globs), excludes existing tests unless the item is about them, `non_goals` names adjacent work deliberately excluded, and `estimated_lines` (hand-written changed lines, tests included, generated files excluded; post-mortem 2026-10-11 §3) is at size M or below under the run's budget, with every regenerated file declared in `regenerated`.
+- 0: `allowed_paths` contains `**` at the root or includes existing test files without reason, or the estimate is above size M or implausible for the criteria.
 - 1: bounded but broader than the criteria require.
 - 2: paths match the criteria; non-goals present.
 - 3: as 2, and `forbidden_changes` lists tempting but disallowed changes.

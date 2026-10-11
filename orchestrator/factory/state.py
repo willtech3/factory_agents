@@ -126,6 +126,9 @@ class Policy:
     design_only: bool = False            # stop after Gate 2: real agents for decompose/specify/judge, no code stage, no forge needed
     preview_wait_seconds: int = 1800     # how long verification waits for the platform to deploy head_sha to its preview
     dev_pipeline_timeout_seconds: int = 3600  # Stage 5: how long to watch the dev pipeline before a DEPLOY_FAILURE gate
+    # Hand-written changed lines (tests included, generated files excluded) per size; FACTORY_SIZE_BUDGET tunes them.
+    # Above M is split at planning; an overrun at merge is a flag for the owner (size.py, post-mortem 2026-10-11 §3).
+    size_budget_lines: dict[str, int] = field(default_factory=lambda: {"XS": 50, "S": 150, "M": 400})
 
 
 @dataclass

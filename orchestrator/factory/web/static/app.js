@@ -470,6 +470,11 @@
     section("Needs a decision", (rec.decisions || []).length
       ? el("ul", null, rec.decisions.map(d => el("li", null, d.decision, d.location ? el("span", { class: "explain mono" }, ` ${d.location}`) : null)))
       : el("p", { class: "explain" }, "Nothing."));
+    const sz = rec.size || {};
+    if (sz.line) section("Size", el("p", null, sz.line.replace(/\*\*/g, "")), sz.flag ? el("div", { class: "notice warn", style: "margin:0" }, el("b", null, "Over budget. "),
+      "Reported for you to judge; it did not trigger another round.") : null,
+      (sz.measured && (sz.measured.files || []).length) ? el("details", null, el("summary", null, `Lines per file (${sz.measured.files.length})`),
+        el("ul", null, sz.measured.files.map(f => el("li", { class: "mono" }, `${f.path}: ${f.lines} (${f.kind})`)))) : null);
     const crit = el("table", null, el("tr", null, el("th", null, "Criterion"), el("th", null, "Given / when / then"), el("th", null, "Status"), el("th", null, "Evidence"), el("th", null, "End-to-end rows"), el("th", null, "Reviewers")));
     for (const c of rec.criteria || []) crit.append(el("tr", null, el("td", { class: "mono" }, c.ac_id),
       el("td", null, `${c.given || ""} / ${c.when || ""} / ${c.then || ""}`),

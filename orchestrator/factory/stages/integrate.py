@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from .. import pr_description, run_record, visual
+from .. import pr_description, run_record, size, visual
 from ..budget import reserve_budget
 from ..forge import Forge
 from ..sessions import SessionContext
@@ -105,6 +105,7 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
     # No integration commit: the PR must contain the exact candidate the judge reviewed.
     head_sha = judged_sha
     stats: dict[str, Any] | None = None
+    attributes: str | None = None
     beyond: dict[str, Any] | None = None
     default_branch = _normal_default_branch(ctx, base_branch)
     if verifier is not None:
@@ -118,6 +119,12 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
             beyond = _numstat_since(verifier, default_branch, judged_sha)
             repo = verifier.checkout(branch)
         stats = _numstat_since(verifier, base_branch, judged_sha, base_sha=verdict.get("_base_sha"), repo=repo)
+        attributes = _show(repo, f"{judged_sha}:.gitattributes")
+    budget = getattr(ctx.policy, "size_budget_lines", None) or size.DEFAULT_BUDGET
+    measured = size.measure(stats, gitattributes=attributes, regenerated=spec.get("regenerated") or [])
+    estimate = size.estimate_of(spec)
+    sized = {"diff": stats, "measured": measured, "estimate": estimate, "budget": dict(budget),
+             "flag": size.flag(measured, estimate, budget), "line": size.line(measured, estimate, budget)}
     ctx.store.put_artifact(ctx.run_id, "integrate", f"{sid}-approved-merge_readiness.json",
                            json.dumps(verdict, indent=2).encode())
 
@@ -126,12 +133,13 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
                 if e.get("spec_id") == sid]
     record = run_record.build(run_id=ctx.run_id, spec=spec, verdict=verdict, findings=findings, response=response,
                               test_results=test_results if isinstance(test_results, dict) else {}, run_summary=run_summary,
-                              visual_evidence=evidence, diff_stats=stats, base_branch=base_branch, artifact_links=links)
+                              visual_evidence=evidence, size=sized, base_branch=base_branch, artifact_links=links)
     run_record.store(ctx, record)
 
     record_url = pr_description.run_record_url(ctx.cfg.artifact_base_url, ctx.run_id, sid)
     facts = pr_description.facts(spec=spec, verdict=verdict, test_results=test_results if isinstance(test_results, dict) else {},
-                                 preview_mode=ctx.cfg.preview_mode, head_sha=judged_sha, diff_stats=stats, record_url=record_url)
+                                 preview_mode=ctx.cfg.preview_mode, head_sha=judged_sha, diff_stats=stats, record_url=record_url,
+                                 size_line=sized["line"])
     draft = pr_description.render(facts, ctx.cfg.templates_dir / "cr_template.md")
     banner = evaluation_banner(ctx.evaluation_target[1], default_branch, beyond) if ctx.evaluation_target else ""
     allowed_words = [str(spec.get("title") or ""), str(spec.get("goal") or "")]
@@ -175,6 +183,13 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
     ctx.event("work_item.stage", {"stage": WorkItemStage.CR_OPEN.value, "cr_id": cr.get("id", cr.get("iid"))},
               work_item_id=wid, spec_id=sid)
     return cr
+
+
+def _show(repo: Path, ref: str) -> str:
+    try:
+        return _git(repo, "show", ref)
+    except (subprocess.CalledProcessError, OSError):
+        return ""
 
 
 def _normal_default_branch(ctx: RunContext, base_branch: str) -> str:

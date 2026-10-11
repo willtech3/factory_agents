@@ -43,7 +43,8 @@ How to work:
 5. Set `allowed_paths` tightly. The implementer will be blocked from touching anything else. Include new test file locations. Do not include existing test files unless the item is explicitly about changing them.
 6. Write the test plan: the exact commands that must pass, and the new tests mapped to criteria. Commands are test, build or lint runs the repository supports (`pytest`, `npm test`, `ruff check`) that run at any commit of the implementer's branch; a shell assertion that a file exists or that a docstring or README contains text is not a command but a criterion with `verification: static_check`. Mark each criterion `user_visible` honestly (a user, operator, or external system can observe it through the deployed service), and give every user-visible criterion a `test_plan.e2e` entry that runs against the preview environment (`target: preview`, `$BASE_URL` substituted); add a `local` counterpart where cheap. Unit tests passing while the deployed change does not work is the failure this prevents.
    Read the `platform-contract` skill: declare any service-manifest change the item needs as a `config` interface, and never ask the implementer for anything the contract reserves (IAM, networking, the platform repository).
-7. Fill in non-goals, dependencies, rollout and rollback, and open questions with defaults.
+7. Estimate the size: `estimated_lines` (hand-written changed lines, app and tests, generated files excluded) and the matching `estimated_size` under the kickoff's budget. Declare every generated file the change rewrites in `regenerated` with the command that rewrites it. A spec above size M is not ready: say in `open_questions` how the work item should split (post-mortem 2026-10-11 §3).
+8. Fill in non-goals, dependencies, rollout and rollback, and open questions with defaults.
 
 Before finishing, run `python -I /mnt/session/uploads/tools/validate.py spec.json` and fix any schema errors.
 

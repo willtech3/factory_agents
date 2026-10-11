@@ -9,7 +9,7 @@ from ..budget import reserve_budget
 from ..gates import Decision, GateKind
 from ..state import RunStage
 from . import RunContext
-from .common import hosted_planning_clause, make_ask_human, open_gate_and_wait, persist_outputs, platform_skill, require_json, rubric_text, run_session, stamp_provenance
+from .common import hosted_planning_clause, make_ask_human, size_clause, open_gate_and_wait, persist_outputs, platform_skill, require_json, rubric_text, run_session, stamp_provenance
 
 DESCRIPTION = """Produce a decomposition of the business outcome in /mnt/session/uploads/outcome.json.
 {repo_clause} {skill_clause}
@@ -61,7 +61,7 @@ def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | N
     res = run_session(
         ctx, agent_key="decomposer", title=f"{ctx.run_id} decompose", run_id=ctx.run_id, stage="decompose",
         uploads={**uploads, **skill_uploads},
-        description=DESCRIPTION.format(feedback_clause=feedback_clause, repo_clause=repo_clause, skill_clause=skill_clause) + hosted_planning_clause(ctx),
+        description=DESCRIPTION.format(feedback_clause=feedback_clause, repo_clause=repo_clause, skill_clause=skill_clause) + size_clause(ctx) + hosted_planning_clause(ctx),
         rubric_md=rubric_text(ctx, "decomposition", repo_available), max_iterations=ctx.policy.outcome_max_iterations,
         budget_usd=ctx.policy.stage_budget_usd["decompose"],
         custom_tools={"ask_human": make_ask_human(ctx, "decomposer")}, repository=mount,
@@ -80,6 +80,7 @@ def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | N
         checks.schema_valid(decomposition, ctx.cfg.schemas_dir / "decomposition.schema.json", ctx.cfg.schemas_dir),
         checks.dag_acyclic(decomposition["work_items"]),
         checks.metric_coverage(outcome, decomposition),
+        checks.decomposition_size(decomposition, ctx.policy.size_budget_lines),
     ]
     failed = [r for r in results if not r.passed]
     ctx.event("artifact.produced", {"artifact_type": "decomposition", "revision": decomposition["revision"],

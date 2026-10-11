@@ -97,6 +97,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 | `budget.py` | Run budget enforcement. Pauses before the session that would exceed `constraints.budget_usd` |
 | `pr_description.py` | Renders the change request description from `templates/cr_template.md` and lints it (60 lines, no factory ids, vocabulary, costs or local links; post-mortem 2026-10-11) |
 | `run_record.py` | Builds the per-spec run record (criteria, findings, checks, media, cost) that the PR links and the Console shows |
+| `size.py` | Counts a change's hand-written lines (tests included; linguist-generated files, lockfiles and spec-declared regenerated files excluded) against the size budget |
 | `summary.py` | Derives each run's status, headline and results for the run history (`factory runs`, the Console's Runs page) |
 | `config.py` | Reads agent IDs from `claude-lock.json` and everything else from the environment and `.env` |
 
