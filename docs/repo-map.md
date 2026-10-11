@@ -95,6 +95,8 @@ A human decides a gate by writing to the file queue, either from the Console or 
 | `gates.py` | Gates and in-session questions: the protocols, hash binding, and the composite queue that lets several surfaces decide |
 | `approvals.py` | What a Gate 2 approval may select, and how the owner's notes are routed to each spec |
 | `budget.py` | Run budget enforcement. Pauses before the session that would exceed `constraints.budget_usd` |
+| `pr_description.py` | Renders the change request description from `templates/cr_template.md` and lints it (60 lines, no factory ids, vocabulary, costs or local links; post-mortem 2026-10-11) |
+| `run_record.py` | Builds the per-spec run record (criteria, findings, checks, media, cost) that the PR links and the Console shows |
 | `summary.py` | Derives each run's status, headline and results for the run history (`factory runs`, the Console's Runs page) |
 | `config.py` | Reads agent IDs from `claude-lock.json` and everything else from the environment and `.env` |
 
@@ -105,7 +107,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 | `decompose.py` | 1. Outcome to work items, then Gate 1 |
 | `specify.py` | 2. Parallel spec writers, a judge loop, then Gate 2 |
 | `implement.py` | 3. Per spec: implementer, reviewer and security-reviewer passes, then the merge judge. Also holds `LocalVerifier`, `LocalPreview` and the findings merge |
-| `integrate.py` | 4. The integrator opens the PR at the exact head the merge judge approved. The approved spec and verdicts stay in Factory's artifact store and are linked from the PR, not committed to the branch ([ADR-0010](adr/0010-external-integration-records.md)) |
+| `integrate.py` | 4. The integrator opens the PR at the exact head the merge judge approved, with the reviewer-first description the orchestrator rendered and linted. The approved spec, verdicts and the spec's run record stay in Factory's artifact store and are linked from the PR, not committed to the branch ([ADR-0010](adr/0010-external-integration-records.md)) |
 | `deploy_observe.py` | 5. Watches the platform deploy `main` to dev and runs e2e against it. Driven by `watcher.py` |
 | `common.py` | Shared helpers: run a session, persist outputs, provenance, open and wait on gates |
 | `watcher.py` (top level) | `factory watch`: follows open PRs to merge (Gate 3), then hands each one to Stage 5 |

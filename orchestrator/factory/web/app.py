@@ -29,7 +29,7 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, SecretStr
 
-from .. import visual
+from .. import run_record, visual
 from ..approvals import presented_specs, subset_problems
 from .. import checks
 from .. import config as cfgmod
@@ -312,6 +312,7 @@ class Console:
                 "gates": gates, "questions": questions, "events": timeline, "artifacts": self._artifacts(run_id),
                 "browser_checks_pending": visual.pending(self.cfg.runs_dir / run_id),
                 "visual_evidence": visual.summaries(self.cfg.runs_dir / run_id / "artifacts", events),
+                "run_records": run_record.load_all(self.cfg.runs_dir / run_id / "artifacts"),
                 "created_at": events[0].at, "updated_at": events[-1].at}
 
     def _budget(self, st, events, open_gates: list[dict[str, Any]]) -> dict[str, Any]:

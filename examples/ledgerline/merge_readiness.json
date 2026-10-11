@@ -11,26 +11,97 @@
     }
   ],
   "criteria": [
-    {"ac_id": "AC-1", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:21 passes in test_results.json commands[0]; e2e row 'payment_failed' (target preview) exit 0"},
-    {"ac_id": "AC-2", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:47 passes; payment_failed_at cleared asserted"},
-    {"ac_id": "AC-3", "status": "met", "evidence": "payment_attempt_spec.rb:12 idempotent insert passes; e2e row 'payment_failed' replays the event, exit 0; my 20-thread re-run of the reviewer's probe: 20/20 clean"},
-    {"ac_id": "AC-4", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:63 publishes billing.retries_exhausted on null next_payment_attempt"},
-    {"ac_id": "AC-5", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:80 passes; e2e row 'unknown customer' (target preview) exit 0"},
-    {"ac_id": "AC-6", "status": "met", "evidence": "rubocop command exit 0 in test_results.json commands[1]; the migration is additive only (db/migrate/20261009_create_payment_attempts.rb)"},
-    {"ac_id": "AC-7", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:21 asserts the existing notification still fires"},
-    {"ac_id": "AC-8", "status": "met", "evidence": "stripe_webhook_handler_spec.rb:95 passes; e2e row 'handler failure' (target preview) exit 0 with HTTP 500 observed"}
+    {
+      "ac_id": "AC-1",
+      "status": "met",
+      "evidence": "stripe_webhook_handler_spec.rb:21 passes in test_results.json commands[0]; e2e row 'payment_failed' (target preview) exit 0"
+    },
+    {
+      "ac_id": "AC-2",
+      "status": "met",
+      "evidence": "stripe_webhook_handler_spec.rb:47 passes; payment_failed_at cleared asserted"
+    },
+    {
+      "ac_id": "AC-3",
+      "status": "met",
+      "evidence": "payment_attempt_spec.rb:12 idempotent insert passes; e2e row 'payment_failed' replays the event, exit 0; my 20-thread re-run of the reviewer's probe: 20/20 clean"
+    },
+    {
+      "ac_id": "AC-4",
+      "status": "met",
+      "evidence": "stripe_webhook_handler_spec.rb:63 publishes billing.retries_exhausted on null next_payment_attempt"
+    },
+    {
+      "ac_id": "AC-5",
+      "status": "met",
+      "evidence": "stripe_webhook_handler_spec.rb:80 passes; e2e row 'unknown customer' (target preview) exit 0"
+    },
+    {
+      "ac_id": "AC-6",
+      "status": "met",
+      "evidence": "rubocop command exit 0 in test_results.json commands[1]; the migration is additive only (db/migrate/20261009_create_payment_attempts.rb)"
+    },
+    {
+      "ac_id": "AC-7",
+      "status": "met",
+      "evidence": "stripe_webhook_handler_spec.rb:21 asserts the existing notification still fires"
+    },
+    {
+      "ac_id": "AC-8",
+      "status": "met",
+      "evidence": "stripe_webhook_handler_spec.rb:95 passes; e2e row 'handler failure' (target preview) exit 0 with HTTP 500 observed"
+    }
   ],
   "deterministic_checks": [
-    {"check": "diff_scope", "passed": true, "detail": "all changed files inside allowed_paths"},
-    {"check": "protected_tests", "passed": true, "detail": "no existing tests modified"},
-    {"check": "test_weakening", "passed": true, "detail": "no skip/xfail markers added"},
-    {"check": "ac_test_mapping", "passed": true, "detail": "all automated criteria map to passing tests"},
-    {"check": "test_plan_commands", "passed": true, "detail": "all test plan commands exit 0"}
+    {
+      "check": "diff_scope",
+      "passed": true,
+      "detail": "all changed files inside allowed_paths"
+    },
+    {
+      "check": "protected_tests",
+      "passed": true,
+      "detail": "no existing tests modified"
+    },
+    {
+      "check": "test_weakening",
+      "passed": true,
+      "detail": "no skip/xfail markers added"
+    },
+    {
+      "check": "ac_test_mapping",
+      "passed": true,
+      "detail": "all automated criteria map to passing tests"
+    },
+    {
+      "check": "test_plan_commands",
+      "passed": true,
+      "detail": "all test plan commands exit 0"
+    }
   ],
   "residual_risks": [
     "Smart Retries must be enabled in the Stripe dashboard before launch; the code is inert without it (rollout step 3 in the spec).",
     "invoice.payment_action_required is ignored by design (spec minor issue SR-1 accepted at Gate 2); if 3DS challenges rise, failures will look like plain declines in payment_attempts."
   ],
+  "pr_summary": {
+    "what_changed": "Records every Stripe payment attempt in a new payment_attempts table and handles the invoice.payment_failed and invoice.paid webhooks, so support can see why a subscription is past due. When Stripe stops retrying, the app publishes billing.retries_exhausted for the dunning work that follows.",
+    "how_tested": "The handler specs cover a failed payment, a paid invoice, duplicate deliveries of the same event, an unknown customer and a handler failure that must return 500.",
+    "decisions": [],
+    "read_first": [
+      {
+        "path": "app/models/payment_attempt.rb",
+        "why": "the idempotent insert that makes duplicate deliveries safe"
+      },
+      {
+        "path": "app/services/stripe_webhook_handler.rb",
+        "why": "the two new handler branches at lines 36-49"
+      },
+      {
+        "path": "db/migrate/20261009_create_payment_attempts.rb",
+        "why": "additive only"
+      }
+    ]
+  },
   "summary_for_human": "Adds a payment_attempts table and handles Stripe invoice.payment_failed / invoice.paid webhooks to record every attempt, publishing billing.retries_exhausted when Stripe gives up. Review round 1 found a real concurrency bug (F-1: duplicate webhook deliveries raced and returned 500) and a correctness bug (F-2: voided invoices were treated as final failures); both were fixed with new tests and I re-ran the reviewer's 20-thread probe myself: 20/20 clean. One nit (F-4) was refuted on project convention and withdrawn. All 8 acceptance criteria are met with located tests; the orchestrator's own run of the test plan passed (34 examples). Nothing needs a decision from you. Read first: app/models/payment_attempt.rb (the idempotent insert) and the two new handler branches at stripe_webhook_handler.rb:36-49. Then the migration, which is additive only.",
   "produced_by": {
     "agent_name": "Merge judge",
