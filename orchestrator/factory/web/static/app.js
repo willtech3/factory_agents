@@ -459,7 +459,7 @@
     const pr = rec.pull_request || {};
     const box = el("details", { class: "run-record", id: `record-${rec.spec_id}` },
       el("summary", null, `Full record${pr.id != null ? ` for #${pr.id}` : ""}: ${rec.title || rec.spec_id}`));
-    const section = (title, ...kids) => box.append(el("h4", { class: "mini-h" }, title), ...kids);
+    const section = (title, ...kids) => box.append(el("h4", { class: "mini-h" }, title), ...kids.filter(k => k != null));
     const artifact = a => `/api/artifacts/${encodeURIComponent(r.run_id)}/${a.split("/").map(encodeURIComponent).join("/")}`;
     if (rec.what_changed) section("What changed", el("p", null, rec.what_changed));
     section("Needs a decision", (rec.decisions || []).length
