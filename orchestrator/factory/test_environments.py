@@ -266,7 +266,7 @@ def functional_checks(profile: dict, output_dir: Path) -> list[dict] | None:
         status = got.get("status") if got else None
         observation = got.get("observation") if got else None
         rows.append({"id": declared["id"], "description": declared["description"],
-                     "status": status if status in CHECK_STATUSES else "not_reported" if got is None else "invalid",
+                     "status": status if isinstance(status, str) and status in CHECK_STATUSES else "not_reported" if got is None else "invalid",
                      "observation": observation.strip()[:600] if isinstance(observation, str) else ""})
     return rows
 
@@ -282,7 +282,9 @@ def read_diagnosis(output_dir: Path) -> dict | None:
         return None
     if not isinstance(value, dict) or not isinstance(value.get("summary"), str) or not value["summary"].strip():
         return None
-    phase = value.get("phase") if value.get("phase") in DIAGNOSIS_PHASES else None
+    phase = value.get("phase")
+    if not isinstance(phase, str) or phase not in DIAGNOSIS_PHASES:
+        phase = None
     return {"phase": phase, "summary": value["summary"].strip()[:1500]}
 
 

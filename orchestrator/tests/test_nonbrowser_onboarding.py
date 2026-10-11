@@ -198,3 +198,12 @@ def test_a_failed_verification_reaches_the_person_and_the_next_discovery(monkeyp
     assert "previous_attempt.verification records the first failed phase" in sent["description"]
     assert "functional verification checks" in request["evidence"]
     assert manager.get(aid)["status"] == "setup_ready"
+
+@pytest.mark.parametrize('bad', [[], {}, 7])
+def test_malformed_diagnostic_fields_remain_visible_as_invalid(tmp_path, bad):
+    (tmp_path / 'verification-result.json').write_text(json.dumps({
+        'checks': [{'id': 'health', 'status': bad, 'observation': 'probe output'}]}))
+    rows = te.functional_checks(RECIPE, tmp_path)
+    assert rows[0]['status'] == 'invalid'
+    (tmp_path / 'diagnosis.json').write_text(json.dumps({'phase': bad, 'summary': 'A diagnosis'}))
+    assert te.read_diagnosis(tmp_path) == {'phase': None, 'summary': 'A diagnosis'}
