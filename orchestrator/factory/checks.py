@@ -269,6 +269,28 @@ def size_budget(measured: dict[str, Any] | None, estimate: int | None, budget: d
     return CheckResult("size_budget", True, detail, {"measured": measured, "estimate": estimate, "budget": dict(budget)}, flag=over)
 
 
+EVIDENCE_PROTOCOL = re.compile(r"\bFACTORY_[A-Z][A-Z_]+\b|\bviewport_observed\b|\bvisual[_ ]request\b|\bevidence[_ ]dir(?:ectory)?\b",
+                               re.IGNORECASE)
+
+
+def criteria_describe_product(spec: dict[str, Any]) -> CheckResult:
+    """No acceptance criterion is about the factory's own evidence protocol. A criterion is behaviour a user, an operator
+    or a caller of the app observes; how the factory proves it (the browser evidence directory and request, the evidence
+    file's fields) belongs to the verification and the run record. Narrow on purpose: it names only the protocol, so a
+    product that happens to write a result.json is unaffected; the spec judge scores the rest (rubric S13). Post-mortem
+    2026-10-11 §2."""
+    hits = []
+    for ac in spec.get("acceptance_criteria", []):
+        text = " ".join(str(ac.get(k) or "") for k in ("given", "when", "then"))
+        m = EVIDENCE_PROTOCOL.search(text)
+        if m:
+            hits.append(f"{ac.get('ac_id')} ({m.group(0)})")
+    return CheckResult("criteria_describe_product", not hits,
+                       "every criterion describes the product" if not hits else
+                       f"criteria about the factory's evidence, not the product: {hits}; state the behaviour a user, operator or "
+                       "caller observes and leave the proof to the e2e entry's visual contract", {"hits": hits})
+
+
 def spec_traceability(spec: dict[str, Any], decomposition: dict[str, Any]) -> CheckResult:
     """Spec points at a real work item; declared spec dependencies match the DAG."""
     items = {w["work_item_id"]: w for w in decomposition["work_items"]}
