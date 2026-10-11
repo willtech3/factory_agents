@@ -590,6 +590,10 @@ summary.explain { cursor: pointer; }
 .run-row .meta span:first-child { color: var(--text-2); }
 .runs-foot { font-size: var(--fs-sm); color: var(--text-3); margin: 10px 0 0; }
 
+.run-record { margin-top: var(--sp-4); }
+.run-record > summary { cursor: pointer; font-weight: 700; }
+.run-record table { font-size: var(--fs-sm); }
+
 /* utilities: spacing from the scale, the two small sizes, a narrow input, a flex row. They sit after every component so they win on equal specificity (.stack, .notice, .facts set margins too); reach for one before an inline style */
 .m-0 { margin: 0; }
 .mt-1 { margin-top: var(--sp-1); } .mt-2 { margin-top: var(--sp-2); } .mt-3 { margin-top: var(--sp-3); } .mt-4 { margin-top: var(--sp-4); }

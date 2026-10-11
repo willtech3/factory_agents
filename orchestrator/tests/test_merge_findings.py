@@ -70,3 +70,11 @@ def test_round_two_keeps_previous_ids_carries_dispositions_and_numbers_only_new_
     assert next(f for f in folded if f["finding_id"] == "DET-ac_test_mapping")["status"] == "open"
     folded = apply_deterministic([f for f in merged["findings"] if f["finding_id"] != "DET-ac_test_mapping"] + [_f("DET-e2e_preview", "blocking", "test_quality", "d:1")], [])
     assert next(f for f in folded if f["finding_id"] == "DET-e2e_preview")["status"] == "fixed"                         # carried open, check passes now
+
+
+def test_a_verification_finding_never_hides_a_change_finding_at_the_same_place():
+    change = _f("F-1", "major", "test_quality", "src/app.ts:12")
+    plumbing = _f("F-1", "major", "test_quality", "src/app.ts:12", target="verification")
+    for passes in ([{"findings": [plumbing]}, {"findings": [change]}], [{"findings": [change]}, {"findings": [plumbing]}]):
+        merged = merge_findings(passes, "spec_x", 1, "b", "h", "br")
+        assert sorted(f.get("target", "change") for f in merged["findings"]) == ["change", "verification"]

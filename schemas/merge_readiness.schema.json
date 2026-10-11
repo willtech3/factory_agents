@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://factory.example/schemas/merge_readiness.schema.json",
   "title": "MergeReadinessVerdict",
-  "description": "Output of the Merge Judge: an independent decision, after the reviewer/implementer exchange has settled, on whether the change is ready for a human to review in GitLab. Consumes the spec, findings, responses, test results, and the deterministic checks. Never edits code.",
+  "description": "Output of the Merge Judge: an independent decision, after the reviewer/implementer exchange has settled, on whether the change is ready for a human to review on the forge. Consumes the spec, findings, responses, test results, and the deterministic checks. Never edits code.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["verdict_id", "spec_id", "round", "result", "unresolved_findings", "criteria", "deterministic_checks", "residual_risks", "summary_for_human", "produced_by"],
+  "required": ["verdict_id", "spec_id", "round", "result", "unresolved_findings", "criteria", "deterministic_checks", "residual_risks", "pr_summary", "summary_for_human", "produced_by"],
   "properties": {
     "verdict_id": { "type": "string", "pattern": "^mrv_[a-z0-9]{8,}$" },
     "spec_id": { "type": "string" },
@@ -54,7 +54,42 @@
       }
     },
     "residual_risks": { "type": "array", "items": { "type": "string" } },
-    "summary_for_human": { "type": "string", "maxLength": 3000, "description": "Becomes the top of the change request description. What changed, what was contested, what the human should look at first." },
+    "pr_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The part of the verdict the change request description shows, written for an engineer who knows the app and nothing about the factory: third person, plain words, no ids (criteria, findings, checks, sessions), no agent names, no costs. The judge never sees the description and does not comment on it. Post-mortem 2026-10-11 §5.",
+      "required": ["what_changed", "how_tested", "decisions", "read_first"],
+      "properties": {
+        "what_changed": { "type": "string", "minLength": 1, "maxLength": 700, "description": "Two to four sentences: what the change does for its users and why." },
+        "how_tested": { "type": "string", "maxLength": 400, "description": "One or two sentences on what the tests and browser checks cover, in the app's terms. The controller adds the counts." },
+        "decisions": {
+          "type": "array",
+          "maxItems": 6,
+          "description": "Only what a person must decide before merging, one sentence each with the file and line it concerns. Empty when there is nothing to decide.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["decision", "location", "affects_product"],
+            "properties": {
+              "decision": { "type": "string", "minLength": 1, "maxLength": 300 },
+              "location": { "type": "string", "pattern": "^[^\\s:]+:[0-9]+(-[0-9]+)?$", "description": "path:line or path:start-end" },
+              "affects_product": { "type": "boolean", "description": "true when the answer changes what users see or get; these are listed first." }
+            }
+          }
+        },
+        "read_first": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "why"],
+            "properties": { "path": { "type": "string", "minLength": 1 }, "why": { "type": "string", "maxLength": 160 } }
+          }
+        }
+      }
+    },
+    "summary_for_human": { "type": "string", "maxLength": 3000, "description": "The detail for the run record (not the change request): what changed, what was contested and how it was settled, what the evidence shows and what it does not." },
     "produced_by": { "$ref": "provenance.schema.json" }
   }
 }

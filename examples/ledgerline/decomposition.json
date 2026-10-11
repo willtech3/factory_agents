@@ -11,6 +11,7 @@
       "intent": "Stripe retries failed charges on its own schedule; we subscribe to the invoice.payment_failed and invoice.paid webhooks and store each attempt in a new payment_attempts table so recovery can be measured and shown to support.",
       "depends_on": [],
       "size": "M",
+      "estimated_lines": 320,
       "contributes_to_metrics": ["Failed-payment recovery rate", "Involuntary churn rate"],
       "touches": {
         "repositories": ["https://gitlab.com/ledgerline/app"],
@@ -26,6 +27,7 @@
       "intent": "Customers get a clear, plain-language email at first failure and after each failed retry, each with a signed one-click link to update their card. Replaces the single existing failure email.",
       "depends_on": ["wi-smart-retries"],
       "size": "M",
+      "estimated_lines": 320,
       "contributes_to_metrics": ["Failed-payment recovery rate"],
       "touches": {
         "repositories": ["https://gitlab.com/ledgerline/app"],
@@ -42,6 +44,7 @@
       "intent": "Support sees every account with an open failed payment, days since first failure, retry attempts so far, and the last email sent, and can trigger a manual retry or extend grace.",
       "depends_on": ["wi-smart-retries"],
       "size": "M",
+      "estimated_lines": 320,
       "contributes_to_metrics": ["Support visibility", "Involuntary churn rate"],
       "touches": {
         "repositories": ["https://gitlab.com/ledgerline/app"],
@@ -57,6 +60,7 @@
       "intent": "Account suspension moves from a fixed 7-day timer to the moment Stripe reports the last retry failed, with a configurable maximum grace period as a safety cap.",
       "depends_on": ["wi-smart-retries"],
       "size": "S",
+      "estimated_lines": 120,
       "contributes_to_metrics": ["Involuntary churn rate"],
       "touches": {
         "repositories": ["https://gitlab.com/ledgerline/app"],

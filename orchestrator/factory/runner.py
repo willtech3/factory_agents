@@ -62,7 +62,8 @@ def policy_snapshot(ctx: RunContext) -> dict[str, Any]:
             # the pass also needs its optional agent deployed; without one it is skipped whatever the policy says
             "security_review_available": "security_reviewer" in ctx.cfg.agents,
             "outcome_max_iterations": p.outcome_max_iterations, "stage_budget_usd": dict(p.stage_budget_usd),
-            "preview_mode": ctx.cfg.preview_mode, "design_only": p.design_only}
+            "preview_mode": ctx.cfg.preview_mode, "design_only": p.design_only,
+            "size_budget_lines": dict(getattr(p, "size_budget_lines", {}) or {})}
 
 
 def notes_by_item(comments: str, item_ids: list[str]) -> dict[str, str]:

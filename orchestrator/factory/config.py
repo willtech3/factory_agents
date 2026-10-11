@@ -85,6 +85,7 @@ class Config:
     test_vault_ids: tuple[str, ...] = ()      # FACTORY_TEST_VAULT_IDS: explicit test-only vaults; never the forge's vault
     managed_verify_budget_usd: float = 4.0    # FACTORY_MANAGED_VERIFY_BUDGET_USD: cap per hosted verification session
     artifact_base_url: str = "http://127.0.0.1:8772"  # Factory Console, or an externally hosted artifact service
+    pr_media: bool = True     # FACTORY_PR_MEDIA=off: no screenshots or demo in change request descriptions (pr_media.py)
 
     def console_session_url(self, session_id: str) -> str:
         return f"https://platform.claude.com/workspaces/{self.console_workspace}/sessions/{session_id}"
@@ -202,6 +203,7 @@ def load(lock_path: Path | None = None, dotenv_path: Path | None = None) -> Conf
         test_vault_ids=tuple(v.strip() for v in os.environ.get("FACTORY_TEST_VAULT_IDS", "").split(",") if v.strip()),
         managed_verify_budget_usd=_float_env("FACTORY_MANAGED_VERIFY_BUDGET_USD", 4.0),
         artifact_base_url=os.environ.get("FACTORY_ARTIFACT_BASE_URL", "http://127.0.0.1:8772").rstrip("/"),
+        pr_media=os.environ.get("FACTORY_PR_MEDIA", "on").lower() not in ("0", "off", "false", "no"),
         smoke_commands=tuple(c for c in os.environ.get("FACTORY_SMOKE_COMMANDS", "").split(";") if c.strip()),
         console_workspace=os.environ.get("ANTHROPIC_WORKSPACE", "default"),
         workspace_id=os.environ.get("ANTHROPIC_WORKSPACE_ID"),

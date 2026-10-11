@@ -60,6 +60,7 @@ class StageResult:
     events_seen: int
     custom_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     finish_recorded: bool = False
+    last_message: str | None = None     # the agent's final chat text; explains a turn that ended without its output file
 
 
 class SessionDriver:
@@ -210,6 +211,7 @@ class SessionDriver:
         outcome_result: str | None = None
         iterations = 0
         stop_reason: str | None = None
+        last_message: str | None = None
         seen: set[str] = set()
         calls: list[dict[str, Any]] = []
         tool_results: dict[str, str] = {}
@@ -218,9 +220,13 @@ class SessionDriver:
 
         def handle(event: Any) -> bool:
             """Returns True when the drain loop should stop."""
-            nonlocal outcome_result, iterations, stop_reason
+            nonlocal outcome_result, iterations, stop_reason, last_message
             et = event.type
-            if et == "agent.custom_tool_use":
+            if et == "agent.message":
+                text = "".join(getattr(b, "text", "") or "" for b in (getattr(event, "content", None) or [])).strip()
+                if text:
+                    last_message = text
+            elif et == "agent.custom_tool_use":
                 if event.id in acknowledged:
                     return False
                 ctx.custom_tool_use_id = event.id
@@ -341,6 +347,7 @@ class SessionDriver:
             stop_reason=stop_reason,
             events_seen=len(seen),
             custom_tool_calls=calls,
+            last_message=last_message,
         )
 
     def _session_events(self, session_id: str):

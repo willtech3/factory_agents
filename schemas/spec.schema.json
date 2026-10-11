@@ -5,7 +5,7 @@
   "description": "One specification per work item, written by the Spec Writer and graded by the Spec Judge. This is the contract the Implementer builds to and the Reviewer reviews against. Acceptance criteria are the primary artifact; everything else supports them.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["spec_id", "work_item_id", "decomposition_id", "outcome_id", "revision", "title", "goal", "non_goals", "acceptance_criteria", "interfaces", "allowed_paths", "test_plan", "dependencies", "produced_by"],
+  "required": ["spec_id", "work_item_id", "decomposition_id", "outcome_id", "revision", "title", "goal", "non_goals", "acceptance_criteria", "interfaces", "allowed_paths", "test_plan", "dependencies", "estimated_lines", "produced_by"],
   "properties": {
     "spec_id": { "type": "string", "pattern": "^spec_[a-z0-9-]{3,}$" },
     "work_item_id": { "type": "string" },
@@ -217,7 +217,19 @@
         }
       }
     },
-    "estimated_size": { "type": "string", "enum": ["XS", "S", "M", "L"] },
+    "estimated_size": { "type": "string", "enum": ["XS", "S", "M", "L"], "description": "The band of estimated_lines.hand_written under the run's size budget (default XS ≤ 50, S ≤ 150, M ≤ 400)." },
+    "estimated_lines": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hand_written", "app", "tests"],
+      "description": "Estimated changed lines (added plus removed) a reviewer reads: generated files excluded (linguist-generated in .gitattributes, lockfiles, and the files in `regenerated`). A spec above size M is split. Post-mortem 2026-10-11 §3.",
+      "properties": {
+        "hand_written": { "type": "integer", "minimum": 0, "description": "app + tests" },
+        "app": { "type": "integer", "minimum": 0 },
+        "tests": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "regenerated": { "type": "array", "description": "Generated files the change rewrites by running a named command; excluded from the size and reported separately in the pull request.", "items": { "type": "object", "additionalProperties": false, "required": ["paths", "command"], "properties": { "paths": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Globs of the files the command rewrites." }, "command": { "type": "string", "minLength": 1, "description": "The repository command that regenerates them, e.g. `bun run catalog:refresh`." } } } },
     "produced_by": { "$ref": "provenance.schema.json" }
   }
 }

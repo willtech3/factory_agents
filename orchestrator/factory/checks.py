@@ -24,9 +24,10 @@ class CheckResult:
     passed: bool
     detail: str = ""
     data: dict[str, Any] = field(default_factory=dict)
+    flag: str | None = None        # something the owner should see that is not a failure (an over-budget change)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"check": self.check, "passed": self.passed, "detail": self.detail}
+        return {"check": self.check, "passed": self.passed, "detail": self.detail, **({"flag": self.flag} if self.flag else {})}
 
 
 # ---------------------------------------------------------------- globs
@@ -224,6 +225,71 @@ def metric_coverage(outcome: dict[str, Any], decomposition: dict[str, Any]) -> C
     )
 
 
+def decomposition_size(decomposition: dict[str, Any], budget: dict[str, int]) -> CheckResult:
+    """No work item is estimated above size M: hand-written lines, tests included, generated files excluded
+    (size.py; post-mortem 2026-10-11 §3). An item above M is split before anyone specifies it."""
+    from .size import size_for, whole
+    over = [f"{w['work_item_id']} ({whole(w.get('estimated_lines'))} lines)" for w in decomposition.get("work_items", [])
+            if whole(w.get("estimated_lines")) is not None and size_for(whole(w["estimated_lines"]), budget) == "L"]
+    big = [w["work_item_id"] for w in decomposition.get("work_items", []) if w.get("size") == "L"]
+    problems = ([f"estimated above size M (≤ {budget['M']} hand-written lines); split them: {over}"] if over else []) + \
+               ([f"sized L; split them: {big}"] if big else [])
+    return CheckResult("size_budget", not problems, "every work item is estimated at size M or below" if not problems
+                       else "; ".join(problems), {"over": over, "large": big})
+
+
+def spec_size_estimate(spec: dict[str, Any], budget: dict[str, int]) -> CheckResult:
+    """The spec's own estimate is at size M or below, and its size label matches it."""
+    from .size import estimate_of, size_for
+    estimate = estimate_of(spec)
+    if estimate is None:
+        return CheckResult("size_budget", False, "no estimated_lines.hand_written; estimate the hand-written lines, tests included")
+    size = size_for(estimate, budget)
+    if size == "L":
+        return CheckResult("size_budget", False, f"estimated {estimate} hand-written lines, above size M (≤ {budget['M']}); "
+                           "split the work item (a regenerated data refresh lands as its own item first)", {"estimate": estimate})
+    label = spec.get("estimated_size")
+    if label and label != size:
+        return CheckResult("size_budget", False, f"estimated_size {label} does not match estimated_lines ({estimate} lines is size {size})",
+                           {"estimate": estimate})
+    return CheckResult("size_budget", True, f"estimated {estimate} hand-written lines (size {size})", {"estimate": estimate})
+
+
+def size_budget(measured: dict[str, Any] | None, estimate: int | None, budget: dict[str, int]) -> CheckResult:
+    """Merge time: the change's hand-written and generated lines against the spec's estimate. Always passes: going
+    over budget is a flag the owner sees in the run record and the pull request's size line, not a reason for another
+    round (post-mortem 2026-10-11 §3)."""
+    from .size import flag, size_for
+    if measured is None:
+        return CheckResult("size_budget", True, "size not measured (no diff statistics)")
+    over = flag(measured, estimate, budget)
+    detail = (f"{measured['hand_written']} hand-written lines (app {measured['app']}, tests {measured['tests']}; size "
+              f"{size_for(measured['hand_written'], budget)}), {measured['generated']} generated lines in "
+              f"{len(measured['generated_files'])} files; estimate {estimate if estimate is not None else 'none'}")
+    return CheckResult("size_budget", True, detail, {"measured": measured, "estimate": estimate, "budget": dict(budget)}, flag=over)
+
+
+EVIDENCE_PROTOCOL = re.compile(r"\bFACTORY_(?:VISUAL_REQUEST|EVIDENCE_DIR)\b|\bviewport_observed\b")
+
+
+def criteria_describe_product(spec: dict[str, Any]) -> CheckResult:
+    """No acceptance criterion is about the factory's own evidence protocol. A criterion is behaviour a user, an operator
+    or a caller of the app observes; how the factory proves it (the browser evidence directory and request, the evidence
+    file's fields) belongs to the verification and the run record. Narrow on purpose: it names only the protocol, so a
+    product that happens to write a result.json is unaffected; the spec judge scores the rest (rubric S13). Post-mortem
+    2026-10-11 §2."""
+    hits = []
+    for ac in spec.get("acceptance_criteria", []):
+        text = " ".join(str(ac.get(k) or "") for k in ("given", "when", "then"))
+        m = EVIDENCE_PROTOCOL.search(text)
+        if m:
+            hits.append(f"{ac.get('ac_id')} ({m.group(0)})")
+    return CheckResult("criteria_describe_product", not hits,
+                       "every criterion describes the product" if not hits else
+                       f"criteria about the factory's evidence, not the product: {hits}; state the behaviour a user, operator or "
+                       "caller observes and leave the proof to the e2e entry's visual contract", {"hits": hits})
+
+
 def spec_traceability(spec: dict[str, Any], decomposition: dict[str, Any]) -> CheckResult:
     """Spec points at a real work item; declared spec dependencies match the DAG."""
     items = {w["work_item_id"]: w for w in decomposition["work_items"]}
@@ -347,6 +413,22 @@ def _test_passed(test_id: str, passed: set[str], collected: set[str] | None) -> 
     return bool(under) and all(c in passed for c in under)
 
 
+PROOF_CODE = re.compile(r"\bFACTORY_(?:VISUAL_REQUEST|EVIDENCE_DIR)\b")
+
+
+def factory_proof_in_diff(added_lines_by_file: dict[str, list[str]]) -> CheckResult:
+    """The change adds no code that answers the factory's evidence protocol. Browser checks run through the factory's
+    own runner on a journey that is a run artifact (`factory:journey <name>`); a UI change's pull request adds no
+    browser-test files (post-mortem 2026-10-11 §1: a 71-line change shipped with a 1,860-line runner written for it).
+    A repository's own end-to-end suite, which maintainers keep, is unaffected: only code that reads the factory's
+    request or writes its evidence directory is refused."""
+    hits = sorted({f for f, lines in added_lines_by_file.items() if any(PROOF_CODE.search(ln) for ln in lines)})
+    return CheckResult("factory_proof_in_diff", not hits,
+                       "no code answering the factory's evidence protocol" if not hits else
+                       f"files answering the factory's evidence protocol (FACTORY_VISUAL_REQUEST / FACTORY_EVIDENCE_DIR): {hits}; "
+                       "write the steps as a journey under /mnt/session/outputs/journeys/ and remove these files", {"files": hits})
+
+
 def secret_scan(added_lines_by_file: dict[str, list[str]]) -> CheckResult:
     """No high-confidence credential in the added lines. A hit is blocking whatever a reviewer thinks."""
     from .security import secret_scan as scan
@@ -438,7 +520,7 @@ def run_all_for_merge(
     named_test_files: Iterable[str] = (), removed_lines_by_file: dict[str, list[str]] | None = None,
     manifest_path: Path | None = None, schema_dir: Path | None = None,
     e2e_results: list[dict[str, Any]] | None = None, tests_that_exist: list[str] | None = None,
-    require_test_evidence: bool = False,
+    require_test_evidence: bool = False, size: dict[str, Any] | None = None, size_budget_lines: dict[str, int] | None = None,
 ) -> list[CheckResult]:
     """The merge judge receives this list verbatim and may not override a failure.
 
@@ -458,9 +540,13 @@ def run_all_for_merge(
         e2e_coverage(spec),
         visual_passed(spec, e2e_results or []),
         secret_scan(added_lines_by_file),
+        factory_proof_in_diff(added_lines_by_file),
     ]
     if manifest_path is not None and schema_dir is not None:
         out.append(manifest_valid(manifest_path, schema_dir))
+    if size_budget_lines is not None:
+        from .size import estimate_of
+        out.append(size_budget(size, estimate_of(spec), size_budget_lines))
     preview_entries = [e for e in spec.get("test_plan", {}).get("e2e", []) if e.get("target") == "preview"]
     if preview_entries:
         if e2e_results is None:

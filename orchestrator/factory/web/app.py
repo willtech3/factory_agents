@@ -29,7 +29,7 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, SecretStr
 
-from .. import visual
+from .. import run_record, visual
 from ..approvals import presented_specs, subset_problems
 from .. import checks
 from .. import config as cfgmod
@@ -115,7 +115,7 @@ SETTINGS_ENV = {
     "budget_usd": "FACTORY_RUN_BUDGET_USD", "preview": "FACTORY_PREVIEW", "reviewer_passes": "FACTORY_REVIEWER_PASSES",
     "review_rounds": "FACTORY_REVIEW_MAX_ROUNDS", "security_review": "FACTORY_SECURITY_REVIEW",
     "parallel_items": "FACTORY_PARALLEL_IMPLEMENTATIONS", "grader_iterations": "FACTORY_OUTCOME_MAX_ITERATIONS",
-    "budget_scale": "FACTORY_BUDGET_SCALE",
+    "budget_scale": "FACTORY_BUDGET_SCALE", "size_budget": "FACTORY_SIZE_BUDGET",
 }
 CREW_ROLES = ["decomposer", "spec_writer", "spec_judge", "implementer", "reviewer", "security_reviewer", "merge_judge", "integrator"]
 
@@ -330,6 +330,7 @@ class Console:
                 "gates": gates, "questions": questions, "events": timeline, "artifacts": self._artifacts(run_id),
                 "browser_checks_pending": visual.pending(self.cfg.runs_dir / run_id),
                 "visual_evidence": visual.summaries(self.cfg.runs_dir / run_id / "artifacts", events),
+                "run_records": run_record.load_all(self.cfg.runs_dir / run_id / "artifacts"),
                 "created_at": events[0].at, "updated_at": events[-1].at}
 
     def _budget(self, st, events, open_gates: list[dict[str, Any]]) -> dict[str, Any]:

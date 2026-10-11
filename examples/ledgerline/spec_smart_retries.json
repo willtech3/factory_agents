@@ -77,6 +77,7 @@
     {"question": "Keep attempts for deleted accounts (FK on delete)?", "blocking": false, "default_if_unanswered": "ON DELETE CASCADE, matching the payments table convention at db/schema.rb:212"}
   ],
   "estimated_size": "M",
+  "estimated_lines": {"hand_written": 320, "app": 170, "tests": 150},
   "produced_by": {
     "agent_name": "Spec writer",
     "agent_id": "agent_02example",
