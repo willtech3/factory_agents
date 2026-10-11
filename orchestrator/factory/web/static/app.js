@@ -1411,7 +1411,7 @@
     ["Discover the setup", "An agent finds how to build, run and test it."],
     ["Answer questions", "Only if the agent needs something from you."],
     ["Verify", "The setup runs once in a hosted sandbox."],
-    ["Evidence", "Results and screenshots from that run."],
+    ["Evidence", "Check results from that run, with screenshots for browser apps."],
     ["Setup pull request", "Proposed to the repository; a person merges it."],
   ];
   const GITHUB_HTTPS = /^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
@@ -1772,6 +1772,21 @@
     }
     return ul;
   }
+  // a non-browser app has no screenshots: each declared functional check and what the recipe observed is its evidence
+  function checkList(v) {
+    const ul = el("ul", { class: "caps" });
+    for (const c of v.checks || []) {
+      const tone = c.status === "passed" ? "ok" : c.status === "failed" || c.status === "invalid" ? "bad" : "warn";
+      ul.append(el("li", null, el("span", { class: `tag ${tone}` }, words(c.status)),
+        el("span", { class: "cap" }, c.description || c.id),
+        el("span", { class: "lim" }, c.observation ? `Observed: ${c.observation}` : "No observation was reported for this check.")));
+    }
+    return ul;
+  }
+  function readiness(v) {
+    const stalled = (v.services || []).filter(s => s.status !== "passed");
+    return stalled.length ? el("p", { class: "explain" }, `Not ready: ${stalled.map(s => `${s.service} (${words(s.reason || s.status)})`).join(", ")}.`) : null;
+  }
   // only what the reviewed test recipe declares (test_environment.schema.json: name, required, allowed_hosts, injection, description)
   function declaredSecrets(plan) {
     const list = plan && plan.profile && Array.isArray(plan.profile.secrets) ? plan.profile.secrets : [];
@@ -1975,11 +1990,16 @@
           el("div", { class: "row-tags" }, el("span", { class: `tag ${v.status === "passed" ? "ok" : v.status === "failed" ? "bad" : "warn"}` }, words(v.status)),
             stale ? el("span", { class: "tag warn" }, "Earlier commit") : null, v.cost_usd != null ? el("span", { class: "tag" }, `${money(v.cost_usd)} charged`) : null),
           v.detail ? el("p", null, v.detail) : null,
-          v.phases ? el("ul", {class:"plain-list"}, v.phases.map(p => el("li", null, `${words(p.phase)}: ${words(p.status)}${p.seconds != null ? ` · ${p.seconds}s` : ""}${p.exit_code ? ` · exit ${p.exit_code}` : ""}`))) : null,
+          v.phases ? el("ul", {class:"plain-list"}, v.phases.map(p => el("li", null, `${words(p.phase)}: ${words(p.status)}${p.seconds != null ? ` · ${p.seconds}s` : ""}${p.exit_code ? ` · exit ${p.exit_code}` : ""}${p.reason ? ` · ${words(p.reason)}` : ""}`))) : null,
+          readiness(v),
+          (v.checks || []).length ? el("div", null, el("h3", { class: "mini-h" }, "Functional checks"), checkList(v)) : null,
+          v.diagnosis && v.diagnosis.summary ? el("div", { class: "notice info", style: "margin:0" },
+            el("b", null, `Sandbox agent’s diagnosis${v.diagnosis.phase ? ` (${words(v.diagnosis.phase)})` : ""}: `), v.diagnosis.summary,
+            el("p", { class: "explain", style: "margin:6px 0 0" }, "Written by the agent after reading the sandbox logs. It explains the failure; it is not evidence.")) : null,
           uncovered.length ? el("div", { class: "notice info", style: "margin:0" }, el("b", null, "Not covered by this verification: "),
             uncovered.map(c => `${c.label || c.id}${c.limitation ? ` (${c.limitation})` : ""}`).join("; "),
             v.status === "passed" && !stale ? ". The app is ready only for the verified journeys." : ". This attempt does not establish readiness for the current setup.") : null,
-          (a.evidence || []).length ? evidenceGallery(a) : el("p", { class: "explain" }, "No media was accepted from this verification."),
+          (a.evidence || []).length ? evidenceGallery(a) : el("p", { class: "explain" }, (v.checks || []).length ? "This recipe produces no media; its checks above are the evidence." : "No media was accepted from this verification."),
           el("dl", { class: "kv" }, el("dt", null, "Source commit"), el("dd", { class: "mono" }, v.source_sha || a.source_sha || "new scaffold"), el("dt", null, "Tested snapshot"), el("dd", { class: "mono" }, v.head_sha || "not given"), el("dt", null, "Profile fingerprint"), el("dd", { class: "mono" }, v.profile_sha256 || "not given"),
             el("dt", null, "Session"), el("dd", { class: "mono" }, v.session_id || "not given"))), stale ? "a newer commit needs a new verification" : null));
       }

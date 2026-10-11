@@ -214,7 +214,7 @@ def ensure_environment(client, profile: dict, cache_dir: Path, *, purpose: str =
         return env.id
 
 
-SYSTEM = """You operate a Factory-owned ephemeral test sandbox. Run only the uploaded
+SANDBOX_SYSTEM = """You operate a Factory-owned ephemeral test sandbox. Run only the uploaded
 controller harness and report its result. Do not edit application source, profile,
 harness, evidence or results; do not create commits, push, deploy, delegate, or
 change permissions. Do not read, print, copy or search for credential values.
@@ -223,10 +223,101 @@ do not wrap it in a shorter timeout or terminate it because a tool call is slow.
 If your tool returns a running process handle, wait on that same process.
 Read-only diagnosis of failed command exit codes is permitted. If a command needs
 approval, stop and report the specific blocker; do not substitute another route.
-The user approved browser automation inside this isolated cloud sandbox. The
+"""
+BROWSER_SYSTEM = """The user approved browser automation inside this isolated cloud sandbox. The
 controller harness provisions the application, synthetic data, browser and media.
 Local-machine browser preferences do not forbid this hosted test workflow.
 """
+DIAGNOSIS_SYSTEM = """If the harness exits non-zero, diagnose once before you stop. Read the failed phase's
+log in /tmp/factory-test/logs/ and any service log the recipe's start command writes,
+then write /mnt/session/outputs/diagnosis.json as {"phase": "<prepare|start|services|seed|verify|stop>",
+"summary": "<at most 1200 characters>"}. Name the failing command or service, the error,
+and the likely cause in the recipe or the app. Quote at most three short error lines.
+Never include environment values, tokens, keys or other credential-like text. Do not
+fix, retry or rerun anything.
+"""
+SYSTEM = SANDBOX_SYSTEM + BROWSER_SYSTEM      # change runs: their e2e entries may drive a browser
+CHECK_STATUSES = {"passed", "failed", "blocked", "skipped"}
+DIAGNOSIS_PHASES = {"prepare", "start", "services", "seed", "verify", "stop"}
+
+
+def onboarding_system(profile: dict) -> str:
+    """Browser wording only for browser recipes: an API, bot, worker, CLI or library is not a browser test."""
+    return SANDBOX_SYSTEM + (BROWSER_SYSTEM if "browser" in profile else "") + DIAGNOSIS_SYSTEM
+
+
+def functional_checks(profile: dict, output_dir: Path) -> list[dict] | None:
+    """Each declared functional check with what verification-result.json reported for it (None for browser recipes).
+    A non-browser app has no screenshots: these rows are its evidence, for the person and for a repair."""
+    if "verification" not in profile:
+        return None
+    try:
+        report = json.loads((output_dir / "verification-result.json").read_text())
+    except (OSError, ValueError):
+        report = None
+    reported = report.get("checks") if isinstance(report, dict) else None
+    by_id: dict[str, dict] = {}
+    for check in reported if isinstance(reported, list) else []:
+        if isinstance(check, dict) and isinstance(check.get("id"), str):
+            by_id.setdefault(check["id"], check)
+    rows = []
+    for declared in profile["verification"]["checks"]:
+        got = by_id.get(declared["id"])
+        status = got.get("status") if got else None
+        observation = got.get("observation") if got else None
+        rows.append({"id": declared["id"], "description": declared["description"],
+                     "status": status if isinstance(status, str) and status in CHECK_STATUSES else "not_reported" if got is None else "invalid",
+                     "observation": observation.strip()[:600] if isinstance(observation, str) else ""})
+    return rows
+
+
+def read_diagnosis(output_dir: Path) -> dict | None:
+    """The sandbox agent's bounded explanation of a failed run. Commentary, never evidence: raw logs stay in the sandbox."""
+    p = output_dir / "diagnosis.json"
+    try:
+        if p.is_symlink() or not p.is_file() or p.stat().st_size > 16 * 1024:
+            return None
+        value = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(value, dict) or not isinstance(value.get("summary"), str) or not value["summary"].strip():
+        return None
+    phase = value.get("phase")
+    if not isinstance(phase, str) or phase not in DIAGNOSIS_PHASES:
+        phase = None
+    return {"phase": phase, "summary": value["summary"].strip()[:1500]}
+
+
+def explain(report: dict, *, bound: bool, passed: bool, browser: bool, checks: list[dict] | None,
+            evidence_detail: str, diagnosed: bool) -> str:
+    """What happened, in the order the harness ran it: the first failed phase, a service that never became ready (start
+    exits 0 when it backgrounds a process that then crashes), missing credentials, then the evidence and each check."""
+    if passed:
+        return ("Sandbox recipe completed; inspect browser evidence for acceptance." if browser
+                else "Every lifecycle phase and every declared functional check passed in the hosted sandbox.")
+    if not bound:
+        return "The hosted result is missing or not bound to this source, recipe and archive, so nothing it reports counts."
+    phases = [p for p in report.get("phases", []) if isinstance(p, dict)]
+    failed = next((p for p in phases if p.get("status") != "passed"), None)
+    stalled = [str(s.get("service")) for s in report.get("services", []) if isinstance(s, dict) and s.get("status") != "passed"]
+    if failed and failed.get("phase") != "stop":
+        how = f"exit {failed['exit_code']}" if failed.get("exit_code") is not None else str(failed.get("reason") or failed.get("status"))
+        text = f"The {failed.get('phase', 'setup')} command did not pass ({how})."
+    elif stalled:
+        text = (f"The start command returned, but {', '.join(stalled)} never answered its health check in the readiness "
+                "window. The process most likely exited after launch or listens on another port or path.")
+    elif report.get("missing_secrets"):
+        text = "Required test credentials were not attached: " + ", ".join(map(str, report["missing_secrets"]))[:300] + "."
+    elif failed:
+        text = f"The recipe ran, but its stop command did not pass ({failed.get('reason') or failed.get('status')})."
+    else:
+        text = f"The recipe ran, but its evidence was not accepted: {evidence_detail}."
+    bad = [c for c in checks or [] if c["status"] != "passed"]
+    if bad:
+        text += " Checks not passed: " + "; ".join(f"{c['id']} ({c['status'].replace('_', ' ')})" for c in bad) + "."
+    text += (" The sandbox agent's diagnosis is attached." if diagnosed
+             else " Raw logs stay in the sandbox; open the verification session for more.")
+    return text
 
 
 def run_hosted(cfg, repo: Path, output_dir: Path, *, profile_relative: str = PROFILE_PATH,
@@ -262,7 +353,7 @@ def run_hosted(cfg, repo: Path, output_dir: Path, *, profile_relative: str = PRO
                      "tools/environment_runner.py": (Path(__file__).parent / "sandbox_tools/environment_runner.py").read_bytes()},
             description="Run `python3 -I /mnt/session/uploads/tools/environment_runner.py`. All application, database and browser execution must stay inside this cloud sandbox. Report its exit status; leave its outputs intact. Never run against the user's computer or production.",
             rubric_md=None, max_iterations=1, budget_usd=budget_usd,
-            environment_id=environment_id, vault_ids=list(vault_ids), system_override=SYSTEM, metadata=app_labels(app),
+            environment_id=environment_id, vault_ids=list(vault_ids), system_override=onboarding_system(profile), metadata=app_labels(app),
         )
         if on_finished:
             on_finished({"session_id": result.session_id, "list_cost_usd": result.list_cost_usd, "stop_reason": result.stop_reason})
@@ -282,14 +373,28 @@ def run_hosted(cfg, repo: Path, output_dir: Path, *, profile_relative: str = PRO
             report = {}
         bound = all(report.get(k) == descriptor[k] for k in ("head_sha", "profile_sha256", "source_sha256"))
         from .sandbox_tools.environment_runner import check_evidence
-        media_ok, _ = check_evidence(profile, output_dir)
+        media_ok, media_detail = check_evidence(profile, output_dir)
         phases = {p.get("phase"): p.get("status") for p in report.get("phases", []) if isinstance(p, dict)}
         phases_ok = all(phases.get(p) == "passed" for p in ("prepare", "start", "seed", "verify", "stop"))
         passed = bound and report.get("status") == "passed" and media_ok and phases_ok
+        # Check rows only once verify ran: before that, "not reported" on every check would bury the real cause.
+        checks = functional_checks(profile, output_dir) if bound and "verify" in phases else None
+        diagnosis = None if passed else read_diagnosis(output_dir)
         response = {**descriptor, "status": "passed" if passed else "blocked" if not bound else report.get("status", "blocked"),
                     "session_id": result.session_id, "cost_usd": result.list_cost_usd,
                     "stop_reason": result.stop_reason, "artifacts": saved,
-                    "detail": "Sandbox recipe completed; inspect browser evidence for acceptance." if passed else "Environment verification did not pass; inspect recorded phase statuses."}
+                    "detail": explain(report, bound=bound, passed=passed, browser="browser" in profile, checks=checks,
+                                      evidence_detail=media_detail, diagnosed=diagnosis is not None)}
+        if bound:
+            response.update(phases=[{k: p[k] for k in ("phase", "status", "exit_code", "seconds", "reason") if k in p}
+                                    for p in report.get("phases", []) if isinstance(p, dict)],
+                            services=[{k: str(s[k])[:200] for k in ("service", "status", "reason") if k in s}
+                                      for s in report.get("services", []) if isinstance(s, dict)],
+                            harness_reason=str(report.get("reason") or "")[:300] or None)
+        if checks is not None:
+            response["checks"] = checks
+        if diagnosis:
+            response["diagnosis"] = diagnosis
         if not passed and response["status"] == "passed":
             response["status"] = "blocked"
         try:

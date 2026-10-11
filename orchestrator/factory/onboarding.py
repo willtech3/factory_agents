@@ -92,8 +92,12 @@ def unpack_source(data: bytes, destination: Path, *, strip_root=False):
 
 def validate_plan(plan: dict, kind: str, repo: Path, schemas: Path, manifest_path: str = "service_manifest.json") -> dict:
     schema = json.loads((schemas / "onboarding_plan.schema.json").read_text())
-    if list(jsonschema.Draft202012Validator(schema).iter_errors(plan)):
-        raise ValueError("Onboarding agent returned an invalid plan; discovery must be retried")
+    errors = sorted(jsonschema.Draft202012Validator(schema).iter_errors(plan), key=lambda e: list(map(str, e.path)))
+    if errors:
+        # Where, not what: a value may be a pasted credential. The next discovery sees this in previous_attempt.error.
+        where = [f"{'/'.join(map(str, e.path)) or '$'}: invalid {e.validator}" for e in errors[:8]]
+        more = f"; and {len(errors) - 8} more" if len(errors) > 8 else ""
+        raise ValueError("Onboarding agent returned an invalid plan (" + "; ".join(where) + more + "); discovery must be retried")
     paths = set()
     for f in plan["files"]:
         p = safe_path(f["path"])
@@ -358,8 +362,14 @@ class AppOnboarding:
         _, source = snapshot(repo)
         request = {"kind": r["kind"], "name": r["name"], "description": r["description"], "answers": r["answers"],
                    "hosted_browser_automation": True, "execution_location": "Anthropic hosted Linux sandbox",
+                   "evidence": ("Browser journeys only for an app with a browser UI; hosted browser permission does not make "
+                                "every app a browser test. APIs, bots, webhooks, workers, CLIs and libraries use functional "
+                                "verification checks."),
                    "previous_attempt": previous_attempt, "feedback": r.get("feedback", ""),
                    "instructions": "Inspect source only and propose a setup. No execution, external access or readiness claims."}
+        repair = (" previous_attempt.verification records the first failed phase, service readiness, each check's "
+                  "observation and the sandbox agent's diagnosis; fix those causes before anything else."
+                  if (previous_attempt or {}).get("verification") else "")
         driver = SessionDriver(self.cfg, client=self.client,
             on_session_started=lambda x: self._started(app_id, x), on_session_finished=lambda x: self._finished(app_id, x))
         # Discovery needs no outbound network or credentials: one shared limited environment, not one per app.
@@ -373,7 +383,15 @@ class AppOnboarding:
                              f"The change runner selects {self.cfg.service_manifest_path} test_environment.profile, or "
                              "test_environment.json when that pointer is absent. profile_path must match that selection in the "
                              "proposed source. Existing-app onboarding cannot change the manifest; ask a focused question if a "
-                             "manifest change or recipe edit outside the allowed onboarding paths is essential."),
+                             "manifest change or recipe edit outside the allowed onboarding paths is essential. "
+                             "For an app without a browser UI, use a verification block whose verify command runs a script "
+                             "you propose under verification/factory-onboarding/. It exercises real behaviour with synthetic "
+                             "inputs (signed requests to the running service, the CLI on fixtures, the public API) and "
+                             "writes verification-result.json with an observation for every check. Nothing you propose runs "
+                             "before verification: install dependencies the way the repository's CI does, because other "
+                             "lockfiles and scripts can be stale; start services so cloud SDK clients need no real "
+                             "credentials (emulator hosts or fakes the code supports); and declare a provider key as "
+                             "required only when no synthetic or no-key baseline is possible." + repair),
                 rubric_md=None, max_iterations=1, budget_usd=cap, environment_id=env_id, vault_ids=[], metadata=app_labels(r),
                 schema_names=("onboarding_plan.schema.json", "test_environment.schema.json"))
             self._finished(app_id, {"session_id": result.session_id, "list_cost_usd": result.list_cost_usd, "stop_reason": result.stop_reason})
@@ -452,15 +470,10 @@ class AppOnboarding:
                             vault_ids=vaults, client=self.client, on_started=lambda x: self._started(app_id, x),
                             on_finished=lambda x: self._finished(app_id, x), app=r)
         result.update(source_sha=r["source_sha"], plan_sha256=r["plan_sha256"])
-        try:
-            report = json.loads((out / "environment-result.json").read_text())
-            result["phases"] = [{k: phase[k] for k in ("phase", "status", "exit_code", "seconds") if k in phase}
-                                for phase in report.get("phases", []) if isinstance(phase, dict)]
-            failed = next((p for p in result["phases"] if p.get("status") != "passed"), None)
-            if failed and result["status"] != "passed":
-                result["detail"] = f"Hosted {failed.get('phase', 'setup')} did not pass (exit {failed.get('exit_code', 'unavailable')}). Review the session diagnosis, then revise the recipe and discover again."
-        except (OSError, ValueError, TypeError):
-            pass
+        if result["status"] != "passed":
+            # The phases, service readiness, check rows and diagnosis travel with this result into the next
+            # discovery's previous_attempt, so a repair starts from what failed rather than from exit codes alone.
+            result["detail"] += " Revise the setup with this evidence and discover again."
         (out / "controller-result.json").write_text(json.dumps(result, indent=2))
         evidence = [{"name": n, "url": f"/api/apps/{app_id}/evidence/{quote(n)}"} for n in result["artifacts"]]
         limited = bool(r["plan"]["limitations"] or any(not c["available"] for c in r["plan"]["capabilities"]))
