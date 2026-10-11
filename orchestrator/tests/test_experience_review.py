@@ -100,7 +100,8 @@ def test_sessions_left_by_a_dead_controller_are_not_live_work(tmp_path):
     resumed = summarize(events, replay(rid, events), controller_alive=True)
     assert resumed["working"] == ["reviewer"] and resumed["live_sessions"] == 1 and resumed["working_since"] == events[-1].at
     roster = {r["role"]: r for r in crew_roster(events)}
-    assert roster["implementer"]["state"] == "done" and roster["reviewer"]["state"] == "working"
+    # the orphaned session was cut short, not finished: the roster says so instead of a green "done"
+    assert roster["implementer"]["state"] == "interrupted" and roster["reviewer"]["state"] == "working"
 
 
 class _Forge:

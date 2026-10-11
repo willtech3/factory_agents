@@ -169,4 +169,4 @@ Gaps that are not about code: the Console has no authentication (it binds to loc
 
 ## Docs: maintained vs. historical
 
-Maintained: `00`–`09`, `design-principles.md`, `roadmap.md`, the ADRs, and this page. Dated records that are not updated after the fact: `postmortems/`, `audits/`, `research/`, and `claude-browser-worker-handoff.md` (the hand-off note for the browser-worker branch).
+Maintained: `00`–`10`, `design-principles.md`, `roadmap.md`, the ADRs, and this page. Dated records that are not updated after the fact: `postmortems/`, `audits/`, `research/`, and `claude-browser-worker-handoff.md` (the hand-off note for the browser-worker branch).

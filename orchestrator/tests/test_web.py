@@ -538,12 +538,21 @@ def test_crew_roster_board_and_settings_passthrough(client, monkeypatch):
     d = client.get(f"/api/runs/{rid}").json()
     assert d["policy"]["run_budget_usd"] == 60 and d["policy"]["security_review"] is True
     assert [c["role"] for c in d["crew"]][:2] == ["decomposer", "spec_writer"]
+    assert d["events"][0]["actor_id"] == "test"       # the story names the person who decided, never "console"
 
     b = client.get("/api/board").json()
     run = next(r for r in b["runs"] if r["run_id"] == rid)
     assert run["column"] == "specify"
     agent_cards = [c for c in run["cards"] if c["kind"] == "agent"]
     assert agent_cards and agent_cards[0]["row"] == "crew" and agent_cards[0]["column"] == "specify" and agent_cards[0]["role"] == "spec_writer"
+    assert run["status"] == "running"
+
+    # a session the orchestrator interrupted on its way out was cut short, not finished: the roster must not say done
+    store.append(rid, "run.failed", actor, {"reason": "boom", "interrupted_sessions": ["s2"]})
+    roster = {r["role"]: r for r in crew_roster(store.events(rid))}
+    assert roster["spec_writer"]["state"] == "interrupted" and roster["spec_writer"]["live_count"] == 0 and roster["spec_writer"]["cost_usd"] == 0
+    board = client.get("/api/board").json()
+    assert next(r for r in board["runs"] if r["run_id"] == rid)["status"] == "failed"
 
     assert settings_env({"budget_usd": 45, "security_review": False, "preview": "local", "reviewer_passes": "", "nope": 1}) == {
         "FACTORY_RUN_BUDGET_USD": "45", "FACTORY_SECURITY_REVIEW": "0", "FACTORY_PREVIEW": "local"}

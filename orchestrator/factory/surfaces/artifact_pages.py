@@ -63,16 +63,18 @@ def make_publisher(cfg: "Config") -> PagePublisher:
 
 # ------------------------------------------------------------------------------------------ rendering
 
+# The same inks and rules as the Console (web/static/app.css, docs/10-console-design-system.md), with system fonts so the
+# page stays a single self-contained file: paper, hairlines, tone inks as text, no pills, no coloured bars.
 _CSS = """
-:root{--fg:#1b1b1b;--bg:#fff;--muted:#5f6368;--line:#e3e3e3;--ok:#1a7f37;--warn:#9a6700;--bad:#b42318;--soft:#f6f7f9;--link:#1d4ed8;--visited:#6b21a8}
-@media(prefers-color-scheme:dark){:root{--fg:#e8e8e8;--bg:#121212;--muted:#9aa0a6;--line:#2c2c2c;--soft:#1c1c1c;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--link:#8ab4f8;--visited:#c58af9}}
+:root{--fg:#16202A;--bg:#FFFFFF;--muted:#5B6B7A;--line:#D7DDE4;--hair:#EEF1F4;--ok:#166534;--warn:#92400E;--bad:#B91C1C;--soft:#F6F8FA;--link:#1D4ED8;--visited:#6B21A8}
+@media(prefers-color-scheme:dark){:root{--fg:#E8ECF0;--bg:#171D24;--muted:#8E9AA6;--line:#2A343F;--hair:#222B35;--soft:#1E262F;--ok:#86EFAC;--warn:#FCD34D;--bad:#FCA5A5;--link:#8AB4F8;--visited:#C58AF9}}
 a{color:var(--link)}a:visited{color:var(--visited)}a:focus-visible{outline:2px solid currentColor;outline-offset:2px}
-body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--fg);background:var(--bg);margin:0;padding:24px 16px;max-width:1040px;margin-inline:auto}
-h1{font-size:1.6rem;margin:.2em 0}h2{font-size:1.2rem;margin-top:2em;border-bottom:1px solid var(--line);padding-bottom:.2em}h3{font-size:1.05rem;margin-top:1.4em}
-table{border-collapse:collapse;width:100%;margin:.6em 0;font-size:.92em}th,td{border:1px solid var(--line);padding:6px 8px;vertical-align:top;text-align:left}th{background:var(--soft)}
+body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;color:var(--fg);background:var(--bg);margin:0;padding:24px 16px;max-width:1040px;margin-inline:auto}
+h1{font-size:1.7rem;margin:.2em 0;letter-spacing:-.02em}h2{font-size:1.15rem;margin-top:2em;border-top:1px solid var(--fg);padding-top:.6em}h3{font-size:1rem;margin-top:1.4em}
+table{border-collapse:collapse;width:100%;margin:.6em 0;font-size:.92em}th,td{border-bottom:1px solid var(--hair);padding:7px 10px;vertical-align:top;text-align:left}th{color:var(--muted);font-size:.85em}
 code{font:.88em ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--soft);padding:1px 4px;border-radius:3px}pre{background:var(--soft);padding:10px;overflow:auto;border-radius:6px}
-.summary{background:var(--soft);border-left:4px solid var(--ok);padding:12px 16px;border-radius:6px;white-space:pre-wrap}.summary.warn{border-color:var(--warn)}
-.muted{color:var(--muted)}.pill{display:inline-block;padding:0 8px;border-radius:999px;font-size:.8em;border:1px solid var(--line)}
+.summary{background:var(--soft);padding:12px 16px;border-radius:6px;white-space:pre-wrap}.summary.warn{color:var(--fg)}
+.muted{color:var(--muted)}.pill{display:inline;font-size:.85em;font-weight:700;color:var(--muted)}.pill.bad{color:var(--bad)}
 .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}nav a{margin-right:12px}.sha{font:.8em ui-monospace,monospace;word-break:break-all}
 details{margin:.4em 0}summary{cursor:pointer}
 """

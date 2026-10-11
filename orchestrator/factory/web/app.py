@@ -164,21 +164,22 @@ def crew_roster(events) -> list[dict[str, Any]]:
             row["finished_at"] = ev.at
             row["state"] = "working" if row["live"] else ("blocked" if p.get("stop_reason") in ("budget_reached",) else "done")
         elif ev.kind == "run.resumed":
-            # a resume starts new sessions; whatever its dead predecessor left open is not being worked on
+            # a resume starts new sessions; whatever its dead predecessor left open was cut short, not finished
             for row in by_role.values():
                 if row["live"]:
                     row["live"].clear()
                     row["finished_at"] = ev.at
-                    row["state"] = "done"
+                    row["state"] = "interrupted"
         elif ev.kind == "run.failed":
-            # sessions the orchestrator interrupted on its way out never get a session.finished of their own
+            # sessions the orchestrator interrupted on its way out never get a session.finished of their own: they were
+            # cut short, and the Console must not show them as done
             for sid in p.get("interrupted_sessions") or []:
                 meta = started.get(sid)
                 if meta and sid in by_role[meta["role"]]["live"]:
                     row = by_role[meta["role"]]
                     row["live"].remove(sid)
                     row["finished_at"] = ev.at
-                    row["state"] = "working" if row["live"] else "done"
+                    row["state"] = "working" if row["live"] else "interrupted"
     for row in by_role.values():
         row["cost_usd"] = round(row["cost_usd"], 2)
         row["live_count"] = len(row.pop("live"))
@@ -276,7 +277,7 @@ class Console:
                 it["cr_url"] = crs[it["spec_id"]].get("url")
         gates = [g for g in self.queue.open_gates().values() if g["run_id"] == run_id and g["gate_id"] in st.open_gates]
         questions = [q for q in self.queue.open_questions().values() if q["run_id"] == run_id and q["question_id"] in st.open_questions]
-        timeline = [{"seq": ev.seq, "at": ev.at, "kind": ev.kind, "actor": ev.actor.get("type"), "stage": ev.stage,
+        timeline = [{"seq": ev.seq, "at": ev.at, "kind": ev.kind, "actor": ev.actor.get("type"), "actor_id": ev.actor.get("id"), "stage": ev.stage,
                      "work_item_id": ev.work_item_id, "spec_id": ev.spec_id, "payload": _trim(ev.payload)}
                     for ev in events if ev.kind in TIMELINE_KINDS]
         design_only = any(ev.kind == "run.completed" and ev.payload.get("design_only") for ev in events) or \
@@ -368,7 +369,11 @@ class Console:
         st = self.store.state(run_id)
         rec["open"] = gate_id in st.open_gates
         decided = next((ev.payload for ev in events if ev.kind == "gate.decided" and ev.payload.get("gate_id") == gate_id), None)
+        summary = summarize(events, st, controller_running(self.cfg.runs_dir, run_id))
+        for key in ("open_gate_ids", "open_question_ids"):
+            summary.pop(key, None)
         return {"gate": rec, "run_id": run_id, "run_title": self._title(run_id, events), "run_stage": st.stage.value,
+                "run_status": summary["status"], "summary": summary,
                 "decided": decided, "review": self._review(run_id, rec, events)}
 
     def _review(self, run_id: str, rec: dict[str, Any], events) -> dict[str, Any]:
@@ -622,8 +627,10 @@ class Console:
                 continue
             cards: list[dict[str, Any]] = []
             stage = st.stage.value
+            # a paused run sits where it paused, so its budget gate is filed under that column, not under Plan
+            pause = last_pause(events) if st.stage == RunStage.PAUSED_BUDGET else None
             column = {"intake": "plan", "decomposing": "plan", "gate_1_decomposition": "plan", "specifying": "specify",
-                      "gate_2_spec_readiness": "specify", "implementing": "build", "completed": "ship"}.get(stage, "plan")
+                      "gate_2_spec_readiness": "specify", "implementing": "build", "completed": "ship"}.get((pause or {}).get("run_stage") or stage, "plan")
             for g in gates.values():
                 if g["run_id"] == run_id and g["gate_id"] in st.open_gates and not g["recorded"]:
                     col = "plan" if g["kind"] == "gate_1_decomposition" else "specify" if g["kind"] == "gate_2_spec_readiness" else "ship" if g["kind"] == "deploy_failure" else "specify"
@@ -644,8 +651,12 @@ class Console:
                     col = {"decomposer": "plan", "spec_writer": "specify", "spec_judge": "specify", "implementer": "build",
                            "reviewer": "review", "security_reviewer": "review", "merge_judge": "review", "integrator": "ship"}[member["role"]]
                     cards.append({"column": col, "row": "crew", "kind": "agent", "role": member["role"], "title": member["title"], "since": member["started_at"], "session_id": member["session_id"]})
+            try:                                    # the same status the Runs list shows: a stopped run's gate is decided, not driven
+                status = self.summary(run_id)["status"]
+            except Exception:  # noqa: BLE001 - a corrupt log is reported by the Runs list; the board shows the cards it can
+                status = None
             runs.append({"run_id": run_id, "title": self._title(run_id, events), "stage": stage, "column": column, "cost": round(st.list_cost_usd, 2),
-                         "updated_at": events[-1].at, "cards": cards,
+                         "updated_at": events[-1].at, "cards": cards, "status": status,
                          "terminal": stage in ("completed", "closed", "failed", "escalated")})
         runs.sort(key=lambda r: (r["terminal"], r["updated_at"]), reverse=False)
         runs.sort(key=lambda r: r["updated_at"] or "", reverse=True)
