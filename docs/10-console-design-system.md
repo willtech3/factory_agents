@@ -35,7 +35,7 @@ Parked and terminal states (paused at budget, stopped, failed, escalated, done, 
 - **No role colours.** "Product owner", "Engineer", "Ops" are words. The crew is told apart by its figure, not by a hue.
 - **One meaning per ink.** Orange (`--call-text`, `--call-solid`, the `you` figure) means a person is needed now and nothing else. Clay (`--crew`, `--crew-text`) is the crew. Green, amber and red inks (`--ok-text`, `--warn-text`, `--bad-text`) are text only, for done, parked, and broken. Every ink is at least 4.5:1 on paper in both themes; `tests/test_experience_review.py` checks the status inks.
 - **Status is written, not coded.** A run's state is a sentence in the display face with a bold lead (`statusSentence()`), then a grey meta line (`metaLine()`). Never a bare "30 s" or an absolute clock time without a relative one.
-- **Times are relative on the page, absolute on hover.** Use `timeEl(iso)`; it renders `<time datetime title="…">4 min ago</time>`.
+- **Times are relative on the page, absolute on hover.** Use `timeEl(iso, text?)`; it renders `<time datetime title="…">4 min ago</time>`.
 - **One slot, one unit.** A row's right-hand figure is elapsed time while a crew member works and cost once it is done, never both in the same slot.
 - **Nothing is cut mid-word.** Long agent prose goes through `firstSentences(text, max)`, which ends at a sentence or adds an ellipsis at a word boundary, and the whole text stays one fold or one link away.
 - **Monospace is for identifiers.** Run ids, spec ids, hashes, commands. Never for labels.
@@ -49,12 +49,12 @@ Components use only semantic names. Add a primitive only when a semantic name ne
 |---|---|
 | Grounds and rules | `--bg` (floor) · `--surface` (paper) · `--surface-2` (one quiet inset) · `--hair` (divider inside paper) · `--line`, `--line-2` (inputs, buttons, the track ahead) · `--rule` (a section's top rule, the active tab) · `--belt`, `--belt-2` |
 | Ink | `--text`, `--text-2`, `--text-3` (labels and meta) · `--text-4` (only what is ahead or disabled) · `--ink` · `--link` |
-| Tone inks | `--call-text`, `--call-solid`, `--call` · `--crew`, `--crew-text` · `--human` · `--ok-text`, `--warn-text`, `--bad-text` (the `*-soft` fills exist for the few notices that keep a ground and for the contrast tests) |
+| Tone inks | `--call-text`, `--call-solid`, `--call` · `--crew`, `--crew-text` · `--human` · `--ok-text`, `--warn-text`, `--bad-text` |
 | Space | `--sp-1` … `--sp-8` = 4, 8, 12, 16, 20, 24, 32, 40 px |
 | Type | `--fs-xs` 12 · `--fs-sm` 13 · `--fs-md` 14 · `--fs-base` 15 · `--fs-lg` 17 (section titles) · `--fs-xl` 21 (the sentence) · `--fs-2xl` 30 (the page title) · `--display`, `--sans`, `--mono` |
 | Shape | `--radius` 10 (paper) · `--radius-ctl` 6 (buttons, inputs) · `--radius-nav` 8 |
 | Layout | `--w-side` 200 · `--w-content` 1440 · `--w-aside` 340 · `--w-roster` 300 |
-| Motion | `--t-fast` 120 ms · `--t-base` 160 ms |
+| Motion | `--t-fast` 120 ms · `--t-base` 160 ms for transitions · `--t-blink` 4.2 s · `--t-bob` 1.6 s · `--t-tap` 1.1 s · `--t-belt` 1.2 s for the crew and the belt |
 
 Dark mode redefines the same names under `html[data-theme="dark"]`, the fills (`--ok`, `--warn`, `--bad`) and the two orange pairs (`--call-solid-fg`, `--call-on-ink`) included; a component never branches on the theme.
 
@@ -86,7 +86,7 @@ Dark mode redefines the same names under `html[data-theme="dark"]`, the fills (`
 
 ## Helpers (`app.js`, the top of the file)
 
-`el(tag, attrs, …children)` builds DOM; never `innerHTML` for agent text. `timeEl(iso)`, `ago(iso)`, `dur(from, to)`, `money(n)`, `plural(n, one, many)`, `firstSentences(text, max)`, `crewNames(roles)`, `crewNamesLower(roles)`, `personName(actorId)` (hides `console`, `human` and other system actor ids), `gateLabel(kind)`, `stationOf(summary)`, `lineStrip(record, size)`, `crewFigure(…)`, `humanFigure(…)`, `statusSentence(summary, long)`, `metaLine(summary)`. New wording for an event kind goes into `storyEntries()` (the story) and `describe()` (the raw event list); both name the cause or the effect in plain words.
+`el(tag, attrs, …children)` builds DOM; never `innerHTML` for agent text. `timeEl(iso, text?)`, `ago(iso)`, `dur(from, to)`, `money(n)`, `plural(n, one, many)`, `firstSentences(text, max)`, `crewNames(roles)`, `crewNamesLower(roles)`, `personName(actorId)` (hides `console`, `human` and other system actor ids), `gateLabel(kind)`, `stationOf(summary)`, `lineStrip(record, size)`, `crewFigure(…)`, `humanFigure(…)`, `statusSentence(summary, long)`, `metaLine(summary)`. New wording for an event kind goes into `storyEntries()` (the story) and `describe()` (the raw event list); both name the cause or the effect in plain words.
 
 ## Adding a screen
 

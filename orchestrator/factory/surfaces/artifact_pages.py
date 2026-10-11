@@ -66,16 +66,16 @@ def make_publisher(cfg: "Config") -> PagePublisher:
 # The same inks and rules as the Console (web/static/app.css, docs/10-console-design-system.md), with system fonts so the
 # page stays a single self-contained file: paper, hairlines, tone inks as text, no pills, no coloured bars.
 _CSS = """
-:root{--fg:#16202A;--bg:#FFFFFF;--muted:#5B6B7A;--line:#D7DDE4;--hair:#EEF1F4;--ok:#166534;--warn:#92400E;--bad:#B91C1C;--soft:#F6F8FA;--link:#1D4ED8;--visited:#6B21A8}
-@media(prefers-color-scheme:dark){:root{--fg:#E8ECF0;--bg:#171D24;--muted:#8E9AA6;--line:#2A343F;--hair:#222B35;--soft:#1E262F;--ok:#86EFAC;--warn:#FCD34D;--bad:#FCA5A5;--link:#8AB4F8;--visited:#C58AF9}}
+:root{--text:#16202A;--bg:#FFFFFF;--text-3:#5B6B7A;--line:#D7DDE4;--hair:#EEF1F4;--ok-text:#166534;--warn-text:#92400E;--bad-text:#B91C1C;--surface-2:#F6F8FA;--link:#1D4ED8;--visited:#6B21A8}
+@media(prefers-color-scheme:dark){:root{--text:#E8ECF0;--bg:#171D24;--text-3:#8E9AA6;--line:#2A343F;--hair:#222B35;--surface-2:#1E262F;--ok-text:#86EFAC;--warn-text:#FCD34D;--bad-text:#FCA5A5;--link:#8AB4F8;--visited:#C58AF9}}
 a{color:var(--link)}a:visited{color:var(--visited)}a:focus-visible{outline:2px solid currentColor;outline-offset:2px}
-body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;color:var(--fg);background:var(--bg);margin:0;padding:24px 16px;max-width:1040px;margin-inline:auto}
-h1{font-size:1.7rem;margin:.2em 0;letter-spacing:-.02em}h2{font-size:1.15rem;margin-top:2em;border-top:1px solid var(--fg);padding-top:.6em}h3{font-size:1rem;margin-top:1.4em}
-table{border-collapse:collapse;width:100%;margin:.6em 0;font-size:.92em}th,td{border-bottom:1px solid var(--hair);padding:7px 10px;vertical-align:top;text-align:left}th{color:var(--muted);font-size:.85em}
-code{font:.88em ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--soft);padding:1px 4px;border-radius:3px}pre{background:var(--soft);padding:10px;overflow:auto;border-radius:6px}
-.summary{background:var(--soft);padding:12px 16px;border-radius:6px;white-space:pre-wrap}.summary.warn{color:var(--fg)}
-.muted{color:var(--muted)}.pill{display:inline;font-size:.85em;font-weight:700;color:var(--muted)}.pill.bad{color:var(--bad)}
-.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}nav a{margin-right:12px}.sha{font:.8em ui-monospace,monospace;word-break:break-all}
+body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;color:var(--text);background:var(--bg);margin:0;padding:24px 16px;max-width:1040px;margin-inline:auto}
+h1{font-size:1.7rem;margin:.2em 0;letter-spacing:-.02em}h2{font-size:1.15rem;margin-top:2em;border-top:1px solid var(--text);padding-top:.6em}h3{font-size:1rem;margin-top:1.4em}
+table{border-collapse:collapse;width:100%;margin:.6em 0;font-size:.92em}th,td{border-bottom:1px solid var(--hair);padding:7px 10px;vertical-align:top;text-align:left}th{color:var(--text-3);font-size:.85em}
+code{font:.88em ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--surface-2);padding:1px 4px;border-radius:3px}pre{background:var(--surface-2);padding:10px;overflow:auto;border-radius:6px}
+.summary{background:var(--surface-2);padding:12px 16px;border-radius:6px;white-space:pre-wrap}.summary.warn{color:var(--text)}
+.muted{color:var(--text-3)}.tag{display:inline;font-size:.85em;font-weight:700;color:var(--text-3)}.tag.bad{color:var(--bad-text)}
+.ok{color:var(--ok-text)}.bad{color:var(--bad-text)}.warn{color:var(--warn-text)}nav a{margin-right:12px}.sha{font:.8em ui-monospace,monospace;word-break:break-all}
 details{margin:.4em 0}summary{cursor:pointer}
 """
 

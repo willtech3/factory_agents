@@ -56,6 +56,7 @@
   const PHASE_DOES = { plan: "outcome, decompose, Gate 1", specify: "contracts, Gate 2", build: "implement, review, judge", ship: "pull requests, dev" };
   const stationIndex = stage => STATIONS.findIndex(s => s.key === stage);
   const TERMINAL = { closed: "Closed", escalated: "Escalated", failed: "Failed", paused_budget: "Paused at budget" };
+  const stageLabel = key => TERMINAL[key] || (STATIONS.find(st => st.key === key) || {}).label || words(key);
   // a terminal or parked run keeps the station it reached; the status says what happened there
   const stationOf = r => {
     const i = stationIndex(r.stage);
@@ -99,7 +100,7 @@
     const waitingOn = r.open_gates && r.open_gates.length ? r.open_gates[0] : r.open_questions ? "a question" : null;
     const waited = r.updated_at ? dur(r.updated_at) : "";
     const c = r.counts || {};
-    const prsText = () => (r.pull_requests || []).length ? r.headline.replace(/^Completed\.?\s*/, "") : r.headline;
+    const prsText = () => (r.pull_requests || []).length ? r.headline.replace(/^Completed\.?\s*/, "") : "No pull requests were opened.";
     if (r.status === "unreadable") return el("span", { class: "s" }, lead("Unreadable.", "bad"), r.headline);
     switch (r.status) {
       case "needs_you": {
@@ -129,11 +130,11 @@
   // the meta line under the sentence: when it started, what it cost, the last thing a person did
   function metaLine(r) {
     const parts = [];
-    parts.push(r.terminal ? `took ${dur(r.started_at, r.ended_at || r.updated_at)}, ended ${ago(r.ended_at || r.updated_at)}` : `started ${ago(r.started_at)}`);
-    if (r.cost_usd != null) parts.push(`${money(r.cost_usd)}${r.budget_usd != null ? ` of ${money(r.budget_usd)}` : ""}${r.terminal ? "" : " so far"}${r.live_sessions && !r.terminal ? `, not counting ${plural(r.live_sessions, "open session")}` : ""}`);
+    parts.push(r.terminal ? [`took ${dur(r.started_at, r.ended_at || r.updated_at)}, ended `, timeEl(r.ended_at || r.updated_at)] : ["started ", timeEl(r.started_at)]);
+    if (r.cost_usd != null) parts.push([`${money(r.cost_usd)}${r.budget_usd != null ? ` of ${money(r.budget_usd)}` : ""}${r.terminal ? "" : " so far"}${r.live_sessions && !r.terminal ? `, not counting ${plural(r.live_sessions, "open session")}` : ""}`]);
     const d = (r.decisions || []).slice(-1)[0];
-    if (d) parts.push(`${cap(gateLabel(d.kind))} ${({ approve: "approved", approve_subset: "approved in part", request_changes: "sent back", reject: "rejected" })[d.decision] || d.decision}${personName(d.by) ? ` by ${d.by}` : ""} ${ago(d.at)}`);
-    return parts.join(" · ");
+    if (d) parts.push([`${cap(gateLabel(d.kind))} ${({ approve: "approved", approve_subset: "approved in part", request_changes: "sent back", reject: "rejected" })[d.decision] || d.decision}${personName(d.by) ? ` by ${d.by}` : ""} `, timeEl(d.at)]);
+    return parts.flatMap((p, i) => i ? [" · ", ...p] : p);
   }
   const ITEM_STAGE = {
     pending: "Waiting", spec_drafting: "Contract being written", spec_judging: "Contract being judged", spec_approved: "Contract approved",
@@ -191,7 +192,7 @@
     if (cut > max * 0.4) return head.slice(0, cut + 1);
     return head.replace(/\s+\S*$/, "") + "…";
   }
-  function money(n) { return n == null ? "" : `$${Number(n).toFixed(2)}`; }
+  function money(n) { if (n == null) return ""; const v = Number(n); return Number.isInteger(v) ? `$${v}` : `$${v.toFixed(2)}`; }
   function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
   function words(s) { return String(s ?? "").replace(/_/g, " "); }
   function plural(n, one, many) { return `${n} ${n === 1 ? one : (many || one + "s")}`; }
@@ -603,14 +604,14 @@
     const r = await api(`/api/runs/${runId}`);
     if ((r.summary || {}).status === "stopped") for (const m of r.crew || []) if (m.state === "working") m.state = "interrupted";   // the controller is gone: nobody is at work
     const frag = document.createDocumentFragment();
-    const stageName = TERMINAL[r.stage] || (STATIONS[stationIndex(r.stage)] || {}).label || r.stage;
+    const stageName = stageLabel(r.stage);
     const b = r.budget || {};
     const started = r.created_at;
     const s = r.summary || {};
     const oc = r.outcome && r.outcome.outcome_id ? el("a", { href: `#/outcomes/new?outcome=${encodeURIComponent(r.outcome.outcome_id)}`, title: r.outcome.statement || null }, "Outcome") : null;
     const head = pageHead(r.title, null, null, [el("a", { href: "#/runs" }, "Runs"), " / ", el("span", { class: "mono" }, r.run_id), r.design_only ? " · design run" : "", oc ? " · " : null, oc]);
     head.querySelector("div").append(el("div", { class: "now" }, el("p", { class: "sentence" }, statusSentence({ ...s, cost_usd: r.cost }, true)),
-      el("p", { class: "meta" }, metaLine({ ...s, cost_usd: r.cost, budget_usd: b.budget_usd != null ? b.budget_usd : s.budget_usd })),
+      el("p", { class: "meta" }, ...metaLine({ ...s, cost_usd: r.cost, budget_usd: b.budget_usd != null ? b.budget_usd : s.budget_usd })),
       r.stage === "implementing" && (r.work_items || []).length ? el("p", { class: "meta" }, itemsLine(r.work_items)) : null));
     frag.append(head);
 
@@ -704,7 +705,7 @@
     const tune = el("div", { class: "tune" });
     const caps = p.stage_budget_usd || {};
     const security = securityReview(p, r);
-    const summary = [p.run_budget_usd ? `$${p.run_budget_usd} cap` : null, p.preview_mode === "local" ? "local previews" : p.preview_mode ? `${p.preview_mode} previews` : null,
+    const summary = [p.run_budget_usd ? `${money(p.run_budget_usd)} cap` : null, p.preview_mode === "local" ? "local previews" : p.preview_mode ? `${p.preview_mode} previews` : null,
       p.reviewer_passes ? `${p.reviewer_passes} reviewers${security.short}` : null, p.review_max_rounds ? `${p.review_max_rounds} review rounds` : null].filter(Boolean).join(" · ");
     const details = el("div", { class: "tier" },
       el("dl", null,
@@ -857,7 +858,7 @@
       const p = ev.payload || {};
       if (ev.kind === "gate.decided") lastDecision = p.decision;
       if (ev.kind === "stage.entered" && stationIndex(p.stage) >= 0) {
-        if (visited.has(p.stage) && p.stage !== station) out.push({ at: ev.at, who: "", whoLabel: "Factory", title: `Back to ${(STATIONS.find(x => x.key === p.stage) || {}).label || words(p.stage)}`,
+        if (visited.has(p.stage) && p.stage !== station) out.push({ at: ev.at, who: "", whoLabel: "Factory", title: `Back to ${stageLabel(p.stage)}`,
           body: lastDecision === "request_changes" ? "After your request for changes, the crew revises." : "", group: p.stage });
         visited.add(p.stage); station = p.stage;
       }
@@ -900,7 +901,7 @@
         case "e2e.dev_failed": E("ops", "Ops", "Dev checks failed", [item, "A deploy-failure gate opens."].filter(Boolean).join(" · ")); break;
         case "run.escalated": E("", "Factory", "Escalated", `${p.reason || ""} Nothing runs until a person decides.`.trim()); break;
         case "run.failed": E("", "Factory", "The controller stopped", `${p.reason || "No reason was recorded."}${(p.interrupted_sessions || []).length ? ` ${plural(p.interrupted_sessions.length, "open session")} ${p.interrupted_sessions.length === 1 ? "was" : "were"} cut short.` : ""}`); break;
-        case "run.resumed": E("po", "Product owner", `Run resumed${p.from === "paused_budget" ? " after the budget pause" : ""}`, Object.entries(p.points || {}).map(([s, x]) => `${itemShort(s)}: round ${x.round}${x.implementer_done ? ", implementer done" : ""}`).join("; ") || (p.stage ? `Back into ${(STATIONS.find(x => x.key === p.stage) || {}).label || words(p.stage)}.` : "")); break;
+        case "run.resumed": E("po", "Product owner", `Run resumed${p.from === "paused_budget" ? " after the budget pause" : ""}`, Object.entries(p.points || {}).map(([s, x]) => `${itemShort(s)}: round ${x.round}${x.implementer_done ? ", implementer done" : ""}`).join("; ") || (p.stage ? `Back into ${stageLabel(p.stage)}.` : "")); break;
         case "budget.reached": E("", "Factory", p.next ? "Paused at the budget" : "A session hit its cap", p.next ? `${money(p.spent_usd)} of ${money(p.budget_usd)} spent; ${p.next.label || p.next.stage || "the next step"} could cost ${money(p.next.cap_usd)}. Nothing runs until a person decides.` : `${p.title || p.agent_key || "A session"} reached its ${p.budget_usd != null ? money(p.budget_usd) : ""} cap; waiting on a person.`); break;
         case "budget.raised": E("po", byName(p.decided_by) || "Product owner", `Budget raised to ${money(p.budget_usd)}`, p.previous_budget_usd != null ? `Was ${money(p.previous_budget_usd)}. The run continues.` : "The run continues."); break;
         case "run.completed": E("eng", p.design_only ? "Product owner" : "Engineer", p.design_only ? "Design run done" : "Done: the pull requests are yours", p.design_only ? "Nothing was built; start a full run from the outcome to implement the approved contracts." : "Review and merge happen on the code host."); break;
@@ -1181,7 +1182,7 @@
     const budget = el("input", { type: "number", min: "1", step: "1", value: 60 });
     const hostedOption = el("option", { value: "managed", selected: !!app, hidden: !app }, "Hosted sandbox · verified app setup");
     const preview = el("select", { disabled: !!app }, hostedOption, el("option", { value: "local", selected: !app }, "Local (this computer)"), el("option", { value: "platform" }, "Deployed preview"));
-    const previewHelp = el("span", { class: "h" }, app ? "Application, database and browser tests run in a fresh hosted sandbox." : "Local runs app commands on this computer. Platform uses the repository deploy workflow.");
+    const previewHelp = el("span", { class: "h" }, app ? "Application, database and browser tests run in a fresh hosted sandbox." : "Local runs app commands on this computer. Deployed preview uses the repository's deploy workflow.");
     const syncBinding = () => {
       if (app) return;
       const url = repoNew.checked ? "" : repoUrl.value.trim();
@@ -1189,7 +1190,7 @@
       bound = matches.length === 1 ? matches[0] : null;
       hostedOption.hidden = !bound; preview.disabled = !!bound;
       if (bound) preview.value = "managed"; else if (preview.value === "managed") preview.value = "local";
-      previewHelp.textContent = bound ? "This repository is an onboarded app: live runs verify in its hosted sandbox." : "Local runs app commands on this computer. Platform uses the repository deploy workflow.";
+      previewHelp.textContent = bound ? "This repository is an onboarded app: live runs verify in its hosted sandbox." : "Local runs app commands on this computer. Deployed preview uses the repository's deploy workflow.";
       const ready = bound && ["ready", "ready_limited"].includes(bound.status);
       bindNote.replaceChildren(...(matches.length > 1 ? [el("div", { class: "notice bad m-0" }, el("b", null, "Several apps use this repository. "),
           `A live run must name one: start it from the app you mean (${matches.map(a => a.name || a.app_id).join(", ")}) under Apps.`)]
@@ -1293,7 +1294,7 @@
     const head = pageHead(rec.kind === "budget" && !rv.budget ? "Session limit: continue or stop" : GATE_NAME[rec.kind] || rec.kind, null, rec.kind === "budget" ? null : [el("a", { class: "btn", href: `/gates/${gateId}/page`, target: "_blank", rel: "noopener" }, "Open as a page")],
       [el("a", { href: "#/board" }, "Board"), " / ", el("a", { href: `#/runs/${g.run_id}` }, g.run_title)]);
     // the same sentence and line as the run page, so the person deciding sees where the run is and who waits on whom
-    if (g.summary) head.querySelector("div").append(el("div", { class: "now" }, el("p", { class: "sentence" }, statusSentence(g.summary, true)), el("p", { class: "meta" }, metaLine(g.summary))));
+    if (g.summary) head.querySelector("div").append(el("div", { class: "now" }, el("p", { class: "sentence" }, statusSentence(g.summary, true)), el("p", { class: "meta" }, ...metaLine(g.summary))));
     frag.append(head);
     try {
       const run = await api(`/api/runs/${g.run_id}`);
@@ -1333,7 +1334,7 @@
     const body = el("div", { class: "text clamp" }, text);
     const more = el("button", { class: "btn sm more", type: "button", "aria-expanded": "false", onclick: () => { body.classList.toggle("clamp"); const open = !body.classList.contains("clamp"); more.textContent = open ? "Show less" : "Read the whole summary"; more.setAttribute("aria-expanded", String(open)); } }, "Read the whole summary");
     const node = el("div", { class: "summary-card" }, el("h2", null, label), body, more);
-    requestAnimationFrame(() => { if (body.scrollHeight <= body.clientHeight + 4) { body.classList.remove("clamp"); more.remove(); } });
+    (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => { if (body.scrollHeight <= body.clientHeight + 4) { body.classList.remove("clamp"); more.remove(); } });
     return node;
   }
   function noteField(id, placeholder, notes) {
@@ -1372,13 +1373,13 @@
       ["Items that need your judgement", judgement.length ? `${judgement.map(w => w.title).join("; ")}. Read these closely: they contain a product decision.` : "None flagged."],
       ["Scope", `${(d.explicitly_out_of_scope || []).length} things are explicitly out of scope. Make sure nothing you expected is there.`],
       ["Open questions and their defaults", openQ.length ? `${openQ.length} questions will use their default unless you say otherwise in a note.` : "None."],
-    ])), "for your own reading; nothing is recorded");
+    ]), "for your own reading; nothing is recorded"));
 
     const tbl = el("table", { class: "coverage" }, el("tr", null, el("th", null, "Success metric"), el("th", null, "Target"), el("th", null, "Work items that move it"), el("th", null, "Why")));
     for (const m of (metrics.length ? metrics : Object.keys(cov))) {
       const c = cov[m] || {}; const ids = c.work_item_ids || [];
       const target = ((o.success_metrics || []).find(x => x.metric === m) || {}).target || "";
-      tbl.append(el("tr", null, el("td", null, el("b", null, m)), el("td", null, target), el("td", { class: ids.length ? "ok" : "gap" }, ids.length ? ids.join(", ") : "nothing"), el("td", null, c.rationale || "")));
+      tbl.append(el("tr", null, el("td", null, el("b", null, m)), el("td", null, target), ids.length ? el("td", { class: "mono explain" }, ids.join(", ")) : el("td", { class: "gap" }, "nothing"), el("td", null, c.rationale || "")));
     }
     doc.append(card("Metric coverage", tbl));
 
@@ -1467,7 +1468,7 @@
       ["Product decisions hiding in the criteria", "Customer-facing wording, limits, timings, and defaults in a criterion are decisions you are making by approving."],
       ["Where each agent may change code", "Each contract lists allowed paths. If one reaches into something it should not, request changes."],
       ["Open questions and their defaults", openQ.length ? `${openQ.length} questions across the contracts will use their defaults unless you say otherwise.` : "None."],
-    ])), "for your own reading; nothing is recorded");
+    ]), "for your own reading; nothing is recorded"));
 
     const byContract = acs => { const m = {}; for (const x of acs || []) { const [sid, ac] = String(x).split("/"); (m[sid] = m[sid] || []).push(ac || x); }
       return Object.entries(m).map(([sid, list]) => `${(specs[sid] || {}).title || sid}: ${list.join(", ")}`).join(" · "); };
@@ -1714,7 +1715,7 @@
     const f = {};
     let controlSeq = 0;
     const labelControl = (label, input) => { input.id = input.id || `fc-${++controlSeq}`;
-      return el("div", {class:"field-label"}, el("label", {class:"help", for: input.id}, label), input); };
+      return el("div", { class: "field-label" }, el("label", { class: "lab", for: input.id }, label), input); };
     const field = (key, label, help, input) => { f[key] = input; input.id = `f-${key}`; return el("div", { class: "field" }, el("label", { class: "lab", for: input.id }, label), help ? el("p", { class: "help" }, help) : null, input); };
     const statement = el("textarea", { class: "big" }); statement.value = o.statement || "";
     form.append(card("The outcome", el("div", null,
@@ -1861,7 +1862,7 @@
       }
     }
     const saveBtn = el("button", { class: "btn primary", type: "button", onclick: save }, "Save");
-    const startLink = el("button", { class: "btn call", type: "button", onclick: async () => { const r = await save(); if (r) location.hash = `#/start?outcome=${savedId}${appQuery}`; } }, "Save and start a run");
+    const startLink = el("button", { class: "btn primary", hidden: !(cfg.can_run_live || cfg.can_run_design), type: "button", onclick: async () => { const r = await save(); if (r) location.hash = `#/start?outcome=${savedId}${appQuery}`; } }, "Save and start a run");
     form.append(card("Save", el("div", null, notice, el("div", { class: "startbar" }, saveBtn, el("span", { class: "spacer" }), startLink))));
     frag.append(form);
     if (!paint(frag, nav)) return;
@@ -1968,10 +1969,10 @@
   function twoStep(label, confirmLabel, run, cls) {
     const line = el("span", { class: "explain", role: "status", "aria-live": "polite" });
     const first = el("button", { class: `btn ${cls || "sm"}`, type: "button" }, label);
-    const yes = el("button", { class: `btn call ${cls || "sm"}`, type: "button" }, confirmLabel);
+    const yes = el("button", { class: `btn danger ${cls || "sm"}`, type: "button" }, confirmLabel);
     const no = el("button", { class: `btn ${cls || "sm"}`, type: "button" }, "Cancel");
     const confirmBox = el("span", { class: "row-gap", hidden: true }, yes, no);
-    first.onclick = () => { first.hidden = true; confirmBox.hidden = false; yes.focus(); };
+    first.onclick = () => { first.hidden = true; confirmBox.hidden = false; yes.disabled = true; setTimeout(() => { yes.disabled = false; yes.focus(); }, 600); };
     no.onclick = () => { confirmBox.hidden = true; first.hidden = false; first.focus(); };
     yes.onclick = async () => {
       yes.disabled = no.disabled = true; line.textContent = "Working…";
@@ -2222,7 +2223,7 @@
         el("li", null, `Discovery starts at once and is charged to the ${b.budget_usd > 0 ? money(b.budget_usd) : "$0"} budget`),
         el("li", null, "Verification and publishing wait for your click"));
     }
-    const addBtn = el("button", { class: "btn call lg", type: "button" }, "Add the app and start discovery");
+    const addBtn = el("button", { class: "btn primary lg", type: "button" }, "Add the app and start discovery");
     addBtn.onclick = async () => {
       notice.replaceChildren();
       const b = body(), bad = problems(b);
@@ -2408,7 +2409,7 @@
       // discover: started automatically after adding; offered again when idle
       if (!plan || a.status === "connected" || a.status === "failed") {
         const line = actionLine();
-        const btn = el("button", { class: "btn call", type: "button", disabled: busy() }, plan ? "Discover again" : "Start discovery");
+        const btn = el("button", { class: "btn primary", type: "button", disabled: busy() }, plan ? "Discover again" : "Start discovery");
         btn.onclick = () => act(btn, line, () => api(`${appPath(appId)}/discover`, { body: {} }));
         out.push(card("Discover the setup", el("div", null,
           el("p", null, a.status === "discovering" ? appStatusText(a).text : a.kind === "greenfield"
@@ -2420,7 +2421,7 @@
         const feedback = el("textarea", {id:"setup-feedback", placeholder:"Describe what should change. Never paste credentials here."});
         feedback.value = drafts.feedback ?? a.feedback ?? "";
         feedback.oninput = () => { drafts.feedback = feedback.value; };
-        const line = actionLine(), btn = el("button", {class:"btn call",type:"button"}, "Revise this setup");
+        const line = actionLine(), btn = el("button", { class: "btn primary", type: "button" }, "Revise this setup");
         btn.onclick = () => {
           if (!feedback.value.trim()) { line.textContent = "Describe the change first."; return; }
           act(btn,line,async () => {
@@ -2478,7 +2479,7 @@
         const missing = () => fields.filter(f => f.q.required && !f.ta.value.trim()).map(f => f.q.prompt);
         const line = actionLine();
         const saveBtn = el("button", { class: "btn", type: "button", disabled: busy() }, "Save answers");
-        const againBtn = el("button", { class: "btn call", type: "button", disabled: busy() }, "Save and discover again");
+        const againBtn = el("button", { class: "btn primary", type: "button", disabled: busy() }, "Save and discover again");
         const save = async () => { const r = await api(`${appPath(appId)}/answers`, { body: { answers: collect() } }); fields.forEach(f => { delete drafts[f.q.id]; }); return r; };
         saveBtn.onclick = () => act(saveBtn, line, save);
         againBtn.onclick = () => {
@@ -2566,7 +2567,7 @@
         const first = el("button", { class: "btn primary", type: "button", disabled: busy() || !a.plan_sha256 }, label);
         const sha = a.plan_sha256;
         first.onclick = () => { confirmBox.hidden = false; first.hidden = true; confirmBtn.focus(); };
-        const confirmBtn = el("button", { class: "btn call", type: "button" }, `Confirm: ${label.toLowerCase()}`);
+        const confirmBtn = el("button", { class: "btn primary", type: "button" }, `Confirm: ${label.toLowerCase()}`);
         const cancel = el("button", { class: "btn", type: "button", onclick: () => { confirmBox.hidden = true; first.hidden = false; first.focus(); } }, "Cancel");
         confirmBtn.onclick = () => act(confirmBtn, line, () => api(`${appPath(appId)}/publish`, { body: { plan_sha256: sha } }));
         confirmBox.append(el("p", { class: "what" }, a.kind === "greenfield"
@@ -2646,9 +2647,9 @@
     const platformGaps = gapsMatching(c.design_gaps, ["agent:", "environment_id", "ANTHROPIC_API_KEY"]);
     const forgeGaps = forgeGapsOf(c);
     const surfaceGaps = gapsMatching(c.gaps, ["LINEAR", "FACTORY_GATE_SURFACE", "FACTORY_PAGE_PUBLISHER"]);
-    const r = (title, ok, desc, gaps, how, label) => el("div", { class: "r" }, el("h3", null, title), el("div", { class: `status ${ok ? "ok" : "warn"}` }, ok ? "Ready" : (label || "Not configured")),
+    const r = (title, ok, desc, gaps, how, label) => el("div", { class: "r" }, el("h3", null, title), el("div", { class: `tag ${ok ? "ok" : "warn"}` }, ok ? "Ready" : (label || "Not configured")),
       el("p", { class: "explain mt-2" }, desc), gaps.length ? el("ul", null, gaps.map(x => el("li", null, x))) : null, !ok && how ? el("p", { class: "explain" }, how) : null);
-    const agentsCard = r("The crew and the platform", !platformGaps.length, "The agents and the sandbox environment in your Console workspace, plus the API key the controller uses to start sessions.", platformGaps, "Run `ant apply agents environments` once and put ANTHROPIC_API_KEY (and ANTHROPIC_WORKSPACE_ID if the key is not workspace-scoped) in .env at the repository root.", "Checking...");
+    const agentsCard = r("The crew and the platform", !platformGaps.length, "The agents and the sandbox environment in your Console workspace, plus the API key the controller uses to start sessions.", platformGaps, el("span", null, "Run ", el("code", null, "ant apply agents environments"), " once and put ", el("code", null, "ANTHROPIC_API_KEY"), " (and ", el("code", null, "ANTHROPIC_WORKSPACE_ID"), " if the key is not workspace-scoped) in ", el("code", null, ".env"), " at the repository root."), "Checking...");
     frag.append(card("Readiness", el("div", { class: "readiness" },
       agentsCard,
       r("Code host", !forgeGaps.length, `Where the code lives and pull requests are opened (${c.forge}). Needed for full runs, not for design runs.`, forgeGaps, "Export FORGE_TOKEN (a GitHub token with repo and workflow scopes); FORGE_REPO may stay unset, it follows the outcome."),
@@ -2712,7 +2713,7 @@
       else if (path.startsWith("/gates/")) await viewGate(path.slice(7));
       else if (path === "/start") await viewStart(params);
       else if (path === "/outcomes") await viewOutcomes();
-      else if (path === "/outcomes/new") await viewOutcomeForm(params);
+      else if (path === "/outcomes/new" || path.startsWith("/outcomes/")) await viewOutcomeForm(path === "/outcomes/new" ? params : new URLSearchParams({ ...Object.fromEntries(params), outcome: decodeURIComponent(path.slice(10)) }));
       else if (path === "/apps") await viewApps();
       else if (path === "/apps/new") await viewAppNew();
       else if (path.startsWith("/apps/")) await viewApp(decodeURIComponent(path.slice(6)));

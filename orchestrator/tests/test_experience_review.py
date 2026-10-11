@@ -189,12 +189,12 @@ def _contrast(a, b):
 
 def test_exported_gate_pages_keep_links_and_status_readable_in_both_themes():
     """P1: the exported gate document's links were about 2.0:1 against its dark background."""
-    colour = r"--([a-z]+):(#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3})\b"
+    colour = r"--([a-z0-9-]+):(#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3})\b"
     light = dict(re.findall(colour, _CSS.split("@media")[0]))
     dark = {**light, **dict(re.findall(colour, _CSS.split("prefers-color-scheme:dark")[1].split("}}")[0]))}
     assert "a{color:var(--link)}" in _CSS and "a:visited{color:var(--visited)}" in _CSS
     for theme in (light, dark):
-        for name in ("link", "visited", "ok", "warn", "bad", "muted", "fg"):
+        for name in ("link", "visited", "ok-text", "warn-text", "bad-text", "text-3", "text"):
             assert _contrast(theme[name], theme["bg"]) >= 4.5, (name, theme[name], theme["bg"])
 
 
@@ -205,9 +205,13 @@ def test_console_status_text_is_readable_in_both_themes():
     light = dict(re.findall(colour, css.split(":root {")[1].split("}")[0]))
     dark = {**light, **dict(re.findall(colour, css.split('html[data-theme="dark"] {')[1].split("}")[0]))}
     for theme in (light, dark):
-        for name in ("ok-text", "warn-text", "bad-text"):
-            for ground in ("surface", "surface-2", "bg", name.replace("-text", "-soft")):
+        inks = [n for n in theme if n.endswith("-text") or n in ("text", "text-2", "text-3", "link")]
+        assert len(inks) >= 8, inks
+        for name in inks:
+            for ground in ("surface", "surface-2", "bg"):
                 assert _contrast(theme[name], theme[ground]) >= 4.5, (name, ground, theme[name], theme[ground])
+        for name in ("crew", "call", "human"):              # figures and fills: graphics, 3:1 on paper
+            assert _contrast(theme[name], theme["surface"]) >= 3, (name, theme[name], theme["surface"])
     assert not re.search(r"(?<![-\w])color: var\(--(ok|warn|bad)\)", css)    # fills may use them; text may not
 
 
