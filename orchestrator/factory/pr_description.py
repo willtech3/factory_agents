@@ -29,8 +29,10 @@ IDS = [(re.compile(p), why) for p, why in (
     (r"\bsesn_\w+", "session id"), (r"\brun_[0-9a-f]{6,}\b", "run id"), (r"\bspec_[a-z0-9][\w-]*", "spec id"),
     (r"\bwi-[a-z0-9][\w-]*", "work-item id"), (r"\bmrv_\w+", "verdict id"),
     (r"\$\s?\d", "a cost"), (r"\b(?:list cost|USD)\b", "a cost"),
-    (r"(?<![\w/])I(?:'m|'ve|'d|'ll|’m|’ve|’d|’ll)?(?![\w/'’])", "first-person text"), (r"\bmyself\b", "first-person text"),
+    (r"(?<![\w/+\-\"“'‘])I(?:'m|'ve|'d|'ll|’m|’ve|’d|’ll)?(?![\w/'’])", "first-person text"), (r"\bmyself\b", "first-person text"),
 )]
+IN_CODE = (0, 1, 2, 3, 4, 7)     # the ids still refused inside a code span: no app names a file or a flag like these
+CODE_SPAN = re.compile(r"`[^`\n]*`")
 TERMS = ["merge judge", "spec judge", "spec writer", "the judge", "orchestrator", "recipe", "journey", "round",
          "decomposer", "implementer", "integrator", "codebase researcher", "security reviewer", "adversarial reviewer",
          "merge_readiness", "deterministic check"]
@@ -214,8 +216,10 @@ def lint(description: str, *, record_url: str, allowed_words: Iterable[str] = ()
     if re.search(r"(?m)^\s*\|?\s*:?-{3,}:?\s*\|", description):
         problems.append("no tables; the criteria and the review findings live in the run record")
     without_record = description.replace(record_url, "")
-    if LOCAL_HOST.search(without_record):
-        problems.append("links to the owner's machine (127.0.0.1, localhost) other than the run-record link")
+    console = record_url.split("/#/")[0]
+    if console in without_record or LOCAL_HOST.search(CODE_SPAN.sub("", without_record)):     # a code span is not a link
+        problems.append("links to the owner's machine (127.0.0.1, localhost) or the factory's Console other than the "
+                        "run-record link")
     images = [(m.group(1) or m.group(2)) for m in IMAGE.finditer(description)]
     gifs = [u for u in images if _path_of(u).endswith(".gif")]
     videos = [m.group(1) for m in LINK.finditer(description) if _path_of(m.group(1)).endswith(VIDEO)]
@@ -224,12 +228,15 @@ def lint(description: str, *, record_url: str, allowed_words: Iterable[str] = ()
     if len(gifs) + len(videos) > MAX_DEMOS:
         problems.append(f"{len(gifs) + len(videos)} demos; at most {MAX_DEMOS}")
     prose = _prose(without_record)
-    for pattern, why in IDS:
-        hit = pattern.search(prose)
+    spans, outside = " ".join(CODE_SPAN.findall(prose)), CODE_SPAN.sub("", prose)
+    for i, (pattern, why) in enumerate(IDS):
+        # a path or a command is the app's own name (`spec/spec_helper.rb`, `python -I`): inside one only a factory id
+        # that cannot be an app's own name is refused
+        hit = pattern.search(outside) or (pattern.search(spans) if i in IN_CODE else None)
         if hit:
             problems.append(f"contains {why} ({hit.group(0)!r}); describe it in the app's own terms")
     allowed = " ".join(allowed_words).lower()
-    words = re.sub(r"`[^`\n]*`", "", prose)        # a path or a command is the app's own name for a thing
+    words = outside                                 # a path or a command is the app's own name for a thing
     for term in TERMS:
         word = rf"\b{re.escape(term)}s?\b" + (r"(?![- ]trip)" if term == "round" else "")
         hit = re.search(word, words, flags=re.IGNORECASE)
