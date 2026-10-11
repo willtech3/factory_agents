@@ -19,7 +19,7 @@ Where things live, what runs, and what is reference material or not wired up. St
 | `docs/` | Design, setup guides, ADRs, research, and dated audits and post-mortems | No |
 | `.claude/launch.json` | Starts the Console as a Claude Code preview server | Dev convenience |
 
-Local-only files (git-ignored): `.env` (API key, workspace ID, forge token), `runs/` (every run's event log and artifacts), `orchestrator/.venv/`, `orchestrator/shell-shim/` (an `sh` symlink the local verifier creates on macOS).
+Local-only files (git-ignored): `.env` (API key, workspace ID, forge token), `runs/` (every run's event log and artifacts), `orchestrator/.venv/`, `orchestrator/shell-shim/` (ignored as a safety net: the verifier's `sh` symlink belongs under each run's verify directory, and `tests/conftest.py` fails any test that leaves it here).
 
 ## How the pieces connect
 
