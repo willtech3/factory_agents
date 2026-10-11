@@ -13,6 +13,8 @@ The App Onboarding managed agent reads pinned committed source, dependency decla
 - Browser journeys, required viewports, screenshots and an optional short demo.
 - Functional API, worker, CLI or library checks with named observations.
 
+A Slack bot, webhook, worker, CLI or library uses functional checks, not a browser. Hosted browser permission does not make every app a browser test, and the sandbox session is told about browsers only for a browser recipe. The verify command runs a script proposed under `verification/factory-onboarding/`. It exercises real behaviour with synthetic inputs, such as signed requests to the running service, the CLI on fixtures or the public API, and writes `verification-result.json` with an observation per check. Nothing in a proposal runs before verification, so discovery installs dependencies the way the repository's CI does. Other lockfiles and scripts can be stale. Services start so that cloud SDK clients need no real credentials, using emulator hosts or fakes the code supports.
+
 Specialized native/mobile/GPU runtimes must report unsupported capabilities. A browser test does not stand in for an unavailable native test. Onboarding cannot promise universal one-click setup: some applications need a test identity, an isolated service or a repository-approved adapter.
 
 ## Where execution happens
@@ -40,6 +42,8 @@ Opaque vault substitution works for supported outbound requests, not local signi
 The app page records every session and its reported cost. A pending session reserves its cap. Missing usage is charged conservatively against the cap, not displayed as free. Controller restart recovery interrupts orphaned remote work before a retry becomes available.
 
 **Improve or repair the setup** sends feedback, the previous proposal and failure evidence back to the onboarding agent. It invalidates the previous plan fingerprint and verification, so a repaired proposal must be verified again before publication. Failed phases are visible without downloading the technical report.
+
+A failed verification names what failed, in harness order: the first failed command and its exit code, or a service that never answered its health check. A start command that backgrounds a process exits 0 even when that process then crashes, so every phase can read passed while a service was never ready. Next come missing credentials, then each functional check that did not pass. Once verify has run, every declared check is shown with its status and the recipe's observation, and a check the recipe never reported reads `not reported`. When the harness exits non-zero, the sandbox session reads the logs and writes a bounded `diagnosis.json`. It names the failing command, the error and the likely cause, never credential values. The Console shows it labelled as commentary, not evidence. Raw logs still stay in the sandbox. The phases, service readiness, check rows and diagnosis go to the next discovery in `previous_attempt.verification`. An agent plan that fails its schema reports the failing paths, never their values, in the error that discovery sees next.
 
 Readiness means the declared baseline passed, with any limitations shown. It does not mean all features or production authentication were tested. Inspect screenshots and play the recording. The reviewed source and plan fingerprint remain attached to the result. Publishing creates a draft setup PR; it does not merge it. Setup publication, Gate 1 scope, Gate 2 specs and final code merges remain separate decisions.
 
