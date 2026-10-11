@@ -15,7 +15,7 @@ WEBM = b"\x1aE\xdf\xa3" + b"\x00" * 24
 HEAD = "a" * 40
 
 
-def _evidence(root, n, *, status="passed", head=HEAD, viewport=(1440, 900), seen=None, demo=GIF, credential=False):
+def _evidence(root, n, *, status="passed", head=HEAD, viewport=(1440, 900), seen=None, demo=GIF, credential=False, runner=True):
     media = []
     for i, content in enumerate([PNG, PNG, PNG] + ([demo] if demo else [])):
         name = f"check{n}-{i}.{'png' if content == PNG else 'gif' if content == GIF else 'webm'}"
@@ -26,7 +26,7 @@ def _evidence(root, n, *, status="passed", head=HEAD, viewport=(1440, 900), seen
                       "mime_type": {PNG: "image/png", GIF: "image/gif", WEBM: "video/webm"}[content]})
     vp = {"width": viewport[0], "height": viewport[1]}
     return {"id": f"req{n}abcdef", "description": f"Check {n}", "status": status, "head_sha": head, "viewport": vp,
-            "viewport_observed": seen or vp, "media": media, **({"credential_seen": True} if credential else {})}
+            "viewport_observed": seen or vp, "media": media, "factory_runner": runner, **({"credential_seen": True} if credential else {})}
 
 
 def test_three_screenshots_and_one_demo_from_passing_checks_on_the_approved_head(tmp_path):
@@ -43,6 +43,8 @@ def test_nothing_is_published_after_a_credential_was_seen_or_without_the_request
     assert pr_media.select([_evidence(tmp_path, 1), _evidence(tmp_path, 2, status="blocked", credential=True)], HEAD, tmp_path)[0] == []
     items, why = pr_media.select([_evidence(tmp_path, 1, seen={"width": 1280, "height": 720})], HEAD, tmp_path)
     assert items == [] and "viewport" in why
+    # a repository's own visual command or a connected browser never checked the screen for credentials
+    assert pr_media.select([_evidence(tmp_path, 1, runner=False)], HEAD, tmp_path)[0] == []
 
 
 def test_a_file_that_changed_since_verification_or_a_caption_with_a_credential_is_skipped(tmp_path):

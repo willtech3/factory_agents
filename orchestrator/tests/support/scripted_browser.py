@@ -18,12 +18,15 @@ WEBM = b"\x1aE\xdf\xa3" + b"\x00" * 64
 
 class ScriptedDriver:
     """`page`: {"texts": [...] visible text, "targets": [...] visible target descriptions (e.g. "role button Send"),
-    "on_click": {target: {"texts": [...], "responses": [...]}} what activating a target adds, "goto_status": 200,
-    "goto_error": str, "start_error": str, "viewport": {...}, "scroll_width": int, "url": str}."""
+    "on_click": {target: {"texts": [...], "remove_texts": [...], "responses": [...], "late_responses": [...]}} what
+    activating a target (or "key <key>") changes, late responses arriving only while the runner pumps,
+    "goto_status": 200, "goto_error": str, "start_error": str, "press_errors": [keys], "unreadable": bool (screen_text
+    raises), "viewport": {...}, "scroll_width": int, "url": str}."""
 
     def __init__(self, page: dict[str, Any] | None = None):
         self.page = {"texts": [], "targets": [], "on_click": {}, "goto_status": 200, **(page or {})}
         self.log: list[dict[str, Any]] = []
+        self.late: list[dict[str, Any]] = []
         self.calls: list[tuple] = []
         self.video_dir: Path | None = None
         self.started_with: tuple | None = None
@@ -49,7 +52,8 @@ class ScriptedDriver:
         return self.page["goto_status"]
 
     def _apply(self, effect: dict[str, Any]) -> None:
-        self.page["texts"] = self.page["texts"] + effect.get("texts", [])
+        self.page["texts"] = [t for t in self.page["texts"] if t not in effect.get("remove_texts", [])] + effect.get("texts", [])
+        self.late += effect.get("late_responses", [])
         self.page["targets"] = self.page["targets"] + effect.get("targets", [])
         for r in effect.get("responses", []):
             self.log.append({"method": "GET", "content_type": "", "body": "", **r, "at": time.monotonic()})
@@ -70,6 +74,8 @@ class ScriptedDriver:
 
     def press(self, key):
         self.calls.append(("press", key))
+        if key in self.page.get("press_errors", []):
+            raise ValueError(f'Unknown key: "{key}"')
         self._apply(self.page["on_click"].get(f"key {key}", {}))
 
     def visible(self, target, timeout_s):
@@ -97,6 +103,8 @@ class ScriptedDriver:
         return dict(self.page["viewport"])
 
     def screen_text(self):
+        if self.page.get("unreadable"):
+            raise RuntimeError("Execution context was destroyed")
         return "\n".join(self.page["texts"] + self.page.get("inputs", []))
 
     def responses(self):
@@ -104,6 +112,9 @@ class ScriptedDriver:
 
     def pump(self, ms):
         self.calls.append(("pump", ms)) if ms >= 1000 else None
+        for r in self.late:
+            self.log.append({"method": "GET", "content_type": "", "body": "", **r, "at": time.monotonic()})
+        self.late = []
 
     def screenshot(self, path):
         path.write_bytes(PNG)

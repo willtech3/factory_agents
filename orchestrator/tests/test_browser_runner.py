@@ -61,6 +61,14 @@ def test_journey_validation_names_every_problem():
     for expected in ("version must be 1", "input must be one of", "not another site", "click needs a target", "`do` must be one of",
                      "the journey has 3 steps but the spec's visual contract has 4"):
         assert any(expected in p for p in problems), expected
+    # a goto stays on the app: no scheme, host or backslash; wrong types are refused before any browser starts
+    for path in ("data:text/html,<p>ok</p>", "file:///etc/hostname", "https:evil.example/x", "/\\evil.example", "//evil.example/"):
+        assert any("not another site" in p for p in br.validate_journey({**journey(), "steps": [
+            {"name": "x", "actions": [{"do": "goto", "path": path}]}]})), path
+    assert br.validate_journey({**journey(), "steps": [{"name": "x", "actions": [{"do": "goto", "path": "chat?x=1"}]}]}) == []
+    typed = br.validate_journey({**journey(), "steps": [{"name": "x", "actions": [
+        {"do": "wait", "ms": "1s"}, {"do": "tab", "count": True}, {"do": "expect_url", "path_contains": 3}]}]})
+    assert [p.split(": ")[1] for p in typed] == ["ms must be a whole number", "count must be a whole number", "path_contains must be text"]
 
 
 def test_a_passing_journey_answers_the_controllers_request(tmp_path):
@@ -96,6 +104,19 @@ def test_a_refusal_from_the_app_is_blocked_not_failed(tmp_path, status):
     assert f"answered {status}" in report["summary"]
 
 
+def test_a_refusal_the_journey_asserts_is_a_pass_and_a_different_status_fails(tmp_path):
+    p = page()
+    p["on_click"]["key Enter"]["responses"][0]["status"] = 403
+    j = journey()
+    j["steps"][2]["actions"][3] = {"do": "expect_request", "id": "chat", "status": 403}
+    assert run(tmp_path, j=j, p=p)[0]["status"] == "passed"
+    j = journey()
+    j["steps"][0]["actions"][0] = {"do": "goto", "path": "/admin", "status": 403}
+    assert run(tmp_path / "g", j=j, p=page(goto_status=403))[0]["status"] == "passed"
+    report, *_ = run(tmp_path / "h", j=j, p=page(goto_status=200))
+    assert report["status"] == "failed" and "answered 200, expected 403" in report["summary"]
+
+
 def test_a_refusal_from_another_origin_does_not_block(tmp_path):
     p = page()
     p["on_click"]["key Enter"]["responses"].append({"url": "https://fonts.example/css", "status": 403})
@@ -119,6 +140,35 @@ def test_a_credential_on_screen_deletes_every_screenshot_and_the_recording(tmp_p
     assert SECRET not in json.dumps(report) and report["credentials_checked"] == ["OPENROUTER_API_KEY"]
     evidence = visual.collect(directory, request, 3)
     assert evidence["status"] == "blocked" and evidence["credential_seen"] is True and evidence["media"] == []
+
+
+def test_a_credential_that_shows_and_goes_within_a_step_still_deletes_the_media(tmp_path):
+    p = page()
+    p["on_click"]["text Claude Haiku 5.5"]["texts"].append(f"Copied {SECRET}")
+    p["on_click"]["key Escape"] = {"remove_texts": [f"Copied {SECRET}"]}
+    j = journey()
+    j["steps"][1]["actions"].insert(3, {"do": "press", "key": "Escape"})
+    report, _, directory, _ = run(tmp_path, j=j, p=p, secrets={"OPENROUTER_API_KEY": SECRET})
+    assert report["secret_seen"] is True and report["media"] == [] and not list(directory.glob("*.png"))
+
+
+def test_an_action_that_errors_still_writes_the_report_and_cleans_up(tmp_path):
+    """A journey mistake (Playwright calls Escape "Escape", not "Esc") is a failed step with its reason, and the
+    credential cleanup still runs: no screenshot from the run survives a credential on screen."""
+    p = page(press_errors=["Esc"])
+    p["texts"] = ["Evergreen", f"key {SECRET}"]
+    j = journey()
+    j["steps"][1]["actions"].insert(0, {"do": "press", "key": "Esc"})
+    report, _, directory, _ = run(tmp_path, j=j, p=p, secrets={"OPENROUTER_API_KEY": SECRET})
+    assert report["status"] == "blocked" and report["media"] == [] and not list(directory.glob("*.png"))
+    p["texts"] = ["Evergreen"]
+    report, *_ = run(tmp_path / "b", j=j, p=p)
+    assert report["status"] == "failed" and "ValueError: Unknown key" in report["summary"]
+
+
+def test_a_screen_that_cannot_be_read_keeps_no_recording_or_screenshot(tmp_path):
+    report, *_ = run(tmp_path, p=page(unreadable=True))
+    assert report["secret_seen"] is False and report["media"] == [] and "could not be checked" in report["demo_note"]
 
 
 def test_credentials_are_redacted_from_everything_written(tmp_path):
@@ -153,6 +203,10 @@ def test_request_and_viewport_expectations(tmp_path):
     j = journey()
     j["steps"][2]["actions"][3] = {"do": "expect_no_request", "id": "chat"}
     assert "1 request(s) to /api/chat" in run(tmp_path / "n", j=j)[0]["summary"]
+    # a request still in flight when the assertion starts is waited for, not missed
+    p = page()
+    p["on_click"]["key Enter"]["late_responses"] = p["on_click"]["key Enter"].pop("responses")
+    assert "1 request(s) to /api/chat" in run(tmp_path / "l", j=j, p=p)[0]["summary"]
 
 
 def test_the_demo_is_a_gif_when_ffmpeg_can_make_one(tmp_path, monkeypatch):

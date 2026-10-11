@@ -11,11 +11,13 @@ measures the viewport, watches network requests, and answers the controller's vi
 Two things are solved once here instead of in every feature's test (post-mortem 2026-10-11 §1):
 - blocked versus failed. Blocked means the app could not be exercised: the browser would not start, BASE_URL did not
   answer, a required test credential is missing, or the app answered 401/402/403/407 to a same-origin request during the
-  step. Failed means the app was exercised and an expectation about it was false. Exit codes: 0 passed, 1 failed,
-  3 blocked (2 for an invalid journey, reported blocked).
-- credential hygiene. Every value of a declared test secret is redacted from everything the runner writes, and if one
-  ever appears on screen (page text or a form field), every screenshot and the recording are deleted and the check is
-  blocked: no evidence that showed a credential is ever kept or published.
+  step (unless the journey asserts that very status). Failed means the app was exercised and an expectation about it
+  was false, or an action errored. Exit codes: 0 passed, 1 failed, 3 blocked (2 for an invalid journey, reported
+  blocked).
+- credential hygiene. Every value of a declared test secret is redacted from everything the runner writes. The screen
+  (page text, form fields, open shadow roots, every frame) is checked after every action; if a credential ever appears,
+  every screenshot and the recording are deleted and the check is blocked, and a check that could not read the screen
+  keeps no recording: no evidence that showed a credential is ever kept or published.
 
 Stdlib only at import; Playwright (preinstalled in the hosted sandbox) is imported by `PlaywrightDriver` alone, so the
 logic above is tested in orchestrator/tests with a scripted driver.
@@ -46,10 +48,23 @@ ACTIONS = {
     "expect_request": {"id"}, "expect_no_request": {"id"}, "wait": {"ms"},
 }
 TARGETED = {"click", "fill", "expect_visible", "expect_hidden"}
+TYPES = {"ms": int, "count": int, "status": int, "key": str, "text": str, "path_contains": str, "url_contains": str,
+         "id": str, "path": str}
 BLOCKING_STATUS = {401, 402, 403, 407}
 MAX_STEPS, MAX_ACTIONS, MAX_SHOTS = 11, 40, 11
 DEFAULT_TIMEOUT_S, MAX_TIMEOUT_S = 15, 240
 REDACTED = "[redacted credential]"
+SCREEN_TEXT_JS = """() => {
+  const out = [document.body ? document.body.innerText : ""];
+  const walk = (root) => {
+    for (const e of root.querySelectorAll("*")) {
+      if (typeof e.value === "string" && e.value) out.push(e.value);
+      if (e.shadowRoot) { out.push(e.shadowRoot.textContent || ""); walk(e.shadowRoot); }
+    }
+  };
+  walk(document);
+  return out.join("\\n");
+}"""
 SECRET_NAME = re.compile(r"(?i)(api_?key|token|secret|password|passwd|credential)")
 
 
@@ -98,8 +113,12 @@ def validate_journey(journey: Any, steps: list[str] | None = None) -> list[str]:
                 problems.append(f"{where}: {action['do']} needs {missing}")
             if action["do"] in TARGETED and not any(k in action for k in TARGET_KEYS):
                 problems.append(f"{where}: {action['do']} needs a target ({', '.join(TARGET_KEYS)})")
-            if action["do"] == "goto" and urlparse(str(action.get("path", ""))).netloc:
+            path = urlparse(str(action.get("path", "")))
+            if action["do"] == "goto" and (path.scheme or path.netloc or "\\" in str(action.get("path", ""))):
                 problems.append(f"{where}: goto takes a path on the app, not another site")
+            for k, kind in TYPES.items():
+                if k in action and not (isinstance(action[k], kind) and not isinstance(action[k], bool)):
+                    problems.append(f"{where}: {k} must be {'a whole number' if kind is int else 'text'}")
             if "timeout_s" in action and not (isinstance(action["timeout_s"], (int, float)) and 0 < action["timeout_s"] <= MAX_TIMEOUT_S):
                 problems.append(f"{where}: timeout_s must be between 0 and {MAX_TIMEOUT_S}")
     if total > MAX_ACTIONS:
@@ -235,9 +254,9 @@ class PlaywrightDriver:
         return {"width": int(seen["width"]), "height": int(seen["height"])}
 
     def screen_text(self) -> str:
-        return str(self._page.evaluate(
-            "document.body.innerText + '\\n' + Array.from(document.querySelectorAll('input, textarea'))"
-            ".map(e => e.value).join('\\n')"))
+        # Every frame, every field's value, and the text of open shadow roots; a frame that cannot be read is an error,
+        # so the runner treats the scan as incomplete rather than clean.
+        return "\n".join(str(frame.evaluate(SCREEN_TEXT_JS)) for frame in self._page.frames)
 
     def responses(self) -> list[dict[str, Any]]:
         return list(self._log)
@@ -277,6 +296,7 @@ class Runner:
         self.mode = journey.get("input", "pointer")
         self.watches: dict[str, dict[str, Any]] = {}
         self.secret_seen = False
+        self.scan_gaps = 0            # scans that could not read the screen: the recording is not kept
 
     # ---- helpers
     def redact(self, text: str) -> str:
@@ -290,13 +310,22 @@ class Runner:
     def _same_origin(self, url: str) -> bool:
         return urlparse(url).netloc == self.origin
 
-    def _check_screen(self) -> None:
-        try:
-            text = self.driver.screen_text()
-        except Exception:  # noqa: BLE001  (a page that is navigating away)
-            return
+    def _check_screen(self) -> bool:
+        """Look for a credential on screen; False when the screen could not be read (a page navigating away, after
+        one retry), which counts as a gap, never as clean."""
+        for attempt in range(2):
+            try:
+                text = self.driver.screen_text()
+                break
+            except Exception:  # noqa: BLE001
+                if attempt:
+                    self.scan_gaps += 1
+                    return False
+                with contextlib.suppress(Exception):
+                    self.driver.pump(200)
         if any(value in text for value in self.secrets.values()):
             self.secret_seen = True
+        return True
 
     def _refusals(self, since: float) -> list[dict[str, Any]]:
         with contextlib.suppress(Exception):          # a page that is navigating away
@@ -309,12 +338,16 @@ class Runner:
         do, timeout = action["do"], self._timeout(action)
         if do == "goto":
             url = urljoin(self.base_url + "/", str(action["path"]).lstrip("/"))
+            if not self._same_origin(url):
+                raise Failed(f"{action['path']!r} is not a path on the app")
             try:
                 status = self.driver.goto(url, timeout)
             except Exception as exc:  # noqa: BLE001
                 raise Blocked(f"the app did not answer {url}: {str(exc)[:200]}") from None
-            if status in BLOCKING_STATUS:
+            if status in BLOCKING_STATUS and action.get("status") != status:
                 raise Blocked(f"the app answered {status} to {url}")
+            if "status" in action and status != action["status"]:
+                raise Failed(f"{urlparse(url).path or '/'} answered {status}, expected {action['status']}")
             return f"opened {urlparse(url).path or '/'} ({status})"
         if do == "click":
             try:
@@ -388,6 +421,7 @@ class Runner:
         if watch is None:
             raise Failed(f"no watch named {action['id']!r} before this step")
         if action["do"] == "expect_no_request":
+            self.driver.pump(int(min(timeout, 2) * 1000))     # a request the last action just sent is still in flight
             hits = self._matching(watch)
             if hits:
                 raise Failed(f"{len(hits)} request(s) to {watch['url_contains']} were made")
@@ -401,7 +435,7 @@ class Runner:
         if not hits:
             raise Failed(f"no {watch['method'] or ''} request to {watch['url_contains']} within {timeout:g}s".replace("  ", " "))
         last = hits[-1]
-        if last.get("status") in BLOCKING_STATUS:
+        if last.get("status") in BLOCKING_STATUS and action.get("status") != last.get("status"):
             raise Blocked(f"the app answered {last['status']} to {watch['url_contains']}")
         if "status" in action and last.get("status") != action["status"]:
             raise Failed(f"{watch['url_contains']} answered {last.get('status')}, expected {action['status']}")
@@ -435,20 +469,21 @@ class Runner:
                 try:
                     for action in step["actions"]:
                         notes.append(self.act(action))
-                except (Blocked, Failed) as exc:
+                        self._check_screen()
+                except Exception as exc:  # noqa: BLE001  (any error still writes result.json and cleans up media)
                     refused = self._refusals(since)
                     kind = "blocked" if isinstance(exc, Blocked) or refused else "failed"
-                    reason = str(exc) + (f"; the app answered {refused[-1]['status']} to {urlparse(refused[-1]['url']).path}"
-                                         if refused and not isinstance(exc, Blocked) else "")
-                    self._check_screen()
-                    shot = self._shot(i, step["name"], media)
+                    reason = (str(exc) if isinstance(exc, (Blocked, Failed)) else f"{type(exc).__name__}: {str(exc)[:200]}") + (
+                        f"; the app answered {refused[-1]['status']} to {urlparse(refused[-1]['url']).path}"
+                        if refused and not isinstance(exc, Blocked) else "")
+                    shot = self._check_screen() and self._shot(i, step["name"], media)
                     observed.append({"status": kind, "observation": self.redact(
                         f"{'; '.join(notes + [reason])}" + ("" if shot else " (no screenshot)"))[:1500]})
                     status, summary = kind, self.redact(f"Step {i} ({step['name']}) {kind}: {reason}")[:1500]
                     observed += [{"status": "blocked", "observation": f"not reached: step {i} {kind}"} for _ in steps[i:]]
                     break
-                self._check_screen()
-                self._shot(i, step["name"], media)
+                if self._check_screen():
+                    self._shot(i, step["name"], media)
                 observed.append({"status": "passed", "observation": self.redact("; ".join(notes))[:1500]})
             if status == "passed":
                 summary = self.redact(f"All {len(steps)} steps passed: " + "; ".join(s["name"] for s in steps))[:1500]
@@ -464,7 +499,7 @@ class Runner:
             with contextlib.suppress(Exception):      # a browser that never started
                 video = self.driver.close()
         demo_note = ""
-        if self.record_demo and video is not None and Path(video).is_file() and not self.secret_seen:
+        if self.record_demo and video is not None and Path(video).is_file() and not self.secret_seen and not self.scan_gaps:
             demo = self._demo(Path(video))
             if demo is not None:
                 media.append(demo)
@@ -478,7 +513,9 @@ class Runner:
             summary = "A test credential appeared on screen, so every screenshot and the recording were deleted. " + summary
             demo_note = "No media is kept from a run in which a credential was visible."
         elif not any(m["role"] == "demo" for m in media):
-            demo_note = "No recording was saved." if not self.record_demo or video is None else "The recording could not be kept."
+            demo_note = ("No recording was saved." if not self.record_demo or video is None else
+                         "The recording was not kept: the screen could not be checked for credentials throughout." if self.scan_gaps
+                         else "The recording could not be kept.")
         return {"request_id": self.request.get("id"), "head_sha": self.request.get("head_sha"), "status": status,
                 "runner": "factory browser runner (Playwright, Chromium)", "journey": self.journey.get("name"),
                 "input": self.mode, "summary": summary, "viewport_observed": seen, "steps": observed, "media": media,

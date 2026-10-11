@@ -36,7 +36,11 @@ class App(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        body = PAGE.replace("<p id=\"out\">", f"<p>{SECRET}</p><p id=\"out\">") if App.leak else PAGE
+        leak = {"text": f"<p>{SECRET}</p>",
+                "shadow": "<div id='h'></div><script>document.getElementById('h').attachShadow({mode: 'open'}).innerHTML = "
+                          f"'<p>{SECRET}</p>'</script>",
+                "iframe": "<iframe src='/frame'></iframe>"}.get(App.leak, "")
+        body = f"<p>{SECRET}</p>" if self.path.startswith("/frame") else PAGE.replace("<p id=\"out\">", leak + "<p id=\"out\">")
         self.send_response(200)
         self.send_header("content-type", "text/html")
         self.end_headers()
@@ -105,8 +109,9 @@ def test_a_real_403_is_blocked(tmp_path, app):
     assert code == 3 and report["status"] == "blocked" and "answered 403" in report["summary"]
 
 
-def test_a_real_credential_on_screen_deletes_the_media(tmp_path, app):
-    App.leak = True
+@pytest.mark.parametrize("where", ["text", "shadow", "iframe"])
+def test_a_real_credential_on_screen_deletes_the_media(tmp_path, app, where):
+    App.leak = where
     code, report, evidence = _run(tmp_path, app, {"width": 1440, "height": 900}, secrets={"OPENROUTER_API_KEY": SECRET})
     assert code == 3 and report["secret_seen"] and report["media"] == [] and evidence["credential_seen"]
     assert not list(tmp_path.rglob("*.png")) and not list(tmp_path.rglob("demo.*"))

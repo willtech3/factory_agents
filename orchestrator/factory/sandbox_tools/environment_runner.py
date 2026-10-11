@@ -243,8 +243,12 @@ def node_id_of(file, classname: str, name: str) -> str:
 
 
 def copy_entry_evidence(index: int, directory: Path, outputs: Path, report: dict) -> list[str]:
-    """A visual entry's result.json and media, as e2e-<index>-<name>; links, odd names and oversize files stay behind."""
+    """A visual entry's result.json and media, as e2e-<index>-<name>; links, odd names and oversize files stay behind.
+    Without a result.json nothing is copied: media no report accounts for (a runner that crashed or was killed) may
+    still show what its credential check would have deleted."""
     names = []
+    if not (directory / "result.json").is_file() or (directory / "result.json").is_symlink():
+        return names
     for p in sorted(directory.iterdir()):
         if p.name == "request.json" or p.is_symlink() or not p.is_file():
             continue

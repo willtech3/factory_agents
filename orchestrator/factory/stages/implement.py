@@ -1311,7 +1311,7 @@ def merge_findings(passes: list[dict[str, Any]], spec_id: str, round_no: int, ba
     prev_by_key = {_loc_key(f): f["finding_id"] for f in reversed(prev_findings)}
     disposition = {r.get("finding_id"): r.get("disposition") for r in (response or {}).get("responses", [])}
     carried: dict[str, dict[str, Any]] = {}
-    fresh: dict[tuple[str, str], dict[str, Any]] = {}
+    fresh: dict[tuple[str, str, str], dict[str, Any]] = {}
     checks_performed: list[dict[str, Any]] = []
     conformance: dict[str, dict[str, Any]] = {}
     scope: dict[str, set[str]] = {"files_outside_allowed_paths": set(), "unrelated_changes": set()}
@@ -1324,7 +1324,7 @@ def merge_findings(passes: list[dict[str, Any]], spec_id: str, round_no: int, ba
                 if pid not in carried or _reevaluation_rank(f) > _reevaluation_rank(carried[pid]):
                     carried[pid] = f
                 continue
-            key = _loc_key(f)
+            key = (*_loc_key(f), f.get("target", "change"))      # a verification finding never hides a change finding
             if key not in fresh or _sev(f) > _sev(fresh[key]):
                 fresh[key] = f
         for row in p.get("spec_conformance", []):
@@ -1388,8 +1388,9 @@ def _previous_id(f: dict[str, Any], prev_by_id: dict[str, dict[str, Any]], prev_
     return prev_by_key.get(_loc_key(f))
 
 
-def _reevaluation_rank(f: dict[str, Any]) -> tuple[int, int]:
-    return ({"upheld": 3, "open": 2, "fixed": 1, "refuted": 1, "accepted_risk": 1, "withdrawn": 0}.get(f.get("status", "open"), 2), _sev(f))
+def _reevaluation_rank(f: dict[str, Any]) -> tuple[int, bool, int]:
+    return ({"upheld": 3, "open": 2, "fixed": 1, "refuted": 1, "accepted_risk": 1, "withdrawn": 0}.get(f.get("status", "open"), 2),
+            f.get("target") != "verification", _sev(f))
 
 
 def tag_pass(findings: dict[str, Any], label: str) -> dict[str, Any]:

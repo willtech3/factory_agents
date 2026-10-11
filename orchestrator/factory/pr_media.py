@@ -1,8 +1,9 @@
 """What a change request may show: up to three screenshots and one short demo, from browser checks that passed.
 
-Only media from a check that passed on the head the merge judge approved, observed at the viewport the spec asked for,
-already validated by the controller (`visual.collect`: signature, size, plain names, fingerprints) and from a check during
-which no test credential was on screen. If any check of this spec saw a credential, nothing is published. Each file is
+Only media from a check the factory's own browser runner ran (the one runner that checks the screen for credentials)
+that passed on the head the merge judge approved, observed at the viewport the spec asked for, already validated by the
+controller (`visual.collect`: signature, size, plain names, fingerprints) and during which no test credential was on
+screen. If any check of this spec saw a credential, nothing is published. Each file is
 re-read from the artifact store and must still hash to the fingerprint recorded at verification, and its caption must
 carry no credential shape (`security.secret_scan`). Post-mortem 2026-10-11 §4 and §7: the reviewer gets a couple of
 screenshots and a demo; every other screenshot and recording stays in the run record.
@@ -24,9 +25,12 @@ def select(evidence: list[dict[str, Any]], head_sha: str, artifacts_root: Path) 
     mine = [e for e in evidence if e.get("head_sha") == head_sha]
     if any(e.get("credential_seen") for e in evidence):
         return [], "a test credential was visible during a browser check, so no media from this change is published"
-    usable = [e for e in mine if e.get("status") == "passed" and e.get("viewport") and e.get("viewport_observed") == e.get("viewport")]
+    # Only the factory's own runner checks the screen for credentials; a repository's visual command or a connected
+    # browser operator may pass without that check, so its media stays in the run record.
+    usable = [e for e in mine if e.get("factory_runner") and e.get("status") == "passed" and e.get("viewport")
+              and e.get("viewport_observed") == e.get("viewport")]
     if not usable:
-        return [], "no browser check passed at its requested viewport on the approved head"
+        return [], "no factory browser check passed at its requested viewport on the approved head"
     shots: list[tuple[dict[str, Any], dict[str, Any]]] = []
     queues = [[m for m in e.get("media") or [] if m.get("role") == "screenshot"][::-1] for e in usable]
     while len(shots) < MAX_SCREENSHOTS and any(queues):           # the last step of each check first, then earlier ones
