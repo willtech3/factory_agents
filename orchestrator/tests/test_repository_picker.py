@@ -23,7 +23,7 @@ def test_repository_pages_are_private_bounded_and_mark_unwritable(root, tmp_path
         assert req.headers['Authorization'] == 'Bearer never-return-this'
         assert req.url.path == '/user/repos' and req.url.params['per_page'] == '100'
         assert req.url.params['page'] == '2'
-        rows = [dict(full_name='team/app', html_url='https://github.com/team/app', default_branch='develop', private=True, permissions={'push':True}, temp_clone_token='secret'),
+        rows = [dict(full_name='team/app', html_url='https://github.com/team/app', default_branch='develop', private=True, permissions={'push':True}, temp_clone_token='secret', owner={'login':'team','type':'Organization'}),
                 dict(full_name='team/archive', html_url='https://github.com/team/archive', archived=True, permissions={'push':True}),
                 dict(full_name='team/read', html_url='https://github.com/team/read', permissions={'push':False})]
         return httpx.Response(200,json=rows,headers={'Link':'<https://api.github.com/user/repos?page=3>; rel="next"'})
@@ -35,6 +35,8 @@ def test_repository_pages_are_private_bounded_and_mark_unwritable(root, tmp_path
         assert data['next_page'] == 3
         assert data['repositories'][0]['default_branch'] == 'develop'
         assert [r['selectable'] for r in data['repositories']] == [True,False,False]
+        # who owns it and whether the connection administers it: where the add-app form may offer a new repository
+        assert data['repositories'][0]['owner_type'] == 'Organization' and data['repositories'][0]['admin'] is False
         assert 'token' not in response.text and 'secret' not in response.text
         assert c.get('/api/repositories?page=0').status_code == 422
         assert len(seen)==1
