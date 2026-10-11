@@ -207,3 +207,41 @@ def test_malformed_diagnostic_fields_remain_visible_as_invalid(tmp_path, bad):
     assert rows[0]['status'] == 'invalid'
     (tmp_path / 'diagnosis.json').write_text(json.dumps({'phase': bad, 'summary': 'A diagnosis'}))
     assert te.read_diagnosis(tmp_path) == {'phase': None, 'summary': 'A diagnosis'}
+
+
+def test_a_discovery_that_ends_without_a_plan_says_why_and_the_next_discovery_hears_it(monkeypatch, tmp_path, root):
+    """Live emoji-smith: auto mode denied a draft write and the agent ended its turn asking in chat. The record said only
+    that no plan came back "within its session limit", and the retry was sent no reason."""
+    cfg = make_config(root, tmp_path / "runs", gate_surface="web", agents={"app_onboarding": AgentRef(id="agent_onboard", version=1)})
+    manager = AppOnboarding(cfg, client=Client())
+    aid = manager.create(kind="existing", name="Bot", repository_url="https://github.com/example/bot", description="Slack bot",
+                         budget_usd=10)["app_id"]
+    sent = []
+
+    class Driver:
+        def __init__(self, cfg, client=None, on_session_started=None, on_session_finished=None):
+            pass
+
+        def run(self, **kw):
+            sent.append(kw)
+            return SimpleNamespace(session_id="sesn_d", list_cost_usd=0.5, stop_reason="end_turn", outputs={},
+                                   last_message="I was blocked writing start.sh.\n\nShould I finish it as described?")
+
+        def interrupt_active(self):
+            return []
+
+    monkeypatch.setattr(onboarding, "SessionDriver", Driver)
+    monkeypatch.setattr(onboarding, "ensure_environment", lambda *a, **kw: "env_discovery")
+    (tmp_path / "src").mkdir()
+    repo = committed(tmp_path / "src")
+    monkeypatch.setattr(manager, "source", lambda record: repo)
+    monkeypatch.setattr(onboarding.threading, "Thread", lambda target, args, **kw: SimpleNamespace(start=lambda: target(*args)))
+    manager.start(aid, "discover")
+    r = manager.get(aid)
+    assert r["status"] == "failed" and "session limit" not in r["error"]
+    assert "ended without writing a setup plan (stop: end_turn)" in r["error"]
+    assert "Its last message: I was blocked writing start.sh. Should I finish it as described?" in r["error"]
+
+    manager.start(aid, "discover")
+    request = json.loads(sent[1]["uploads"]["onboarding-request.json"])
+    assert "I was blocked writing start.sh" in request["previous_attempt"]["error"]

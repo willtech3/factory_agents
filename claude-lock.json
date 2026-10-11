@@ -9,9 +9,9 @@
     "./agents/app_onboarding.md": {
       "kind": "agent",
       "id": "agent_01Vfcs8bh7apzKYPVAYMDRfh",
-      "version": "1",
-      "hash": "f1a82c6d1e4f56483299bfd597de8836",
-      "remote_hash": "5536fbc8164faf7fdb49197ff47f38c3"
+      "version": "2",
+      "hash": "7df9cb162c18f37d4cd724053dbd3eca",
+      "remote_hash": "8c0f9b4a6400bcf1ebdfe00af7afb5f6"
     },
     "./agents/codebase_researcher.md": {
       "kind": "agent",

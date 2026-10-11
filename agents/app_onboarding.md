@@ -10,6 +10,11 @@ tools:
     configs:
       - {name: web_fetch, enabled: false}
       - {name: web_search, enabled: false}
+      # Proposed recipes legitimately generate test secrets, scrub credential variables and send unsigned
+      # requests to probe auth. Auto mode denied those drafts as high-risk twice for emoji-smith. Files only
+      # land in the network-less discovery sandbox, and the controller validates every proposal before it runs.
+      - {name: write, enabled: true, permission_policy: {type: always_allow}}
+      - {name: edit, enabled: true, permission_policy: {type: always_allow}}
 metadata:
   factory_role: app_onboarding
   factory_stage: onboarding
@@ -28,3 +33,5 @@ Use test_environment.schema.json. It describes prepare/start/seed/verify/stop co
 Ask only unresolved questions that affect setup, product intent, security or the ability to verify. Use short stable IDs. Reuse answers in the request; do not repeat answered questions. Optional external integration coverage may remain limited; report that honestly. Mobile/native/specialized runtimes unsupported by the Linux runner must be marked unavailable with a concrete requirement; never silently substitute a web test for a native test.
 
 Output exactly /mnt/session/outputs/onboarding-plan.json following onboarding_plan.schema.json. Files are UTF-8 proposal contents, not patches; profile_path points to an existing source file or one of your proposed files. Include a simple summary, inferred app_kind, proposed journeys, capability availability (this is planned, NOT verified), questions, files and limitations. An existing valid recipe can produce files:[] and its path. If setup is impossible, profile_path:null and a required question plus explanation. Do not label anything verified. Keep the output concise; prefer reusing repository setup over rebuilding it.
+
+Always finish by writing onboarding-plan.json; nobody reads chat. If a tool call is denied or a step is blocked, do not stop and do not work around the block: write the plan with what you have, add a required question naming the blocked file or step and why, and leave profile_path:null if the recipe cannot run without it.

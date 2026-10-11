@@ -31,7 +31,7 @@ def test_stream_drop_is_reopened_and_events_are_not_handled_twice(tmp_path, root
     monkeypatch.setattr(sessions.time, "sleep", lambda s: None)
 
     idle = ev("e3", "session.status_idle", stop_reason=SimpleNamespace(type="end_turn"))
-    msg = ev("e2", "agent.message", content=[])
+    msg = ev("e2", "agent.message", content=[SimpleNamespace(type="text", text="I stopped: a write was denied.")])
     streams = iter([
         FakeStream([msg], then_raise=httpx.RemoteProtocolError("peer closed connection without sending complete message body")),
         FakeStream([idle]),
@@ -61,6 +61,7 @@ def test_stream_drop_is_reopened_and_events_are_not_handled_twice(tmp_path, root
                 max_iterations=1, budget_usd=1.0, repository={"type": "github_repository", "url": "https://github.com/example/test"},
                 environment_id="env_test", vault_ids=["vault_test"], system_override="Run the immutable test harness")
     assert res.stop_reason == "end_turn" and res.list_cost_usd == 1.23 and res.events_seen == 3
+    assert res.last_message == "I stopped: a write was denied."
     assert calls["stream"] == 2 and calls["list"] == 2 and calls["custom"] == 0
     assert calls["create"]["environment_id"] == "env_test"
     assert calls["create"]["vault_ids"] == ["vault_test"]

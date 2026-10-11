@@ -405,8 +405,13 @@ class AppOnboarding:
                 schema_names=("onboarding_plan.schema.json", "test_environment.schema.json"))
             self._finished(app_id, {"session_id": result.session_id, "list_cost_usd": result.list_cost_usd, "stop_reason": result.stop_reason})
             raw = result.outputs.get("onboarding-plan.json")
-            if not raw or len(raw) > 2 * 1024 * 1024:
-                raise ValueError("The onboarding agent did not return a complete setup plan within its session limit")
+            if raw and len(raw) > 2 * 1024 * 1024:
+                raise ValueError("The onboarding agent's setup plan is over 2 MB; discover again and ask for a smaller recipe")
+            if not raw:
+                # The error becomes the next discovery's previous_attempt.error, so the agent's own words travel with it.
+                said = " ".join((getattr(result, "last_message", None) or "").split())
+                raise ValueError(f"The onboarding agent ended without writing a setup plan (stop: {result.stop_reason or 'unknown'}). "
+                                 + (f"Its last message: {said[:900]}" if said else "It left no message; open the linked session."))
             try:
                 proposal = json.loads(raw)
                 self.update(app_id, last_proposal=proposal)
