@@ -67,6 +67,7 @@ A full run that opens pull requests also needs a GitHub token and a target repos
 | How a run moves, stage by stage, with budgets and failure handling | [01-pipeline.md](docs/01-pipeline.md) |
 | What each agent does and why | [02-agents.md](docs/02-agents.md), [agents/README.md](agents/README.md) |
 | What a person sees at each gate | [03-human-in-the-loop-ux.md](docs/03-human-in-the-loop-ux.md), [08-factory-console.md](docs/08-factory-console.md) |
+| How to design and extend the Console UI | [console-design-system.md](docs/console-design-system.md) |
 | How it maps onto Managed Agents | [04-managed-agents-mapping.md](docs/04-managed-agents-mapping.md) |
 | Preview environments, the dev deploy, and the platform boundary | [05-platform-and-deployment.md](docs/05-platform-and-deployment.md) |
 | Running it with your own GitHub repository | [07-personal-e2e-setup.md](docs/07-personal-e2e-setup.md) |

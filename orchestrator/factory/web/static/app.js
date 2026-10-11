@@ -6,6 +6,7 @@
   const $main = document.getElementById("main");
   const $foot = document.getElementById("side-foot");
   const $inboxCount = document.getElementById("inbox-count");
+  const Model = window.FactoryModel;
   const SVG = "http://www.w3.org/2000/svg";
 
   function el(tag, attrs, ...children) {
@@ -34,9 +35,11 @@
   }
 
   async function api(path, opts) {
+    const routeAtRequest = location.hash;
     const r = await fetch(path, opts && opts.body ? { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(opts.body) } : opts);
     const data = await r.json().catch(() => ({}));
+    if (!opts?.background && routeAtRequest !== location.hash) throw new DOMException("Navigation changed", "AbortError");
     if (!r.ok) { const err = new Error(data.detail || data.error || `${r.status} ${r.statusText}`); err.status = r.status; throw err; }
     return data;
   }
@@ -51,21 +54,25 @@
     ["completed", "Done", "Every item has a pull request for human review."],
   ];
   const TERMINAL = { closed: "Closed", escalated: "Escalated", failed: "Failed", paused_budget: "Paused at budget" };
-  // run status (summary.py) -> tag colour: orange is a person's turn, clay is the crew, red is something to look into
+  // Semantic status classes. Render as plain text; only meaningful errors use color.
   const STATUS_TAG = { needs_you: "gate", running: "crew", stopped: "bad", paused: "warn", completed: "ok", closed: "", failed: "bad", escalated: "warn", unreadable: "bad" };
-  const RUN_FILTERS = [["all", "All"], ["needs_you", "Needs you"], ["active", "In progress"], ["done", "Done"], ["unfinished", "Did not finish"]];
+  const RUN_FILTERS = [["all", "All"], ["needs_you", "Needs you"], ["active", "Unfinished"], ["done", "Finished"], ["unfinished", "Did not finish"]];
   const runMatches = (r, f) => f === "all" ? true
     : f === "needs_you" ? (r.status === "needs_you" || r.status === "stopped" || (r.waiting && r.waiting.gates + r.waiting.questions > 0) || (r.pull_requests || []).some(p => p.stage === "cr_open"))
     : f === "active" ? !r.terminal
     : f === "done" ? r.status === "completed"
     : ["failed", "closed", "escalated", "unreadable"].includes(r.status);
-  const statusTag = r => el("span", { class: `tag ${STATUS_TAG[r.status] || ""}` }, r.status_label || words(r.status || ""));
+  // "Running" is a claim. Without an observed controller or open session, an hour-old log is not evidence of current activity.
+  const quietRun = r => r.status === "running" && r.controller_alive == null && !r.live_sessions && !!r.updated_at && Date.now() - Date.parse(r.updated_at) > 3600e3;
+  const statusTag = r => quietRun(r)
+    ? el("span", { class: "tag warn", title: "No controller lock and no open agent session" }, "No recent activity")
+    : el("span", { class: `tag ${STATUS_TAG[r.status] || ""}` }, r.status === "completed" ? (r.design_only ? "Design approved" : (r.pull_requests || []).some(p => p.stage === "cr_open") ? "Ready for review" : "Finished") : r.status_label || words(r.status || ""));
   // agent activity (the oldest open session) apart from pipeline events, which a long session does not produce
   const activityLine = r => r.working_since
     ? `${(r.working || []).map(w => CREW_NAME[w] || words(w)).join(", ") || "Agent"} working for ${dur(r.working_since)}`
     : `last activity ${ago(r.updated_at)}`;
   const liveSpendNote = r => r.live_sessions && !r.terminal ? el("div", { class: "explain" }, `excludes ${plural(r.live_sessions, "session")} still running`) : null;
-  const modeTag = r => r.mode ? el("span", { class: "tag" }, r.mode === "design" ? "design only" : "live") : null;
+  const modeTag = r => r.mode ? el("span", { class: "tag" }, r.mode === "design" ? "Design only" : "Full run") : null;
   const ITEM_STAGE = {
     pending: "Waiting", spec_drafting: "Spec being written", spec_judging: "Spec being judged", spec_approved: "Spec approved",
     implementing: "Implementing", reviewing: "In review", responding: "Responding to review", merge_judging: "Merge judge",
@@ -138,7 +145,7 @@
     const tool = TOOLS[CREW_TOOL[role] || "wrench"];
     if (tool) {
       const g = svg("g", { class: "tool", transform: big ? "" : "scale(0.6) translate(1,0)" });
-      g.append(svg("path", { d: tool, fill: "#16202A" }));
+      g.append(svg("path", { d: tool, fill: "var(--text)" }));
       node.append(g);
     }
     const bx = big ? 62 : 38, by = big ? 22 : 13, br = big ? 8 : 5.5;
@@ -152,63 +159,15 @@
 
   // ------------------------------------------------------------------ the line: a compact progress strip with the active station's crew member
   function lineStrip(r) {
-    const open = (r.gates || []).filter(g => !g.recorded);
-    const stage = r.stage;
-    const terminal = TERMINAL[stage];
-    const S = [
-      { key: "intake", lbl: "Outcome", who: "po", d: "The brief" },
-      { key: "decomposing", lbl: "Decompose", who: "crew", d: "Work items", role: "decomposer" },
-      { key: "gate_1_decomposition", lbl: "Plan check", who: "po", d: "Gate 1" },
-      { key: "specifying", lbl: "Specify and judge", who: "crew", d: "Contracts", role: "spec_writer" },
-      { key: "gate_2_spec_readiness", lbl: "Contract check", who: "po", d: "Gate 2" },
-      { key: "implementing", lbl: "Build and review", who: "crew", d: "Branches", role: "implementer" },
-      { key: "completed", lbl: "Pull request", who: "eng", d: "Review and merge" },
-    ];
-    const idx = STAGES.findIndex(s => s[0] === stage);
-    const working = (r.crew || []).filter(c => c.state === "working").map(c => c.role);
-    const stations = el("div", { class: "stations" });
-    S.forEach((s, i) => {
-      let cls = `st ${s.who}`;
-      const done = !terminal && i < idx, current = !terminal && i === idx;
-      if (done || (stage === "completed" && i === S.length - 1)) cls += " done";
-      if (current && !r.design_only) cls += " current";
-      const isCall = open.length && ((s.key === "gate_1_decomposition" && open.some(g => g.kind === "gate_1_decomposition")) || (s.key === "gate_2_spec_readiness" && open.some(g => g.kind === "gate_2_spec_readiness")));
-      if (isCall) cls += " call calling";
-      let fig = null;
-      if (current && s.who === "crew") {
-        const role = working.find(w => ["decomposer", "spec_writer", "spec_judge", "implementer", "reviewer", "security_reviewer", "merge_judge", "integrator"].includes(w)) || s.role;
-        fig = el("span", { class: "fig" }, crewFigure(role, working.length ? "working" : "still", "s"));
-      }
-      stations.append(el("div", { class: cls, title: s.d },
-        el("div", { class: "bar" }), el("span", { class: "n" }, `Station ${i + 1}`), el("span", { class: "lbl" }, s.lbl),
-        el("span", { class: `who ${s.who}` }, isCall ? "Your call" : ROLE_NAME[s.who]), fig));
-    });
-    const belt = el("div", { class: "belt" });
-    return el("div", { class: `line ${terminal || stage === "completed" ? "still" : ""}` }, stations, belt);
+    const labels = [["intake","Outcome"],["decomposing","Plan"],["gate_1_decomposition","Plan review"],["specifying","Contracts"],["gate_2_spec_readiness","Contract review"],
+      ...(r.design_only ? [] : [["implementing","Build & review"]]), ["completed",r.design_only ? "Design approved" : "Handoff"]];
+    const current = Model.lastPhase(r), idx = labels.findIndex(x => x[0] === current);
+    const stopped = r.summary?.status === "stopped" || !!TERMINAL[r.stage];
+    return el("ol", {class:"progress-track", "aria-label":"Run progress"}, labels.map(([key,label],i) =>
+      el("li", {class:i === idx ? `current ${stopped ? "halted" : ""}` : i < idx ? "done" : "", "aria-current":i === idx ? "step" : null},
+        el("span", {class:"progress-dot", "aria-hidden":"true"}, i < idx ? "✓" : i+1), el("span", null,label),
+        el("span", {class:"sr-only"}, i === idx ? (stopped ? ", last stage reached" : ", current stage") : i < idx ? ", reached" : ", upcoming"))));
   }
-  function miniSteps(stage) {
-    const idx = STAGES.findIndex(s => s[0] === stage);
-    const terminal = TERMINAL[stage];
-    return el("span", { class: "mini-steps", title: terminal || (STAGES[idx] || [])[1] || stage },
-      STAGES.map((s, i) => el("i", { class: terminal ? (i < 2 ? "done" : "") : i < idx ? "done" : i === idx ? "current" : "" })),
-      terminal ? el("i", { class: "terminal" }) : null);
-  }
-  function stepper(stage, designOnly) {
-    const idx = STAGES.findIndex(s => s[0] === stage);
-    const terminal = TERMINAL[stage];
-    const t = el("div", { class: "stepper", role: "list", "aria-label": "Run stages" });
-    const stages = designOnly ? STAGES.map(s => s[0] === "implementing" ? [s[0], "Building", "Skipped: design run."] : s[0] === "completed" ? [s[0], "Done", "Specs approved; nothing built."] : s) : STAGES;
-    stages.forEach(([key, label, desc], i) => {
-      let cls = "step";
-      if (!terminal && i < idx) cls += " done";
-      else if (!terminal && i === idx) cls += " current";
-      else if (terminal && i < 2) cls += " done";
-      t.append(el("div", { class: cls, role: "listitem" }, el("span", { class: "n" }, i + 1), el("span", { class: "lbl" }, label), el("span", { class: "d" }, desc)));
-    });
-    if (terminal) t.append(el("div", { class: "step terminal", role: "listitem" }, el("span", { class: "lbl" }, terminal)));
-    return t;
-  }
-
   // tiny markdown subset for decomposition.md and spec.md
   function md(text) {
     const lines = (text || "").split("\n");
@@ -239,7 +198,7 @@
   }
 
   // ------------------------------------------------------------------ chrome: sidebar, nav, polling
-  const state = { config: null, poll: null, lastKey: {} };
+  const state = { config: null, poll: null, lastKey: {}, renderedRoute: null, checkedAt: null };
 
   function applyTheme(t) { document.documentElement.dataset.theme = t === "dark" ? "dark" : ""; try { localStorage.setItem("factory-theme", t); } catch (e) { /* private window */ } }
   try { applyTheme(localStorage.getItem("factory-theme") || "light"); } catch (e) { applyTheme("light"); }
@@ -254,16 +213,17 @@
   const forgeGapsOf = c => gapsMatching(c.gaps, ["FORGE", "FACTORY_FORGE", "FACTORY_VAULT_ID"]);
   async function loadChrome() {
     try {
-      const [c, board] = await Promise.all([api("/api/config"), api("/api/board")]);
+      const [c, board] = await Promise.all([api("/api/config", {background:true}), api("/api/board", {background:true})]);
       state.config = c;
       const w = waitingOf(onBoard(board)), n = w.decisions + w.reviews;
+      $inboxCount.setAttribute("aria-label", `${n} decisions and reviews`);
       $inboxCount.textContent = n; $inboxCount.classList.toggle("zero", n === 0);
       const dark = document.documentElement.dataset.theme === "dark";
       const forgeOk = !forgeGapsOf(c).length;
       $foot.replaceChildren(
         el("b", null, "Crew"), el("span", { class: c.can_run_design ? "" : "warn" }, c.can_run_design ? "ready" : "not configured"),
         el("br"), el("b", null, "Code host"), el("span", { class: forgeOk ? "" : "warn" }, forgeOk ? `${c.forge}${c.forge_repo ? ": " + c.forge_repo : ""}` : "not configured"),
-        el("br"), el("button", { class: "theme", type: "button", onclick: () => { applyTheme(dark ? "light" : "dark"); loadChrome(); } }, dark ? "Light mode" : "Dark mode"));
+        el("br"), el("a", {href:"#/design-system", class:"system-link"}, "Design system"), el("button", { class: "theme", type: "button", onclick: () => { applyTheme(dark ? "light" : "dark"); loadChrome(); } }, dark ? "Light mode" : "Dark mode"));
     } catch (e) { $foot.textContent = "Console offline"; }
   }
   function setNav(key) {
@@ -272,20 +232,83 @@
     if (a) a.setAttribute("aria-current", "page");
   }
   function stopPoll() { if (state.poll) { clearInterval(state.poll); state.poll = null; } }
-  function startPoll(fn, ms) { stopPoll(); state.poll = setInterval(() => { if (document.visibilityState === "visible") fn(); }, ms); }
+  function startPoll(fn, ms) { stopPoll(); state.poll = setInterval(() => { if (document.visibilityState === "visible") Promise.resolve(fn()).catch(e => { if (e.name !== "AbortError") connectionNotice("Updates could not be loaded. Showing the last loaded state; retrying automatically."); }); }, ms); }
   function typing() {
     const a = document.activeElement;
     return !!(a && $main.contains(a) && (a.tagName === "TEXTAREA" || a.tagName === "INPUT" || a.tagName === "SELECT"));
   }
   function refreshWhenChanged(key, fetchKey, render) {
     return async () => {
-      if (typing()) return;
+      if (typing()) { connectionNotice("Updates pause while you type. They resume when you leave the field.", "info"); return; }
       try {
         const k = await fetchKey();
         if (k !== state.lastKey[key]) { state.lastKey[key] = k; await render(); }
-        loadChrome();
-      } catch (e) { /* keep the page */ }
+        connectionNotice(); loadChrome();
+      } catch (e) { if (e.name !== "AbortError") connectionNotice("Connection lost. Showing the last loaded state; retrying automatically.", "warn"); }
     };
+  }
+
+  function connectionNotice(message, tone = "warn") {
+    const node = document.getElementById("connection-status");
+    const wasOffline = node.classList.contains("warn");
+    node.hidden = !message;
+    node.className = `connection-status ${tone}`;
+    if (node.textContent !== (message || "")) {
+      node.textContent = message || "";
+      document.getElementById("live-status").textContent = message || (wasOffline ? "Connection restored." : "");
+    }
+  }
+  function showPage(content) {
+    const samePage = state.renderedRoute === location.hash;
+    const opened = new Map(), drafts = new Map();
+    const active = document.activeElement;
+    const focusKey = active && (active.id || active.dataset.focusKey);
+    if (samePage) {
+      $main.querySelectorAll("details").forEach(d => opened.set(d.dataset.disclosure || d.querySelector("summary")?.textContent, d.open));
+      $main.querySelectorAll("[data-dirty][id]").forEach(n => drafts.set(n.id, {value:n.value, checked:n.checked}));
+    }
+    const selection = samePage && (active?.tagName === "TEXTAREA" || ["text","search"].includes(active?.type)) ? [active.selectionStart, active.selectionEnd] : null;
+    $main.replaceChildren(content);
+    if (samePage) {
+      $main.querySelectorAll("details").forEach(d => { const key = d.dataset.disclosure || d.querySelector("summary")?.textContent; if (opened.has(key)) d.open = opened.get(key); });
+      drafts.forEach((v,id) => { const n = document.getElementById(id); if (n) { n.value = v.value; n.checked = v.checked; n.dataset.dirty = "true"; } });
+      const next = focusKey && [...$main.querySelectorAll("[id], [data-focus-key]")].find(n => (n.id || n.dataset.focusKey) === focusKey);
+      if (next && active !== document.body) { next.focus({preventScroll:true}); if (selection) next.setSelectionRange(...selection); }
+    }
+    state.renderedRoute = location.hash;
+  }
+  $main.addEventListener("input", e => { if (e.target.matches("input,textarea,select")) e.target.dataset.dirty = "true"; });
+  document.querySelector(".skip-link").addEventListener("click", e => { e.preventDefault(); $main.focus(); });
+  function disclosure(key, label, body, open = false) {
+    const content = el("div", {class:"disclosure-body"}, typeof body === "function" ? null : body);
+    const details = el("details", {class:"disclosure", dataset:{disclosure:key}, open}, el("summary", {dataset:{focusKey:`disclosure-${key}`}}, label), content);
+    if (typeof body === "function") {
+      let loaded = false;
+      const fill = () => { if (details.open && !loaded) { content.append(body()); loaded = true; } };
+      details.addEventListener("toggle",fill); fill();
+    }
+    return details;
+  }
+  function longText(text, limit = 220) {
+    if (!text) return null;
+    if (text.length <= limit) return el("p", {class:"prose"}, text);
+    const cut = text.lastIndexOf(" ", limit);
+    return el("div", null, el("p", {class:"prose"}, text.slice(0, cut > 0 ? cut : limit) + "…"),
+      disclosure(`text-${text.slice(0,60)}`, "Read the full explanation", el("p", {class:"prose"}, text)));
+  }
+  let hintId = 0;
+  function hint(label, text) {
+    const id = `hint-${++hintId}`;
+    const tip = el("span", {id, role:"tooltip", class:"hint-text", hidden:true}, text);
+    const button = el("button", {type:"button", class:"hint-trigger", "aria-label":label, "aria-describedby":id}, "i");
+    const box = el("span", {class:"hint"}, button, tip);
+    let openedByFocus = false;
+    const show = () => { tip.hidden = false; }, hide = () => { tip.hidden = true; };
+    box.addEventListener("mouseenter", show); box.addEventListener("mouseleave", hide);
+    button.addEventListener("focus", () => { openedByFocus = true; show(); }); button.addEventListener("blur", () => { openedByFocus = false; hide(); });
+    button.addEventListener("click", () => { if (openedByFocus) { show(); openedByFocus = false; } else tip.hidden = !tip.hidden; });
+    button.addEventListener("keydown", e => { if (e.key === "Escape") { hide(); e.stopPropagation(); } });
+    return box;
   }
 
   function pageHead(title, sub, actions, crumbs) {
@@ -298,15 +321,6 @@
       title ? el("div", { class: "card-head" }, el("h2", null, title), meta ? el("span", { class: "meta" }, meta) : null) : null,
       el("div", { class: "card-body" }, body));
   }
-  function roleLegend() {
-    return el("div", { style: "display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center;font-size:14px" },
-      el("span", { class: "role crew" }, el("i"), "Claude crew"),
-      el("span", { class: "role po" }, el("i"), "Product owner decides what is built"),
-      el("span", { class: "role eng" }, el("i"), "Engineer reviews and merges"),
-      el("span", { class: "role ops" }, el("i"), "Ops watches it land"),
-      el("span", { class: "role call", style: "margin-left:auto" }, el("i"), "A human is needed now"));
-  }
-
   // ------------------------------------------------------------------ the board: columns are the pipeline, rows are who owns the work
   async function viewInbox() {
     setNav("inbox");
@@ -325,41 +339,36 @@
         el("div", null, "No run is in progress. Start one from an outcome; the crew wakes up and the board fills in."),
         el("a", { class: "btn primary", href: "#/start" }, "Start a run"))));
     } else {
-      const g = el("div", { class: "g" });
-      g.append(el("div"));
-      for (const col of [["plan", "Plan"], ["specify", "Specify"], ["build", "Build"], ["review", "Review"], ["ship", "Ship"]]) g.append(el("div", { class: "colh" }, col[1]));
-      const COLS = { plan: "Plan", specify: "Specify", build: "Build", review: "Review", ship: "Ship" };
-      for (const row of ["po", "eng", "ops", "crew"]) {
-        // on a phone the grid stacks: a role, then only its columns that hold cards, each labelled (data-col)
-        const empty = !live.some(r => r.cards.some(c => c.row === row));
-        g.append(el("div", { class: `rowh ${row}${empty ? " empty-row" : ""}` }, el("b", null, ROLE_NAME[row]), el("span", null, ROLE_DOES[row])));
-        for (const col of ["plan", "specify", "build", "review", "ship"]) {
-          const cell = el("div", { class: "cell", dataset: { col: COLS[col] } });
-          for (const r of live) {
-            for (const c of r.cards.filter(c => c.row === row && c.column === col)) cell.append(boardCard(r, c));
-
-          }
-          g.append(cell);
-        }
+      const agentCards = live.flatMap(r => r.cards.filter(c=>c.kind === "agent"));
+      if (agentCards.length) frag.append(el("p",{class:"board-activity"},el("b",null,`${plural(agentCards.length,"open session")}: `),
+        [...new Set(agentCards.map(c=>CREW_NAME[c.role] || words(c.role)))].join(", ")));
+      const lanes = el("div", {class:"board-lanes"});
+      for (const row of ["po","eng","ops","crew"]) {
+        const cards = live.flatMap(r => r.cards.filter(c => c.row === row).map(c => [r,c]));
+        if (!cards.length) continue;
+        lanes.append(el("section", {class:"board-lane"}, el("div",{class:"lane-heading"},el("h2",null,ROLE_NAME[row]),el("span",{class:"tag"},String(cards.length))),
+          el("p",{class:"muted"},ROLE_DOES[row]),el("div",{class:"board lane-cards"},cards.map(([r,c])=>boardCard(r,c)))));
       }
-      frag.append(card(null, el("div", { class: "board" }, g, el("div", { class: "legend" }, el("span", null, [active ? `${plural(active, "run")} in progress.` : null, handedOff ? `${plural(handedOff, "finished run")} with pull requests to review.` : null, "Finished runs are under Runs."].filter(Boolean).join(" ")))), null));
+      frag.append(lanes);
+      frag.append(el("p",{class:"muted",style:"margin-top:16px"},`${plural(active,"unfinished run")}${handedOff ? ` · ${plural(handedOff,"finished run")} awaiting review` : ""}. Full history is in Runs.`));
+
     }
 
-    $main.replaceChildren(frag);
+    showPage(frag);
     state.lastKey.inbox = boardKey(b);
     startPoll(refreshWhenChanged("inbox", async () => boardKey(await api("/api/board")), viewInbox), 5000);
   }
-  function boardKey(b) { return JSON.stringify(b.runs.map(r => [r.run_id, r.stage, r.updated_at, r.cards.map(c => [c.kind, c.gate_id || c.question_id || c.role || c.work_item_id])])); }
+  function boardKey(b) { return Math.floor(Date.now()/60000) + JSON.stringify(b.runs.map(r => [r.run_id, r.stage, r.updated_at, r.cards.map(c => [c.kind, c.gate_id || c.question_id || c.session_id || c.role || c.work_item_id])])); }
   // Every card names its run as a link, so any card on the board leads to that run's evidence and next action.
   function boardCard(r, c) {
     const run = el("a", { class: "run-link", href: `#/runs/${r.run_id}` }, r.title);
     if (c.kind === "agent") {
       return el("div", { class: "k agent" }, crewFigure(c.role, "working", "s"),
-        el("div", { class: "txt" }, el("span", { class: "t" }, CREW_NAME[c.role] || words(c.role)), el("span", { class: "s" }, run, `, working for ${dur(c.since)}`)));
+        el("div", { class: "txt" }, el("span", { class: "t" }, CREW_NAME[c.role] || words(c.role)), el("span", { class: "s" }, run, el("span", {class:"muted"}, `Session open · started ${ago(c.since)}`))));
     }
     if (c.kind === "gate") {
       return el("div", { class: "k call calling" }, el("span", { class: "since" }, `Your call since ${clock(c.since)}`), el("span", { class: "t" }, GATE_NAME[c.title] || words(c.title)),
-        el("span", { class: "s" }, run, `. ${(c.summary || "").slice(0, 140)}`), el("a", { class: "btn call", href: `#/gates/${c.gate_id}`, style: "align-self:flex-start" }, "Review and decide"));
+        el("span", { class: "s" }, run, longText(c.summary || "",140)), el("a", { class: "btn call", href: `#/gates/${c.gate_id}`, style: "align-self:flex-start" }, "Review and decide"));
     }
     if (c.kind === "question") {
       return el("div", { class: "k call calling" }, el("span", { class: "since" }, `${c.blocking ? "Agent paused" : "Question"} since ${clock(c.since)}`), el("span", { class: "t" }, c.title),
@@ -369,51 +378,49 @@
       return el("div", { class: "k call" }, el("span", { class: "since" }, "Waiting for you"), el("span", { class: "t" }, c.title), el("span", { class: "s" }, run),
         c.url ? el("a", { class: "btn", href: c.url, target: "_blank", rel: "noopener", style: "align-self:flex-start" }, "Open on the code host") : null);
     }
-    return el("div", { class: "k quiet" }, el("span", { class: "run" }, run), el("span", { class: "t" }, c.title));
+    return el("div", {class:`k ${c.kind === "stopped" ? "attention" : "quiet"}`},el("span",{class:"t"},c.title),run,c.summary ? el("p",{class:"muted"},c.summary) : null,el("a",{class:"btn sm",href:`#/runs/${r.run_id}`},"View run"));
   }
 
   // ------------------------------------------------------------------ runs: the history, and the home page
-  const runsKey = runs => JSON.stringify(runs.map(r => [r.run_id, r.status, r.stage, r.updated_at, r.live_sessions, r.waiting ? [r.waiting.gates, r.waiting.questions] : null]));
+  const runsKey = runs => Math.floor(Date.now()/60000) + JSON.stringify(runs.map(r => [r.run_id, r.status, r.stage, r.updated_at, r.live_sessions, quietRun(r), r.waiting ? [r.waiting.gates, r.waiting.questions] : null]));
   async function viewRuns() {
     setNav("runs");
     const runs = (await api("/api/runs")).runs;
     const filter = state.runsFilter || "all";
-    const shown = runs.filter(r => runMatches(r, filter));
+    const query = state.runSearch || "";
+    const shown = runs.filter(r => runMatches(r,filter) && `${r.title} ${r.run_id} ${r.headline}`.toLowerCase().includes(query.toLowerCase()));
     const needs = runs.filter(r => runMatches(r, "needs_you")).length, active = runs.filter(r => !r.terminal).length;
     const frag = document.createDocumentFragment();
-    frag.append(pageHead("Runs", "Every run of the factory, unfinished ones first: what it was for, where it stands, and what came out of it.",
+    frag.append(pageHead("Runs", "Follow the work, understand what changed, and see what needs you.",
       [needs ? el("span", { class: "tag gate" }, `${plural(needs, "run")} waiting on you`) : active ? el("span", { class: "tag crew" }, `${plural(active, "run")} in progress`) : el("span", { class: "tag ok" }, "Nothing waiting on a person"),
        el("a", { class: "btn primary", href: "#/start" }, "Start a run")]));
     if (!runs.length) {
       frag.append(card(null, el("div", { class: "empty" }, crewFigure("decomposer", "asleep", "l"), el("h3", null, "No runs yet"),
-        el("div", null, "Start one from an outcome. Every run shows up here with its status and what came out of it, for as long as its event log is kept."),
+        el("div", null, "Describe an outcome to start. Runs recorded on this Console will appear here."),
         el("a", { class: "btn primary", href: "#/start" }, "Start a run"))));
     } else {
       const chips = el("div", { class: "chips", role: "group", "aria-label": "Show runs" }, RUN_FILTERS.map(([key, label]) =>
-        el("button", { class: "btn sm", type: "button", "aria-pressed": String(key === filter), onclick: () => { state.runsFilter = key; viewRuns(); } },
+        el("button", { class: "btn sm", type: "button", "aria-pressed": String(key === filter), dataset:{focusKey:`filter-${key}`}, onclick: () => { state.runsFilter = key; viewRuns(); } },
           label, " ", el("span", { class: "n" }, String(runs.filter(r => runMatches(r, key)).length)))));
-      const tbl = el("table", { class: "runs" }, el("tr", null, el("th", null, "Outcome"), el("th", null, "Status"), el("th", null, "What came out"), el("th", null, "Spend"), el("th", null, "When")));
+      const search = el("input",{type:"search",id:"run-search",placeholder:"Find a run…","aria-label":"Find runs by outcome, status text, or run ID",value:query,oninput:e=>{state.runSearch=e.target.value;viewRuns();}});
+      const list = el("div",{class:"run-list"});
       for (const r of shown) {
-        const waiting = r.waiting ? r.waiting.gates + r.waiting.questions : 0;
+        const stage = TERMINAL[r.stage] || (STAGES.find(x=>x[0]===r.stage)||[])[1] || words(r.stage);
         const prs = r.pull_requests || [];
-        tbl.append(el("tr", { class: "link", onclick: () => { location.hash = `#/runs/${r.run_id}`; } },
-          el("td", null, el("div", { class: "title" }, el("a", { href: `#/runs/${r.run_id}` }, r.title), modeTag(r)),
-            el("div", { class: "explain mono", style: "font-size:12px" }, r.run_id)),
-          el("td", null, statusTag(r), el("div", { style: "margin-top:6px" }, miniSteps(r.stage)),
-            waiting ? el("div", { class: "explain", style: "color:var(--call-text);font-weight:700" }, `${plural(waiting, "decision")} waiting on you`) : null),
-          el("td", { class: "headline" }, r.headline || "",
-            prs.length ? el("div", { class: "prs" }, prs.map(p => p.url
-              ? el("a", { href: p.url, target: "_blank", rel: "noopener", title: `${p.title || p.work_item_id}: ${p.state}`, onclick: ev => ev.stopPropagation() }, `#${p.cr_id}`, el("span", { class: "explain" }, ` ${p.state}`))
-              : el("span", { class: "explain" }, `${p.work_item_id}: ${p.state}`))) : null),
-          el("td", null, money(r.cost_usd), r.budget_usd != null ? el("span", { class: "explain" }, ` of ${money(r.budget_usd)}`) : null, liveSpendNote(r)),
-          el("td", { class: "explain" }, el("div", { title: r.started_at || "" }, `started ${ago(r.started_at)}`),
-            el("div", null, r.terminal ? `took ${dur(r.started_at, r.ended_at || r.updated_at)}` : activityLine(r)),
-            r.working_since && !r.terminal ? el("div", null, `pipeline step ${ago(r.updated_at)}`) : null)));
+        list.append(el("article",{class:"run-row"},
+          el("div",{class:"run-row-main"},el("div",{class:"run-row-heading"},el("h2",null,el("a",{href:`#/runs/${r.run_id}`},r.title)),statusTag(r)),
+            el("p",{class:"run-row-description"},r.headline || stage),
+            el("div",{class:"run-row-meta"},el("span",null,r.mode === "design" ? "Design only" : "Full run"),
+              el("span",null,stage),el("span",null,r.terminal ? `Ended ${ago(r.ended_at || r.updated_at)}` : activityLine(r))),
+            prs.length ? el("div",{class:"run-row-links"},prs.map(p=>p.url ? el("a",{href:p.url,target:"_blank",rel:"noopener"},`PR #${p.cr_id} · ${p.state}`) : null)) : null),
+          el("div",{class:"run-row-budget"},el("b",null,money(r.cost_usd)),el("span",{class:"muted"},r.budget_usd != null ? `of ${money(r.budget_usd)} budget` : "recorded spend"),liveSpendNote(r))));
       }
-      if (!shown.length) tbl.append(el("tr", null, el("td", { colspan: "5", class: "explain" }, "No run matches this filter.")));
-      frag.append(card(null, el("div", null, chips, tbl)));
+      if (!shown.length) list.append(el("div",{class:"empty"},el("h3",null,"No matching runs"),el("p",null,"Try a different search or filter."),
+        el("button",{class:"btn",type:"button",onclick:()=>{state.runSearch="";state.runsFilter="all";viewRuns();}},"Clear search and filters")));
+      frag.append(el("section",{class:"card run-history"},el("div",{class:"run-toolbar"},chips,search),list));
+
     }
-    $main.replaceChildren(frag);
+    showPage(frag);
     state.lastKey.runs = runsKey(runs);
     startPoll(refreshWhenChanged("runs", async () => runsKey((await api("/api/runs")).runs), viewRuns), 5000);
   }
@@ -507,162 +514,119 @@
   }
 
   function askBlock(q, onDone) {
-    const ta = el("textarea", { placeholder: "Your answer", "aria-label": "Your answer" });
-    const status = el("div", { class: "explain" });
-    const options = el("div", { class: "options" }, q.options.map(o => el("button", { class: "btn sm", type: "button", onclick: () => { ta.value = o; ta.focus(); } }, o)));
+    const ta = el("textarea", { id:`answer-${q.question_id}`, placeholder:"Type an answer or choose a suggestion", "aria-label":`Answer: ${q.question}`, "aria-describedby":`why-${q.question_id}` });
+    const status = el("div", { class: "explain", role:"status" });
+    const options = el("div", { class: "options" }, q.options.map(o => el("button", { class: "btn sm", type: "button", onclick: () => { ta.value = o; ta.dataset.dirty = "true"; ta.focus(); } }, o)));
     const send = el("button", { class: "btn call", type: "button", style: "margin-top:8px", onclick: async () => {
       if (!ta.value.trim()) { status.textContent = "Type or pick an answer first."; return; }
       send.disabled = true;
       try { await api(`/api/questions/${q.question_id}/answer`, { body: { answer: ta.value.trim(), by: "console" } });
         box.replaceChildren(el("div", { class: "q" }, q.question), el("div", { class: "done" }, `Answered: ${ta.value.trim()}`),
-          el("div", { class: "explain" }, "The agent continues with your answer."));
+          el("div", { class: "explain" }, "Your answer is recorded. The controller will pass it to the agent."));
         if (onDone) onDone();
       } catch (e) { status.textContent = e.message; send.disabled = false; }
     } }, "Send answer");
-    const box = el("div", { class: "ask", id: "q" },
+    const box = el("div", { class: "ask", id: `question-${q.question_id}` },
       el("div", { class: "q" }, q.question),
-      el("div", { class: "why" }, `The ${words(q.asked_by)} is paused until you answer. ${q.why ? "Why it matters: " + q.why : ""}`),
-      q.default ? el("div", { class: "why" }, `If nobody answers: ${q.default}`) : null,
+      el("div", {class:"why",id:`why-${q.question_id}`}, `${q.blocking ? `The ${words(q.asked_by)} is paused until you answer.` : "This question does not pause the run."} ${q.why ? "Why it matters: " + q.why : ""}`),
+      q.default ? el("div", { class: "why" }, `${q.blocking ? "Suggested answer" : "Default if unanswered"}: ${q.default}`) : null,
       q.options.length ? options : null, ta, send, status);
     return box;
   }
 
   // ------------------------------------------------------------------ the crew view: one run
   async function viewRun(runId) {
+    if (!location.hash.startsWith(`#/runs/${runId}`)) return;
     setNav("runs");
-    const r = await api(`/api/runs/${runId}`);
+    const r = await api(`/api/runs/${runId}`), s = r.summary || {}, b = r.budget || {}, n = Model.narrative(r);
     const frag = document.createDocumentFragment();
-    const stageName = TERMINAL[r.stage] || (STAGES.find(s => s[0] === r.stage) || [])[1] || r.stage;
-    const b = r.budget || {};
-    const started = r.created_at;
-    const s = r.summary || {};
-    frag.append(pageHead(r.title, r.outcome ? r.outcome.statement.split(". ")[0] + "." : null,
-      [statusTag(s), modeTag(s),
-       el("span", { class: `tag ${b.paused ? "warn" : ""}`, title: s.live_sessions ? `Excludes ${plural(s.live_sessions, "session")} still running` : null },
-         `${money(r.cost)}${b.budget_usd != null ? ` of ${money(b.budget_usd)}` : " spent"}${s.live_sessions && !s.terminal ? " so far" : ""}`),
-       !s.terminal && s.working_since ? el("span", { class: "tag" }, activityLine(s)) : null,
-       el("span", { class: "tag" }, dur(started, s.ended_at || (TERMINAL[r.stage] || r.stage === "completed" ? r.updated_at : null)))],
-      [el("a", { href: "#/runs" }, "Runs"), " / ", el("span", { class: "mono" }, r.run_id)]));
-
-    frag.append(card(null, lineStrip(r), null, "soft"));
-    if (s.terminal || s.status === "stopped") frag.append(resultCard(r));
-    else if ((r.run_records || []).length) frag.append(card("What came out so far", el("div", { class: "result" }, r.run_records.map(rec => runRecordBlock(r, rec))), "pull requests opened while the run continues"));
-
-    for (const check of r.browser_checks_pending || []) frag.append(card("Browser check in progress",
-      el("div", null, el("p", null, check.description), el("p", { class: "explain" }, `${check.persona} · ${check.environment.name} · waiting for browser observations and screenshots`))));
-    if ((r.visual_evidence || []).length) frag.append(visualEvidenceCard(r));
-
-    // roster
-    const roster = el("div", { class: "roster" });
-    for (const m of r.crew || []) {
-      const costTxt = m.cost_usd ? money(m.cost_usd) : (m.state === "working" && m.started_at ? dur(m.started_at) : "");
-      const st = m.state === "working" ? (m.title ? m.title.replace(`${r.run_id} `, "") : "Working") :
-        m.state === "done" ? `Done${m.sessions > 1 ? `, ${plural(m.sessions, "session")}` : ""}` :
-        m.state === "blocked" ? "Stopped at its budget" : crewAsleepText(m.role, r);
-      roster.append(el("div", { class: `m ${m.state}` }, crewFigure(m.role, m.state, "s"),
-        el("div", { class: "txt" }, el("div", { class: "nm" }, el("span", null, CREW_NAME[m.role] || words(m.role)), el("span", null, costTxt)),
-          el("span", { class: "st" }, st))));
+    frag.append(pageHead(r.title, null, [modeTag(s)], [el("a", {href:"#/runs"}, "Runs"), " / Overview"]));
+    const summary = el("section", {class:`run-summary ${n.tone}`, "aria-labelledby":"run-now"},
+      el("div", {class:"summary-heading"}, el("div", null, el("span", {class:"eyebrow"}, "Right now"), el("h2", {id:"run-now"}, n.title),n.sessions.length ? el("p",{class:"session-summary"},`${[...new Set(n.sessions.map(x=>x.name))].join(" · ")} · ${plural(n.sessions.length,"open session")}`) : null), statusTag(s)),
+      el("div", {class:"summary-reason"}, el("span", {class:"eyebrow"}, n.eventKind === "session.started" ? "Latest recorded change" : "Why this state"), longText(n.reason),
+        n.at ? el("time", {class:"muted", datetime:n.at}, `Recorded ${ago(n.at)} · ${clock(n.at)}`) : null),
+      el("p", {class:"summary-next"}, s.status === "running" && !r.questions.length && !r.gates.length ? `No action needed. ${n.next}` : n.next),
+      el("div", {class:"run-facts"},
+        el("span", null, el("b", null, money(r.cost)), b.budget_usd != null ? ` of ${money(b.budget_usd)} budget` : " recorded spend",
+          hint("About recorded spend", "Spend includes finished sessions. Sessions still open are charged when they finish; this is not a live meter.")),
+        n.sessions.length ? el("span", null, `${plural(n.sessions.length,"open session")} excluded from spend`) : null,
+        el("span", null, `${s.ended_at ? "Duration" : "Started"}: ${s.ended_at ? dur(r.created_at,s.ended_at) : ago(r.created_at)}`)));
+    frag.append(summary, lineStrip(r));
+    const activity = el("div", {class:"stack"});
+    const sessions = el("div", {class:"session-list"});
+    const consoleUrl = sid => state.config?.console_session_url?.replace("SESSION_ID", sid);
+    for (const m of n.sessions) {
+      const item = (r.work_items || []).find(w => w.work_item_id === m.work_item_id || (m.spec_id && w.spec_id === m.spec_id));
+      const input = (r.questions || []).some(q => q.blocking && q.asked_by === m.role);
+      sessions.append(el("article", {class:"session-row"}, crewFigure(m.role,input ? "still" : "working","s"),
+        el("div", {class:"session-copy"}, el("div", {class:"session-title"}, el("h3",null,m.name), el("span",{class:`tag ${input ? "gate" : "crew"}`},input ? "Input requested" : "Session open")),
+          el("p",null,m.title || CREW_DOES[m.role] || "Agent session"), item ? el("p",{class:"muted"},item.title || item.work_item_id) : null,
+          el("div",{class:"session-meta"}, el("time",{datetime:m.since},`Started ${ago(m.since)}`),
+            consoleUrl(m.id) ? el("a",{href:consoleUrl(m.id),target:"_blank",rel:"noopener","aria-label":`Open ${m.name} session: ${m.title || m.id}`},"Inspect session ↗") : null))));
     }
-    const consoleUrl = sid => state.config && state.config.console_session_url ? state.config.console_session_url.replace("SESSION_ID", sid) : null;
-    const liveMember = (r.crew || []).find(m => m.state === "working" && m.session_id);
-    const rosterCard = card("The crew", el("div", null, roster,
-      el("p", { class: "explain", style: "margin-top:10px;font-size:12.5px" }, liveMember && consoleUrl(liveMember.session_id) ? [el("a", { href: consoleUrl(liveMember.session_id), target: "_blank", rel: "noopener" }, "Open the live session in the Anthropic Console.")] : null)));
-
-    // the story so far
-    const story = el("div", { class: "story" });
-    const entries = storyEntries(r).reverse();
-    for (const e of entries) story.append(el("div", { class: "e" }, el("time", { datetime: e.at, title: e.at }, clock(e.at)),
-      el("div", { class: "rail" }, el("i", { class: e.who }), el("b")),
-      el("div", { class: "body" }, el("div", { class: "t" }, el("span", null, e.title), el("span", { class: `who ${e.who}` }, e.whoLabel)), e.body ? el("div", { class: "d" }, e.body) : null)));
-    const storyCard = card("The story so far", entries.length ? story : el("p", { class: "explain" }, "Nothing has happened yet."), "newest first");
-
-    // your turn
-    const onCard = g => g.kind === "budget" && b.paused && b.pause;
-    const gates = r.gates.filter(g => !g.recorded && !onCard(g)), recorded = r.gates.filter(g => g.recorded && !onCard(g));
-    const turn = el("div", { class: "turn" });
+    const roster = el("div", {class:"role-list"}, (r.crew || []).map(m => el("div", null,
+      el("b",null,CREW_NAME[m.role] || words(m.role)), el("span",{class:"muted"},
+        n.sessions.some(x => x.role === m.role) ? `${plural(n.sessions.filter(x => x.role === m.role).length,"open session")}` : m.sessions ? `${plural(m.sessions,"session")} recorded · ${money(m.cost_usd)}` : crewAsleepText(m.role,r)))));
+    activity.append(card("Agents", el("div",null,
+      n.sessions.length ? sessions : el("p",{class:"muted"},s.status === "stopped" ? "No agent activity is confirmed while the controller is stopped." : "No open agent sessions recorded."),
+      disclosure("all-roles", "All roles and recorded sessions",roster)), `${plural(n.sessions.length,"open session")}`));
+    const gates = (r.gates || []).filter(g => !g.recorded && !(g.kind === "budget" && b.paused && b.pause));
+    const recorded = (r.gates || []).filter(g => g.recorded);
     const waiting = gates.length + r.questions.length + (b.paused ? 1 : 0);
-    turn.append(el("div", { class: "dot" }, el("i", { class: waiting ? "on" : "" }), el("h2", { style: "font-size:17px" }, "Your turn")));
-    if (b.paused && b.pause) turn.append(budgetCard(r));
-    if (waiting) {
-      for (const q of r.questions) turn.append(askBlock(q, () => setTimeout(() => viewRun(runId), 1500)));
-      for (const g of gates) turn.append(el("div", { class: "card call", style: "padding:12px" },
-        el("div", { style: "font-size:12px;font-weight:700;color:var(--call-text)" }, `Your call since ${clock(g.opened_at)}`),
-        el("div", { style: "font-weight:700;font-size:15px;margin:4px 0" }, GATE_NAME[g.kind] || g.kind),
-        el("div", { class: "explain" }, (g.summary || "").slice(0, 220)),
-        el("a", { class: "btn call", href: `#/gates/${g.gate_id}`, style: "margin-top:10px" }, "Review and decide")));
-    } else if (s.status !== "stopped") {
-      turn.append(el("p", { style: "margin:0;font-size:15px" }, r.stage === "completed" ? "Nothing waiting on you here. The pull request is on the code host." : TERMINAL[r.stage] ? `${stageName}. ${s.headline || "Nothing more happens in this run."}` : "Nothing waiting on you."));
+    const turn = el("div", {class:"turn",id:"run-actions"});
+    if (b.paused && b.pause) turn.append(...budgetCard(r).querySelector(".card-body").childNodes);
+    for (const q of r.questions) turn.append(askBlock(q, () => setTimeout(() => { if(location.hash.includes(runId)) viewRun(runId); },1500)));
+    for (const g of gates) turn.append(el("div",{class:"decision-request"},
+      el("h3",null,GATE_NAME[g.kind] || words(g.kind)), longText(g.summary || "Review the proposed work before it continues.",180),
+      el("a",{class:"btn call",href:`#/gates/${g.gate_id}`},"Review and decide")));
+    for (const g of recorded) turn.append(el("p",{class:"notice info"},`${DECISION_LABEL[g.recorded.decision] || g.recorded.decision} recorded. `,
+      s.status === "stopped" ? "The controller must restart before it can apply this decision." : "Waiting for the controller to apply it. ",el("a",{href:`#/gates/${g.gate_id}`},"View decision")));
+    if (s.status === "stopped") turn.append(el("p",null,"A stopped controller cannot apply decisions or start new sessions. Check its logs in Settings."),el("a",{class:"btn",href:"#/settings"},"Open diagnostics"));
+    else if (!waiting && !recorded.length) turn.append(el("p",null,s.terminal ? n.next : "No action needed right now."),!s.terminal ? el("p",{class:"muted"},n.next) : null);
+    if (r.resumable && r.resuming) turn.append(el("p",{class:"notice info"},"Resuming from saved work. Waiting for the controller to report progress."));
+    else if (r.resumable && !b.paused) turn.append(resumeBox(r,runId));
+    if (r.watch && (r.watch.pending.length || r.watch.heartbeat)) turn.append(watchBox(r,runId));
+    const actions = card(waiting ? "Needs your attention" : "Next action",turn,null,waiting ? "call action-card" : "action-card");
+    const entries = storyEntries(r).reverse();
+    const entryNode = e => el("li", {class:"activity-entry"}, el("div",{class:"activity-head"},el("b",null,e.title),el("time",{datetime:e.at},`${ago(e.at)} · ${clock(e.at)}`)),
+      el("span",{class:"muted"},e.whoLabel),e.body ? longText(e.body,180) : null);
+    activity.append(card("Recent activity",el("div",null,el("ol",{class:"activity-list"},entries.slice(0,4).map(entryNode)),
+      entries.length > 4 ? disclosure("earlier-activity",`Earlier activity (${entries.length-4})`,el("ol",{class:"activity-list"},entries.slice(4).map(entryNode))) : null),"Newest first"));
+    // DOM order is the reading order: actions come before secondary activity on a small screen.
+    const showAction = waiting || recorded.length || s.status === "stopped" || r.resumable || (r.watch && (r.watch.pending.length || r.watch.heartbeat));
+    frag.append(el("div",{class:`run-layout${showAction ? "" : " no-action"}`},showAction ? el("aside",{class:"run-action-column"},actions) : null,activity));
+    if (s.terminal) frag.append(resultCard(r));
+    else if ((r.run_records || []).length) frag.append(card("What came out so far", el("div", {class:"result"}, r.run_records.map(rec => runRecordBlock(r,rec))), "Pull requests opened while the run continues"));
+    if (r.work_items.length) {
+      const items = el("div",{class:"work-list"},r.work_items.map(w => el("article",{class:"work-row"},
+        el("div",null,el("h3",null,w.title || w.work_item_id),el("p",{class:"muted"},w.depends_on.length ? `After: ${w.depends_on.map(id => r.work_items.find(i=>i.work_item_id===id)?.title || id).join(", ")}` : "No dependencies")),
+        el("span",{class:"tag"},ITEM_STAGE[w.stage] || words(w.stage)),w.cr_url ? el("a",{href:w.cr_url,target:"_blank",rel:"noopener"},`Pull request #${w.cr_id} ↗`) : null, w.stage === "deployed_dev" && w.dev_environment_url ? el("a",{href:w.dev_environment_url,target:"_blank",rel:"noopener"},"Verified dev ↗") : null)));
+      frag.append(card("Work items",items,plural(r.work_items.length,"item")));
     }
-    if (s.status === "stopped") turn.append(el("div", { class: "notice bad", style: "margin:0" }, el("b", null, "The controller stopped without recording why. "),
-      "Nothing moves this run, and a decision on its open gate is not picked up, until a controller drives it again."));
-    for (const g of recorded) turn.append(el("div", { class: "notice ok", style: "margin:0" }, el("b", null, `${DECISION_LABEL[g.recorded.decision] || g.recorded.decision} recorded on ${GATE_SHORT[g.kind]}. `), "The run picks it up within seconds. ", el("a", { href: `#/gates/${g.gate_id}` }, "View")));
-    if (!TERMINAL[r.stage]) {
-      const up = el("div", { class: "up" }, el("span", { class: "explain", style: "font-size:12.5px" }, "Coming up for humans"));
-      const pendingGate = r.stage === "decomposing" || r.stage === "intake" ? "approve the plan (Gate 1)" : r.stage === "specifying" ? "approve the contracts (Gate 2)" : null;
-      if (pendingGate) up.append(el("span", null, el("b", { class: "po" }, "Product owner"), `: ${pendingGate}, when the crew is done`));
-      if (!r.design_only) up.append(el("span", null, el("b", { class: "eng" }, "Engineer"), r.stage === "completed" ? ": review and merge the pull request" : ": review the pull request, after Build and Review"));
-      if (r.watch && r.watch.pending && r.watch.pending.length) up.append(el("span", null, "Waiting for merge or deployment."));
-      turn.append(up);
-    }
-    if (r.resumable && r.resuming) turn.append(el("div", { class: "notice info", style: "margin:0" }, el("b", null, "Resuming. "), "The orchestrator is re-checking the branch; this page follows it."));
-    else if (r.resumable && !b.paused) turn.append(resumeBox(r, runId));
-    if (r.watch && (r.watch.pending.length || r.watch.heartbeat)) turn.append(watchBox(r, runId));
-    const turnCard = card(null, turn, null, waiting ? "call" : "");
-
-    // how this run is tuned (read-only here; the next run is tuned on the Start screen)
-    const p = { ...(r.policy || {}), ...(b.budget_usd != null ? { run_budget_usd: b.budget_usd } : {}) };
-    const tune = el("div", { class: "tune" });
-    const caps = p.stage_budget_usd || {};
-    const security = securityReview(p, r);
-    const summary = [p.run_budget_usd ? `$${p.run_budget_usd} cap` : null, p.preview_mode === "local" ? "local previews" : p.preview_mode ? `${p.preview_mode} previews` : null,
-      p.reviewer_passes ? `${p.reviewer_passes} reviewers${security.short}` : null, p.review_max_rounds ? `${p.review_max_rounds} review rounds` : null].filter(Boolean).join(", ");
-    const details = el("div", { class: "tier", hidden: true },
-      el("dl", null,
-        tunePair("Run budget", p.run_budget_usd ? `$${p.run_budget_usd}` : "from the outcome"), tunePair("Preview", p.preview_mode || "platform"),
-        tunePair("Reviewer passes", p.reviewer_passes ?? "default"), tunePair("Review rounds", p.review_max_rounds ?? "default"),
-        tunePair("Security reviewer", security.long),
-        tunePair("Grader iterations", p.outcome_max_iterations ?? "default"), tunePair("Cap per implementer", caps.implement ? `$${caps.implement}` : "default"),
-        tunePair("Cap per judge", caps.judge ? `$${caps.judge}` : "default"), tunePair("Cap per review", caps.review ? `$${caps.review}` : "default")),
-      el("p", { class: "explain", style: "margin:10px 0 0;font-size:12.5px" }, "Settings are fixed for a run once it starts. ", el("a", { href: "#/start" }, "Tune the next run on the Start screen.")));
-    const toggle = el("button", { class: "btn sm", type: "button", onclick: () => { details.hidden = !details.hidden; toggle.textContent = details.hidden ? "Show all" : "Hide"; } }, "Show all");
-    tune.append(el("div", { class: "row" }, el("h2", { style: "font-size:16px" }, "How this run is tuned"), toggle), el("p", { class: "explain", style: "margin:0" }, summary || "Defaults."), details);
-    const tuneCard = card(null, tune);
-
-    frag.append(el("div", { class: "floor" }, rosterCard, storyCard, el("aside", { class: "stack" }, turnCard, tuneCard)));
-
-    // the details a reviewer or operator sometimes needs, folded away
-    const items = el("table", null, el("tr", null, el("th", null, "Work item"), el("th", null, "Stage"), el("th", null, "Depends on"), el("th", null, "Pull request")));
-    for (const w of r.work_items) items.append(el("tr", null,
-      el("td", null, el("div", null, w.title || w.work_item_id), el("div", { class: "explain mono" }, w.work_item_id)),
-      el("td", null, el("span", { class: "tag" }, ITEM_STAGE[w.stage] || words(w.stage))),
-      el("td", { class: "explain" }, (w.depends_on || []).join(", ") || "none"),
-      el("td", null, w.cr_url ? el("a", { href: w.cr_url, target: "_blank", rel: "noopener" }, `#${w.cr_id}`) : (w.branch ? el("span", { class: "explain mono" }, w.branch) : el("span", { class: "explain" }, "not yet")),
-        w.stage === "deployed_dev" && w.dev_environment_url ? [" · ", el("a", { href: w.dev_environment_url, target: "_blank", rel: "noopener" }, "dev")] : null,
-        w.merge_sha ? [" ", el("span", { class: "explain mono" }, `merged as ${w.merge_sha.slice(0, 10)}`)] : null)));
-    const tl = el("ol", { class: "timeline" });
-    for (const ev of [...r.events].reverse().slice(0, 120)) {
-      const [who, what] = describe(ev);
-      const link = what.session_id && consoleUrl(what.session_id) ? el("a", { href: consoleUrl(what.session_id), target: "_blank", rel: "noopener" }, " open in the Anthropic Console") : null;
-      tl.append(el("li", null, el("time", { datetime: ev.at, title: ev.at }, ev.at ? ev.at.slice(11, 19) : ""),
-        el("span", null, el("span", { class: who === "human" ? "human" : "" }, what.main), what.detail ? el("span", { class: "detail" }, " ", what.detail) : null, link)));
-    }
-    const files = el("table", null, el("tr", null, el("th", null, "Stage"), el("th", null, "File"), el("th", null, "Fingerprint")));
-    for (const a of r.artifacts) files.append(el("tr", null, el("td", { class: "explain" }, a.stage),
-      el("td", null, el("a", { href: `/api/artifacts/${r.run_id}/${a.stage}/${a.name}`, target: "_blank", rel: "noopener" }, a.name)),
-      el("td", { class: "explain mono" }, a.sha256 ? a.sha256.slice(0, 12) : "")));
-    const more = el("details", { style: "margin-top:16px" }, el("summary", { class: "explain", style: "cursor:pointer;font-weight:700" }, `Work items (${r.work_items.length}), every event (${r.events.length}) and every file (${r.artifacts.length})`),
-      el("div", { class: "stack", style: "margin-top:12px" }, card("Work items", r.work_items.length ? items : el("p", { class: "explain" }, "Work items appear once the decomposition exists.")),
-        el("div", { class: "grid-2" }, card("Every event", tl, "newest first"), card("Files produced", r.artifacts.length ? files : el("p", { class: "explain" }, "None yet.")))));
-    frag.append(more);
-
-    $main.replaceChildren(frag);
-    if (location.hash.endsWith("#q")) { const q = document.getElementById("q"); if (q) q.scrollIntoView(); }
-    const recordAt = location.hash.match(/#record-([^#?]+)$/);
-    if (recordAt) { const rec = document.getElementById(`record-${decodeURIComponent(recordAt[1])}`); if (rec) { rec.open = true; setTimeout(() => rec.scrollIntoView(), 0); } }
+    for (const check of r.browser_checks_pending || []) frag.append(card("Browser check in progress",el("div",null,el("p",null,check.description),el("p",{class:"muted"},`${check.persona} · ${check.environment.name} · waiting for observations`))));
+    if ((r.visual_evidence || []).length) frag.append(visualEvidenceCard(r));
+    const policy = {...(r.policy || {}),...(b.budget_usd != null ? {run_budget_usd:b.budget_usd} : {})};
+    const caps = policy.stage_budget_usd || {};
+    const settings = el("div",null,el("dl",{class:"kv"},
+      tunePair("Run budget",money(policy.run_budget_usd) || "Default"),tunePair("Verification",policy.preview_mode || "platform"),
+      tunePair("Reviewer passes",policy.reviewer_passes ?? "Default"),tunePair("Review rounds",policy.review_max_rounds ?? "Default"),
+      tunePair("Security review",securityReview(policy,r).long),tunePair("Grader iterations",policy.outcome_max_iterations ?? "Default"),
+      tunePair("Implementer cap",money(caps.implement) || "Default"),tunePair("Judge cap",money(caps.judge) || "Default"),tunePair("Review cap",money(caps.review) || "Default")),
+      disclosure("raw-policy","Recorded policy",el("pre",{class:"policy-json"},JSON.stringify(policy,null,2))));
+    const eventList = () => el("ol",{class:"timeline"},[...r.events].reverse().map(ev => { const [,what] = describe(ev); return el("li",null,el("time",{datetime:ev.at},clock(ev.at)),el("div",null,what.main,what.detail ? el("p",{class:"muted"},what.detail) : null)); }));
+    const files = () => el("ul",{class:"file-list"},r.artifacts.map(a=>el("li",null,el("a",{href:`/api/artifacts/${r.run_id}/${a.stage}/${a.name}`,target:"_blank",rel:"noopener"},`${a.stage}/${a.name}`),el("code",null,a.sha256 || "No fingerprint recorded"))));
+    frag.append(el("div",{class:"run-details"},
+      disclosure("run-brief","Outcome and run settings",el("div",null,r.outcome ? el("p",{class:"prose"},r.outcome.statement) : null,settings,el("p",{class:"muted mono"},r.run_id))),
+      disclosure("run-events",`Event log (${r.events.length})`,eventList),
+      disclosure("run-files",`Produced files (${r.artifacts.length})`,files)));
+    const previous = state.runAnnouncement;
+    const announcement = `${n.title}. ${n.reason}. ${plural(n.sessions.length,"open session")}.`;
+    showPage(frag);
+    if (previous?.id === runId && previous.text !== announcement) document.getElementById("live-status").textContent = announcement;
+    state.runAnnouncement = {id:runId,text:announcement};
     state.lastKey.run = runKey(r);
-    // A parked run stops polling; one paused at its budget keeps polling so the page follows the resume it started.
-    if (!(TERMINAL[r.stage] || r.stage === "completed") || r.stage === "paused_budget") startPoll(refreshWhenChanged("run", async () => runKey(await api(`/api/runs/${runId}`)), () => viewRun(runId)), 4000);
-    else stopPoll();
+    // Completed runs can still receive merge/deploy evidence and failed runs can be resumed elsewhere.
+    startPoll(refreshWhenChanged("run",async()=>runKey(await api(`/api/runs/${runId}`)),()=>viewRun(runId)), s.terminal ? 12000 : 4000);
   }
   function visualEvidenceCard(r) {
     const body = el("div", { class: "stack" });
@@ -737,7 +701,8 @@
     const past = STAGES.findIndex(s => s[0] === r.stage);
     const needs = { decomposer: 1, spec_writer: 3, spec_judge: 3, implementer: 5, reviewer: 5, security_reviewer: 5, merge_judge: 5, integrator: 5 }[role] || 0;
     if (role === "security_reviewer" && !securityReview({ ...(r.policy || {}) }, r).on) return (r.policy || {}).security_review === false ? "Off for this run" : "Not deployed: no security pass";
-    if (TERMINAL[r.stage]) return "Not needed";
+    if (TERMINAL[r.stage] || r.stage === "completed") return "No session recorded";
+    if (past > needs) return "No session recorded";
     if (r.design_only && needs >= 5) return "Not in a design run";
     const waits = { decomposer: "Waits for the outcome", spec_writer: "Waits for the plan", spec_judge: "Waits for the contracts", implementer: "Waits for the approved contract",
       reviewer: "Waits for a branch", security_reviewer: "Waits for a branch", merge_judge: "Waits for the reviews", integrator: "Waits for the verdict" };
@@ -745,7 +710,7 @@
   }
   function runKey(r) {
     const hb = r.watch && r.watch.heartbeat;
-    return JSON.stringify([r.updated_at, r.stage, r.status, r.gates.map(g => [g.gate_id, !!g.recorded]), r.questions.map(q => q.question_id),
+    return JSON.stringify([Math.floor(Date.now()/60000), r.updated_at, r.stage, r.status, quietRun(r.summary || {}), r.gates.map(g => [g.gate_id, !!g.recorded]), r.questions.map(q => q.question_id),
       hb ? [hb.alive, hb.last_poll_at] : null, (r.browser_checks_pending || []).map(c => c.id), (r.crew || []).map(c => c.state), r.resuming || null]);
   }
   function storyEntries(r) {
@@ -757,12 +722,12 @@
       switch (ev.kind) {
         case "run.created": E("po", "Product owner", "Outcome written", title); break;
         case "repository.created": E("po", "Product owner", "Repository created", `${p.url}${p.workflow_seeded === false ? ". The preview workflow could not be seeded (token scope); local previews do not need it." : ""}`); break;
-        case "session.started": { const role = p.agent_key; if (!role || role === "codebase_researcher") break;
-          const what = { decomposer: "Decomposing started", spec_writer: "Writing the contract", spec_judge: "Judging the contract", implementer: "Building started",
+        case "session.started": { const role = p.agent_key; if (!role) break;
+          const what = { codebase_researcher:"Research started", decomposer: "Decomposing started", spec_writer: "Writing the contract", spec_judge: "Judging the contract", implementer: "Building started",
             reviewer: "Reviewing the branch", security_reviewer: "Security review started", merge_judge: "Deciding merge readiness", integrator: "Opening the pull request" }[role] || words(role);
           E("crew", CREW_NAME[role] || words(role), what, p.title ? p.title.replace(`${r.run_id} `, "") : ""); break; }
-        case "gate.opened": E("call", "Your call", `${GATE_SHORT[p.kind] || p.kind} opened`, (p.summary || "").slice(0, 260)); break;
-        case "gate.decided": E("po", "Product owner", `${GATE_SHORT[p.kind] || p.kind}: ${(DECISION_LABEL[p.decision] || p.decision).toLowerCase()}`, p.comments ? `“${p.comments.slice(0, 240)}${p.comments.length > 240 ? "…" : ""}”` : "No notes."); break;
+        case "gate.opened": E("call", "Your call", `${GATE_SHORT[p.kind] || p.kind} opened`, p.summary || ""); break;
+        case "gate.decided": E("po", "Product owner", `${GATE_SHORT[p.kind] || p.kind}: ${(DECISION_LABEL[p.decision] || p.decision).toLowerCase()}`, p.comments ? `“${p.comments}”` : "No notes."); break;
         case "question.asked": E("call", "Your call", `The ${words(p.asked_by)} asked a question`, p.question); break;
         case "question.answered": E("po", "Product owner", "Question answered", p.answer); break;
         case "judge.verdict": E("crew", "Spec judge", `Spec ${p.result === "pass" ? "passed" : "sent back"} on round ${p.round}`, p.blocking ? `${plural(p.blocking, "blocking issue")}.` : ""); break;
@@ -846,10 +811,8 @@
     const needed = Number(p.needed_usd || 0);
     const recorded = b.decision;
     const box = el("div", { class: "stack" });
-    box.append(glance([[money(p.spent_usd), `spent across ${plural(p.sessions_finished || b.sessions || 0, "session")}`],
-      [money(p.budget_usd), "the run's budget", "warn"], [money(next.cap_usd), `next: ${next.label || next.stage} (${plural(next.sessions || 1, "session")}), at most`],
-      [money(needed), "needed to continue", "bad"]]));
-    box.append(el("p", { class: "explain" }, "Every agent session carries its own hard cap, so the check is spent plus the next step's caps: the run can never go past the budget, and a step is refused before it starts rather than cut off midway. The caps are conservative; a step usually costs less than its cap."));
+    box.append(el("dl",{class:"budget-facts"},el("dt",null,"Recorded spend"),el("dd",null,money(p.spent_usd)),el("dt",null,"Current budget"),el("dd",null,money(p.budget_usd)),el("dt",null,`Next: ${next.label || next.stage}`),el("dd",null,`Up to ${money(next.cap_usd)}`),el("dt",null,"Minimum total budget"),el("dd",null,money(needed))));
+    box.append(disclosure("budget-explanation","How this amount is calculated",el("p",{class:"prose"},`Recorded spend plus the caps for ${plural(next.sessions || 1,"next session")}. Factory pauses before starting work that could exceed the total. Actual session cost may be lower than its cap.`)));
     const status = el("div");
     const err = el("div", { class: "err", role: "alert" });
     async function go(body, btn, label) {
@@ -870,7 +833,7 @@
         "The orchestrator is not running while the run is paused; apply the decision to continue."),
         el("div", { class: "actions" }, apply), status, err);
     } else {
-      const input = el("input", { type: "number", min: String(Math.ceil(needed)), step: "1", value: String(Math.ceil(needed)), "aria-label": "New budget in USD", style: "max-width:140px" });
+      const input = el("input", { id:"run-budget-input", type: "number", min: String(Math.ceil(needed)), step: "1", value: String(Math.ceil(needed)), "aria-label": "New budget in USD", style: "max-width:140px" });
       const raise = el("button", { class: "btn primary", type: "button", dataset: { label: "Raise the budget and continue" } }, "Raise the budget and continue");
       const close = el("button", { class: "btn danger", type: "button", dataset: { label: "Close the run" } }, "Close the run");
       raise.onclick = () => {
@@ -1095,9 +1058,17 @@
 
     // summary + start
     const summary = el("ul", { class: "summary-list" });
-    const notice = el("div");
+    const notice = el("div",{role:"status"});
+    const prerequisites = el("p",{class:"muted",id:"start-prerequisites"});
     const syncSummary = () => {
       syncBinding();
+      const needsOutcome = !outcome;
+      const validBudget = Number.isFinite(Number(budget.value)) && Number(budget.value) >= 1;
+      const hasRepo = !!(repoNew.checked ? newName.value.trim() : repoUrl.value.trim());
+      const appReady = !(app || bound) || ["ready","ready_limited"].includes((app || bound).status);
+      startBtn.disabled = !cfg.can_run_live || needsOutcome || !validBudget || !hasRepo || !appReady;
+      designBtn.disabled = !cfg.can_run_design || needsOutcome || !validBudget;
+      prerequisites.textContent = needsOutcome ? "Choose or create an outcome to continue." : !validBudget ? "Enter a budget of at least $1." : !hasRepo ? "Choose a repository for a full run. Design-only can continue without one." : !appReady ? "Verify this app’s setup before a full run. Design-only is available." : !cfg.can_run_live ? "Connect the required services in Settings before a full run." : "A full run uses paid agent sessions and stops for your plan and contract approvals.";
       const repo = repoNew.checked ? (newName.value.trim() || "a new private repository") : (repoUrl.value.trim() || "the outcome's repository");
       summary.replaceChildren(
         el("li", null, el("b", null, outcome ? outcome.title : "No outcome selected")),
@@ -1132,15 +1103,15 @@
         else { notice.append(el("div", { class: "notice ok" }, el("b", null, "Run started. "), "The crew is waking up; the run appears under Runs within a minute.")); setTimeout(() => { location.hash = "#/runs"; }, 4000); }
       } catch (e) { notice.append(el("div", { class: "notice bad" }, e.message)); btn.disabled = false; }
     }
-    const startBtn = el("button", { class: "btn call", type: "button", style: "min-height:48px;font-size:16px", disabled: !cfg.can_run_live, title: cfg.can_run_live ? "" : "Needs the code host configured; see Settings", onclick: ev => go("live", ev.currentTarget) }, "Start the run");
-    const designBtn = el("button", { class: "btn", type: "button", disabled: !cfg.can_run_design, title: cfg.can_run_design ? "" : "Needs the crew and API key; see Settings", onclick: ev => go("design", ev.currentTarget) }, "Design only: stop after Gate 2");
+    const startBtn = el("button", { class: "btn primary", "aria-describedby":"start-prerequisites", type: "button", style: "min-height:48px;font-size:16px", disabled: !cfg.can_run_live, title: cfg.can_run_live ? "" : "Needs the code host configured; see Settings", onclick: ev => go("live", ev.currentTarget) }, "Start the run");
+    const designBtn = el("button", { class: "btn", "aria-describedby":"start-prerequisites", type: "button", disabled: !cfg.can_run_design, title: cfg.can_run_design ? "" : "Needs the crew and API key; see Settings", onclick: ev => go("design", ev.currentTarget) }, "Design only");
     const aside = el("aside", null,
-      card("This run", el("div", { class: "stack" }, summary, el("div", { class: "btn-col" }, startBtn, designBtn), notice,
-        el("p", { class: "explain", style: "margin:0;font-size:12.5px" }, "Design only stops after contract approval."),
+      card("This run", el("div", { class: "stack" }, summary, prerequisites, el("div", { class: "btn-col" }, startBtn, designBtn), notice,
+        el("p", { class: "explain", style: "margin:0;font-size:12.5px" }, "Design only uses paid planning and contract sessions. It stops before implementation."),
         (!cfg.can_run_live || !cfg.can_run_design) ? el("p", { class: "explain", style: "margin:0;font-size:12.5px" }, el("a", { href: "#/settings" }, "What is missing to run")) : null)));
 
-    frag.append(el("div", { class: "start" }, el("main", null, whatCard, whereCard, guardsCard), aside));
-    $main.replaceChildren(frag);
+    frag.append(el("div", { class: "start" }, el("div", {class:"start-main"}, whatCard, whereCard, guardsCard), aside));
+    showPage(frag);
     stopPoll();
     if (outcomeId) await pickOutcome(outcomeId); else { syncRepo(); syncWho(); syncSummary(); }
     syncWho();
@@ -1162,7 +1133,7 @@
     const notes = new Map();
     const picks = new Map();
     const frag = document.createDocumentFragment();
-    frag.append(pageHead(rec.kind === "budget" && !rv.budget ? "Session limit: continue or stop" : GATE_NAME[rec.kind] || rec.kind, g.run_title, rec.kind === "budget" ? null : [el("a", { class: "btn", href: `/gates/${gateId}/page`, target: "_blank", rel: "noopener" }, "Open as a page")],
+    frag.append(pageHead(rec.kind === "budget" && !rv.budget ? "Session limit: continue or stop" : GATE_NAME[rec.kind] || rec.kind, g.run_title, [el("button",{class:"btn",type:"button",onclick:()=>{const panel=document.getElementById("gate-decision");panel?.scrollIntoView({block:"start"});panel?.focus({preventScroll:true});}},"Go to decision"),rec.kind === "budget" ? null : el("a", { class: "btn", href: `/gates/${gateId}/page`, target: "_blank", rel: "noopener" }, "Open as a page")],
       [el("a", { href: "#/inbox" }, "Board"), " / ", el("a", { href: `#/runs/${g.run_id}` }, g.run_title), " / opened ", ago(rec.opened_at)]));
 
     const doc = el("div", { class: "stack" });
@@ -1178,8 +1149,9 @@
     else doc.append(card("Summary", el("div", { class: "reading" }, rec.summary)));
 
     const decide = buildDecide(g, notes, picks);
+    decide.node.id = "gate-decision"; decide.node.tabIndex = -1;
     frag.append(el("div", { class: "review" }, doc, decide.node));
-    $main.replaceChildren(frag);
+    showPage(frag);
     startPoll(async () => { try { decide.update(await api(`/api/gates/${gateId}`)); } catch (e) { /* keep */ } }, 4000);
   }
 
@@ -1194,7 +1166,7 @@
   }
   function summaryCard(label, text) {
     const body = el("div", { class: "text clamp" }, text);
-    const more = el("button", { class: "btn sm more", type: "button", onclick: () => { body.classList.toggle("clamp"); more.textContent = body.classList.contains("clamp") ? "Read the whole summary" : "Show less"; } }, "Read the whole summary");
+    const more = el("button", { class: "btn sm more", type: "button", "aria-expanded":"false", onclick: () => { body.classList.toggle("clamp"); more.setAttribute("aria-expanded",String(!body.classList.contains("clamp"))); more.textContent = body.classList.contains("clamp") ? "Read the whole summary" : "Show less"; } }, "Read the whole summary");
     const node = el("div", { class: "summary-card" }, el("h2", null, label), body, more);
     requestAnimationFrame(() => { if (body.scrollHeight <= body.clientHeight + 4) { body.classList.remove("clamp"); more.remove(); } });
     return node;
@@ -1449,23 +1421,26 @@
       type: "button", dataset: { decision: opt }, onclick: () => arm(opt) }, DECISION_LABEL[opt] || opt));
 
     function arm(opt) {
+      armedOption = opt;
       error.textContent = "";
       const comments = composeComments();
+      const approvedSubset = subset();
       if (opt === "request_changes" && !comments) { error.textContent = "Say what should change first."; return; }
       if (isBudget && opt === "approve" && !(Number(budgetInput.value) >= needed)) { error.textContent = `The next step needs at least ${money(needed)}.`; return; }
       buttons.forEach(b => b.hidden = true);
-      const go = el("button", { class: `btn block ${opt === "reject" ? "danger" : opt === "request_changes" ? "changes" : "approve"}`, type: "button", disabled: true, onclick: () => decide(opt, comments) }, `Yes, ${(DECISION_LABEL[opt] || opt).toLowerCase()}`);
+      const go = el("button", { class: `btn block ${opt === "reject" ? "danger" : opt === "request_changes" ? "changes" : "approve"}`, type: "button", disabled: true, onclick: () => decide(opt, comments, approvedSubset) }, `Yes, ${(DECISION_LABEL[opt] || opt).toLowerCase()}`);
       confirmBox.replaceChildren(el("div", { class: "what" }, `${DECISION_LABEL[opt] || opt}?`),
         el("div", { class: "explain" }, consequences[opt] || ""),
         el("div", { class: "btn-col", style: "margin-top:10px" }, go, el("button", { class: "btn block", type: "button", onclick: disarm }, "Cancel")));
       confirmBox.hidden = false;
-      setTimeout(() => { go.disabled = false; go.focus(); }, 600);
+      setTimeout(() => { if (go.isConnected && !confirmBox.hidden) { go.disabled = false; go.focus(); } }, 600);
     }
-    function disarm() { confirmBox.hidden = true; buttons.forEach(b => b.hidden = false); refresh(); }
-    async function decide(opt, comments) {
+    let armedOption = null;
+    function disarm() { confirmBox.hidden = true; buttons.forEach(b => b.hidden = false); refresh(); buttons.find(b => b.dataset.decision === armedOption)?.focus(); }
+    async function decide(opt, comments, approvedSubset) {
       confirmBox.querySelectorAll("button").forEach(b => b.disabled = true);
       try {
-        const r = await api(`/api/gates/${rec.gate_id}/decision`, { body: { decision: opt, comments, approved_subset: opt === "approve_subset" ? subset() : [], by: "console" } });
+        const r = await api(`/api/gates/${rec.gate_id}/decision`, { body: { decision: opt, comments, approved_subset: opt === "approve_subset" ? approvedSubset : [], by: "console" } });
         confirmBox.hidden = true;
         showRecorded({ ...r.recorded, decision: opt });
       } catch (e) { error.textContent = e.message; disarm(); }
@@ -1486,6 +1461,7 @@
     const form = el("div", null,
       isBudget ? el("div", { style: "margin-bottom:10px" }, el("label", { for: "decide-budget" }, "New budget in USD"), budgetInput) : null,
       el("label", { for: "decide-comment" }, "Your comment"), comment, counts,
+      el("p",{class:"muted"},"Add a comment to request changes. Every decision has a confirmation step."),
       confirmBox, el("div", { class: "btn-col", style: "margin-top:12px" }, buttons), error,
       rec.artifacts.length ? el("details", null, el("summary", null, "Artifacts tied to this decision"),
         el("ul", { class: "files" }, rec.artifacts.map(a => el("li", null, el("span", null, a.name), el("code", { title: a.sha256 }, a.sha256.slice(0, 10)))))) : null);
@@ -1515,7 +1491,7 @@
       }
       frag.append(card("Saved outcomes", list, plural(outs.length, "outcome")));
     }
-    $main.replaceChildren(frag);
+    showPage(frag);
     stopPoll();
   }
 
@@ -1699,7 +1675,7 @@
     const startLink = el("button", { class: "btn call", type: "button", onclick: async () => { const r = await save(); if (r) location.hash = `#/start?outcome=${savedId}${appQuery}`; } }, "Save and start a run");
     form.append(card("Save", el("div", null, notice, el("div", { class: "startbar" }, saveBtn, el("span", { class: "spacer" }), startLink))));
     frag.append(form);
-    $main.replaceChildren(frag);
+    showPage(frag);
     stopPoll();
   }
 
@@ -1756,7 +1732,7 @@
     frag.append(pageHead("Apps", "Repositories and their verified test setups.",
       [el("a", { class: "btn primary", href: "#/apps/new" }, "Add an app")]));
     const cloudBox = el("div", { role: "status", "aria-live": "polite" }, el("p", { class: "explain", style: "margin:0" }, "Reading the workspace's execution environments…"));
-    const cloudCard = card("Elsewhere in the workspace", cloudBox, "execution environments this Console does not hold");
+    const cloudCard = card("Workspace environments", cloudBox, "Shared across Consoles");
     // One row per app: where onboarding stands, the setup pull request, and its hosted environment once the workspace answers.
     const envCells = new Map();
     if (!apps.length) {
@@ -1764,7 +1740,7 @@
         el("div", null, "Add an existing GitHub repository, or describe a new app. An agent works out how to test it; you review before anything is verified or published."),
         el("a", { class: "btn primary", href: "#/apps/new" }, "Add an app"))));
     } else {
-      const tbl = el("table", null, el("tr", null, el("th", null, "App"), el("th", null, "Where it is"), el("th", null, "Hosted environment"), el("th", null, "Spend"), el("th", null, "Last activity")));
+      const tbl = el("table", null, el("tr", null, el("th", null, "App"), el("th", null, "Setup status"), el("th", null, "Hosted environment"), el("th", null, "Spend"), el("th", null, "Last activity")));
       for (const a of apps) {
         const envCell = el("td", { class: "explain" }, a.environment_id ? el("span", { class: "mono" }, a.environment_id) : "None until verified");
         envCells.set(a.app_id, envCell);
@@ -1774,10 +1750,10 @@
           el("td", null, appStatusTag(a), a.phase ? el("div", { class: "explain" }, a.phase) : null),
           envCell, el("td", null, appMoney(a)), el("td", { class: "explain" }, ago(a.updated_at))));
       }
-      frag.append(card("On this Console", tbl, plural(apps.length, "app")), cloudCard);
+      frag.append(card("Apps managed here", tbl, plural(apps.length, "app")), cloudCard);
     }
 
-    $main.replaceChildren(frag);
+    showPage(frag);
     const showLocal = local => {
       for (const [id, cell] of envCells) {
         const a = apps.find(x => x.app_id === id);
@@ -1787,7 +1763,7 @@
         const cell = envCells.get(x.local_app_id), e = x.environment;
         if (!cell) continue;
         cell.replaceChildren(/^https:\/\//.test(e.console_url || "") ? el("a", { class: "mono", href: e.console_url, target: "_blank", rel: "noopener", onclick: ev => ev.stopPropagation() }, e.name) : el("span", { class: "mono" }, e.name),
-          el("div", null, e.verified_at ? `Verified ${ago(e.verified_at)}` : `Created ${ago(e.created_at) || "just now"}`, e.in_use ? " · session running" : ""));
+          environmentFacts(e));
       }
     };
     api("/api/apps/environments").then(v => cloudEnvironments(cloudBox, v, showLocal))
@@ -1817,13 +1793,19 @@
   // Console or checkout onboarded it, plus what earlier attempts left behind.
   // Apps this Console holds are shown on their own rows above (showLocal); this list is the rest of the workspace, plus any
   // environment of a local app that could be archived.
+  function environmentFacts(e) {
+    return el("dl",{class:"environment-facts"},
+      el("dt",null,"Readiness"),el("dd",null,e.verified_at ? `Verified ${ago(e.verified_at)}` : "No verification recorded"),
+      el("dt",null,"Activity"),el("dd",null,e.in_use ? "Session running" : "No active session observed"),
+      el("dt",null,"Lifecycle"),el("dd",null,e.current ? "Current setup" : "Available in workspace"));
+  }
   function cloudEnvironments(box, v, showLocal) {
     const reload = async refresh => cloudEnvironments(box, await api(`/api/apps/environments${refresh ? "?refresh=true" : ""}`), showLocal);
     if (!v.configured) { box.replaceChildren(el("p", { class: "explain", style: "margin:0" }, v.error)); return; }
     const again = el("button", { class: "btn sm", type: "button" }, "Check again");
     again.onclick = async () => { again.disabled = true; try { await reload(true); } catch (e) { again.disabled = false; again.textContent = `Check again (${e.message})`; } };
     const parts = [el("p", { class: "explain", style: "margin:0 0 10px" },
-      "Each onboarded app runs its hosted checks in one execution environment in the Anthropic workspace (Claude Console, Environments). Every Console and checkout using this workspace sees the same apps. ",
+      "Shared hosted environments. ",
       v.checked_at ? `Checked ${ago(v.checked_at) || "just now"}. ` : "", again)];
     if (v.error) parts.push(el("div", { class: "notice bad" }, v.error));
     const all = v.apps || [];
@@ -1836,7 +1818,7 @@
         const here = a.local_app_id;
         const actions = [];
         if (!here && GITHUB_HTTPS.test(a.repository_url || "")) {
-          actions.push(el("button", { class: "btn sm", type: "button", onclick: () => { state.appPrefill = { url: a.repository_url, name: a.name }; location.hash = "#/apps/new"; } }, "Onboard on this Console"));
+          actions.push(el("button", { class: "btn sm", type: "button", onclick: () => { state.appPrefill = { url: a.repository_url, name: a.name }; location.hash = "#/apps/new"; } }, "Set up here"));
         }
         if (!e.current && !e.in_use) {
           actions.push(twoStep("Archive…", "Confirm: archive", async () => {
@@ -1849,15 +1831,14 @@
             el("div", { class: "explain mono" }, a.repository_url ? repoName(a.repository_url) : "repository not recorded")),
           el("td", null, /^https:\/\//.test(e.console_url || "") ? el("a", { class: "mono", href: e.console_url, target: "_blank", rel: "noopener" }, e.name) : el("span", { class: "mono" }, e.name),
             el("div", { class: "explain" }, `Created ${ago(e.created_at) || "just now"}`, a.leftover_count ? ` · ${plural(a.leftover_count, "older one")} below` : "")),
-          el("td", null, el("span", { class: `tag ${here ? "ok" : ""}` }, here ? "On this Console" : "Onboarded elsewhere"),
-            e.verified_at ? el("span", { class: "tag ok" }, `Verified ${ago(e.verified_at)}`) : null,
-            e.in_use ? el("span", { class: "tag crew" }, "Session running") : null),
+          el("td", null, environmentFacts(e),
+            disclosure(`environment-${e.id}`,"Management details",el("p",{class:"muted"},here ? "Managed by this Console." : "The plan, credentials, and verification evidence remain on the Console that onboarded this app."))),
           el("td", null, el("div", { style: "display:flex;flex-direction:column;align-items:flex-start;gap:6px" }, actions))));
       }
       parts.push(tbl);
       if (apps.some(a => !a.local_app_id)) {
         parts.push(el("p", { class: "explain", style: "margin:10px 0 0;font-size:12.5px" },
-          "Apps onboarded elsewhere keep their plan, evidence and test credentials on the Console that onboarded them. To request changes from here, onboard the app on this Console: an unchanged recipe reuses its environment, so the app still has one."));
+          "To start changes here, choose Set up here. Factory reuses the environment if the test recipe is unchanged."));
       }
     } else if (!v.error) {
       parts.push(el("p", { class: "explain", style: "margin:0" }, all.length ? "Every app with an execution environment in this workspace is listed above."
@@ -2076,8 +2057,8 @@
         el("p", { class: "explain", style: "margin:0;font-size:12.5px" }, "This starts a charged agent session. It reads or proposes code only; it changes nothing in the repository."), notice)),
       onboardingFacts());
     frag.append(el("div", { class: "start" }, el("div", { class: "start-main" }, whichCard, aboutCard, budgetCard), aside));
-    $main.replaceChildren(frag);
-    // From "Onboard on this Console" on an app found in the workspace: its repository and name, nothing else.
+    showPage(frag);
+    // From "Set up here" on an app found in the workspace: its repository and name, nothing else.
     const prefill = state.appPrefill;
     state.appPrefill = null;
     if (prefill) {
@@ -2096,15 +2077,10 @@
     // the last step is done when the setup pull request is merged; while it is open, it is the current step
     if (a.pr_url && s !== "publishing") idx = a.pr_state === "merged" ? APP_STEPS.length : APP_STEPS.length - 1;
     const failed = s === "failed", failedAt = a.verification ? 3 : plan ? 2 : 1;
-    const t = el("div", { class: "stepper app-steps", role: "list", "aria-label": "Onboarding steps" });
-    APP_STEPS.forEach(([label, desc], i) => {
-      const done = failed ? i < failedAt : i < idx;
-      const current = !failed && i === idx;
-      const d = i === 2 && plan && !(plan.questions || []).length && done ? "None were needed." : desc;
-      t.append(el("div", { class: `step${done ? " done" : current ? " current" : ""}`, role: "listitem", "aria-current": current ? "step" : null },
-        el("span", { class: "n" }, i + 1), el("span", { class: "lbl" }, label), el("span", { class: "d" }, d)));
-    });
-    if (failed) t.append(el("div", { class: "step terminal", role: "listitem" }, el("span", { class: "lbl" }, "Failed")));
+    const t = el("ol", {class:"progress-track", "aria-label":"Onboarding progress"});
+    const currentIndex = failed ? failedAt : Math.min(idx, APP_STEPS.length-1);
+    APP_STEPS.forEach(([label],i) => t.append(el("li",{class:i===currentIndex ? `current ${failed ? "halted" : ""}` : i<currentIndex ? "done" : "", "aria-current":i===currentIndex ? "step" : null},
+      el("span",{class:"progress-dot","aria-hidden":"true"},i<currentIndex ? "✓" : i+1),el("span",null,label))));
     return t;
   }
   function appAgentRole(a) { return a.status === "verifying" ? "reviewer" : a.status === "publishing" ? "integrator" : "app_onboarding"; }
@@ -2127,14 +2103,14 @@
     return el("div", { class: "app-status" },
       el("div", { class: "head" }, crewFigure(appAgentRole(a), appAgentState(a), "s"),
         el("div", null, el("div", { class: "label" }, s.label), el("div", { class: "phase" }, a.phase || s.text))),
-      a.phase && a.phase !== s.text ? el("p", { class: "explain", style: "margin:8px 0 0" }, s.text) : null,
+      a.status !== "failed" && a.phase && a.phase !== s.text ? el("p", { class: "explain", style: "margin:8px 0 0" }, s.text) : null,
       el("p", { class: "explain", style: "margin:8px 0 0;font-size:12.5px" }, `Updated ${ago(a.updated_at) || "just now"}.`),
       el("dl", { class: "kv app-money" }, el("dt", null, "Budget"), el("dd", null, money(a.budget_usd)), el("dt", null, "Spent"), el("dd", null, money(a.spent_usd || 0)),
         el("dt", null, "Available"), el("dd", null, appLeft(a))),
       a.reserved_usd ? el("p", { class: "explain" }, `${money(a.reserved_usd)} is reserved for the current session.`) : null,
       a.cost_warning ? el("p", { class: "notice warn" }, a.cost_warning) : null,
       a.cleanup_warning ? el("p", { class: "notice warn" }, a.cleanup_warning) : null,
-      (a.sessions || []).length ? el("div", null, el("h3", { class: "mini-h" }, "Charged sessions"), sessions)
+      (a.sessions || []).length ? disclosure("app-sessions",`Charged sessions (${a.sessions.length})`,sessions)
         : el("p", { class: "explain", style: "margin:8px 0 0;font-size:12.5px" }, "No agent session has run yet."));
   }
   function capabilityList(plan) {
@@ -2226,9 +2202,10 @@
 
     function sections(a) {
       const out = [];
+      let recoveryBody = null;
       const plan = a.plan || null;
       if (flash) { out.push(el("div", { class: "notice bad", role: "alert" }, flash.text)); flash = null; }
-      if (a.error) out.push(el("div", { class: "notice bad", role: "alert" }, el("b", null, "The last step failed. "), a.error));
+      if (a.error && a.status !== "failed") out.push(el("div", {class:"notice bad",role:"alert"},a.error));
 
       if (a.recoverable) {
         const line = actionLine(), btn = el("button", {class:"btn call", type:"button"}, "Recover interrupted setup");
@@ -2239,19 +2216,21 @@
       // discover: started automatically after adding; offered again when idle
       if (!plan || a.status === "connected" || a.status === "failed") {
         const line = actionLine();
-        const btn = el("button", { class: "btn call", type: "button", disabled: busy() }, plan ? "Discover again" : "Start discovery");
+        const btn = el("button", { class: "btn call", type: "button", disabled: busy() }, a.status === "failed" ? "Retry discovery" : plan ? "Discover again" : "Start discovery");
         btn.onclick = () => act(btn, line, () => api(`${appPath(appId)}/discover`, { body: {} }));
-        out.push(card("Discover the setup", el("div", null,
+        recoveryBody = el("div", null,
+          a.status === "failed" ? el("div",{class:"notice bad"},el("b",null,"Discovery did not finish. "),a.error || "No failure reason was recorded.") : null,
           el("p", null, a.status === "discovering" ? appStatusText(a).text : a.kind === "greenfield"
             ? "An agent proposes a scaffold, how to run it, and how to test it, from your description."
             : "An agent reads the repository's committed source and existing test setup, and proposes how to build, run and test it."),
-          busy() ? el("p", { class: "explain" }, "The agent is working. This page follows it; you can leave and come back.") : el("div", null, btn, charged(`Starts a charged agent session (${appLeft(a)} left in this app's budget).`)), line)));
+          busy() ? el("p", { class: "explain" }, "The agent is working. This page follows it; you can leave and come back.") : el("div", null, btn, charged(`Starts a charged agent session (${appLeft(a)} left in this app's budget).`)), line);
+        out.push(card(a.status === "failed" ? "Recover the setup" : "Discover the setup",recoveryBody));
       }
       if (!busy() && (plan || a.status === "failed" || a.feedback)) {
         const feedback = el("textarea", {id:"setup-feedback", placeholder:"Describe what should change. Never paste credentials here."});
         feedback.value = drafts.feedback ?? a.feedback ?? "";
         feedback.oninput = () => { drafts.feedback = feedback.value; };
-        const line = actionLine(), btn = el("button", {class:"btn call",type:"button"}, "Revise this setup");
+        const line = actionLine(), btn = el("button", {class:"btn call",type:"button"}, a.status === "failed" ? "Retry with guidance" : "Revise this setup");
         btn.onclick = () => {
           if (!feedback.value.trim()) { line.textContent = "Describe the change first."; return; }
           act(btn,line,async () => {
@@ -2260,10 +2239,12 @@
             return api(`${appPath(appId)}/discover`, {body:{}});
           });
         };
-        out.push(card("Improve or repair the setup", el("details", {open:a.status === "failed" || a.status === "needs_input" && !!a.feedback},
+        const guidance = el("details", {class:"disclosure",open:a.status === "needs_input" && !!a.feedback},
           el("summary", null, "Tell the onboarding agent what to change"),
           el("label", {for:"setup-feedback"}, "Setup feedback"), feedback, btn,
-          charged(`Uses the previous proposal and failure evidence. Starts a charged discovery session (${appLeft(a)} available).`), line)));
+          charged(`Uses the previous proposal and failure evidence. Starts a charged discovery session (${appLeft(a)} available).`), line);
+        if (a.status === "failed" && recoveryBody) recoveryBody.append(guidance);
+        else out.push(card("Improve or repair the setup",guidance));
       }
       if (!plan) { out.push(sourceDetails(a)); return out; }
 
@@ -2435,18 +2416,22 @@
       app = a; pending = null; updateBar.hidden = true;
       headBox.replaceChildren(pageHead(a.name || a.app_id, a.description || null,
         [el("span", { class: "tag" }, appKind(a.kind)), appStatusTag(a), el("span", { class: "tag" }, appMoney(a))],
-        [el("a", { href: "#/apps" }, "Apps"), " / ", el("span", { class: "mono" }, repoName(a.repository_url) || a.app_id)]), card(null, appStepper(a), null, "soft"));
+        [el("a", { href: "#/apps" }, "Apps"), " / ", el("span", { class: "mono" }, repoName(a.repository_url) || a.app_id)]), appStepper(a));
       statusBox.replaceChildren(appStatusBody(a));
+      const feedback = body.querySelector("#setup-feedback")?.value;
+      const openDetails = [...body.querySelectorAll("details[open]")].map(d=>d.querySelector("summary")?.textContent);
       body.replaceChildren(...sections(a));
+      if (feedback && body.querySelector("#setup-feedback")) { body.querySelector("#setup-feedback").value = feedback; body.querySelector("#setup-feedback").dataset.dirty = "true"; }
+      body.querySelectorAll("details").forEach(d=>{if(openDetails.includes(d.querySelector("summary")?.textContent)) d.open = true;});
       state.lastKey.app = appKey(a);
       schedule();
     }
-    const dirty = () => typing() || [...body.querySelectorAll("input[type=password]")].some(i => i.value) ||
+    const dirty = () => typing() || [...body.querySelectorAll("input[type=password], textarea[data-dirty]")].some(i => i.value) ||
       Object.keys(drafts).some(k => (drafts[k] || "") !== ((app.answers || {})[k] || ""));
     async function tick() {
       if (!document.body.contains(statusBox)) { stopPoll(); return; }
       let a;
-      try { a = await api(appPath(appId)); } catch (e) { return; }
+      try { a = await api(appPath(appId)); connectionNotice(); } catch (e) { if (e.name !== "AbortError") connectionNotice("Connection lost. App status may be out of date; retrying automatically."); return; }
       if (appKey(a) === state.lastKey.app) return;
       statusBox.replaceChildren(appStatusBody(a));
       if (dirty()) {
@@ -2472,7 +2457,7 @@
     const [c, logs] = await Promise.all([api("/api/config"), api("/api/logs")]);
     state.config = c;
     const frag = document.createDocumentFragment();
-    frag.append(pageHead("Settings", "Connections, agent sessions and diagnostics."));
+    frag.append(pageHead("Settings", "Connections, agent sessions and diagnostics.",[el("a",{class:"btn",href:"#/design-system"},"Design system")]));
     const platformGaps = gapsMatching(c.design_gaps, ["agent:", "environment_id", "ANTHROPIC_API_KEY"]);
     const forgeGaps = forgeGapsOf(c);
     const surfaceGaps = gapsMatching(c.gaps, ["LINEAR", "FACTORY_GATE_SURFACE", "FACTORY_PAGE_PUBLISHER"]);
@@ -2500,7 +2485,7 @@
         const t = el("table", { class: "platform-sessions" }, el("tr", null, el("th", null, "Session"), el("th", null, "Status"), el("th", null, "Run"), el("th", null, "Created")));
         for (const s of p.sessions) t.append(el("tr", null, el("td", null, el("a", { href: s.url, target: "_blank", rel: "noopener" }, s.title || s.id)), el("td", null, el("span", { class: "tag" }, s.status || "?")),
           el("td", null, s.local_url ? el("a", { href: s.local_url }, s.run_id) : el("span", { class: "explain", title: s.run_id ? "Not stored on this Console; open the platform session for its trace." : "" }, s.run_id || "not a factory run")), el("td", { class: "explain" }, s.created_at ? ago(s.created_at) : "")));
-        parts.push(el("h3", { style: "font-size:13px;margin:14px 0 6px" }, "Recent sessions in the workspace"), t);
+        parts.push(disclosure("platform-sessions", `Recent workspace sessions (${p.sessions.length})`, t));
       } else if (!p.error) parts.push(el("p", { class: "explain" }, p.sessions_error ? `Sessions could not be listed: ${p.sessions_error}` : "No sessions yet. Start a design run to see the decomposer appear here and in the Anthropic Console."));
       platformBox.replaceChildren(...parts);
     }).catch(e => platformBox.replaceChildren(el("div", { class: "notice bad" }, e.message)));
@@ -2510,13 +2495,44 @@
         el("pre", { class: "log" }, l.tail))));
       frag.append(el("details", {class:"card optional-fields"}, el("summary", null, "Orchestrator logs"), el("div",{class:"card-body"},body)));
     }
-    $main.replaceChildren(frag);
-    startPoll(viewSettings, 30000);
+    showPage(frag);
+    startPoll(async () => { if (!typing() && !$main.querySelector("details[open]")) await viewSettings(); }, 30000);
+  }
+
+  function viewDesignSystem() {
+    setNav("settings");
+    const frag = document.createDocumentFragment();
+    frag.append(pageHead("Factory design system","Working patterns for a calm, understandable control room.",null,[el("a",{href:"#/settings"},"Settings")," / Design system"]));
+    frag.append(card("The information contract",el("div",{class:"system-principles"},
+      [["01","What is happening?","Name the current work in plain language. A pipeline stage and an open session are different facts."],
+       ["02","Why did it change?","Show the recorded reason and time. Say when the cause is unknown; never invent a reassuring explanation."],
+       ["03","Who is doing it?","One row per open session, with its role, task, and evidence link."],
+       ["04","Do I need to act?","Put the next decision before history. Explain cost and consequences before confirmation."]].map(([n,h,t])=>el("div",null,el("span",{class:"eyebrow"},n),el("h3",null,h),el("p",null,t))))));
+    frag.append(el("div",{class:"grid-2 system-grid"},
+      card("Status communicates a fact",el("div",null,el("div",{class:"row-tags"},["Running","Needs you","Paused","Failed","Verified"].map((t,i)=>el("span",{class:`tag ${["crew","gate","warn","bad","ok"][i]}`},t))),
+        el("p",{class:"muted",style:"margin-top:16px"},"Use plain text, weight, and placement. No pills or colored accent bars. Verified requires evidence; finished work can still need code review."))),
+      card("Actions have a clear order",el("div",null,el("div",{class:"actions"},el("button",{class:"btn primary",type:"button",disabled:true},"Primary action"),el("button",{class:"btn",type:"button",disabled:true},"Secondary action")),
+        el("p",{class:"muted",style:"margin-top:16px"},"Examples are disabled. One primary action per task. Explain why an actual action is unavailable beside it.")))));
+    frag.append(card("Disclosure: essential first, evidence on demand",el("div",null,
+      el("p",{class:"prose"},"Current state, blockers, next action, cost, and consequential limitations stay visible."),
+      disclosure("system-disclosure","Supporting detail (try this with the keyboard)",el("p",{class:"prose"},"Use native disclosures for explanations, older history, raw records, and advanced settings. Enter or Space toggles them. Refresh preserves the open state.")),
+      el("p",{class:"prose"},"A tooltip adds a definition ",hint("Tooltip example","Supplementary help works on hover, keyboard focus, and touch. Press Escape to dismiss it."),". Never hide an error, charge, required action, or safety condition in a tooltip."))));
+    const swatches = ["bg","surface","surface-2","text","text-3","line","link","bad-text"];
+    frag.append(card("Surface and text tokens",el("div",{class:"swatches"},swatches.map(t=>el("div",null,el("div",{class:"swatch",style:`background:var(--${t})`}),el("code",null,`--${t}`))))),
+      card("Type, spacing, and layout",el("div",{class:"prose"},el("p",null,"Atkinson Hyperlegible for reading, Bricolage Grotesque for headings, JetBrains Mono only for identifiers and code."),
+        el("p",null,"Body 15 px / 1.5. Supporting text 13 px. Section title 18 px. Page title 26 px. Reading measure: 72 characters."),
+        el("p",null,"Spacing: 4, 8, 12, 16, 24, 32, 48 px. Controls: 40 px minimum, disclosures: 44 px. Cards: 8 px radius; controls: 6 px."),
+        el("p",null,"Actions precede supporting details in reading order. Collapse the pipeline to the current stage on phones. Never make a user scroll horizontally to find a decision."))),
+      card("Engineering checklist",el("ul",{class:"plain-list"},["Use tokens.css; do not add one-off palette values.","Use card(), disclosure(), longText(), hint(), and showPage().","Derive run state in console-model.js; preserve the event log as evidence.","Keep editable drafts, focus, and open disclosures stable when data refreshes.","Test empty, active, waiting, stopped, failed, completed, stale, and narrow-screen states.","Keep tests and browser evidence separate from claims of delivery."].map(t=>el("li",null,t)))));
+    showPage(frag); stopPoll();
   }
 
   // ------------------------------------------------------------------ router
   async function route() {
+    stopPoll();
     const hash = location.hash || "#/runs";
+    $main.setAttribute("aria-busy","true");
+    const loading = setTimeout(() => { if ((location.hash || "#/runs") === hash) connectionNotice("Loading this page…", "info"); }, 250);
     const [path, query] = hash.slice(1).split("?");
     const params = new URLSearchParams(query || "");
     loadChrome();
@@ -2532,12 +2548,23 @@
       else if (path === "/apps/new") await viewAppNew();
       else if (path.startsWith("/apps/")) await viewApp(decodeURIComponent(path.slice(6)));
       else if (path === "/settings") await viewSettings();
+      else if (path === "/design-system") viewDesignSystem();
       else { $main.replaceChildren(card(null, el("div", { class: "empty" }, el("h3", null, "No such page"), el("a", { class: "btn", href: "#/runs" }, "Back to the runs")))); stopPoll(); }
     } catch (e) {
+      if (e.name === "AbortError") { clearTimeout(loading); return; }
       stopPoll();
-      $main.replaceChildren(pageHead("Something did not load"), card(null, el("div", { class: "empty" }, el("div", null, e.message), el("a", { class: "btn", href: "#/runs" }, "Back to the runs"))));
+      $main.replaceChildren(pageHead("Something did not load"), card(null, el("div", { class: "empty" }, el("div", null, e.message), el("button", {class:"btn primary",type:"button",onclick:route},"Try again"), el("a", { class: "btn", href: "#/runs" }, "Back to the runs"))));
     }
+    clearTimeout(loading);
+    if (hash !== (location.hash || "#/runs")) return;
+    $main.removeAttribute("aria-busy");
+    connectionNotice();
+    document.title = `${$main.querySelector("h1")?.textContent || "Console"} · Factory`;
+    $main.focus({preventScroll:true});
     window.scrollTo(0, 0);
+    if (hash.endsWith("#q")) $main.querySelector(".ask")?.scrollIntoView();
+    const recordAt = hash.match(/#record-([^#?]+)$/);
+    if (recordAt) { const record = document.getElementById(`record-${decodeURIComponent(recordAt[1])}`); if (record) { record.open = true; record.scrollIntoView(); } }
   }
   window.addEventListener("hashchange", route);
   loadChrome().then(route);

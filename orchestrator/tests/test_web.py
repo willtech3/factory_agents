@@ -598,3 +598,26 @@ def test_resume_refuses_a_second_orchestrator_on_the_same_run(client):
     assert r.status_code == 409 and "already being resumed" in r.json()["detail"]
     (client.cfg.runs_dir / rid / "resume.pid").write_text("999999999")               # a dead pid: not resuming
     assert client.get(f"/api/runs/{rid}").json()["resuming"] is None
+
+
+def test_board_keeps_parallel_sessions_and_researcher_then_suppresses_stopped_activity(client):
+    """Run history and the board must agree about activity after a controller exits."""
+    store = client.console.store
+    rid = "run_uiactivity"
+    actor = {"type": "orchestrator", "id": "test"}
+    store.append(rid, "run.created", actor, {"title": "Parallel work", "outcome_id": "o", "policy": {"preview_mode": "local"}, "budget_usd": 50})
+    store.append(rid, "stage.entered", actor, {"stage": "decomposing"})
+    for sid, role in [("first", "decomposer"), ("second", "decomposer"), ("research", "codebase_researcher")]:
+        store.append(rid, "session.started", actor, {"session_id": sid, "agent_key": role, "title": sid})
+    row = next(r for r in client.get("/api/board").json()["runs"] if r["run_id"] == rid)
+    assert {c["session_id"] for c in row["cards"] if c["kind"] == "agent"} == {"first", "second", "research"}
+    store.append(rid, "session.finished", actor, {"session_id": "second", "list_cost_usd": 0.5})
+    roster = client.get(f"/api/runs/{rid}").json()["crew"]
+    decomposer = next(r for r in roster if r["role"] == "decomposer")
+    assert decomposer["session_id"] == "first"
+    assert [s["session_id"] for s in decomposer["live_sessions"]] == ["first"]
+    (client.cfg.runs_dir / rid / "controller.lock").touch()
+    row = next(r for r in client.get("/api/board").json()["runs"] if r["run_id"] == rid)
+    assert row["status"] == "stopped"
+    assert not [c for c in row["cards"] if c["kind"] == "agent"]
+    assert any(c["kind"] == "stopped" for c in row["cards"])
