@@ -32,9 +32,11 @@ from .test_environments import fingerprint, snapshot, validate_profile, run_host
 from .app_environments import DISCOVERY_PROFILE, AppEnvironments, links_from_records
 
 BUSY = {"discovering", "verifying", "publishing"}
-PR_RECHECK_SECONDS = 300     # how often an open setup pull request's state is re-read from the forge
+PR_RECHECK_SECONDS = 300     # how often an unmerged setup pull request's state is re-read from the forge
+# Merged says only that: a change run checks for itself, when it starts, that its base branch holds the verified recipe
+# (the pull request may target another branch, or carry an earlier recipe than the one verified since).
 PR_PHASE = {"open": "Setup pull request is ready for human review",
-            "merged": "Setup pull request merged; change runs can use this setup",
+            "merged": "Setup pull request merged",
             "closed": "Setup pull request closed without merging"}
 APP_ID = re.compile(r"app_[a-f0-9]{12}")
 MAX_SOURCE = 100 * 1024 * 1024
@@ -153,6 +155,7 @@ class AppOnboarding:
     def __init__(self, cfg, client=None):
         self.cfg, self._client = cfg, client
         self._pr_checked: dict[str, float] = {}      # app_id -> monotonic time of the last forge read of its setup PR
+        self._pr_lock = threading.Lock()
         self.root = cfg.runs_dir / "_apps"
         self.root.mkdir(parents=True, exist_ok=True)
 
@@ -226,11 +229,11 @@ class AppOnboarding:
         self.write(r)
         return self.get(r["app_id"])
 
-    def forge(self, record):
+    def forge(self, record, timeout=30.0):
         from .web.repositories import repository_name
         if not self.cfg.forge_token:
             raise ValueError("Connect GitHub in Factory Settings first")
-        return GitHubForge(self.cfg.forge_url, self.cfg.forge_token, repository_name(record["repository_url"], self.cfg))
+        return GitHubForge(self.cfg.forge_url, self.cfg.forge_token, repository_name(record["repository_url"], self.cfg), timeout=timeout)
 
     def source(self, r):
         """Fetch only a pinned committed archive. Never access the user's app checkout."""
@@ -580,38 +583,48 @@ class AppOnboarding:
             forge.http.close()
 
     def refresh_setup_pr(self, r):
-        """`r` with its setup pull request's state as the forge reports it now (pr_state: open, merged or closed).
-        Publishing records only that the pull request was opened; the merge or close happens later on the forge, so a
-        record read on its own goes stale. An open pull request is re-read at most every PR_RECHECK_SECONDS per app; a
-        settled one never again. A failed read (no token, forge unreachable) keeps the last known state."""
-        match = re.search(r"/pull/(\d+)$", r.get("pr_url") or "")
-        if not match or r.get("pr_state") in ("merged", "closed"):
+        """`r` as recorded, after starting a background re-read of its setup pull request when one is due. Publishing
+        records only that the pull request was opened; the merge or close happens later on the forge, so a record read
+        on its own goes stale. An unmerged pull request (a closed one can be reopened) is re-read at most every
+        PR_RECHECK_SECONDS per app, off the request path: a slow forge never holds up the Apps page, and the next poll
+        shows what the read found."""
+        if not re.search(r"/pull/\d+$", r.get("pr_url") or "") or r.get("pr_state") == "merged":
             return r
-        app_id, now_s = r["app_id"], time.monotonic()
-        if now_s - self._pr_checked.get(app_id, float("-inf")) < PR_RECHECK_SECONDS:
-            return r
-        self._pr_checked[app_id] = now_s
+        now_s = time.monotonic()
+        with self._pr_lock:
+            if now_s - self._pr_checked.get(r["app_id"], float("-inf")) < PR_RECHECK_SECONDS:
+                return r
+            self._pr_checked[r["app_id"]] = now_s
+        threading.Thread(target=self.read_setup_pr, args=(r["app_id"],), daemon=True, name=f"setup-pr-{r['app_id']}").start()
+        return r
+
+    def read_setup_pr(self, app_id):
+        """Read the app's setup pull request from the forge and record its state (pr_state: open, merged or closed) when
+        it changed. A failed read (no token, forge unreachable, app removed) records nothing and keeps the last known
+        state. Returns the record, or None when the read did not happen."""
         try:
-            forge = self.forge(r)
-        except (ValueError, HTTPException):
-            return r
-        try:
-            seen = forge.change_request_state(int(match.group(1)))
-        except Exception:  # noqa: BLE001
-            return r
-        finally:
-            forge.http.close()
-        state = "open" if seen.get("state") == "opened" else seen.get("state")
-        if state not in PR_PHASE or state == r.get("pr_state", "open"):
-            return r
-        with self.locked(app_id) as rec:
-            if rec.get("pr_url") != r["pr_url"]:
-                return self.get(app_id)
-            rec.update(pr_state=state, pr_merged_at=seen.get("merged_at"))
-            if rec["status"] in ("ready", "ready_limited"):     # the phase still describes the published setup
-                rec["phase"] = PR_PHASE[state]
-            self.write(rec)
-        return self.get(app_id)
+            r = self.get(app_id)
+            match = re.search(r"/pull/(\d+)$", r.get("pr_url") or "")
+            if not match:
+                return r
+            forge = self.forge(r, timeout=10.0)
+            try:
+                seen = forge.change_request_state(int(match.group(1)))
+            finally:
+                forge.http.close()
+            state = "open" if seen.get("state") == "opened" else seen.get("state")
+            if state not in PR_PHASE or state == r.get("pr_state", "open"):
+                return r
+            with self.locked(app_id) as rec:
+                if rec.get("pr_url") != r["pr_url"]:
+                    return self.get(app_id)
+                rec.update(pr_state=state, pr_merged_at=seen.get("merged_at"))
+                if rec["status"] in ("ready", "ready_limited"):     # the phase still describes the published setup
+                    rec["phase"] = PR_PHASE[state]
+                self.write(rec)
+            return self.get(app_id)
+        except Exception:  # noqa: BLE001  (best effort: the page keeps showing the last known state)
+            return None
 
     def binding_for(self, target, app_id=None):
         """The managed-run settings for a change to `target`, on every start path: the named app's (`run_settings`), else

@@ -163,6 +163,13 @@ def crew_roster(events) -> list[dict[str, Any]]:
                 row["live"].remove(p["session_id"])
             row["finished_at"] = ev.at
             row["state"] = "working" if row["live"] else ("blocked" if p.get("stop_reason") in ("budget_reached",) else "done")
+        elif ev.kind == "run.resumed":
+            # a resume starts new sessions; whatever its dead predecessor left open is not being worked on
+            for row in by_role.values():
+                if row["live"]:
+                    row["live"].clear()
+                    row["finished_at"] = ev.at
+                    row["state"] = "done"
         elif ev.kind == "run.failed":
             # sessions the orchestrator interrupted on its way out never get a session.finished of their own
             for sid in p.get("interrupted_sessions") or []:
@@ -515,10 +522,12 @@ class Console:
                 "owner": {"name": "", "handle": "", "role": ""},
                 "_example": ex}
 
-    def outcomes(self) -> list[dict[str, Any]]:
+    def outcomes(self, include_runs: bool = True) -> list[dict[str, Any]]:
+        """Saved outcomes, newest first, with the runs started from each (which reads every run's log; a caller that
+        needs only the outcomes passes include_runs=False)."""
         self.outcomes_dir.mkdir(parents=True, exist_ok=True)
         runs_by_outcome: dict[str, list[str]] = {}
-        for run_id in self.store.list_runs():
+        for run_id in self.store.list_runs() if include_runs else []:
             for ev in self.store.events(run_id):
                 if ev.kind == "run.created":
                     runs_by_outcome.setdefault(ev.payload.get("outcome_id", ""), []).append(run_id)
@@ -968,8 +977,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return console.answer(question_id, body)
 
     @app.get("/api/outcomes")
-    def api_outcomes():
-        return {"outcomes": console.outcomes()}
+    def api_outcomes(runs: bool = True):
+        return {"outcomes": console.outcomes(include_runs=runs)}
 
     @app.get("/api/outcomes/template")
     def api_outcome_template(example: str = "sample-app"):

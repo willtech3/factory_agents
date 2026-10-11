@@ -2,6 +2,7 @@
 factory can do and what actually happened. Each test names the finding it holds in place."""
 import json
 import re
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -79,6 +80,29 @@ def test_summary_separates_agent_activity_from_pipeline_events(tmp_path):
     assert s["working"] == [] and s["working_since"] is None and s["live_sessions"] == 0 and s["cost_usd"] == 2.5
 
 
+def test_sessions_left_by_a_dead_controller_are_not_live_work(tmp_path):
+    """Review of the fix above: a SIGKILLed controller leaves session.started without a finish, forever."""
+    from factory.web.app import crew_roster
+    store, actor = RunStore(tmp_path), {"type": "system", "id": "test"}
+    rid = "run_orphaned0001"
+    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "Orphan"})
+    for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness", "implementing"):
+        store.append(rid, "stage.entered", actor, {"stage": stage})
+    store.append(rid, "session.started", actor, {"session_id": "old", "agent_key": "implementer", "title": "implement"}, stage="implement")
+    events = store.events(rid)
+    # the controller is gone (no lock holder): the run reads Stopped, and nothing in it is working
+    stopped = summarize(events, replay(rid, events), controller_alive=False)
+    assert stopped["status"] == "stopped" and stopped["live_sessions"] == 0 and stopped["working_since"] is None
+    # a resume starts new sessions; the one its predecessor left open is no longer counted
+    store.append(rid, "run.resumed", actor, {"stage": "implementing", "from": "implementing", "points": {}})
+    store.append(rid, "session.started", actor, {"session_id": "new", "agent_key": "reviewer", "title": "review"}, stage="review")
+    events = store.events(rid)
+    resumed = summarize(events, replay(rid, events), controller_alive=True)
+    assert resumed["working"] == ["reviewer"] and resumed["live_sessions"] == 1 and resumed["working_since"] == events[-1].at
+    roster = {r["role"]: r for r in crew_roster(events)}
+    assert roster["implementer"]["state"] == "done" and roster["reviewer"]["state"] == "working"
+
+
 class _Forge:
     def __init__(self, state="merged", fail=False):
         self.state, self.fail, self.calls = state, fail, 0
@@ -91,35 +115,63 @@ class _Forge:
         return {"state": self.state, "merged_at": "2026-10-11T01:00:00Z" if self.state == "merged" else None}
 
 
+def _published(manager, name="Evergreen"):
+    aid = manager.create(kind="existing", name=name, repository_url=f"https://github.com/example/{name.lower()}",
+                         description="Chat", budget_usd=10)["app_id"]
+    manager.update(aid, status="ready_limited", pr_url=f"https://github.com/example/{name.lower()}/pull/117", pr_state="open",
+                   phase=onboarding_mod.PR_PHASE["open"])
+    return aid
+
+
 def test_setup_pull_request_state_follows_the_forge(tmp_path, root, monkeypatch):
     """P2: an app still said its setup pull request was ready for review after it had merged and deployed."""
     manager = AppOnboarding(make_config(root, tmp_path / "runs", gate_surface="web"))
-    aid = manager.create(kind="existing", name="Evergreen", repository_url="https://github.com/example/evergreen",
-                         description="Chat", budget_usd=10)["app_id"]
-    manager.update(aid, status="ready_limited", pr_url="https://github.com/example/evergreen/pull/117", pr_state="open",
-                   phase=onboarding_mod.PR_PHASE["open"])
+    aid = _published(manager)
     forge = _Forge(state="opened")
-    monkeypatch.setattr(manager, "forge", lambda r: forge)
-    still_open = manager.refresh_setup_pr(manager.get(aid))
-    assert forge.calls == 1 and still_open["pr_state"] == "open"
-    manager.refresh_setup_pr(manager.get(aid))
-    assert forge.calls == 1                                            # re-read at most every PR_RECHECK_SECONDS
+    monkeypatch.setattr(manager, "forge", lambda r, timeout=30.0: forge)
+    assert manager.read_setup_pr(aid)["pr_state"] == "open" and forge.calls == 1
 
-    manager._pr_checked.clear()
+    # closed is not final: a pull request closed by mistake can be reopened, and then merged
+    forge.state = "closed"
+    closed = manager.read_setup_pr(aid)
+    assert closed["pr_state"] == "closed" and closed["phase"] == onboarding_mod.PR_PHASE["closed"]
+    forge.state = "opened"
+    assert manager.read_setup_pr(aid)["pr_state"] == "open"
     forge.state = "merged"
-    merged = manager.refresh_setup_pr(manager.get(aid))
-    assert merged["pr_state"] == "merged" and merged["pr_merged_at"] == "2026-10-11T01:00:00Z"
-    assert merged["phase"] == onboarding_mod.PR_PHASE["merged"] and merged["status"] == "ready_limited"
-    manager._pr_checked.clear()
-    manager.refresh_setup_pr(manager.get(aid))
-    assert forge.calls == 2                                            # a settled pull request is never read again
+    merged = manager.read_setup_pr(aid)
+    assert merged["pr_state"] == "merged" and merged["pr_merged_at"] == "2026-10-11T01:00:00Z" and merged["status"] == "ready_limited"
+    # merged says only that: whether a change run can use the setup is checked when the run starts
+    assert merged["phase"] == "Setup pull request merged"
 
-    # an unreachable forge keeps the last known state rather than inventing one
-    other = manager.create(kind="existing", name="Other", repository_url="https://github.com/example/other",
-                           description="x", budget_usd=10)["app_id"]
-    manager.update(other, status="ready", pr_url="https://github.com/example/other/pull/3", pr_state="open", phase="Setup pull request is ready for human review")
-    monkeypatch.setattr(manager, "forge", lambda r: _Forge(fail=True))
-    assert manager.refresh_setup_pr(manager.get(other))["pr_state"] == "open"
+    # an unreachable forge records nothing and keeps the last known state
+    other = _published(manager, "Other")
+    monkeypatch.setattr(manager, "forge", lambda r, timeout=30.0: _Forge(fail=True))
+    assert manager.read_setup_pr(other) is None and manager.get(other)["pr_state"] == "open"
+
+
+def test_setup_pull_request_is_read_off_the_request_path(tmp_path, root, monkeypatch):
+    """Review of the fix above: a synchronous forge read per app held up GET /api/apps for up to its timeout."""
+    manager = AppOnboarding(make_config(root, tmp_path / "runs", gate_surface="web"))
+    aid = _published(manager)
+    started = []
+
+    class Thread:            # records what would run in the background instead of running it
+        def __init__(self, target, args, **kw):
+            self.call = (target, args)
+
+        def start(self):
+            started.append(self.call)
+
+    monkeypatch.setattr(onboarding_mod.threading, "Thread", Thread)
+    record = manager.get(aid)
+    assert manager.refresh_setup_pr(record) is record                # answers at once with the record as it is
+    assert started == [(manager.read_setup_pr, (aid,))]
+    manager.refresh_setup_pr(manager.get(aid))
+    assert len(started) == 1                                         # at most one read per PR_RECHECK_SECONDS
+    manager._pr_checked.clear()
+    manager.update(aid, pr_state="merged")
+    manager.refresh_setup_pr(manager.get(aid))
+    assert len(started) == 1                                         # a merged pull request is never read again
 
 
 def _luminance(hex_colour):
@@ -143,6 +195,37 @@ def test_exported_gate_pages_keep_links_and_status_readable_in_both_themes():
     for theme in (light, dark):
         for name in ("link", "visited", "ok", "warn", "bad", "muted", "fg"):
             assert _contrast(theme[name], theme["bg"]) >= 4.5, (name, theme[name], theme["bg"])
+
+
+def test_console_status_text_is_readable_in_both_themes():
+    """Review of the fixes: inline errors and warning tags used --bad/--warn, which the dark theme never redefined."""
+    css = (Path(__file__).resolve().parents[1] / "factory" / "web" / "static" / "app.css").read_text()
+    colour = r"--([a-z0-9-]+):\s*(#[0-9a-fA-F]{6})\b"
+    light = dict(re.findall(colour, css.split(":root {")[1].split("}")[0]))
+    dark = {**light, **dict(re.findall(colour, css.split('html[data-theme="dark"] {')[1].split("}")[0]))}
+    for theme in (light, dark):
+        for name in ("ok-text", "warn-text", "bad-text"):
+            for ground in ("surface", "surface-2", "bg", name.replace("-text", "-soft")):
+                assert _contrast(theme[name], theme[ground]) >= 4.5, (name, ground, theme[name], theme[ground])
+    assert not re.search(r"(?<![-\w])color: var\(--(ok|warn|bad)\)", css)    # fills may use them; text may not
+
+
+def test_console_script_parses_on_older_safari():
+    """Review of the fixes: a regex lookbehind is an early SyntaxError before Safari 16.4, blanking every page."""
+    js = (Path(__file__).resolve().parents[1] / "factory" / "web" / "static" / "app.js").read_text()
+    assert "(?<=" not in js and "(?<!" not in js
+
+
+def test_outcome_list_without_runs_reads_no_run_log(client, monkeypatch):
+    """Review of the fixes: prefilling the owner read every run's event log through /api/outcomes."""
+    good = {"title": "Recover payments", "statement": "Customers whose card fails are retried and told, so fewer of them churn.",
+            "success_metrics": [{"metric": "Recovered payments", "target": "60%"}], "constraints": {"budget_usd": 60},
+            "owner": {"name": "Will", "handle": "willtech3"}, "target_repositories": [{"url": "https://github.com/x/y", "default_branch": "main"}]}
+    assert client.post("/api/outcomes", json={"outcome": good}).json()["ok"]
+    RunStore(client.cfg.runs_dir).append("run_reads00000001", "run.created", {"type": "system", "id": "t"}, {"outcome_id": "o", "title": "t"})
+    monkeypatch.setattr(RunStore, "events", lambda *a: pytest.fail("read a run log"))
+    listed = client.get("/api/outcomes?runs=false").json()["outcomes"]
+    assert listed[0]["owner"] == "willtech3" and listed[0]["owner_name"] == "Will" and listed[0]["runs"] == []
 
 
 def test_browser_evidence_says_who_wrote_its_summary(tmp_path):

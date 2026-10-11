@@ -69,7 +69,7 @@
   const activityLine = r => r.working_since
     ? `${(r.working || []).map(w => CREW_NAME[w] || words(w)).join(", ") || "Agent"} working for ${dur(r.working_since)}`
     : quietRun(r) ? `nothing recorded for ${dur(r.updated_at)}; no controller or agent session is known to be running` : `last activity ${ago(r.updated_at)}`;
-  const liveSpendNote = r => r.live_sessions ? el("div", { class: "explain" }, `excludes ${plural(r.live_sessions, "session")} still running`) : null;
+  const liveSpendNote = r => r.live_sessions && !r.terminal ? el("div", { class: "explain" }, `excludes ${plural(r.live_sessions, "session")} still running`) : null;
   const modeTag = r => r.mode ? el("span", { class: "tag" }, r.mode === "design" ? "design only" : "live") : null;
   const ITEM_STAGE = {
     pending: "Waiting", spec_drafting: "Spec being written", spec_judging: "Spec being judged", spec_approved: "Spec approved",
@@ -378,7 +378,7 @@
   }
 
   // ------------------------------------------------------------------ runs: the history, and the home page
-  const runsKey = runs => JSON.stringify(runs.map(r => [r.run_id, r.status, r.stage, r.updated_at, r.live_sessions, r.waiting ? [r.waiting.gates, r.waiting.questions] : null]));
+  const runsKey = runs => JSON.stringify(runs.map(r => [r.run_id, r.status, r.stage, r.updated_at, r.live_sessions, quietRun(r), r.waiting ? [r.waiting.gates, r.waiting.questions] : null]));
   async function viewRuns() {
     setNav("runs");
     const runs = (await api("/api/runs")).runs;
@@ -490,7 +490,7 @@
     frag.append(pageHead(r.title, r.outcome ? r.outcome.statement.split(". ")[0] + "." : null,
       [statusTag(s), modeTag(s),
        el("span", { class: `tag ${b.paused ? "warn" : ""}`, title: s.live_sessions ? `Excludes ${plural(s.live_sessions, "session")} still running` : null },
-         `${money(r.cost)}${b.budget_usd != null ? ` of ${money(b.budget_usd)}` : " spent"}${s.live_sessions ? " so far" : ""}`),
+         `${money(r.cost)}${b.budget_usd != null ? ` of ${money(b.budget_usd)}` : " spent"}${s.live_sessions && !s.terminal ? " so far" : ""}`),
        !s.terminal && (s.working_since || quietRun(s)) ? el("span", { class: "tag" }, activityLine(s)) : null,
        el("span", { class: "tag" }, dur(started, s.ended_at || (TERMINAL[r.stage] || r.stage === "completed" ? r.updated_at : null)))],
       [el("a", { href: "#/runs" }, "Runs"), " / ", el("span", { class: "mono" }, r.run_id)]));
@@ -651,24 +651,24 @@
   // A check that did not pass leads with what was observed, and says which part stopped it. The worker's summary is its
   // reading of those observations, so it follows them, labelled; the controller's own reason (a refused or missing report,
   // a check that never ran) is shown as the controller's, since then there are no observations of the app to show.
+  // The controller's own summaries, for evidence recorded before summary_source existed.
+  const CONTROLLER_SUMMARY = /^(No browser evidence returned|Browser evidence unavailable:|Hosted browser check not run:|Browser evidence does not show the requested viewport|Browser media changed after verification)/;
   function observedFailure(evidence) {
     const steps = evidence.steps_observed || [];
     const stopped = steps.filter(s => s.status !== "passed");
-    const byController = evidence.summary_source === "controller" || !steps.length;
-    const who = byController ? ["Stopped by Factory, not the app. ", "The check did not run or its report was not accepted, so nothing here shows how the app behaved."]
+    const byController = evidence.summary_source ? evidence.summary_source === "controller" : CONTROLLER_SUMMARY.test(evidence.summary || "");
+    const who = byController && !steps.length ? ["Stopped by Factory, not the app. ", "The check did not run or its report was not accepted, so nothing here shows how the app behaved."]
+      : byController ? ["Factory did not accept the report. ", "The browser's observations are below, but the report failed Factory's checks, so this check cannot pass."]
       : evidence.status === "failed" ? ["Stopped by the app. ", "A step's observation did not meet what the step required."]
       : ["Stopped by the browser check. ", "The worker could not finish every step; read the observations before changing the app."];
     const out = [el("div", { class: "notice bad", style: "margin:0" }, el("b", null, who[0]), who[1])];
-    if (byController) {
-      out.push(el("p", null, el("b", null, "Factory's reason: "), evidence.summary));
-      return out;
-    }
+    if (byController) out.push(el("p", null, el("b", null, "Factory's reason: "), evidence.summary));
     if (stopped.length) {
       out.push(el("div", null, el("h4", { class: "mini-h" }, "What the browser saw"), el("ol", { class: "observed" }, stopped.map(s =>
         el("li", { value: String(steps.indexOf(s) + 1) }, el("span", { class: `tag ${s.status === "failed" ? "bad" : "warn"}` }, words(s.status)), " ",
           el("b", null, s.step), el("div", null, s.observation))))));
     }
-    out.push(el("p", { class: "explain" }, el("b", null, "Worker's summary: "), evidence.summary,
+    if (!byController) out.push(el("p", { class: "explain" }, el("b", null, "Worker's summary: "), evidence.summary,
       el("span", null, " This is the worker's interpretation; the observations above are the evidence.")));
     return out;
   }
@@ -695,7 +695,7 @@
   }
   function runKey(r) {
     const hb = r.watch && r.watch.heartbeat;
-    return JSON.stringify([r.updated_at, r.stage, r.status, r.gates.map(g => [g.gate_id, !!g.recorded]), r.questions.map(q => q.question_id),
+    return JSON.stringify([r.updated_at, r.stage, r.status, quietRun(r.summary || {}), r.gates.map(g => [g.gate_id, !!g.recorded]), r.questions.map(q => q.question_id),
       hb ? [hb.alive, hb.last_poll_at] : null, (r.browser_checks_pending || []).map(c => c.id), (r.crew || []).map(c => c.state), r.resuming || null]);
   }
   function storyEntries(r) {
@@ -1056,7 +1056,7 @@
     };
     [budget, passes, security, repoUrl, newName].forEach(i => i.addEventListener("input", syncSummary));
     const settings = () => ({ budget_usd: Number(budget.value) || undefined, preview: preview.value, reviewer_passes: Number(passes.value) || undefined, review_rounds: Number(rounds.value) || undefined,
-      security_review: security.checked, grader_iterations: Number(iterations.value) || undefined });
+      ...(securityReady ? { security_review: security.checked } : {}), grader_iterations: Number(iterations.value) || undefined });
     async function saveRepo() {
       if (!outcome) return;
       const repo = (outcome.target_repositories || [{}])[0] || {};
@@ -1241,7 +1241,8 @@
       : blockingN ? ["bad", `The judge flagged ${plural(blockingN, "blocking issue")}.`, " Request changes unless you accept them as they stand."]
       : ["warn", `The judge's verdict is ${words(ov.result || "missing")}.`, " Read what it flagged before approving."];
     const jump = sid => () => { const node = document.getElementById(`spec-${sid}`); if (node) { node.scrollIntoView({ block: "start" }); node.querySelector("summary, textarea")?.focus({ preventScroll: true }); } };
-    const firstSentence = text => { const s = String(text || "").split(/(?<=\.)\s/)[0]; return s.length > 220 ? `${s.slice(0, 220).replace(/\s+\S*$/, "")}…` : s; };
+    const firstSentence = text => { const parts = String(text || "").split(/\.\s/), s = parts.length > 1 ? `${parts[0]}.` : parts[0];
+      return s.length > 220 ? `${s.slice(0, 220).replace(/\s+\S*$/, "")}…` : s; };
     // what the whole change leaves out: a non-goal that names a contract of this set is covered there, not excluded
     const excludedBy = new Map();
     for (const s of Object.values(specs)) for (const x of s.non_goals || []) {
@@ -1295,7 +1296,7 @@
     Object.entries(specs).forEach(([sid, s], i) => {
       const ps = issuesBy[sid] || { issues: [] };
       // each box is named for its contract, so a list of them reads as a list of choices, not one label repeated
-      const cb = el("input", { type: "checkbox", checked: true, "aria-label": `Approve contract ${i + 1}: ${s.title || sid}` });
+      const cb = el("input", { type: "checkbox", checked: true });
       picks.set(sid, cb);
       const acs = s.acceptance_criteria || [];
       const uv = acs.filter(a => a.user_visible).length;
@@ -1310,7 +1311,7 @@
       wrap.append(el("div", { class: "item-card", id: `spec-${sid}` },
         el("div", { class: "ih" }, el("span", { class: "num" }, i + 1), el("span", { class: "t" }, s.title), el("span", { class: "id" }, sid),
           el("span", { class: "right" }, blocking ? el("span", { class: "tag bad" }, `${blocking} blocking`) : (ps.issues || []).length ? el("span", { class: "tag warn" }, plural((ps.issues || []).length, "issue")) : el("span", { class: "tag ok" }, "no issues"),
-            subsetAllowed ? el("label", { class: "pick" }, cb, "Approve this contract") : null)),
+            subsetAllowed ? el("label", { class: "pick" }, cb, "Approve this contract", el("span", { class: "sr-only" }, `(${s.title || sid})`)) : null)),
         el("div", { class: "ib" },
           el("div", { class: "intent" }, s.goal),
           el("div", { class: "facts" }, el("span", null, el("b", null, `${acs.length} criteria`), `, ${uv} user-visible`), el("span", null, el("b", null, "Size: "), s.estimated_size || "?"),
@@ -1485,7 +1486,7 @@
     let ownerFrom = null;
     if (!savedId && !((o.owner || {}).name || (o.owner || {}).handle)) {
       try {
-        const last = ((await api("/api/outcomes")).outcomes || []).find(x => x.owner && x.owner_name);
+        const last = ((await api("/api/outcomes?runs=false")).outcomes || []).find(x => x.owner && x.owner_name);
         if (last) { o.owner = { ...(o.owner || {}), name: last.owner_name, handle: last.owner }; ownerFrom = last.title || last.outcome_id; }
       } catch (e) { /* the owner fields stay empty */ }
     }
@@ -1728,6 +1729,10 @@
 
     $main.replaceChildren(frag);
     const showLocal = local => {
+      for (const [id, cell] of envCells) {
+        const a = apps.find(x => x.app_id === id);
+        cell.replaceChildren(a && a.environment_id ? el("span", { class: "mono" }, a.environment_id) : "None until verified");
+      }
       for (const x of local) {
         const cell = envCells.get(x.local_app_id), e = x.environment;
         if (!cell) continue;
@@ -1830,7 +1835,7 @@
   }
 
   // The authenticated GitHub repository list, searchable and paged, with a typed URL as the alternative.
-  function repositoryPicker(onPick) {
+  function repositoryPicker(onPick, onLoaded) {
     let repositories = [], nextPage = 1;
     const search = el("input", { type: "search", id: "app-repo-search", placeholder: "Filter by owner or repository name", autocomplete: "off" });
     const select = el("select", { id: "app-repo-select" }, el("option", { value: "" }, "Choose a repository"));
@@ -1858,6 +1863,7 @@
         repositories = [...byUrl.values()]; nextPage = result.next_page || null;
         more.hidden = !nextPage; more.textContent = "Load more repositories";
         render();
+        if (onLoaded) onLoaded();
       } catch (e) {
         status.textContent = `Could not load repositories: ${e.message}`;
         more.hidden = false; more.textContent = "Retry loading repositories";
@@ -1880,8 +1886,10 @@
       el("label", { class: "lab", for: "app-repo-search" }, "Find a repository"), search,
       el("label", { class: "lab", for: "app-repo-select" }, "GitHub repository"), select, details, status, more, manual);
     const prefill = url => { typed.value = url; manual.open = true; typed.oninput(); };
-    // accounts and organisations this connection can create under: owners of the repositories it can push to
-    const owners = () => [...new Set(repositories.filter(r => r.selectable).map(r => r.full_name.split("/")[0]))];
+    // where this connection can create a repository: its own account (a personal repository it administers) and the
+    // organisations it belongs to; never another person's account it only collaborates on
+    const owners = () => [...new Set(repositories.filter(r => r.owner_type === "Organization" ? r.selectable : r.owner_type === "User" && r.admin)
+      .map(r => r.full_name.split("/")[0]))];
     return { node, load, prefill, owners };
   }
 
@@ -1905,7 +1913,7 @@
     const name = el("input", { type: "text", id: "app-name", autocomplete: "off", maxlength: "80" });
     let nameTouched = false;
     name.oninput = () => { nameTouched = true; sync(); };
-    const picker = repositoryPicker(r => { picked = r; if (!nameTouched) name.value = r ? r.name : ""; sync(); });
+    const picker = repositoryPicker(r => { picked = r; if (!nameTouched) name.value = r ? r.name : ""; sync(); }, () => refreshOwners());
     // A new app's repository: an account this connection can create under, and a name that follows the app's name until
     // edited. A full URL stays available for an owner the loaded repositories do not show.
     const newOwner = el("select", { id: "app-new-owner" });
@@ -1929,7 +1937,9 @@
       if (!list.length) newManual.open = true;
       sync();
     };
-    const newRepoUrl = () => newUrl.value.trim() || (newOwner.value && newRepo.value.trim() ? `https://github.com/${newOwner.value}/${newRepo.value.trim()}` : "");
+    const newRepoUrl = () => ((newManual.open || ownerRow.hidden) && newUrl.value.trim())
+      || (!ownerRow.hidden && newOwner.value && newRepo.value.trim() ? `https://github.com/${newOwner.value}/${newRepo.value.trim()}` : "");
+    newManual.addEventListener("toggle", () => sync());
     // apps already on this Console, to warn before a repository is onboarded a second time
     let known = [];
     const dupNote = el("div", { role: "status" });
@@ -1987,7 +1997,7 @@
         el("b", null, b.kind === "greenfield" ? "That repository is already an app here: " : "Already onboarded here as "),
         ...dup.flatMap((a, i) => [i ? ", " : "", el("a", { href: appHref(a.app_id) }, a.name || a.app_id), ` (${appStatusText(a).label.toLowerCase()})`]), ". ",
         b.kind === "greenfield" ? "Choose another name for the new repository." : "Open it to verify again or request a change. A second app for the same repository makes every change run name which app it means.")] : []));
-      addBtn.textContent = dup.length && b.kind !== "greenfield" ? "Add a second app for this repository" : "Add the app and start discovery";
+      if (!addBtn.disabled) addBtn.textContent = dup.length && b.kind !== "greenfield" ? "Add a second app for this repository" : "Add the app and start discovery";
       summary.replaceChildren(
         el("li", null, el("b", null, b.name || "An unnamed app"), ` · ${appKind(b.kind).toLowerCase()}`),
         el("li", null, b.repository_url ? el("span", { class: "mono" }, repoName(b.repository_url)) : "No repository chosen yet", b.revision ? el("span", { class: "mono" }, ` at ${b.revision}`) : null),
@@ -2025,7 +2035,7 @@
       if (prefill.name) { name.value = prefill.name; nameTouched = true; }
     }
     syncKind();
-    picker.load().then(refreshOwners);
+    picker.load().then(refreshOwners);     // also refreshed after each "Load more"
     api("/api/apps").then(v => { known = v.apps || []; sync(); }).catch(() => { /* no duplicate warning without the list */ });
   }
 
@@ -2350,7 +2360,7 @@
           : el("p", { class: "explain" }, "Requesting changes opens once the repository exists, after you publish.");
         out.push(card("Setup pull request", el("div", { class: "stack" },
           a.pr_url && /^https:\/\//.test(a.pr_url) ? el("p", null, el("a", { href: a.pr_url, target: "_blank", rel: "noopener" }, "Open the setup pull request"),
-            el("span", { class: "explain" }, a.pr_state === "merged" ? ` · merged${a.pr_merged_at ? " " + ago(a.pr_merged_at) : ""}; change runs can use this setup`
+            el("span", { class: "explain" }, a.pr_state === "merged" ? ` · merged${a.pr_merged_at ? " " + ago(a.pr_merged_at) : ""}. A change run checks, when it starts, that its base branch holds this verified recipe`
               : a.pr_state === "closed" ? " · closed without merging; change runs cannot use this setup until it is on the base branch"
               : " · waiting for an engineer to review and merge")) : null,
           a.status === "publishing" ? el("p", { class: "explain" }, "Publishing. This page follows it.") : a.pr_url ? null : !(plan.files || []).length ? el("p", {class:"explain"}, "The existing setup was reused unchanged. No new setup pull request is needed.") : el("div", null, first, confirmBox, line),

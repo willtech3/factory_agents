@@ -58,11 +58,12 @@ def summarize(events: list[RunEvent], state: RunState, controller_alive: bool | 
     escalations = [ev.payload.get("reason") for ev in events if ev.kind == "run.escalated" and ev.payload.get("reason")]
     failed_in = _stage_before(events, "run.failed")
     pause = last_pause(events) if state.stage == RunStage.PAUSED_BUDGET else None
-    live = _live_sessions(events)
+    # a finished run, or one whose controller is gone, has no live work, whatever sessions it left unfinished
+    status = _status(state, controller_alive)
+    live = {} if status in ("stopped", *TERMINAL_STATUS.values()) else _live_sessions(events)
     working = _working_roles(live)
     # when the oldest live session started: agent activity, which pipeline events (updated_at) do not track
     working_since = min((at for _, at in live.values()), default=None)
-    status = _status(state, controller_alive)
     counts = {
         "work_items": len(state.work_items), "specs_approved": len(approved), "pull_requests": len(pull_requests),
         "merged": sum(1 for p in pull_requests if p["stage"] in MERGED_STAGES),
@@ -176,7 +177,8 @@ def _ended_at(events: list[RunEvent], state: RunState) -> str | None:
 
 
 def _live_sessions(events: list[RunEvent]) -> dict[str, tuple[str, str]]:
-    """Sessions started and not yet finished: session id -> (role, started at), in the order they started."""
+    """Sessions started and not yet finished: session id -> (role, started at), in the order they started. A resume
+    never reattaches to a session its dead predecessor left open (it starts new ones), so `run.resumed` clears them."""
     live: dict[str, tuple[str, str]] = {}
     for ev in events:
         p = ev.payload
@@ -187,6 +189,8 @@ def _live_sessions(events: list[RunEvent]) -> dict[str, tuple[str, str]]:
         elif ev.kind == "run.failed":
             for sid in p.get("interrupted_sessions") or []:
                 live.pop(sid, None)
+        elif ev.kind == "run.resumed":
+            live.clear()
     return live
 
 
