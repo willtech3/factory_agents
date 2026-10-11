@@ -423,18 +423,14 @@ class LocalVerifier:
         changed, deleted = [], []
         for line in names:
             status, _, path = line.partition("\t")
-            (deleted if status.startswith("D") else changed).append(path.split("\t")[-1])
-        added_lines: dict[str, list[str]] = {}
-        current = None
-        for line in _git(repo, "diff", "--unified=0", f"{base_sha}..{head_sha}").splitlines():
-            if line.startswith("+++ b/"):
-                current = line[6:]
-                added_lines.setdefault(current, [])
-            elif line.startswith("+") and not line.startswith("+++") and current:
-                added_lines[current].append(line[1:])
+            paths = path.split("\t")
+            (deleted if status.startswith("D") else changed).append(paths[-1])
+            if status.startswith("R") and len(paths) == 2:
+                deleted.append(paths[0])               # a rename removes the old path: a renamed existing test is not kept
+        added_lines, removed_lines = _diff_lines(_git(repo, "diff", "--unified=0", f"{base_sha}..{head_sha}"))
         existing_tests = [p for p in _git(repo, "ls-tree", "-r", "--name-only", base_sha).splitlines()
                           if checks.is_test_file(p)]
-        return {"changed": changed, "deleted": deleted, "added_lines": added_lines, "existing_tests": existing_tests,
+        return {"changed": changed, "deleted": deleted, "added_lines": added_lines, "removed_lines": removed_lines, "existing_tests": existing_tests,
                 "patch": _git(repo, "diff", f"{base_sha}..{head_sha}")}
 
     def run_commands(self, repo: Path, commands: list[str], timeout: int = 1800) -> list[dict[str, Any]]:
@@ -527,6 +523,37 @@ class LocalVerifier:
             else:
                 results.append({**row, **self._run_in_group(cmd, repo or self.workdir, env, timeout)})
         return results
+
+
+def _diff_lines(unified: str) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """Added lines per new path and removed lines per old path from `git diff --unified=0`. The ---/+++ headers are read
+    only before a file's first hunk, so a content line that itself starts with -- or ++ is never taken for a header. Every
+    file whose `--- a/` header was read gets a removed entry, empty when nothing was removed; a file with none (binary,
+    quoted path, not in the diff) is one this parse cannot vouch for."""
+    added: dict[str, list[str]] = {}
+    removed: dict[str, list[str]] = {}
+    old = new = None
+    in_hunk = False
+    for line in unified.splitlines():
+        if line.startswith("diff --git "):
+            old = new = None
+            in_hunk = False
+        elif not in_hunk:
+            if line.startswith("--- "):
+                old = line[6:] if line.startswith("--- a/") else None
+                if old is not None:
+                    removed.setdefault(old, [])         # parsed: an empty list proves nothing was removed
+            elif line.startswith("+++ "):
+                new = line[6:] if line.startswith("+++ b/") else None
+                if new is not None:
+                    added.setdefault(new, [])
+            elif line.startswith("@@"):
+                in_hunk = True
+        elif line.startswith("+") and new is not None:
+            added[new].append(line[1:])
+        elif line.startswith("-") and old is not None:
+            removed.setdefault(old, []).append(line[1:])
+    return added, removed
 
 
 def _kill_group(proc: subprocess.Popen, grace: float = 2.0) -> None:
@@ -895,6 +922,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             added_lines_by_file=diff["added_lines"], implementation_report=report, passing_tests=passing_tests,
             tests_that_exist=tests_known, command_results=cmd_results, manifest_path=manifest_path,
             schema_dir=ctx.cfg.schemas_dir, e2e_results=e2e_results, require_test_evidence=managed,
+            # the approved spec's exact test paths may be extended (never reduced); every other existing test stays protected
+            named_test_files=checks.named_test_paths(spec["allowed_paths"]), removed_lines_by_file=diff.get("removed_lines"),
         )
         test_results = {"commands": cmd_results, "e2e": e2e_results, "preview": preview, "environment": environment,
                         **({"collected_tests": collected} if managed else {})}
@@ -1155,6 +1184,10 @@ def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]]
             environmental = is_environmental(rows)
         fix = {"ac_test_mapping": "Map every automated acceptance criterion to a test in implementation_report.json `criteria` ([{ac_id, tests: [...]}]) using pytest node ids exactly as `pytest --collect-only -q` prints them, or Bun ids `path/x.test.ts::outer describe > test name`; the orchestrator only counts tests its own run of the test plan collected or reported and saw pass (Bun only from direct `bun test` commands).",
                "test_plan_commands": "Make every test_plan command exit 0 from a clean checkout; if a command depends on a port or host, make it robust or pick a free port.",
+               "protected_tests": ("Existing tests are protected. An approved spec may name an existing test file by its exact path in "
+                                   "allowed_paths; that file may then be extended (lines added, none of its existing lines removed). "
+                                   "Any other change to an existing test needs a spec that is explicitly about it; never edit or delete "
+                                   "an existing test to make the change pass."),
                SETUP_CHECK: ("The hosted verification could not run on this head; the detail says why. A failed recipe prepare phase is "
                              "fixed in the change. A changed or missing recipe, or test credentials that are not attached, needs a person "
                              "to re-approve the app's recipe: do not edit the recipe to get past it.") if managed else

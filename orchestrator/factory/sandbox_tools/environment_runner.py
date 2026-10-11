@@ -33,6 +33,9 @@ from pathlib import Path
 
 UPLOADS = Path("/mnt/session/uploads")
 OUTPUTS = Path("/mnt/session/outputs")
+APP_HOST = "localhost"                # the origin the app is used at; see app_base_url
+HEALTH_HOST = "127.0.0.1"             # readiness probes only
+NEXT_SYSTEM_TLS = "NEXT_TURBOPACK_EXPERIMENTAL_USE_SYSTEM_TLS_CERTS"
 SHELL = ["/bin/bash", "-lc"]          # a login shell, as the recipe author tested it in the sandbox
 NODE_ID_RE = re.compile(r"^[^\s:]+::\S+$")
 MEDIA_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".webm", ".mp4", ".gif"}
@@ -68,7 +71,7 @@ def health(services: list[dict], deadline: float) -> list[dict]:
     result = []
     while pending and time.monotonic() < deadline:
         for name, service in list(pending.items()):
-            url = f"http://127.0.0.1:{service['port']}{service['health_path']}"
+            url = f"http://{HEALTH_HOST}:{service['port']}{service['health_path']}"
             try:
                 with urllib.request.urlopen(url, timeout=2) as response:
                     if response.status == service.get("expect_status", 200):
@@ -253,6 +256,52 @@ def copy_entry_evidence(index: int, directory: Path, outputs: Path, report: dict
     return names
 
 
+def app_base_url(app: dict | None) -> str:
+    """The URL every e2e command and browser check uses for the recipe's app: http://localhost:<port>. Dev servers (the
+    Next.js dev server's request.nextUrl.origin among them) and recipes call a local app `localhost`, and an origin or
+    CSRF check compares the browser's Origin header with that origin. http://127.0.0.1:<port> reaches the same socket but
+    is a different origin, so every enhanced request was refused as an invalid origin. Nothing about the check is
+    weakened: the browser simply uses the origin the app expects. Readiness probes stay on 127.0.0.1."""
+    return f"http://{APP_HOST}:{app['port']}" if app else ""
+
+
+def runtime_compat(repo: Path, env: dict) -> dict:
+    """Toolchain compatibility defaults the harness applies, as recorded (non-secret) in the report. One today: a repository
+    whose root package.json depends on `next` runs with NEXT_TURBOPACK_EXPERIMENTAL_USE_SYSTEM_TLS_CERTS=1, Next.js 16's
+    `experimental.turbopackUseSystemTlsCerts`: "Use the system-provided CA roots instead of bundled CA roots for external
+    HTTPS requests" (today only the Google Fonts download). TLS is still verified, against the certificate store this
+    sandbox already trusts; no CA is installed and NODE_TLS_REJECT_UNAUTHORIZED is never set. App files, the recipe and
+    the spec's commands are untouched, and a value the sandbox environment already sets is left as it is."""
+    try:
+        package = json.loads((repo / "package.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    package = package if isinstance(package, dict) else {}
+    deps = {}
+    for key in ("dependencies", "devDependencies"):
+        if isinstance(package.get(key), dict):
+            deps.update(package[key])
+    if "next" not in deps:
+        return {}
+    if NEXT_SYSTEM_TLS in env:
+        return {NEXT_SYSTEM_TLS: {"value": str(env[NEXT_SYSTEM_TLS])[:8], "applied": False,
+                                  "reason": "already set by the sandbox environment"}}
+    env[NEXT_SYSTEM_TLS] = "1"
+    return {NEXT_SYSTEM_TLS: {"value": "1", "applied": True,
+                              "reason": "Next.js app: Turbopack trusts the sandbox's existing system CA roots; TLS stays verified"}}
+
+
+def sandbox_env(base: dict, profile: dict, request: dict, repo: Path, evidence: Path) -> tuple[dict, dict]:
+    """The environment every recipe phase and spec command runs with, and the non-secret runtime facts the report keeps:
+    the app's canonical base URL, the readiness probe host, and the compatibility defaults applied."""
+    app = next((s for s in profile["services"] if s["id"] == "app"), None)
+    env = dict(base)
+    env.update(BASE_URL=app_base_url(app), FACTORY_EVIDENCE_DIR=str(evidence),
+               FACTORY_TEST_HEAD=request["head_sha"], FACTORY_TEST_PROFILE=str(repo / request["profile_path"]))
+    compat = runtime_compat(repo, env)
+    return env, {"base_url": env["BASE_URL"], "health_host": HEALTH_HOST, "compat": compat}
+
+
 def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: float, logs: Path, evidence: Path,
                work: Path, outputs: Path, report: dict) -> None:
     phases = report["phases"]
@@ -310,6 +359,8 @@ def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: flo
         result = command('PY="$(command -v python || command -v python3)"; "$PY" -m pytest --collect-only -q', repo, env, min(per_command, deadline - time.monotonic()), log)
         ids = [ln.strip() for ln in log.read_text(errors="replace").splitlines() if NODE_ID_RE.match(ln.strip())][:MAX_NODE_IDS]
         out["collected_tests"] = {"exit_code": result.get("exit_code"), "status": result["status"], "node_ids": ids}
+    elif change.get("collect_skip_reason"):
+        out["collected_tests"] = {"status": "skipped", "reason": str(change["collect_skip_reason"])[:300]}
     for entry in entries:
         index = int(entry["index"])
         if not ready and (entry.get("target", "preview") == "preview" or entry.get("visual_request")):
@@ -350,14 +401,12 @@ def run(uploads: Path = UPLOADS, outputs: Path = OUTPUTS) -> dict:
     profile = json.loads((repo / request["profile_path"]).read_text())
     if digest(profile) != request["profile_sha256"]:
         raise RuntimeError("profile fingerprint mismatch")
-    app = next((s for s in profile["services"] if s["id"] == "app"), None)
-    env = dict(os.environ)
-    env.update(BASE_URL=f"http://127.0.0.1:{app['port']}" if app else "", FACTORY_EVIDENCE_DIR=str(evidence),
-               FACTORY_TEST_HEAD=request["head_sha"], FACTORY_TEST_PROFILE=str(repo / request["profile_path"]))
+    env, runtime = sandbox_env(dict(os.environ), profile, request, repo, evidence)
     deadline = time.monotonic() + profile["timeout_seconds"]
     phases: list[dict] = []
     report = {**request, "status": "blocked", "phases": phases, "services": [],
-              "execution": {"os": platform.system(), "architecture": platform.machine(), "location": "hosted-sandbox"}}
+              "execution": {"os": platform.system(), "architecture": platform.machine(), "location": "hosted-sandbox"},
+              "runtime": runtime}
     try:
         missing = [s["name"] for s in profile["secrets"] if s["required"] and not env.get(s["name"])]
         if missing:

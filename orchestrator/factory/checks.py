@@ -80,23 +80,60 @@ def is_test_file(path: str) -> bool:
     return bool(TEST_FILE_RE.search(path))
 
 
+GLOB_CHARS = set("*?[]{}!")
+
+
+def named_test_paths(allowed_paths: Iterable[str]) -> list[str]:
+    """The test files an approved spec names by exact path in allowed_paths: no glob character, not a directory. A glob
+    such as tests/** names no file, so it never unlocks an existing test."""
+    return sorted({p.lstrip("/") for p in allowed_paths if p and not (set(p) & GLOB_CHARS) and not p.endswith("/") and is_test_file(p)})
+
+
 def protected_tests(
     modified_files: Iterable[str],
     deleted_files: Iterable[str],
     existing_test_files: Iterable[str],
     allowed_paths: Iterable[str],
     spec_touches_tests: bool,
+    named_test_files: Iterable[str] = (),
+    removed_lines_by_file: dict[str, list[str]] | None = None,
 ) -> CheckResult:
-    """Existing tests may only change if the spec is explicitly about them."""
+    """Existing tests may only change if the spec is explicitly about them.
+
+    `named_test_files` are the existing tests the approved spec names by exact path (`named_test_paths`). Such a file may
+    be extended, never reduced: lines added, none of its existing lines removed, and the file not deleted or renamed;
+    `test_weakening` still reads every added line. "None removed" must be proven: `removed_lines_by_file` has to hold an
+    entry for the file (the diff parser records one, possibly empty, for every file whose header it read), so missing
+    metadata, a binary or unparsed diff, or a quoted path the parser skipped all keep the file protected. Every other
+    existing test stays protected, including any a glob in allowed_paths would cover. `spec_touches_tests` keeps its older meaning (any existing test the
+    allowed paths cover may change) for a caller that sets it explicitly; the implement stage never does."""
     existing = set(existing_test_files)
+    deleted = set(deleted_files)
+    named = set(named_test_files)
+    removed = removed_lines_by_file
     touched = [f for f in list(modified_files) + list(deleted_files) if f in existing and is_test_file(f)]
     if spec_touches_tests:
         touched = [f for f in touched if not path_allowed(f, allowed_paths)]
-    return CheckResult(
-        check="protected_tests", passed=not touched,
-        detail="no existing tests modified" if not touched else f"existing tests modified/deleted: {sorted(touched)}",
-        data={"touched": sorted(touched)},
-    )
+
+    def why_not(f: str) -> str | None:
+        """Why a named test file is not merely extended, or None when the diff proves it is."""
+        if f in deleted:
+            return "deleted or renamed"
+        if removed is None or not isinstance(removed.get(f), list):
+            return "the diff does not prove that none of its existing lines were removed"
+        return f"removes {len(removed[f])} existing line(s)" if removed[f] else None
+    reasons = {f: why_not(f) for f in touched if f in named}
+    extended = sorted(f for f, r in reasons.items() if r is None)
+    blocked = sorted(set(touched) - set(extended))
+    reasons = {f: r for f, r in reasons.items() if r is not None}
+    if blocked:
+        detail = "existing tests modified/deleted: " + str(blocked) + (
+            "; named by the spec but not only extended: " + "; ".join(f"{f} ({r})" for f, r in sorted(reasons.items())) if reasons else "")
+    else:
+        detail = "no existing tests modified" + (
+            f"; extended (lines added, none removed) the existing tests the approved spec names exactly: {extended}" if extended else "")
+    return CheckResult(check="protected_tests", passed=not blocked, detail=detail,
+                       data={"touched": blocked, "extended_named": extended})
 
 
 WEAKENING_PATTERNS = [
@@ -416,7 +453,7 @@ def run_all_for_merge(
     *, spec: dict[str, Any], changed_files: list[str], deleted_files: list[str],
     existing_test_files: list[str], added_lines_by_file: dict[str, list[str]],
     implementation_report: dict[str, Any], passing_tests: list[str] | None, command_results: list[dict[str, Any]],
-    spec_touches_tests: bool = False,
+    spec_touches_tests: bool = False, named_test_files: Iterable[str] = (), removed_lines_by_file: dict[str, list[str]] | None = None,
     manifest_path: Path | None = None, schema_dir: Path | None = None,
     e2e_results: list[dict[str, Any]] | None = None, tests_that_exist: list[str] | None = None,
     require_test_evidence: bool = False,
@@ -430,7 +467,8 @@ def run_all_for_merge(
     """
     out = [
         diff_scope(changed_files + deleted_files, spec["allowed_paths"]),
-        protected_tests(changed_files, deleted_files, existing_test_files, spec["allowed_paths"], spec_touches_tests),
+        protected_tests(changed_files, deleted_files, existing_test_files, spec["allowed_paths"], spec_touches_tests,
+                        named_test_files, removed_lines_by_file),
         test_weakening(added_lines_by_file),
         ac_test_mapping(spec, implementation_report, passing_tests, tests_that_exist,
                         require_verified=require_test_evidence, e2e_results=e2e_results),
