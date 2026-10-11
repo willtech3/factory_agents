@@ -30,6 +30,17 @@ def _repo(tmp_path: Path) -> tuple[Path, Path]:
     return origin, work
 
 
+def _passthrough(kw, description=None):
+    """An integrator that sends the orchestrator's draft (or `description`) with the facts it was given."""
+    from test_session_cutoff import _result
+    facts = json.loads(kw['uploads']['pr_facts.json'])
+    answer = kw['custom_tools']['open_change_request']({
+        'source_branch': facts['source_branch'], 'target_branch': facts['target_branch'], 'title': facts['title'],
+        'description_markdown': description if description is not None else kw['uploads']['pr_description.md'].decode(),
+        'labels': facts['labels'], 'reviewers': facts['reviewers'], 'draft': facts['draft']}, None)
+    return _result({'cr.json': answer.encode()})
+
+
 def test_integration_keeps_artifacts_external_and_candidate_unchanged(tmp_path, root, examples):
     from types import SimpleNamespace
     from test_session_cutoff import _ctx, _result, AutoQueue
@@ -43,13 +54,11 @@ def test_integration_keeps_artifacts_external_and_candidate_unchanged(tmp_path, 
     spec = examples['spec_smart_retries']
     wid = spec['work_item_id']
     def run(**kw):
-        summary = json.loads(kw['uploads']['run_summary.json'])
-        assert '/api/artifacts/' in summary['artifact_links']['spec_json']
-        assert 'run_record_paths' not in summary
-        assert json.loads(kw['uploads']['merge_readiness.json'])['_head_sha'] == judged
-        kw['custom_tools']['open_change_request']({'source_branch': branch, 'target_branch': 'main',
-                                                  'title': 'Reviewed change', 'description_markdown': 'Evidence'}, None)
-        return _result({'cr.json': b'{}'})
+        uploads = kw['uploads']
+        assert 'run_summary.json' not in uploads and 'findings.json' not in uploads   # the evidence goes to the run record
+        assert json.loads(uploads['merge_readiness.json'])['_head_sha'] == judged
+        assert json.loads(uploads['pr_lint.json']) == {'problems': []}
+        return _passthrough(kw)
     ctx = _ctx(tmp_path, root, examples, SimpleNamespace(run=run), AutoQueue(Decision.APPROVE))
     for stage in [WorkItemStage.SPEC_DRAFTING, WorkItemStage.SPEC_JUDGING, WorkItemStage.SPEC_APPROVED,
                   WorkItemStage.IMPLEMENTING, WorkItemStage.REVIEWING, WorkItemStage.MERGE_JUDGING]:
@@ -65,6 +74,12 @@ def test_integration_keeps_artifacts_external_and_candidate_unchanged(tmp_path, 
     assert _git(work, 'status', '--porcelain') == ''
     assert not (work / '.factory').exists()
     assert ctx.store.get_json(ctx.run_id, 'integrate', f"{spec['spec_id']}-approved-merge_readiness.json") == verdict
+    record = ctx.store.get_json(ctx.run_id, 'integrate', f"{spec['spec_id']}-run_record.json")
+    assert '/api/artifacts/' in record['artifact_links']['spec_json'] and record['head_sha'] == judged
+    assert record['pull_request']['url'] == 'https://example.test/pull/42'
+    assert record['size']['files'] == [{'path': 'retry.py', 'added': 1, 'removed': 0}]
+    opened = ctx.store.get_artifact(ctx.run_id, 'integrate', f"{spec['spec_id']}-pr_description.md").decode()
+    assert '1 changed lines in 1 file (+1 / −0).' in opened and f"#record-{spec['spec_id']}" in opened
 
 
 def test_moved_branch_must_be_reviewed_again(tmp_path, root, examples):
@@ -113,8 +128,7 @@ def test_integrator_uses_forge_receipt_instead_of_agent_report(tmp_path, root, e
     sid, wid = spec['spec_id'], spec['work_item_id']
     def run(**kw):
         if opens_pr:
-            kw['custom_tools']['open_change_request']({'source_branch': 'factory/branch', 'target_branch': 'main',
-                                                       'title': 'A reviewed change', 'description_markdown': 'Evidence'}, None)
+            _passthrough(kw)
         return _result({'cr.json': b'{"id": 999, "url": "invented"}'})
     driver = SimpleNamespace(run=run)
     ctx = _ctx(tmp_path, root, examples, driver, AutoQueue(Decision.APPROVE))
@@ -140,7 +154,7 @@ def test_evaluation_pr_is_forced_to_draft_and_labeled(tmp_path, root, examples):
     from types import SimpleNamespace
     from test_session_cutoff import _ctx, Driver, AutoQueue
     from factory.gates import Decision
-    from factory.stages.integrate import make_open_change_request
+    from factory.stages.integrate import evaluation_banner, make_open_change_request
     from factory.forge import ChangeRequest
     ctx = _ctx(tmp_path, root, examples, Driver(examples), AutoQueue(Decision.APPROVE))
     ctx.evaluation_target = ('evaluation', 'a' * 40)
@@ -148,11 +162,39 @@ def test_evaluation_pr_is_forced_to_draft_and_labeled(tmp_path, root, examples):
     def create(**kw):
         calls.append(kw)
         return ChangeRequest(42, 'https://example.test/pull/42', 'factory/branch', 'evaluation')
+    beyond = {'files': [{'path': 'verification/x.py', 'added': 12, 'removed': 3}], 'added': 12, 'removed': 3}
+    banner = evaluation_banner('a' * 40, 'main', beyond)
     handler = make_open_change_request(ctx, SimpleNamespace(kind='github', create_change_request=create),
-                                      'spec_test', 'wi-test', 'factory/branch', 'evaluation')
+                                      'spec_test', 'wi-test', 'factory/branch', 'evaluation', banner=banner)
     handler({'source_branch': 'factory/branch', 'target_branch': 'evaluation', 'title': 'Change',
              'description_markdown': 'Evidence', 'draft': False}, None)
     assert calls[0]['draft'] is True
     assert calls[0]['title'].startswith('[Factory evaluation]')
-    assert 'do not merge' in calls[0]['description']
-    assert 'a' * 40 in calls[0]['description']
+    first, second = calls[0]['description'].splitlines()[:2]
+    assert 'do not merge' in first and 'a' * 10 in first and first.count('. ') == 0      # one sentence
+    assert second == "> Beyond the current `main` it holds 1 file, +12 / −3: `verification/x.py` (+12 / −3)."
+    assert calls[0]['description'].endswith('Evidence')
+
+
+def test_open_change_request_refuses_a_description_written_for_the_factory(tmp_path, root, examples):
+    """Post-mortem 2026-10-11 §4: ids, factory vocabulary, costs, first-person judge text, local links and tables are
+    refused with the reasons, and nothing reaches the forge until the integrator sends a description that passes."""
+    from types import SimpleNamespace
+    from test_session_cutoff import _ctx, Driver, AutoQueue
+    from factory.gates import Decision
+    from factory.stages.integrate import make_open_change_request
+    from factory.forge import ChangeRequest
+    ctx = _ctx(tmp_path, root, examples, Driver(examples), AutoQueue(Decision.APPROVE))
+    calls = []
+    forge = SimpleNamespace(kind='github', create_change_request=lambda **kw: calls.append(kw) or ChangeRequest(7, 'u', 'b', 'main'))
+    url = 'http://127.0.0.1:8772/#/runs/run_budget000001#record-spec_test'
+    handler = make_open_change_request(ctx, forge, 'spec_test', 'wi-test', 'b', 'main', record_url=url)
+    bad = ("## Summary\nI re-ran AC-9 and the merge judge settled F-7 in round 2 for $2.08.\n"
+           "| AC | Judge |\n|---|---|\n[results](http://127.0.0.1:8772/api/artifacts/run_budget000001/implement/x.json)\n")
+    answer = json.loads(handler({'source_branch': 'b', 'target_branch': 'main', 'title': 'spec_test: Change',
+                                 'description_markdown': bad}, None))
+    joined = ' '.join(answer['problems'])
+    for expected in ('AC-9', 'F-7', 'merge judge', 'round', '$2', 'first-person', 'tables', '127.0.0.1', 'run record exactly once',
+                     '`## Needs your decision`', 'spec id'):
+        assert expected in joined, expected
+    assert calls == [] and not any(ev.kind == 'cr.opened' for ev in ctx.store.events(ctx.run_id))

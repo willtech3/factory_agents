@@ -20,7 +20,7 @@ Review the plan, then re-run with `--yes` once you agree with it. `claude-lock.j
 | `reviewer` | 3 | Opus 5.5, high | no | implementer (fresh session per round, sees only diff + spec) | Adversarial review with falsifiable findings |
 | `security_reviewer` | 3 | Fable 5.1, high | no | implementer (fresh session per round, sees only diff + spec + the orchestrator's pre-checks) | Security review: trust boundaries, attacker-controlled input, authorisation, secrets, dependencies; one CWE per finding; reproduced findings stand whatever their label |
 | `merge_judge` | 3 | Opus 5.5, high | no | both | Audits the reviewer/implementer exchange; decides ready / another round / escalate |
-| `integrator` | 4 | Sonnet 5.5, medium | no (pushes) | - | Opens the change request (PR or MR) with the full evidence bundle |
+| `integrator` | 4 | Sonnet 5.5, medium | no (pushes) | - | Opens the change request (PR or MR) with the short reviewer-first description; the evidence is in the run record |
 
 ## Conventions every prompt follows
 

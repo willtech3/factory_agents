@@ -440,6 +440,7 @@
           p.merge_sha ? el("span", { class: "explain mono" }, ` ${p.merge_sha.slice(0, 10)}`) : null,
           p.dev_url ? [" ", el("a", { href: p.dev_url, target: "_blank", rel: "noopener" }, "open dev")] : null)));
       body.append(el("h3", null, "Pull requests"), t);
+      for (const rec of r.run_records || []) body.append(runRecordBlock(r, rec));
     } else if (s.design_only && s.specs_approved.length) {
       body.append(el("h3", null, "Specs approved"), el("ul", null, s.specs_approved.map(x => el("li", { class: "mono" }, x))));
     }
@@ -450,6 +451,54 @@
         d.comments ? el("div", { class: "explain" }, `“${d.comments.slice(0, 300)}${d.comments.length > 300 ? "…" : ""}”`) : null))));
     }
     return card("What came out", body, s.status_label, s.status === "completed" ? "" : "soft");
+  }
+
+  // The full evidence behind one pull request (the run record the integrate stage writes). The pull request itself
+  // carries only a short reviewer-first description and links here; media are shown in "See the change".
+  function runRecordBlock(r, rec) {
+    const pr = rec.pull_request || {};
+    const box = el("details", { class: "run-record", id: `record-${rec.spec_id}` },
+      el("summary", null, `Full record${pr.id != null ? ` for #${pr.id}` : ""}: ${rec.title || rec.spec_id}`));
+    const section = (title, ...kids) => box.append(el("h4", { class: "mini-h" }, title), ...kids.filter(k => k != null));
+    const artifact = a => `/api/artifacts/${encodeURIComponent(r.run_id)}/${a.split("/").map(encodeURIComponent).join("/")}`;
+    if (rec.what_changed) section("What changed", el("p", null, rec.what_changed));
+    section("Needs a decision", (rec.decisions || []).length
+      ? el("ul", null, rec.decisions.map(d => el("li", null, d.decision, d.location ? el("span", { class: "explain mono" }, ` ${d.location}`) : null)))
+      : el("p", { class: "explain" }, "Nothing."));
+    const crit = el("table", null, el("tr", null, el("th", null, "Criterion"), el("th", null, "Given / when / then"), el("th", null, "Status"), el("th", null, "Evidence"), el("th", null, "End-to-end rows"), el("th", null, "Reviewers")));
+    for (const c of rec.criteria || []) crit.append(el("tr", null, el("td", { class: "mono" }, c.ac_id),
+      el("td", null, `${c.given || ""} / ${c.when || ""} / ${c.then || ""}`),
+      el("td", null, el("span", { class: `tag ${c.status === "met" ? "ok" : c.status === "not_met" ? "bad" : "warn"}` }, words(c.status))),
+      el("td", { class: "explain" }, c.evidence || ""),
+      el("td", { class: "explain mono" }, (c.e2e || []).length ? c.e2e.map(e => `exit ${e.exit_code ?? "not run"} (${e.target})`).join("; ") : "none"),
+      el("td", { class: "explain" }, c.reviewer_status ? words(c.reviewer_status) : "")));
+    section("Acceptance criteria", crit);
+    section("Review findings", (rec.findings || []).length ? el("ul", null, rec.findings.map(f => el("li", null,
+      el("b", null, `${f.finding_id} ${f.severity}`), ` ${f.claim || ""}`,
+      el("div", { class: "explain" }, [f.disposition ? `implementer: ${words(f.disposition)}` : null, f.final_status ? `final: ${words(f.final_status)}` : null,
+        f.judge_assessment ? `judge: ${f.judge_assessment}` : null].filter(Boolean).join(" · "))))) : el("p", { class: "explain" }, "No findings."));
+    const v = rec.verification || {};
+    const env = v.environment || {};
+    section("Verification", el("p", { class: "explain" }, [env.mode ? `Mode ${env.mode}` : null, env.host, env.session_id ? `session ${env.session_id}` : null,
+      env.profile_path ? `${env.profile_path} ${(env.profile_sha256 || "").slice(0, 12)}` : null, rec.head_sha ? `head ${rec.head_sha.slice(0, 10)}` : null].filter(Boolean).join(" · ")),
+      el("ul", null, (v.commands || []).map(c => el("li", { class: "mono" }, `${c.command} → exit ${c.exit_code ?? "not run"}${c.passed || c.failed ? ` (${c.passed} passed, ${c.failed} failed)` : ""}`)),
+        (v.e2e || []).map(e => el("li", { class: "mono" }, `${e.command} → exit ${e.exit_code ?? "not run"} (${e.target}${e.visual ? `, browser ${e.visual}` : ""}; covers ${(e.covers_ac || []).join(", ")})`))),
+      el("ul", null, (rec.checks || []).map(c => el("li", null, el("span", { class: `tag ${c.passed ? "ok" : "bad"}` }, c.passed ? "passed" : "failed"), ` ${c.check}`, c.detail ? el("span", { class: "explain" }, `: ${c.detail}`) : null))));
+    const media = rec.media || [];
+    section("Screenshots and recordings", media.length ? el("ul", null, media.map(m => el("li", null,
+      `${m.description || "Browser check"}: ${words(m.status)}${m.current ? "" : " (earlier commit)"} · `,
+      ...(m.media || []).flatMap((x, i) => [i ? ", " : "", el("a", { href: artifact(x.artifact), target: "_blank", rel: "noopener" }, x.caption || x.name)])))) : el("p", { class: "explain" }, "No browser checks."),
+      media.length ? el("p", { class: "explain" }, "Step observations and playback are in See the change.") : null);
+    if ((rec.residual_risks || []).length || rec.judge_summary) section("Residual risks and the judge's summary",
+      el("ul", null, (rec.residual_risks || []).map(x => el("li", null, x))), rec.judge_summary ? el("p", { class: "explain" }, rec.judge_summary) : null);
+    const prov = rec.provenance || {};
+    const sess = el("table", null, el("tr", null, el("th", null, "Stage"), el("th", null, "Agent"), el("th", null, "Session"), el("th", null, "Duration"), el("th", null, "List cost")));
+    for (const x of prov.sessions || []) sess.append(el("tr", null, el("td", null, x.stage), el("td", null, `${x.agent_name || x.agent_key || ""}${x.agent_version ? ` v${x.agent_version}` : ""}`),
+      el("td", { class: "mono" }, x.console_url ? el("a", { href: x.console_url, target: "_blank", rel: "noopener" }, x.session_id) : x.session_id), el("td", null, x.duration || ""), el("td", null, money(x.list_cost_usd))));
+    section("Sessions and cost", sess, el("p", { class: "explain" }, `Sessions above: ${money(prov.sessions_cost_usd)} over ${prov.sessions_duration || "n/a"}; whole run when integrated: ${money(prov.run_cost_usd)}.`));
+    const links = rec.artifact_links || {};
+    if (Object.keys(links).length) section("Contract and verdicts", el("ul", null, Object.entries(links).map(([k, u]) => el("li", null, el("a", { href: u, target: "_blank", rel: "noopener" }, words(k))))));
+    return box;
   }
 
   function askBlock(q, onDone) {
@@ -492,6 +541,7 @@
 
     frag.append(card(null, lineStrip(r), null, "soft"));
     if (s.terminal || s.status === "stopped") frag.append(resultCard(r));
+    else if ((r.run_records || []).length) frag.append(card("What came out so far", el("div", { class: "result" }, r.run_records.map(rec => runRecordBlock(r, rec))), "pull requests opened while the run continues"));
 
     for (const check of r.browser_checks_pending || []) frag.append(card("Browser check in progress",
       el("div", null, el("p", null, check.description), el("p", { class: "explain" }, `${check.persona} · ${check.environment.name} · waiting for browser observations and screenshots`))));
@@ -602,6 +652,8 @@
 
     $main.replaceChildren(frag);
     if (location.hash.endsWith("#q")) { const q = document.getElementById("q"); if (q) q.scrollIntoView(); }
+    const recordAt = location.hash.match(/#record-([^#?]+)$/);
+    if (recordAt) { const rec = document.getElementById(`record-${decodeURIComponent(recordAt[1])}`); if (rec) { rec.open = true; setTimeout(() => rec.scrollIntoView(), 0); } }
     state.lastKey.run = runKey(r);
     // A parked run stops polling; one paused at its budget keeps polling so the page follows the resume it started.
     if (!(TERMINAL[r.stage] || r.stage === "completed") || r.stage === "paused_budget") startPoll(refreshWhenChanged("run", async () => runKey(await api(`/api/runs/${runId}`)), () => viewRun(runId)), 4000);
