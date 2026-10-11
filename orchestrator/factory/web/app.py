@@ -7,7 +7,8 @@ artifacts, and writes decisions and answers to `runs/_queue/`, exactly where `fa
 so a running `factory run` picks them up unchanged. No agent, forge, or tracker call happens here.
 
 Routes: `/` and `/static/*` serve the UI; `/api/*` is JSON; `/gates/<id>/page` is the standalone artifact
-page (the same renderer as `surfaces/artifact_pages.py`). `--demo` seeds a simulated run (`demo.py`).
+page (the same renderer as `surfaces/artifact_pages.py`). The home page is the run history: every run under the
+runs directory with its status and what came out of it, derived from the event log by `summary.py`.
 """
 from __future__ import annotations
 
@@ -16,7 +17,6 @@ import os
 import re
 import subprocess
 import sys
-import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -35,13 +35,13 @@ from .. import config as cfgmod
 from ..budget import last_pause
 from ..config import REPO_ROOT, Config
 from ..gates import Decision, GateKind, parse_budget
-from ..state import RunStage
+from ..state import RunStage, replay
 from ..store import RunStore
+from ..summary import controller_running, summarize
 from ..surfaces.artifact_pages import render_gate1_page, render_gate2_page
 from ..surfaces.filequeue import FileQueue
 from ..watcher import heartbeat as watcher_heartbeat
 from ..watcher import pending_work_items
-from .demo import DemoRunner
 from .repositories import list_repositories, repository_name
 
 STATIC = Path(__file__).parent / "static"
@@ -105,7 +105,7 @@ class OutcomeBody(BaseModel):
 class StartRunBody(BaseModel):
     outcome_id: str
     app_id: str | None = None
-    mode: str = "demo"          # demo | design | live
+    mode: str = "live"          # live | design
     settings: dict[str, Any] = {}   # tunables from the Start screen; see SETTINGS_ENV
 
 
@@ -177,7 +177,8 @@ class Console:
         self.cfg = cfg
         self.store = RunStore(cfg.runs_dir)
         self.queue = FileQueue(cfg.runs_dir / "_queue")
-        self.demo = DemoRunner(cfg.runs_dir, cfg.schemas_dir, REPO_ROOT / "examples" / "ledgerline")
+        # run_id -> ((log size, log mtime, controller alive), summary): the history replays a log only when it changed
+        self._summaries: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
         self.outcomes_dir = cfg.runs_dir / "_outcomes"
         self.logs_dir = cfg.runs_dir / "_logs"
 
@@ -188,32 +189,45 @@ class Console:
                 return ev.payload.get("title") or run_id
         return run_id
 
+    def summary(self, run_id: str) -> dict[str, Any]:
+        """`summary.summarize` for one run, cached on the event log's size and mtime and on whether a controller holds
+        the run's lock. A finished run is replayed once per Console process; the Runs page's poll then costs a stat
+        and one non-blocking flock attempt per run."""
+        log = self.cfg.runs_dir / run_id / "events.jsonl"
+        st = log.stat()
+        alive = controller_running(self.cfg.runs_dir, run_id)
+        key = (st.st_size, st.st_mtime_ns, alive)
+        hit = self._summaries.get(run_id)
+        if hit is None or hit[0] != key:
+            events = self.store.events(run_id)
+            hit = (key, summarize(events, replay(run_id, events), alive))
+            self._summaries[run_id] = hit
+        return dict(hit[1])
+
     def runs(self) -> list[dict[str, Any]]:
+        """The run history: one record per run with its status and what came out of it, plus what the queue says is
+        still waiting on a person. Runs that are not finished come first, then by last activity."""
         gates = self.queue.open_gates()
         questions = self.queue.open_questions()
         out = []
         for run_id in self.store.list_runs():
-            events = self.store.events(run_id)
             try:
-                st = self.store.state(run_id)
+                s = self.summary(run_id)
             except Exception as e:  # a corrupt log should not hide the other runs
-                out.append({"run_id": run_id, "title": self._title(run_id, events), "stage": "unreadable", "error": str(e)})
+                try:
+                    title = self._title(run_id)
+                except Exception:  # noqa: BLE001
+                    title = run_id
+                out.append({"run_id": run_id, "title": title, "stage": "unreadable", "status": "unreadable", "status_label": "Unreadable",
+                            "headline": f"The event log could not be read: {str(e)[:160]}", "terminal": True, "error": str(e)})
                 continue
-            by_stage: dict[str, int] = {}
-            for wi in st.work_items.values():
-                by_stage[wi.stage.value] = by_stage.get(wi.stage.value, 0) + 1
-            out.append({
-                "run_id": run_id, "title": self._title(run_id, events), "stage": st.stage.value,
-                "cost": round(st.list_cost_usd, 2), "budget_usd": st.budget_usd, "updated_at": events[-1].at if events else None,
-                "created_at": events[0].at if events else None,
-                "waiting": {"gates": sum(1 for g in gates.values() if g["run_id"] == run_id and g["gate_id"] in st.open_gates and not g["recorded"]),
+            open_gates, open_questions = set(s.pop("open_gate_ids")), set(s.pop("open_question_ids"))
+            s["waiting"] = {"gates": sum(1 for g in gates.values() if g["run_id"] == run_id and g["gate_id"] in open_gates and not g["recorded"]),
                             "questions": sum(1 for q in questions.values() if q["run_id"] == run_id and not q["answered"]
-                                             and q["question_id"] in st.open_questions)},
-                "work_items": {"total": len(st.work_items), "by_stage": by_stage},
-                "demo": self.demo.is_demo(run_id),
-                "design_only": any(ev.kind in ("run.created", "run.completed") and ev.payload.get("design_only") for ev in events),
-            })
+                                             and q["question_id"] in open_questions)}
+            out.append(s)
         out.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
+        out.sort(key=lambda r: bool(r.get("terminal")))
         return out
 
     def run_detail(self, run_id: str) -> dict[str, Any]:
@@ -252,13 +266,15 @@ class Console:
         # one session hit its own cap is still being driven: its orchestrator waits on that gate, so nothing to resume.
         budget = self._budget(st, events, gates)
         paused = budget["paused"]
-        resumable = not self.demo.is_demo(run_id) and (paused or (
+        resumable = paused or (
             st.stage == RunStage.FAILED
-            and any(ev.kind == "stage.entered" and ev.payload.get("stage") == "implementing" for ev in events)))
+            and any(ev.kind == "stage.entered" and ev.payload.get("stage") == "implementing" for ev in events))
         # Gate 3 and Stage 5 are followed by `factory watch`, a separate process; its heartbeat says whether one is running.
         pending = [wi.work_item_id for wi in pending_work_items(st)]
-        watch = {"pending": pending, "watchable": bool(pending) and not self.demo.is_demo(run_id),
-                 "heartbeat": watcher_heartbeat(self.cfg.runs_dir, run_id)}
+        watch = {"pending": pending, "watchable": bool(pending), "heartbeat": watcher_heartbeat(self.cfg.runs_dir, run_id)}
+        summary = summarize(events, st, controller_running(self.cfg.runs_dir, run_id))
+        for key in ("open_gate_ids", "open_question_ids"):
+            summary.pop(key, None)
         created = next((ev.payload for ev in events if ev.kind == "run.created"), {})
         policy = dict(created.get("policy") or {"run_budget_usd": ((outcome or {}).get("constraints") or {}).get("budget_usd"),
                                                 "preview_mode": self.cfg.preview_mode, "recorded": False})
@@ -270,7 +286,8 @@ class Console:
                     if key in ev.payload:
                         policy[key] = ev.payload[key]
         return {"run_id": run_id, "title": self._title(run_id, events), "outcome": outcome, "stage": st.stage.value,
-                "cost": round(st.list_cost_usd, 2), "demo": self.demo.is_demo(run_id), "design_only": design_only, "work_items": items,
+                "status": summary["status"], "summary": summary,
+                "cost": round(st.list_cost_usd, 2), "design_only": design_only, "work_items": items,
                 "resumable": resumable, "budget": budget, "resuming": self.resuming(run_id), "watch": watch, "crew": crew_roster(events), "policy": policy,
                 "gates": gates, "questions": questions, "events": timeline, "artifacts": self._artifacts(run_id),
                 "browser_checks_pending": visual.pending(self.cfg.runs_dir / run_id),
@@ -526,11 +543,8 @@ class Console:
 
     def start_run(self, body: StartRunBody) -> dict[str, Any]:
         outcome = self.load_outcome(body.outcome_id)
-        if body.mode == "demo":
-            run_id = self.demo.seed(outcome)
-            return {"ok": True, "mode": "demo", "run_id": run_id}
         if body.mode not in ("live", "design"):
-            raise HTTPException(400, "mode must be demo, design, or live")
+            raise HTTPException(400, "mode must be live or design")
         design = body.mode == "design"
         repo_env = {}
         if self.cfg.forge_token:
@@ -595,7 +609,7 @@ class Console:
                            "reviewer": "review", "security_reviewer": "review", "merge_judge": "review", "integrator": "ship"}[member["role"]]
                     cards.append({"column": col, "row": "crew", "kind": "agent", "role": member["role"], "title": member["title"], "since": member["started_at"], "session_id": member["session_id"]})
             runs.append({"run_id": run_id, "title": self._title(run_id, events), "stage": stage, "column": column, "cost": round(st.list_cost_usd, 2),
-                         "demo": self.demo.is_demo(run_id), "updated_at": events[-1].at, "cards": cards,
+                         "updated_at": events[-1].at, "cards": cards,
                          "terminal": stage in ("completed", "closed", "failed", "escalated")})
         runs.sort(key=lambda r: (r["terminal"], r["updated_at"]), reverse=False)
         runs.sort(key=lambda r: r["updated_at"] or "", reverse=True)
@@ -663,7 +677,7 @@ class Console:
         watch = detail["watch"]
         if not watch["watchable"]:
             raise HTTPException(409, f"run {run_id} has nothing to watch: no work item has an open pull request, a merge to observe, "
-                                     "or a dev deploy in flight" + (" (demo runs are not watched)" if detail["demo"] else ""))
+                                     "or a dev deploy in flight")
         hb = watch["heartbeat"]
         if hb and hb.get("alive"):
             raise HTTPException(409, f"a watcher is already running for {run_id} (pid {hb.get('pid')}, last poll {hb.get('last_poll_at')})")
@@ -762,12 +776,11 @@ def _clean(o: Any) -> Any:
     return o
 
 
-def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
+def create_app(cfg: Config | None = None) -> FastAPI:
     cfg = cfg or cfgmod.load()
     console = Console(cfg)
     app = FastAPI(title="Factory Console", docs_url=None, redoc_url=None)
     app.state.console = console
-    app.state.demo = console.demo
     from ..onboarding import AppOnboarding
     onboarding = AppOnboarding(cfg)
     app.state.onboarding = onboarding
@@ -922,10 +935,6 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
     def api_log(name: str):
         return console.log(name)
 
-    @app.post("/api/demo/tick")
-    def api_demo_tick():
-        return {"ticked": console.demo.tick_all()}
-
     @app.get("/api/artifacts/{run_id}/{stage}/{name}")
     def api_artifact(run_id: str, stage: str, name: str):
         root = cfg.runs_dir.resolve()
@@ -959,13 +968,4 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
             response.headers["Cache-Control"] = "no-cache"
         return response
 
-    if demo_thread:
-        def loop() -> None:
-            while True:
-                try:
-                    console.demo.tick_all()
-                except Exception:
-                    pass
-                time.sleep(1.5)
-        threading.Thread(target=loop, name="factory-demo", daemon=True).start()
     return app

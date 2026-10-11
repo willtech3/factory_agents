@@ -134,7 +134,6 @@ h1, h2, h3, h4 { margin: 0; line-height: 1.2; font-family: var(--display); lette
 .tag.ok { background: var(--ok-soft); border-color: transparent; color: var(--ok); }
 .tag.warn { background: var(--warn-soft); border-color: transparent; color: var(--warn); }
 .tag.bad { background: var(--bad-soft); border-color: transparent; color: var(--bad); }
-.tag.demo { background: var(--warn-soft); border-color: transparent; color: var(--warn); }
 .tag.live { background: var(--ink); border-color: transparent; color: var(--primary-fg); }
 .tag.po { color: var(--po); } .tag.eng { color: var(--eng); } .tag.ops { color: var(--ops); } .tag.crew { color: var(--crew-text); background: var(--crew-soft); border-color: transparent; }
 .status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
@@ -503,3 +502,15 @@ details.tech summary { cursor: pointer; }
 .app-recordings { grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr)); }
 .app-recordings video { max-height: 480px; }
 @media (max-width: 520px) { .stepper.app-steps { grid-template-columns: minmax(0, 1fr); } .start > aside { min-width: 0; } .secret .row input { flex-basis: 100%; } }
+
+/* ---------- the run history (the home page) and a finished run's result */
+.chips { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.chips .btn[aria-pressed="true"] { background: var(--ink); color: var(--primary-fg); border-color: var(--ink); }
+.chips .n { opacity: 0.75; font-weight: 400; }
+table.runs td.headline { max-width: 46ch; }
+table.runs .prs { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; font-size: 13px; }
+table.runs .prs a { white-space: nowrap; }
+.result .headline { font-size: 16px; font-weight: 700; margin: 0 0 12px; }
+.result h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-3); margin: 18px 0 8px; }
+.result ul { margin: 0; padding-left: 18px; }
+.result li + li { margin-top: 6px; }

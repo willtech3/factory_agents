@@ -1,12 +1,12 @@
-"""A simulated run for the Factory Console: the Ledgerline example replayed through the real store, state
-machine, checks, and file queue, so the whole human loop (question, Gate 1, Gate 2, change requests) can be
-exercised without the Managed Agents platform or a forge.
+"""A scripted run for the Console tests: the Ledgerline example replayed through the real store, state machine,
+checks, and file queue, so the whole human loop (question, Gate 1, Gate 2, change requests) can be exercised and
+asserted on without the Managed Agents platform or a forge.
 
-Every event the demo appends is one the orchestrator would append, in the same order and shape, so the
-Console shows a demo run exactly as it would show a real one. The difference is who produces the artifacts:
-here they are adapted from `examples/ledgerline/` instead of coming from agent sessions. A demo run is marked
-by `runs/<run_id>/demo.json`, which also holds the phase the simulation is in; `tick()` advances it when the
-human has answered or decided.
+Every event it appends is one the orchestrator would append, in the same order and shape, so the Console shows a
+scripted run exactly as it would show a real one. The difference is who produces the artifacts: here they are
+adapted from `examples/ledgerline/` instead of coming from agent sessions. A scripted run keeps its phase in
+`runs/<run_id>/scripted.json`; `tick()` advances it when the human has answered or decided. This is test support
+only: nothing in the product refers to it.
 """
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .. import checks
-from ..gates import ArtifactRef, Decision, Gate, GateKind, Question
-from ..state import RunStage, WorkItemStage
-from ..store import RunStore
-from ..surfaces.filequeue import FileQueue
+from factory import checks
+from factory.gates import ArtifactRef, Decision, Gate, GateKind, Question
+from factory.state import RunStage, WorkItemStage
+from factory.store import RunStore
+from factory.surfaces.filequeue import FileQueue
 
 QUESTION = {
     "question": "Should retries follow Stripe Smart Retries or our own schedule?",
@@ -31,14 +31,14 @@ QUESTION = {
 }
 
 
-class DemoRunner:
+class ScriptedRun:
     def __init__(self, runs_dir: Path, schemas_dir: Path, examples_dir: Path):
         self.runs_dir = runs_dir
         self.schemas_dir = schemas_dir
         self.examples_dir = examples_dir
         self.store = RunStore(runs_dir)
         self.queue = FileQueue(runs_dir / "_queue")
-        self._lock = threading.Lock()      # the background loop and /api/demo/tick must not advance a run at once
+        self._lock = threading.Lock()      # tick_all() and tick() must not advance a run at once
 
     # ------------------------------------------------------------------ public
     def example_outcome(self) -> dict[str, Any]:
@@ -48,10 +48,10 @@ class DemoRunner:
         return self.seed(self.example_outcome())
 
     def seed(self, outcome: dict[str, Any]) -> str:
-        """Create a demo run: intake, decomposing, and a blocking question from the decomposer."""
+        """Create a scripted run: intake, decomposing, and a blocking question from the decomposer."""
         run_id = f"run_{uuid.uuid4().hex[:10]}"
         self._event(run_id, "run.created", {"outcome_id": outcome["outcome_id"], "title": outcome["title"],
-                                            "forge": "demo", "gate_surface": "web",
+                                            "forge": "scripted", "gate_surface": "web",
                                             "budget_usd": (outcome.get("constraints") or {}).get("budget_usd")}, stage="intake")
         self.store.put_artifact(run_id, "intake", "outcome.json", json.dumps(outcome, indent=2).encode())
         self._event(run_id, "stage.entered", {"stage": RunStage.DECOMPOSING.value}, stage="decompose")
@@ -65,10 +65,10 @@ class DemoRunner:
         return run_id
 
     def runs(self) -> list[str]:
-        return sorted(p.parent.name for p in self.runs_dir.glob("run_*/demo.json"))
+        return sorted(p.parent.name for p in self.runs_dir.glob("run_*/scripted.json"))
 
-    def is_demo(self, run_id: str) -> bool:
-        return (self.runs_dir / run_id / "demo.json").exists()
+    def is_scripted(self, run_id: str) -> bool:
+        return (self.runs_dir / run_id / "scripted.json").exists()
 
     def tick_all(self) -> list[tuple[str, str]]:
         return [(r, self.tick(r)) for r in self.runs()]
@@ -128,7 +128,7 @@ class DemoRunner:
         for name, sha in shas.items():
             self._event(run_id, "artifact.produced", {"artifact_type": Path(name).stem, "path": f"decompose/r{rev}-{name}",
                                                       "sha256": sha}, stage="decompose")
-        self._event(run_id, "session.finished", {"session_id": f"sess_demo_{run_id[-6:]}_dec{rev}", "agent_id": "decomposer (demo)",
+        self._event(run_id, "session.finished", {"session_id": f"sess_scripted_{run_id[-6:]}_dec{rev}", "agent_id": "decomposer (scripted)",
                                                  "agent_version": 1, "list_cost_usd": 6.4, "outcome_result": "satisfied",
                                                  "stop_reason": "end_turn"}, stage="decompose", actor="platform")
         self._event(run_id, "artifact.produced", {"artifact_type": "decomposition", "revision": rev, "work_items": dec["work_items"],
@@ -156,7 +156,7 @@ class DemoRunner:
                         work_item_id=wid, stage="specify")
             self.store.put_artifact(run_id, "specify", f"{wid}-r{rev}-spec.json", json.dumps(spec, indent=2).encode())
             self.store.put_artifact(run_id, "specify", f"{wid}-r{rev}-spec.md", spec_markdown(spec).encode())
-            self._event(run_id, "session.finished", {"session_id": f"sess_demo_{wid[-6:]}_r{rev}", "agent_id": "spec_writer (demo)",
+            self._event(run_id, "session.finished", {"session_id": f"sess_scripted_{wid[-6:]}_r{rev}", "agent_id": "spec_writer (scripted)",
                                                      "agent_version": 1, "list_cost_usd": 3.1, "outcome_result": "satisfied",
                                                      "stop_reason": "end_turn"}, stage="specify", actor="platform")
             self._event(run_id, "work_item.stage", {"stage": WorkItemStage.SPEC_JUDGING.value, "spec_id": sid},
@@ -164,7 +164,7 @@ class DemoRunner:
             shas[f"{sid}.json"] = self.store.put_artifact(run_id, "specify", f"final-{sid}.json", json.dumps(spec, indent=2).encode())
         verdict = self._adapted_verdict(outcome, dec, specs, rev, feedback)
         shas["verdict.json"] = self.store.put_artifact(run_id, "judge", "final-verdict.json", json.dumps(verdict, indent=2).encode())
-        self._event(run_id, "session.finished", {"session_id": f"sess_demo_judge_r{rev}", "agent_id": "spec_judge (demo)",
+        self._event(run_id, "session.finished", {"session_id": f"sess_scripted_judge_r{rev}", "agent_id": "spec_judge (scripted)",
                                                  "agent_version": 1, "list_cost_usd": 5.0, "outcome_result": None,
                                                  "stop_reason": "end_turn"}, stage="judge", actor="platform")
         self._event(run_id, "judge.verdict", {"round": rev, "result": verdict["overall"]["result"],
@@ -195,10 +195,10 @@ class DemoRunner:
                 if stage == WorkItemStage.IMPLEMENTING:
                     payload["branch"] = branch
                 self._event(run_id, "work_item.stage", payload, work_item_id=wid, spec_id=sid)
-            self._event(run_id, "session.finished", {"session_id": f"sess_demo_impl_{wid[-6:]}", "agent_id": "implementer (demo)",
+            self._event(run_id, "session.finished", {"session_id": f"sess_scripted_impl_{wid[-6:]}", "agent_id": "implementer (scripted)",
                                                      "agent_version": 1, "list_cost_usd": 11.2}, stage="implement", actor="platform")
             url = f"https://github.com/example/app/pull/{400 + n}"
-            self._event(run_id, "cr.opened", {"id": 400 + n, "url": url, "branch": branch, "forge": "demo"}, work_item_id=wid, spec_id=sid)
+            self._event(run_id, "cr.opened", {"id": 400 + n, "url": url, "branch": branch, "forge": "scripted"}, work_item_id=wid, spec_id=sid)
             self._event(run_id, "work_item.stage", {"stage": WorkItemStage.CR_OPEN.value, "cr_id": 400 + n}, work_item_id=wid, spec_id=sid)
         self._event(run_id, "run.completed", {"specs_with_change_requests": sorted(approved)})
         m.update({"phase": "done"})
@@ -229,11 +229,11 @@ class DemoRunner:
                           payload, **extra)
 
     def _load(self, run_id: str) -> dict[str, Any]:
-        p = self.runs_dir / run_id / "demo.json"
+        p = self.runs_dir / run_id / "scripted.json"
         return json.loads(p.read_text()) if p.exists() else {}
 
     def _save(self, run_id: str, m: dict[str, Any]) -> None:
-        (self.runs_dir / run_id / "demo.json").write_text(json.dumps(m, indent=2))
+        (self.runs_dir / run_id / "scripted.json").write_text(json.dumps(m, indent=2))
 
     # ------------------------------------------------------------------ adapted artifacts
     def _example(self, name: str) -> dict[str, Any]:
@@ -254,13 +254,13 @@ class DemoRunner:
         coverage = [{**c, "metric": rename[c["metric"]]} for c in dec["coverage"] if c["metric"] in rename]
         for extra in metrics[len(example_metrics):]:
             coverage.append({"metric": extra, "work_item_ids": [w["work_item_id"] for w in dec["work_items"]],
-                             "rationale": "Demo: every work item is assumed to move this metric; a real decomposer would be specific."})
+                             "rationale": "Scripted: every work item is assumed to move this metric; a real decomposer would be specific."})
         dec["coverage"] = coverage
         if answer:
             dec["assumptions"] = [f"Owner answered the retry-schedule question: {answer}."] + list(dec.get("assumptions", []))
         if feedback:
             dec["summary"] = (f"Revision {rev}, after your feedback. What changed: {feedback.strip()[:300]} "
-                              f"(demo: the summary records the request; a real re-run would rework the items.)\n\n" + dec["summary"])
+                              f"(scripted: the summary records the request; a real re-run would rework the items.)\n\n" + dec["summary"])
         return dec
 
     def _adapted_specs(self, outcome: dict[str, Any], dec: dict[str, Any], rev: int, feedback: str | None) -> dict[str, dict[str, Any]]:
@@ -285,7 +285,7 @@ class DemoRunner:
                 spec["interfaces"] = spec["interfaces"][:1]
                 spec["test_plan"] = {**spec["test_plan"], "new_tests": [], "e2e": [
                     {"covers_ac": ["AC-1"], "command": "curl -fsS $BASE_URL/up", "target": "preview",
-                     "description": "Demo smoke check against the preview"}]}
+                     "description": "Scripted smoke check against the preview"}]}
                 spec["estimated_size"] = w.get("size", "M")
                 spec["open_questions"] = []
             spec["spec_id"] = sid
