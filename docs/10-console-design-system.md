@@ -39,7 +39,7 @@ Parked and terminal states (paused at budget, stopped, failed, escalated, done, 
 - **One slot, one unit.** A row's right-hand figure is elapsed time while a crew member works and cost once it is done, never both in the same slot.
 - **Nothing is cut mid-word.** Long agent prose goes through `firstSentences(text, max)`, which ends at a sentence or adds an ellipsis at a word boundary, and the whole text stays one fold or one link away.
 - **Monospace is for identifiers.** Run ids, spec ids, hashes, commands. Never for labels.
-- **Motion carries meaning.** The belt moves and the figures bob and tap only while the crew works; nothing else animates. Everything respects `prefers-reduced-motion`.
+- **Motion carries meaning.** The belt moves and the figures bob and tap only while the crew works. The one exception is the blink: an awake figure blinks every few seconds, asleep ones do not. Everything respects `prefers-reduced-motion`.
 
 ## Tokens (`app.css`, section 1)
 
@@ -56,7 +56,7 @@ Components use only semantic names. Add a primitive only when a semantic name ne
 | Layout | `--w-side` 200 · `--w-content` 1440 · `--w-aside` 340 · `--w-roster` 300 |
 | Motion | `--t-fast` 120 ms · `--t-base` 160 ms |
 
-Dark mode redefines the same names under `html[data-theme="dark"]`; a component never branches on the theme.
+Dark mode redefines the same names under `html[data-theme="dark"]`, the fills (`--ok`, `--warn`, `--bad`) and the two orange pairs (`--call-solid-fg`, `--call-on-ink`) included; a component never branches on the theme.
 
 ## Components (`app.css`, sections 3 to 10)
 
@@ -65,13 +65,13 @@ Dark mode redefines the same names under `html[data-theme="dark"]`; a component 
 | Page head | `.page-head` with `h1`, `.sub`, `.crumbs`, `.actions` | `pageHead(title, sub, actions, crumbs)` |
 | The sentence | `.now .sentence`, `.now .meta` | the run page header; `statusSentence(summary, true)` and `metaLine(summary)` |
 | Label | `.tag`, tones `.call .crew .ok .warn .bad` | a word in ink; no ground |
-| Button | `.btn`, `.btn.primary`, `.btn.call` / `.btn.approve`, `.btn.danger`, `.btn.ghost`, `.btn.link`, `.btn.sm`, `.btn.block` | ink-solid for the main action of a screen, orange-solid only for a decision, hairline for the rest |
+| Button | `.btn`, `.btn.primary`, `.btn.call` / `.btn.approve`, `.btn.danger`, `.btn.changes`, `.btn.link`, `.btn.lg`, `.btn.sm`, `.btn.block` | ink-solid for the main action of a screen, orange-solid only for a decision, hairline for the rest |
 | Filters | `.chips` with `.btn[aria-pressed]` and `.n` | text tabs with counts; the active one carries the rule |
 | Section | `.card`, `.card-head` (`h2`, `.meta`), `.card-body` | `card(title, body, meta, cls)`; `.card.soft`, `.card.info` and `.card.call` render as plain paper |
 | Key-value list | `.kv` | |
 | Notice | `.notice` with `.ok .warn .bad .info` | a sentence between two hairlines, the lead `<b>` carries the tone |
 | Table | `table`, `th`, `td` | hairline rows, grey heads, no vertical rules |
-| Row list | `.list > li` with `.main`, `.title`, `.desc`, `.side-meta` | |
+| Row list | `.list > li` with `.main`, `.title`, `.desc` | |
 | Runs list | `.runs-list > .run-row` with the mini line, `.what` (`.t`, `.s`), `.meta` | one row per run |
 | The line | `.line` (`.belt`, `.stations > .st.done/.current/.ahead/.call` with `.figs`, `.post`, `.lbl`, `.d`), `.line.mini` | `lineStrip(record, "full" or "mini")`; the figures stand in `.figs` |
 | Crew figure | `svg.crew` with states `asleep working done blocked still` | `crewFigure(role, state, "l" / "s" / "xs", label)`; a `label` makes it `role="img"` |

@@ -38,7 +38,7 @@ from ..config import REPO_ROOT, Config
 from ..gates import Decision, GateKind, parse_budget
 from ..state import RunStage, replay
 from ..store import RunStore
-from ..summary import controller_running, summarize
+from ..summary import _stage_before, controller_running, summarize
 from ..surfaces.artifact_pages import render_gate1_page, render_gate2_page
 from ..surfaces.filequeue import FileQueue
 from ..watcher import heartbeat as watcher_heartbeat
@@ -148,21 +148,27 @@ def crew_roster(events) -> list[dict[str, Any]]:
     started: dict[str, dict[str, Any]] = {}
     for ev in events:
         p = ev.payload
-        if ev.kind == "session.started" and p.get("agent_key") in by_role:
-            row = by_role[p["agent_key"]]
-            started[p["session_id"]] = {"role": p["agent_key"], "at": ev.at, "title": p.get("title")}
+        role = p.get("agent_key") or str(p.get("agent_id") or "").split(" ")[0]     # scripted logs name the role in agent_id only
+        if ev.kind == "session.started" and role in by_role:
+            row = by_role[role]
+            started[p["session_id"]] = {"role": role, "at": ev.at, "title": p.get("title")}
             row["sessions"] += 1; row["title"] = p.get("title"); row["started_at"] = ev.at; row["session_id"] = p["session_id"]
             row["live"].append(p["session_id"]); row["state"] = "working"
         elif ev.kind == "session.finished":
             meta = started.get(p.get("session_id"))
             if meta is None:
-                continue
+                if role not in by_role:
+                    continue
+                meta = {"role": role, "at": ev.at, "title": p.get("title")}      # a log with no session.started still counts the finish
+                by_role[role]["sessions"] += 1
+                by_role[role]["title"] = by_role[role]["title"] or p.get("title")
             row = by_role[meta["role"]]
             row["cost_usd"] += float(p.get("list_cost_usd") or 0.0)
             if p["session_id"] in row["live"]:
                 row["live"].remove(p["session_id"])
             row["finished_at"] = ev.at
-            row["state"] = "working" if row["live"] else ("blocked" if p.get("stop_reason") in ("budget_reached",) else "done")
+            cut = p.get("stop_reason") in ("interrupted", "unreachable") or p.get("outcome_result") == "interrupted"   # the controller stopped it on its way out
+            row["state"] = "working" if row["live"] else ("blocked" if p.get("stop_reason") in ("budget_reached",) else "interrupted" if cut else "done")
         elif ev.kind == "run.resumed":
             # a resume starts new sessions; whatever its dead predecessor left open was cut short, not finished
             for row in by_role.values():
@@ -617,11 +623,13 @@ class Console:
             stage = st.stage.value
             # a paused run sits where it paused, so its budget gate is filed under that column, not under Plan
             pause = last_pause(events) if st.stage == RunStage.PAUSED_BUDGET else None
+            where = ((pause or {}).get("run_stage") or (_stage_before(events, "budget.reached") if stage == "paused_budget" else None)
+                     or (_stage_before(events, "run.escalated") if stage == "escalated" else stage))
             column = {"intake": "plan", "decomposing": "plan", "gate_1_decomposition": "plan", "specifying": "specify",
-                      "gate_2_spec_readiness": "specify", "implementing": "build", "completed": "ship"}.get((pause or {}).get("run_stage") or stage, "plan")
+                      "gate_2_spec_readiness": "specify", "implementing": "build", "completed": "ship"}.get(where, "plan")
             for g in gates.values():
                 if g["run_id"] == run_id and g["gate_id"] in st.open_gates and not g["recorded"]:
-                    col = "plan" if g["kind"] == "gate_1_decomposition" else "specify" if g["kind"] == "gate_2_spec_readiness" else "ship" if g["kind"] == "deploy_failure" else "specify"
+                    col = "plan" if g["kind"] == "gate_1_decomposition" else "specify" if g["kind"] == "gate_2_spec_readiness" else "ship" if g["kind"] == "deploy_failure" else column   # budget and escalation gates sit where the run is
                     row = "ops" if g["kind"] == "deploy_failure" else "po"
                     cards.append({"column": col, "row": row, "kind": "gate", "gate_id": g["gate_id"], "title": g["kind"], "summary": g.get("summary", ""), "since": g.get("opened_at")})
             for q in questions.values():

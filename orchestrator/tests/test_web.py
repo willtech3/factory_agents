@@ -557,9 +557,11 @@ def test_crew_roster_board_and_settings_passthrough(client, monkeypatch):
     assert run["status"] == "running"
 
     # a session the orchestrator interrupted on its way out was cut short, not finished: the roster must not say done
+    # the orchestrator records each interrupted session's finish (with its spend) before run.failed names it
+    store.append(rid, "session.finished", actor, {"session_id": "s2", "stop_reason": "interrupted", "outcome_result": "interrupted", "list_cost_usd": 0.4})
     store.append(rid, "run.failed", actor, {"reason": "boom", "interrupted_sessions": ["s2"]})
     roster = {r["role"]: r for r in crew_roster(store.events(rid))}
-    assert roster["spec_writer"]["state"] == "interrupted" and roster["spec_writer"]["live_count"] == 0 and roster["spec_writer"]["cost_usd"] == 0
+    assert roster["spec_writer"]["state"] == "interrupted" and roster["spec_writer"]["live_count"] == 0 and roster["spec_writer"]["cost_usd"] == 0.4
     board = client.get("/api/board").json()
     assert next(r for r in board["runs"] if r["run_id"] == rid)["status"] == "failed"
 

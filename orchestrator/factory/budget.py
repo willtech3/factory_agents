@@ -16,6 +16,7 @@ caps, and the owner can raise the budget from the gate (`budget_usd: 80` in the 
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -86,7 +87,7 @@ def pause_for_budget(ctx: RunContext, stage_key: str, sessions: int, cap: float,
     summary = (f"Budget of ${budget:.2f} reached: ${spent:.2f} spent across {sessions_finished} session"
                f"{'s' if sessions_finished != 1 else ''}. The next step, {STAGE_LABEL.get(stage_key, stage_key)} "
                f"({sessions} session{'s' if sessions != 1 else ''}), could cost up to ${cap:.2f}, taking the run to ${needed:.2f}. "
-               f"Approve with the new budget (`budget_usd: {int(needed) + 1}` or more) to continue, or reject to close the run. "
+               f"Approve with the new budget (`budget_usd: {math.ceil(needed)}` or more) to continue, or reject to close the run. "
                f"Nothing is running while you decide.")
     owner = _owner_handle(ctx)
     gate = Gate(run_id=ctx.run_id, kind=GateKind.BUDGET, artifacts=(ArtifactRef(name=name, sha256=sha),),
