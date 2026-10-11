@@ -269,8 +269,8 @@ def render_gate2_page(run_id: str, outcome: dict[str, Any], specs: dict[str, dic
             f"<li class=\"{'bad' if i.get('severity') == 'blocking' else 'warn' if i.get('severity') == 'major' else ''}\">"
             f"<b>{_e(i.get('severity'))}</b> {_e(i.get('description'))}<br><span class=\"muted\">{_e(i.get('suggested_resolution', ''))}</span></li>"
             for i in ps.get("issues", []))
-        crit = "".join(f"<tr><td><code>{_e(c.get('criterion_id') or c.get('id'))}</code></td><td>{_e(c.get('score'))}</td>"
-                       f"<td>{_e(c.get('evidence') or c.get('rationale') or '')}</td></tr>" for c in ps.get("criteria", []))
+        crit = "".join(f"<tr><td><code>{_e(c.get('criterion'))}</code></td><td>{_e(c.get('score'))}</td>"
+                       f"<td>{_e(c.get('evidence', ''))}</td></tr>" for c in ps.get("criteria", []))
         for q in s.get("open_questions", []):
             all_questions.append({**q, "question": f"[{sid}] {q.get('question')}"})
         spec_sections += (
