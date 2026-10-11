@@ -87,6 +87,9 @@ def test_resume_review_cache_is_bound_to_both_base_and_head(tmp_path, root):
     for base, head in [("base2", "head1"), ("base1", "head2")]:
         other, found = review_evidence_prefix(ctx, "spec_a", 2, "p1", base, head)
         assert found is None and other != prefix
+    # a pass saved under this diff's name that reports reading another head is not reused
+    _put(ctx, "review", "spec_a-r3-basebase1-headhead1-p1-findings.json", {"diff_ref": {"base_sha": "base1", "head_sha": "moved"}})
+    assert review_evidence_prefix(ctx, "spec_a", 3, "p1", "base1", "head1")[1] is None
     assert ctx.store.get_json(ctx.run_id, "review", prefix + "findings.json") == original
 
 

@@ -275,16 +275,11 @@ def _decision_from_event(p: dict[str, Any]) -> GateDecision:
 
 def _spec_markdown(ctx: RunContext, spec: dict[str, Any]) -> str:
     """The writer's spec.md for this spec: carried on the object by `run_specify`, else the `final-<spec_id>.md` the
-    runner stored at Gate 2 (what `factory resume` reads), else the latest round in the store, else ''."""
+    runner stored at Gate 2 (what `factory resume` reads; absent when the markdown was empty), else ''."""
     if spec.get("_markdown"):
         return str(spec["_markdown"])
     try:
         return ctx.store.get_artifact(ctx.run_id, "specify", f"final-{spec['spec_id']}.md").decode(errors="replace")
-    except FileNotFoundError:
-        pass
-    try:
-        name = _latest(ctx, "specify", f"{spec['work_item_id']}-", "-spec.md")
-        return ctx.store.get_artifact(ctx.run_id, "specify", name).decode(errors="replace")
     except FileNotFoundError:
         return ""
 

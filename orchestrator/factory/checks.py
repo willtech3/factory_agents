@@ -267,6 +267,9 @@ def ac_test_mapping(spec: dict[str, Any], implementation_report: dict[str, Any],
     exist = set(tests_that_exist) if tests_that_exist is not None else None
     mapping = criteria_mapping(implementation_report)
     problems = []
+    if not isinstance(implementation_report.get("criteria"), list):
+        problems.append("implementation_report.json has no `criteria: [{ac_id, tests}]` list (implementation_report.schema.json), "
+                        "so no criterion maps to a test")
     for ac in spec["acceptance_criteria"]:
         if ac["verification"] != "automated_test":
             continue

@@ -140,6 +140,15 @@ def test_scripted_run_walks_question_gate1_gate2_to_change_requests(client, sche
         assert checks.schema_valid(ev.to_dict(), schemas_dir / "run_event.schema.json", schemas_dir).passed, ev.kind
 
 
+def test_a_run_stopped_before_run_created_is_not_found_not_a_crash(client):
+    """`factory run` logs `repository.created` for a repository it creates before the runner logs `run.created`."""
+    from factory.store import RunStore
+    RunStore(client.cfg.runs_dir).append("run_beforestart", "repository.created", {"type": "platform"},
+                                         {"url": "https://github.com/me/new", "default_branch": "main"})
+    r = client.get("/api/runs/run_beforestart")
+    assert r.status_code == 404 and "never started" in r.json()["detail"]
+
+
 def test_reject_closes_the_run(client):
     run_id = _seed(client)
     qid = client.get("/api/inbox").json()["questions"][0]["question_id"]

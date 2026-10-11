@@ -441,7 +441,7 @@ class LocalVerifier:
 
         Every pytest invocation inside a command also writes a junit report (appended through PYTEST_ADDOPTS, so
         `pytest`, `python -m pytest` and compound shell commands all get it); a command that produced one carries
-        `pytest: {passed, failed, skipped}` with the node ids, which is where the orchestrator's passing-test set
+        `tests: {framework: "pytest", report: "junit", status: "reported", passed, failed, skipped}` with the node ids, which is where the orchestrator's passing-test set
         comes from (post-mortem issue 5: the set used to be copied from the implementer's own report, so any
         mapping passed, fabricated ids included)."""
         results = []
@@ -782,9 +782,11 @@ def preview_info(ctx: RunContext, branch: str, head_sha: str | None = None) -> d
 def review_evidence_prefix(ctx: RunContext, sid: str, round_no: int, pass_id: str,
                            base_sha: str, head_sha: str) -> tuple[str, dict[str, Any] | None]:
     """The artifact prefix of one review pass, named for the exact diff it read (base and head), and its findings when
-    that pass already persisted them: only a review of the same diff is reused."""
+    that pass already persisted them and they name the same diff: only a review of the same diff is reused."""
     prefix = f"{sid}-r{round_no}-base{base_sha}-head{head_sha}-{pass_id}-"
-    return prefix, artifact_json_or_none(ctx, "review", prefix + "findings.json")
+    found = artifact_json_or_none(ctx, "review", prefix + "findings.json")
+    ref = (found or {}).get("diff_ref") or {}
+    return prefix, found if ref.get("base_sha") == base_sha and ref.get("head_sha") == head_sha else None
 
 
 def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base_branch: str,

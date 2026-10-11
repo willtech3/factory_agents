@@ -253,8 +253,9 @@ class Console:
         if not RUN_ID.match(run_id) or not (self.cfg.runs_dir / run_id / "events.jsonl").is_file():
             raise HTTPException(404, f"no run {run_id}")       # checked first: RunStore.events would create the directory
         events = self.store.events(run_id)
-        if not events:
-            raise HTTPException(404, f"no run {run_id}")
+        if not any(ev.kind == "run.created" for ev in events):
+            # empty, or stopped between creating its repository (`repository.created`) and starting (`run.created`)
+            raise HTTPException(404, f"run {run_id} never started")
         st = self.store.state(run_id)
         outcome = None
         try:

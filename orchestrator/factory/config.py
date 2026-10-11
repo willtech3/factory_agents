@@ -60,7 +60,7 @@ class Config:
     forge_url: str                      # https://github.com, or the self-hosted GitLab host
     forge_token: str | None             # orchestrator-side token; also the github_repository authorization_token
     forge_repo: str                     # "owner/repo" (GitHub) or "group/project" (GitLab)
-    gate_surface: str                   # tracker | file | web
+    gate_surface: str                   # tracker | web
     page_publisher: str                 # local | artifact
     linear_api_key: str | None
     linear_team_id: str | None

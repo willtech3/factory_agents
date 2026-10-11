@@ -123,6 +123,15 @@ def test_run_all_for_merge_includes_e2e_and_manifest(examples, root, schemas_dir
     assert "manifest_valid" in names and "e2e_preview" in names
 
 
+def test_ac_test_mapping_says_when_the_report_is_not_in_the_schema_shape():
+    from factory.checks import ac_test_mapping
+
+    spec = {"acceptance_criteria": [{"ac_id": "AC-1", "verification": "automated_test"}]}
+    r = ac_test_mapping(spec, {"acceptance_criteria": {"AC-1": {"pytest_node_ids": ["tests/test_x.py::test_a"]}}},
+                        ["tests/test_x.py::test_a"])
+    assert not r.passed and "no `criteria: [{ac_id, tests}]` list" in r.detail and "AC-1: no test mapped" in r.detail
+
+
 def test_ac_test_mapping_reads_the_report_shape_the_implementer_writes():
     from factory.checks import ac_test_mapping, criteria_mapping
 
