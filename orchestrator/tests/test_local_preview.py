@@ -70,7 +70,11 @@ def test_verification_env_drops_the_orchestrators_venv_but_keeps_the_system_bin(
     monkeypatch.setenv("VIRTUAL_ENV", str(orch))
     assert orchestrator_bin() == orch / "bin"
     env = verification_env(run_env / "bin")
-    assert env["PATH"].split(os.pathsep) == [str(run_env / "bin"), str(base / "bin"), "/other/bin"]
+    # macOS may insert the documented modern-sh shim between the run venv and system tools.
+    from factory.stages.implement import verification_shell
+    shim = verification_shell(run_env.parent)[1]
+    expected = [str(run_env / "bin"), *([shim] if shim else []), str(base / "bin"), "/other/bin"]
+    assert env["PATH"].split(os.pathsep) == expected
     assert "PYTHONPATH" not in env and env["VIRTUAL_ENV"] == str(run_env)
     # from a system interpreter nothing is removed: the per-run environment coming first is the whole protection
     monkeypatch.setattr(sys, "prefix", str(base))

@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -41,6 +41,7 @@ from ..surfaces.filequeue import FileQueue
 from ..watcher import heartbeat as watcher_heartbeat
 from ..watcher import pending_work_items
 from .demo import DemoRunner
+from .repositories import list_repositories, repository_name
 
 STATIC = Path(__file__).parent / "static"
 RUN_ID = re.compile(r"^run_[a-z0-9]{8,}$")
@@ -489,6 +490,11 @@ class Console:
         if body.mode not in ("live", "design"):
             raise HTTPException(400, "mode must be demo, design, or live")
         design = body.mode == "design"
+        repo_env = {}
+        target = (outcome.get("target_repositories") or [{}])[0]
+        if not design and self.cfg.forge == "github" and target.get("url"):
+            # The Console selection is per run; do not inherit a different repository from server defaults.
+            repo_env["FORGE_REPO"] = repository_name(target["url"], self.cfg)
         gaps = cfgmod.missing(self.cfg, design_only=design)
         if gaps:
             raise HTTPException(409, f"the orchestrator is not configured for a {body.mode} run: {', '.join(gaps)}")
@@ -498,7 +504,7 @@ class Console:
         args = [sys.executable, "-u", "-m", "factory.cli", "run", str(path)] + (["--design-only"] if design else [])
         with log.open("w") as fh:
             proc = subprocess.Popen(args, cwd=str(Path(__file__).resolve().parents[2]), stdout=fh, stderr=subprocess.STDOUT,
-                                    env={**os.environ, **settings_env(body.settings), "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}, start_new_session=True)
+                                    env={**os.environ, **settings_env(body.settings), **repo_env, "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}, start_new_session=True)
         return {"ok": True, "mode": body.mode, "pid": proc.pid, "log": log.name, "settings": settings_env(body.settings)}
 
     def board(self) -> dict[str, Any]:
@@ -721,6 +727,10 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
     @app.get("/api/config")
     def api_config():
         return console.config()
+
+    @app.get("/api/repositories")
+    def api_repositories(page: int = Query(1, ge=1, le=10000)):
+        return list_repositories(console.cfg, page)
 
     @app.get("/api/runs")
     def api_runs():
