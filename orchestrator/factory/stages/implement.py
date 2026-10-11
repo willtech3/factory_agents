@@ -781,6 +781,22 @@ def preview_info(ctx: RunContext, branch: str, head_sha: str | None = None) -> d
     return info
 
 
+def review_evidence_prefix(ctx: RunContext, sid: str, round_no: int, pass_id: str,
+                           base_sha: str, head_sha: str) -> tuple[str, dict[str, Any] | None]:
+    """Reuse only reviews of the exact diff; preserve older session outputs under their original names."""
+    legacy = f"{sid}-r{round_no}-{pass_id}-"
+    scoped = f"{sid}-r{round_no}-base{base_sha}-head{head_sha}-{pass_id}-"
+    for prefix in (scoped, legacy):
+        found = artifact_json_or_none(ctx, "review", prefix + "findings.json")
+        ref = (found or {}).get("diff_ref") or {}
+        if found is not None and ref.get("base_sha") == base_sha and ref.get("head_sha") == head_sha:
+            return prefix, found
+    directory = ctx.cfg.runs_dir / ctx.run_id / "artifacts" / "review"
+    if not any(directory.glob(legacy + "*")):
+        return legacy, None
+    return scoped, None
+
+
 def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base_branch: str,
                       verifier: LocalVerifier, dependency_specs: dict[str, dict], *, spec_md: str = "",
                       resume_from: ResumePoint | None = None, guidance: str = "") -> dict[str, Any]:
@@ -927,9 +943,14 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         )
         test_results = {"commands": cmd_results, "e2e": e2e_results, "preview": preview, "environment": environment,
                         **({"collected_tests": collected} if managed else {})}
-        ctx.store.put_artifact(ctx.run_id, "implement", f"{sid}-r{round_no}-deterministic_checks.json",
+        if resumed_round and report.get("head_sha") is not None:
+            reported_head = report.get("head_sha")
+            det.append(CheckResult("implementation_head", reported_head == head_sha,
+                                   f"implementation report names {reported_head}; verified candidate is {head_sha}. "
+                                   "A changed candidate requires an updated implementation report and review response."))
+        ctx.store.put_derived_artifact(ctx.run_id, "implement", f"{sid}-r{round_no}-deterministic_checks.json",
                                json.dumps([d.to_dict() for d in det], indent=2).encode())
-        ctx.store.put_artifact(ctx.run_id, "implement", f"{sid}-r{round_no}-test_results.json",
+        ctx.store.put_derived_artifact(ctx.run_id, "implement", f"{sid}-r{round_no}-test_results.json",
                                json.dumps(test_results, indent=2).encode())
 
         if round_no > ctx.policy.review_max_rounds:
@@ -948,8 +969,10 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         pass_ids = list(range(1, ctx.policy.reviewer_passes + 1))
         with_security = bool(ctx.policy.security_review and "security_reviewer" in ctx.cfg.agents)
         # Passes persisted before the orchestrator died or paused are reused, not paid for again.
-        reused = {i: artifact_json_or_none(ctx, "review", f"{sid}-r{round_no}-p{i}-findings.json") for i in pass_ids} if resumed_round else {}
-        reused_sec = artifact_json_or_none(ctx, "review", f"{sid}-r{round_no}-sec-findings.json") if resumed_round and with_security else None
+        review_bindings = {i: review_evidence_prefix(ctx, sid, round_no, f"p{i}", base_sha, head_sha) for i in pass_ids}
+        security_prefix, saved_security = review_evidence_prefix(ctx, sid, round_no, "sec", base_sha, head_sha)
+        reused = {i: binding[1] for i, binding in review_bindings.items()} if resumed_round else {}
+        reused_sec = saved_security if resumed_round and with_security else None
         to_run = [i for i in pass_ids if reused.get(i) is None]
         run_sec = with_security and reused_sec is None
         if to_run or run_sec:
@@ -978,7 +1001,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             if reused.get(i) is not None:
                 return tag_pass(reused[i], str(i))      # this pass finished before the orchestrator died or paused
             r = run_session(
-                ctx, prefix=f"{sid}-r{round_no}-p{i}-", spec_id=sid,
+                ctx, prefix=review_bindings[i][0], spec_id=sid,
                 agent_key="reviewer", title=f"{ctx.run_id} review {sid} r{round_no} p{i}", run_id=ctx.run_id,
                 stage="review", uploads=rev_uploads, work_item_id=wid,
                 description=REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
@@ -990,7 +1013,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             f = require_json(r, "findings.json")
             stamp_provenance(f, ctx, r, "Adversarial reviewer", "claude-opus-5-5")
             r.outputs["findings.json"] = json.dumps(f, indent=2).encode()
-            persist_outputs(ctx, "review", r, prefix=f"{sid}-r{round_no}-p{i}-", work_item_id=wid, spec_id=sid)
+            persist_outputs(ctx, "review", r, prefix=review_bindings[i][0], work_item_id=wid, spec_id=sid)
             return tag_pass(f, str(i))
 
         def security_pass() -> dict[str, Any] | None:
@@ -1000,11 +1023,15 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             if reused_sec is not None:
                 return tag_pass(reused_sec, "security")      # finished before the orchestrator died or paused
             pre = managed_prechecks(diff["added_lines"]) if managed else security.prechecks(repo, diff["changed"], diff["added_lines"])
-            ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-security_prechecks.json", json.dumps(pre, indent=2).encode())
+            ctx.store.put_artifact(ctx.run_id, "review", security_prefix + "security_prechecks.json", json.dumps(pre, indent=2).encode())
+            security_skill = ctx.cfg.skills_dir / "security-review" / "SKILL.md"
+            if not security_skill.is_file():
+                raise RuntimeError("security reviewer requires skills/security-review/SKILL.md")
             r = run_session(
-                ctx, prefix=f"{sid}-r{round_no}-sec-", spec_id=sid,
+                ctx, prefix=security_prefix, spec_id=sid,
                 agent_key="security_reviewer", title=f"{ctx.run_id} security-review {sid} r{round_no}", run_id=ctx.run_id,
-                stage="review", uploads={**rev_uploads, "security_prechecks.json": json.dumps(pre, indent=2).encode()}, work_item_id=wid,
+                stage="review", uploads={**rev_uploads, "security_prechecks.json": json.dumps(pre, indent=2).encode(),
+                         "skills/security-review/SKILL.md": security_skill.read_bytes()}, work_item_id=wid,
                 description=SECURITY_REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
                                                                git=git_ro, round=round_no, second_round=second, skill_clause=skill_clause,
                                                                preview_clause=rev_preview_clause),
@@ -1012,9 +1039,9 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 metadata={"pass": "security"}, repository=mount(branch),
             )
             f = require_json(r, "findings.json")
-            stamp_provenance(f, ctx, r, "Security reviewer", "claude-opus-5-5")
+            stamp_provenance(f, ctx, r, "Security reviewer", "claude-fable-5-1")
             r.outputs["findings.json"] = json.dumps(f, indent=2).encode()
-            persist_outputs(ctx, "review", r, prefix=f"{sid}-r{round_no}-sec-", work_item_id=wid, spec_id=sid)
+            persist_outputs(ctx, "review", r, prefix=security_prefix, work_item_id=wid, spec_id=sid)
             return tag_pass(f, "security")
 
         with ThreadPoolExecutor(max_workers=ctx.policy.reviewer_passes + 1) as pool:
@@ -1025,7 +1052,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                                   previous=findings, response=response)
         # A failed deterministic check is a finding the implementer must answer; nobody else can clear it.
         findings["findings"] = apply_deterministic(findings["findings"], deterministic_findings(det, cmd_results, e2e_results, managed=managed))
-        ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-findings.merged.json",
+        ctx.store.put_derived_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-findings.merged.json",
                                json.dumps(findings, indent=2).encode())
         ctx.event("review.findings", {"round": round_no, "count": len(findings["findings"]),
                                       "blocking": sum(f["severity"] == "blocking" for f in findings["findings"])},
@@ -1042,7 +1069,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     # The judge sees the real round (the implementer round whose head it judges; the kickoff and merge_readiness.json
     # used to say "round 1" whatever happened), and its verdict is kept per round.
     prior_verdict = artifact_json_or_none(ctx, "merge_judge", f"{sid}-r{round_no}-merge_readiness.json") if resume_from else None
-    if prior_verdict is not None and prior_verdict.get("_head_sha") == head_sha:
+    if (prior_verdict is not None and prior_verdict.get("_head_sha") == head_sha
+            and prior_verdict.get("_base_sha") == base_sha):
         ctx.event("merge.verdict", {"result": prior_verdict["result"], "round": round_no, "reused": True}, work_item_id=wid, spec_id=sid, actor="agent")
         return prior_verdict      # judged this very head before the orchestrator died or paused
     enter_item_stage(ctx, wid, sid, WorkItemStage.MERGE_JUDGING)

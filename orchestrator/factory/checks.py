@@ -157,9 +157,21 @@ def test_weakening(added_lines_by_file: dict[str, list[str]]) -> CheckResult:
 
 
 def schema_valid(artifact: dict[str, Any], schema_path: Path, schema_dir: Path) -> CheckResult:
-    schema = json.loads(schema_path.read_text())
     if jsonschema is None:
         return CheckResult("schema_valid", True, "jsonschema not installed; skipped (sandbox validator ran)")
+    errors = schema_errors(artifact, schema_path, schema_dir)
+    msgs = [f"{'/'.join(str(x) for x in e.path) or '$'}: {e.message}" for e in errors[:20]]
+    return CheckResult(
+        check=f"schema_valid:{schema_path.name}", passed=not errors,
+        detail="valid" if not errors else "; ".join(msgs), data={"errors": msgs},
+    )
+
+
+def schema_errors(artifact: dict[str, Any], schema_path: Path, schema_dir: Path) -> list[Any]:
+    """The jsonschema ValidationErrors for `artifact`, ordered by path; [] when jsonschema is not installed."""
+    if jsonschema is None:
+        return []
+    schema = json.loads(schema_path.read_text())
     resolver_store = {}
     for p in schema_dir.glob("*.schema.json"):
         s = json.loads(p.read_text())
@@ -173,12 +185,7 @@ def schema_valid(artifact: dict[str, Any], schema_path: Path, schema_dir: Path) 
         validator = jsonschema.Draft202012Validator(schema, registry=registry)
     except ImportError:  # pragma: no cover
         validator = jsonschema.Draft202012Validator(schema)
-    errors = sorted(validator.iter_errors(artifact), key=lambda e: list(e.path))
-    msgs = [f"{'/'.join(str(x) for x in e.path) or '$'}: {e.message}" for e in errors[:20]]
-    return CheckResult(
-        check=f"schema_valid:{schema_path.name}", passed=not errors,
-        detail="valid" if not errors else "; ".join(msgs), data={"errors": msgs},
-    )
+    return sorted(validator.iter_errors(artifact), key=lambda e: list(e.path))
 
 
 def dag_acyclic(work_items: list[dict[str, Any]]) -> CheckResult:

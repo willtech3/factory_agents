@@ -31,6 +31,7 @@ class RunContext:
     run_id: str
     tracker: "TrackerQueue | None" = None       # gate surface = tracker: mirrors work items, holds gates and questions
     pages: "PagePublisher | None" = None        # renders one self-contained HTML page per gate
+    evaluation_target: tuple[str, str] | None = None  # owner-authorized comparison branch and pinned base SHA
 
     def event(self, kind: str, payload: dict[str, Any] | None = None, actor: str = "orchestrator", **extra: Any):
         ev = self.store.append(self.run_id, kind, {"type": actor if actor in ("human", "agent", "platform") else "orchestrator",

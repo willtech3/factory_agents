@@ -1,22 +1,10 @@
-"""Stage 4: record the approved design on the branch, then open the change request.
-
-Two steps, in order:
-
-1. **Run record** (deterministic, orchestrator side, no agent). The approved `spec.json`, `spec.md`,
-   the spec judge's `verdict.json`, and the merge judge's `merge_readiness.json` are committed under
-   `.factory/runs/<run_id>/` on the implementation branch from the orchestrator's own checkout, with a
-   fixed author and timestamp so the commit sha is a pure function of the branch head and the files.
-   The reviewer at Gate 3 therefore sees the contract next to the code, whatever the gate surface.
-2. **Change request** (PR or MR). The `integrator` session renders `templates/cr_template.md` and calls
-   the `open_change_request` custom tool; the orchestrator executes it with its own forge token.
-   Gate 3 is the forge's own review and merge.
-"""
+"""Open a reviewed change request; keep the approved record in Factory's artifact store."""
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 from pathlib import Path
+from urllib.parse import quote
 from typing import Any
 
 from ..budget import reserve_budget
@@ -24,64 +12,26 @@ from ..forge import Forge
 from ..sessions import SessionContext
 from ..state import WorkItemStage
 from . import RunContext
-from .common import enter_item_stage, persist_outputs, platform_skill, public, run_session
+from .common import enter_item_stage, persist_outputs, platform_skill, run_session
 
 INTEGRATE_DESCRIPTION = """Open the change request (pull request or merge request) for specification {spec_id}.
 Inputs are under /mnt/session/uploads/ (spec.json, merge_readiness.json, findings.json, review_response.json,
 test_results.json, run_summary.json, cr_template.md). The branch {branch} is already pushed; its head must equal
-{head_sha} (the orchestrator's run-record commit on top of the judged head {judged_sha}).
+{head_sha} (the exact head verified and approved by the merge judge).
 {git}
-Render the template, call open_change_request, and write cr.json to /mnt/session/outputs/. The verification was run in
+Factory records remain in the external artifact store: use run_summary.json artifact_links in the PR description.
+Do not write or commit .factory files to the target repository. This replaces the earlier run-record-commit workflow.
+Render the supplied current template, call open_change_request, and write cr.json to /mnt/session/outputs/. The verification was run in
 preview mode "{preview_mode}" (run_summary.json `preview_mode`; test_results.json `environment` and `preview` say exactly
 where and how). {skill_clause}"""
 
-RECORD_AUTHOR = ("factory", "factory@localhost")
 
-
-def run_record_paths(run_id: str, spec_id: str) -> dict[str, str]:
-    base = f".factory/runs/{run_id}"
-    return {"spec_json": f"{base}/specs/{spec_id}.json", "spec_md": f"{base}/specs/{spec_id}.md",
-            "verdict": f"{base}/verdict.json", "merge_readiness": f"{base}/evidence/{spec_id}/merge_readiness.json"}
-
-
-def commit_run_record(repo: Path, run_id: str, spec: dict[str, Any], spec_md: str, spec_verdict: dict[str, Any] | None,
-                      merge_verdict: dict[str, Any], *, push: bool = True, remote: str = "origin") -> str:
-    """Write the record files into `repo` (already checked out on the implementation branch), commit them with a
-    fixed identity and date, optionally push, and return the new head sha. Returns the current head unchanged when
-    the files are already identical (re-runs are idempotent)."""
-    sid = spec["spec_id"]
-    paths = run_record_paths(run_id, sid)
-    files = {paths["spec_json"]: json.dumps(public(spec), indent=2, sort_keys=True) + "\n",
-             paths["spec_md"]: spec_md if spec_md.endswith("\n") or not spec_md else spec_md + "\n",
-             paths["merge_readiness"]: json.dumps(public(merge_verdict), indent=2, sort_keys=True) + "\n"}
-    if spec_verdict is not None:
-        files[paths["verdict"]] = json.dumps(spec_verdict, indent=2, sort_keys=True) + "\n"
-    judged = merge_verdict.get("_head_sha")
-    head = _git(repo, "rev-parse", "HEAD").strip()
-    if judged and head != judged:
-        # A retry may find our already-pushed record commit. Any other branch movement
-        # requires another review; instructions to the integrator are not a check.
-        changed = set(_git(repo, "diff", "--name-only", judged, head).splitlines())
-        same_record = bool(changed) and changed <= set(files) and all(
-            (repo / rel).is_file() and (repo / rel).read_text() == content for rel, content in files.items())
-        if not same_record:
-            raise RuntimeError("implementation branch changed after the merge judgement; review the new head first")
-    for rel, content in files.items():
-        target = repo / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
-    _git(repo, "add", "--", *files)
-    if not _git(repo, "status", "--porcelain", "--", *files).strip():
-        return _git(repo, "rev-parse", "HEAD").strip()
-    when = (merge_verdict.get("produced_by") or {}).get("produced_at") or "2026-01-01T00:00:00+00:00"
-    env = {**os.environ, "GIT_AUTHOR_NAME": RECORD_AUTHOR[0], "GIT_AUTHOR_EMAIL": RECORD_AUTHOR[1],
-           "GIT_COMMITTER_NAME": RECORD_AUTHOR[0], "GIT_COMMITTER_EMAIL": RECORD_AUTHOR[1],
-           "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when}
-    msg = f"factory({run_id}): record approved spec and verdicts for {sid}\n\nJudged head: {merge_verdict.get('_head_sha', '')}"
-    subprocess.run(["git", "commit", "-q", "--only", "-m", msg, "--", *files], cwd=repo, env=env, check=True, capture_output=True, text=True)
-    if push:
-        _git(repo, "push", "-q", remote, f"HEAD:{merge_verdict.get('_branch') or _git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').strip()}")
-    return _git(repo, "rev-parse", "HEAD").strip()
+def artifact_links(ctx: RunContext, spec_id: str) -> dict[str, str]:
+    base = f"{ctx.cfg.artifact_base_url}/api/artifacts/{quote(ctx.run_id, safe='')}"
+    return {"spec_json": f"{base}/specify/final-{quote(spec_id, safe='')}.json",
+            "spec_md": f"{base}/specify/final-{quote(spec_id, safe='')}.md",
+            "verdict": f"{base}/judge/final-verdict.json",
+            "merge_readiness": f"{base}/integrate/{quote(spec_id, safe='')}-approved-merge_readiness.json"}
 
 
 def make_open_change_request(ctx: RunContext, forge: Forge, spec_id: str, work_item_id: str, expected_branch: str,
@@ -91,11 +41,19 @@ def make_open_change_request(ctx: RunContext, forge: Forge, spec_id: str, work_i
             return json.dumps({"error": f"source_branch must be {expected_branch}"})
         if tool_input["target_branch"] != expected_target:
             return json.dumps({"error": f"target_branch must be {expected_target}"})
+        evaluation = ctx.evaluation_target
+        title = tool_input["title"]
+        description = tool_input["description_markdown"]
+        if evaluation:
+            title = "[Factory evaluation] " + title
+            description = (f"Factory pipeline evaluation against original baseline `{evaluation[1]}` "
+                           f"on `{expected_target}`. The implementation is already merged in the normal default branch. "
+                           "This draft preserves the complete diff for evaluation; do not merge it.\n\n" + description)
         cr = forge.create_change_request(
             source_branch=tool_input["source_branch"], target_branch=tool_input["target_branch"],
-            title=tool_input["title"][:120], description=tool_input["description_markdown"],
+            title=title[:120], description=description,
             labels=sorted(set(tool_input.get("labels", []) + ["factory", f"spec:{spec_id}", f"run:{ctx.run_id}"])),
-            reviewers=tool_input.get("reviewers", []), draft=bool(tool_input.get("draft", False)),
+            reviewers=tool_input.get("reviewers", []), draft=bool(evaluation or tool_input.get("draft", False)),
         )
         ctx.event("cr.opened", {"id": cr.id, "url": cr.url, "branch": cr.source_branch, "forge": forge.kind},
                   work_item_id=work_item_id, spec_id=spec_id)
@@ -113,15 +71,19 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
     branch, judged_sha = verdict["_branch"], verdict["_head_sha"]
     enter_item_stage(ctx, wid, sid, WorkItemStage.INTEGRATING)
 
+    # No integration commit: the PR must contain the exact candidate the judge reviewed.
     head_sha = judged_sha
     if verifier is not None:
         repo = verifier.checkout(branch)
-        head_sha = commit_run_record(repo, ctx.run_id, spec, spec_md, spec_verdict, verdict)
-        if head_sha != judged_sha:
-            ctx.event("artifact.produced", {"artifact_type": "run_record", "path": f".factory/runs/{ctx.run_id}/",
-                                            "sha256": None, "commit": head_sha, "judged_head": judged_sha},
-                      work_item_id=wid, spec_id=sid, stage="integrate")
-    verdict = {**verdict, "_head_sha": head_sha, "_judged_head_sha": judged_sha}
+        if _git(repo, "rev-parse", "HEAD").strip() != judged_sha:
+            raise RuntimeError("implementation branch changed after the merge judgement; review the new head first")
+        if ctx.evaluation_target:
+            base = verifier.checkout(base_branch)
+            if _git(base, "rev-parse", "HEAD").strip() != ctx.evaluation_target[1]:
+                raise RuntimeError("evaluation comparison branch moved after review")
+            verifier.checkout(branch)
+    ctx.store.put_artifact(ctx.run_id, "integrate", f"{sid}-approved-merge_readiness.json",
+                           json.dumps(verdict, indent=2).encode())
 
     uploads = {
         "spec.json": json.dumps(spec, indent=2).encode(),
@@ -131,7 +93,8 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
         "test_results.json": json.dumps(test_results, indent=2).encode(),
         "run_summary.json": json.dumps({**run_summary, "target_branch": base_branch, "forge": ctx.forge.kind,
                                         "preview_mode": ctx.cfg.preview_mode,
-                                        "run_record_paths": run_record_paths(ctx.run_id, sid)}, indent=2).encode(),
+                                        "artifact_links": artifact_links(ctx, sid),
+                                        "evaluation_target": ctx.evaluation_target}, indent=2).encode(),
         "cr_template.md": (ctx.cfg.templates_dir / "cr_template.md").read_bytes(),
     }
     skill_uploads, skill_clause = platform_skill(ctx)
@@ -140,7 +103,7 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
         ctx, prefix=f"{sid}-", spec_id=sid,
         agent_key="integrator", title=f"{ctx.run_id} integrate {sid}", run_id=ctx.run_id, stage="integrate",
         uploads={**uploads, **skill_uploads}, work_item_id=wid,
-        description=INTEGRATE_DESCRIPTION.format(spec_id=sid, branch=branch, head_sha=head_sha, judged_sha=judged_sha,
+        description=INTEGRATE_DESCRIPTION.format(spec_id=sid, branch=branch, head_sha=head_sha,
                                                  git=ctx.forge.sandbox_git_instructions(ctx.cfg.repo_url, base_branch, branch, read_only=True),
                                                  preview_mode=ctx.cfg.preview_mode, skill_clause=skill_clause),
         rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["integrate"],

@@ -1,6 +1,8 @@
 # Roadmap: from design to a first real run
 
-The design is complete enough to iterate on. What exists has not run against the live platform. The order below is chosen so that each step de-risks the next and produces measurable output.
+The design is complete enough to iterate on. The order below was chosen so that each step de-risks the next and produces measurable output.
+
+**Progress (2026-10-10):** the core of spikes 1, 2 and 3 has run on the personal GitHub setup, through two pull requests (one merged); see the [post-mortem](postmortems/2026-10-10-first-live-runs.md). Not yet done: the Linear and `forge` gate surfaces (spike 2), real preview deployments (spike 2a), everything GitLab and Jira (spike 2b), and a dev deploy for Stage 5 to observe. What is live, stubbed or unused is tracked in [repo-map.md](repo-map.md#what-runs-and-what-does-not).
 
 ## Spike 1: platform plumbing (1 to 2 days)
 Goal: one `decomposer` session end to end on the Ledgerline example outcome against a real (fork of a) repository, following [07-personal-e2e-setup.md](07-personal-e2e-setup.md) with a personal GitHub repository and Linear workspace.
@@ -34,7 +36,7 @@ Goal: confirm the read-only calls Stage 5 and the preview lookup depend on, agai
 - Implement one spec on the fork. Replace `LocalVerifier` with a CI job on the factory branch (same interface: commands, exit codes, diff).
 - Watch the reviewer: are findings falsifiable, do refutation conditions make sense, how many are withdrawn? Tune `reviewer.md` from what you see, one rule per observed failure.
 - Watch the preview loop: does `preview.json` become `ready` before the implementer finishes, do the `preview` e2e entries run in the sandbox, does `e2e_preview` agree with what the implementer reported?
-- Open the pull request; confirm the run record (`.factory/runs/<run_id>/`) is on the branch with a reproducible commit sha. Have a real engineer review it and time them. Merge it with `factory watch <run_id>` running (or started from the Console's run page) and watch Stage 5 end at `DEPLOYED_DEV`; break the next one deliberately and confirm the `DEPLOY_FAILURE` gate carries a useful log excerpt.
+- Open the pull request; confirm the PR links to Factory’s external run record and its head equals the verified and judged candidate. Have a real engineer review it and time them. Merge it with `factory watch <run_id>` running (or started from the Console's run page) and watch Stage 5 end at `DEPLOYED_DEV`; break the next one deliberately and confirm the `DEPLOY_FAILURE` gate carries a useful log excerpt.
 
 ## Milestone A: unattended end-to-end on factory-bench `lintr` (week 3)
 - Build the smallest `factory-bench` repo (the Python CLI) with two outcomes and hidden suites.
@@ -56,19 +58,14 @@ Goal: confirm the read-only calls Stage 5 and the preview lookup depend on, agai
 - **Tiered or automatic approval** of any gate. Needs six months of gate telemetry first.
 - **Memory stores** for cross-run learning. Evidence is mixed; start with a human-curated read-only conventions store per repo once there are enough runs to curate from.
 - **Multiple target repositories per outcome.** Schema allows it; orchestrator handles the first only.
-- **Stacked change requests** for dependent specs. Currently serial: a dependent spec waits for the upstream merge.
 - **Self-hosted sandboxes.** Only if a repository cannot be cloned into Anthropic's cloud environment.
 - **Promotion beyond dev, reverts, and any infrastructure change.** Human and platform-owned by design (ADR-0006); not a future feature.
 
 ## Known gaps in what is here
 
-- `sessions.py`, `forge/github.py`, `forge/gitlab.py`, `surfaces/tracker.py`, and the stage modules are written against documented APIs and have not been executed live. Treat field names as hypotheses until spike 1.
-- `run_eval.py::produce` is a stub.
-- The Factory Console is v0: local, unauthenticated, Gates 1 and 2 only. Session progress is the event log, not a live stream.
-- `LocalVerifier` runs test commands and e2e entries on the orchestrator host; production must move this to CI.
-- Both forges' pipeline, job, environment, and deployment reads and the webhook parsers are unverified (spikes 2a and 2b). `preview_info` fails closed when they misbehave, which blocks merges until fixed.
-- Stage 5 is driven by the polling change-request watcher (`factory watch`, `watcher.py`); the forge webhook endpoint that would shorten the poll is not in this repository, and a deploy-failure `request_changes` leaves the item at `implementing` with its feedback file without starting the follow-up round. The watcher's GitHub reads (`merge_commit_sha`, workflow runs, deployments) are as unverified live as the rest of `forge/github.py`.
-- `surfaces/jira.py` is a stub; `ClaudeArtifactPublisher` writes local files.
-- `skills/platform-contract/SKILL.md` and `schemas/service_manifest.schema.json` are placeholders; the platform team's versions replace them.
-- `merge_findings` de-duplicates by file and the first three characters of the line number, which is crude; good enough until real findings show what collides.
-- Human comments at Gate 2 are broadcast to every spec's writer; per-spec routing from inline CR positions or `spec_x:` prefixes in tracker comments is straightforward and should be done in spike 2.
+The live/stub/unused status of each piece is in [repo-map.md](repo-map.md#what-runs-and-what-does-not). Design-level gaps not visible there:
+
+- The Factory Console is local and unauthenticated. It reviews Gates 1 and 2, and shows Gate 3 and Stage 5 only as the watcher records them.
+- `local` preview mode runs tests and the service on the orchestrator host. `managed` mode moves that into a hosted sandbox. Production would use CI or `managed`.
+- Stage 5 is driven by a polling watcher (`factory watch`). There is no forge webhook endpoint yet. A deploy-failure `request_changes` leaves the item at `implementing` with its feedback file and does not start the follow-up round.
+- `merge_findings` matches findings across passes and rounds by category, file, and the first three characters of the line number. That is crude, but good enough until real findings show what collides.

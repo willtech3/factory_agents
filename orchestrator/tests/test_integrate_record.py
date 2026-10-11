@@ -1,4 +1,4 @@
-"""The run record committed on the implementation branch before the change request is opened.
+"""Integration retains Factory artifacts outside the target repository.
 Uses a local bare 'origin' and a working clone; no network."""
 import json
 import subprocess
@@ -6,7 +6,6 @@ import subprocess
 import pytest
 from pathlib import Path
 
-from factory.stages.integrate import commit_run_record, run_record_paths
 
 RUN = "run_rec0000001"
 
@@ -31,57 +30,61 @@ def _repo(tmp_path: Path) -> tuple[Path, Path]:
     return origin, work
 
 
-def test_record_commit_is_deterministic_and_pushed(tmp_path, examples):
+def test_integration_keeps_artifacts_external_and_candidate_unchanged(tmp_path, root, examples):
+    from types import SimpleNamespace
+    from test_session_cutoff import _ctx, _result, AutoQueue
+    from factory.gates import Decision
+    from factory.stages.integrate import run_integrate
+    from factory.state import WorkItemStage
+    from factory.forge import ChangeRequest
     origin, work = _repo(tmp_path)
-    spec = examples["spec_smart_retries"]
-    judged = _git(work, "rev-parse", "HEAD")
-    merge_verdict = {**examples["merge_readiness"], "_head_sha": judged, "_branch": "factory/run_rec0000001/spec_smart-retries", "_base_sha": "x"}
-    sha = commit_run_record(work, RUN, spec, "# Spec\n", examples["verdict_round2"], merge_verdict)
-    assert sha != judged and _git(work, "rev-parse", "HEAD") == sha
-    paths = run_record_paths(RUN, spec["spec_id"])
-    for key, rel in paths.items():
-        assert (work / rel).exists(), key
-    assert json.loads((work / paths["spec_json"]).read_text())["spec_id"] == spec["spec_id"]
-    recorded = json.loads((work / paths["merge_readiness"]).read_text())
-    assert "_head_sha" not in recorded and recorded["result"] == examples["merge_readiness"]["result"]
-    assert json.loads((work / paths["verdict"]).read_text())["round"] == examples["verdict_round2"]["round"]
-    # pushed: origin's branch head equals the new sha
-    assert _git(origin, "rev-parse", "refs/heads/factory/run_rec0000001/spec_smart-retries") == sha
-    # only .factory/ changed, and the commit identity and date are fixed
-    assert _git(work, "diff", "--name-only", f"{judged}..{sha}").splitlines() == sorted(paths.values())
-    log = _git(work, "log", "-1", "--format=%an|%ae|%cn|%ci", sha)
-    assert log.startswith("factory|factory@localhost|factory|")
-    assert judged in _git(work, "log", "-1", "--format=%B", sha)
-    # idempotent: the same inputs produce no second commit
-    assert commit_run_record(work, RUN, spec, "# Spec\n", examples["verdict_round2"], merge_verdict) == sha
-    # deterministic: a fresh clone at the judged head produces the same sha for the same inputs
-    work2 = tmp_path / "work2"
-    subprocess.run(["git", "clone", "-q", "-b", "factory/run_rec0000001/spec_smart-retries", str(origin), str(work2)], check=True)
-    _git(work2, "reset", "-q", "--hard", judged)
-    sha2 = commit_run_record(work2, RUN, spec, "# Spec\n", examples["verdict_round2"], merge_verdict, push=False)
-    assert sha2 == sha
-
-
-def test_record_does_not_commit_unrelated_staged_files(tmp_path, examples):
-    _, work = _repo(tmp_path)
     judged = _git(work, 'rev-parse', 'HEAD')
-    (work / 'unreviewed.py').write_text('x = 99\n')
-    _git(work, 'add', 'unreviewed.py')
-    verdict = {**examples['merge_readiness'], '_head_sha': judged}
-    sha = commit_run_record(work, RUN, examples['spec_smart_retries'], '# Spec\n', None, verdict, push=False)
-    assert 'unreviewed.py' not in _git(work, 'diff', '--name-only', judged, sha).splitlines()
-    assert _git(work, 'diff', '--cached', '--name-only') == 'unreviewed.py'
+    branch = _git(work, 'branch', '--show-current')
+    spec = examples['spec_smart_retries']
+    wid = spec['work_item_id']
+    def run(**kw):
+        summary = json.loads(kw['uploads']['run_summary.json'])
+        assert '/api/artifacts/' in summary['artifact_links']['spec_json']
+        assert 'run_record_paths' not in summary
+        assert json.loads(kw['uploads']['merge_readiness.json'])['_head_sha'] == judged
+        kw['custom_tools']['open_change_request']({'source_branch': branch, 'target_branch': 'main',
+                                                  'title': 'Reviewed change', 'description_markdown': 'Evidence'}, None)
+        return _result({'cr.json': b'{}'})
+    ctx = _ctx(tmp_path, root, examples, SimpleNamespace(run=run), AutoQueue(Decision.APPROVE))
+    for stage in [WorkItemStage.SPEC_DRAFTING, WorkItemStage.SPEC_JUDGING, WorkItemStage.SPEC_APPROVED,
+                  WorkItemStage.IMPLEMENTING, WorkItemStage.REVIEWING, WorkItemStage.MERGE_JUDGING]:
+        ctx.event('work_item.stage', {'stage': stage.value}, work_item_id=wid)
+    ctx.forge = SimpleNamespace(kind='github', sandbox_git_instructions=lambda *a, **kw: 'read only',
+                                session_repository_resource=lambda *a: None,
+                                create_change_request=lambda **kw: ChangeRequest(42, 'https://example.test/pull/42', branch, 'main'))
+    verifier = SimpleNamespace(checkout=lambda b: work)
+    verdict = {**examples['merge_readiness'], '_head_sha': judged, '_branch': branch}
+    run_integrate(ctx, spec, verdict, {}, {}, {}, {}, 'main', verifier=verifier)
+    assert _git(work, 'rev-parse', 'HEAD') == judged
+    assert _git(origin, 'rev-parse', f'refs/heads/{branch}') == judged
+    assert _git(work, 'status', '--porcelain') == ''
+    assert not (work / '.factory').exists()
+    assert ctx.store.get_json(ctx.run_id, 'integrate', f"{spec['spec_id']}-approved-merge_readiness.json") == verdict
 
 
-def test_moved_branch_must_be_reviewed_again(tmp_path, examples):
-    import pytest
+def test_moved_branch_must_be_reviewed_again(tmp_path, root, examples):
+    from types import SimpleNamespace
+    from test_session_cutoff import _ctx, AutoQueue
+    from factory.gates import Decision
+    from factory.stages.integrate import run_integrate
+    from factory.state import WorkItemStage
     _, work = _repo(tmp_path)
     judged = _git(work, 'rev-parse', 'HEAD')
     (work / 'app.py').write_text("print('changed after judgement')\n")
     _git(work, 'commit', '-am', 'unreviewed change')
+    ctx = _ctx(tmp_path, root, examples, None, AutoQueue(Decision.APPROVE))
+    for stage in [WorkItemStage.SPEC_DRAFTING, WorkItemStage.SPEC_JUDGING, WorkItemStage.SPEC_APPROVED,
+                  WorkItemStage.IMPLEMENTING, WorkItemStage.REVIEWING, WorkItemStage.MERGE_JUDGING]:
+        ctx.event('work_item.stage', {'stage': stage.value}, work_item_id=examples['spec_smart_retries']['work_item_id'])
+    ctx.forge = SimpleNamespace()
     with pytest.raises(RuntimeError, match='changed after'):
-        commit_run_record(work, RUN, examples['spec_smart_retries'], '# Spec\n', None,
-                          {**examples['merge_readiness'], '_head_sha': judged}, push=False)
+        run_integrate(ctx, examples['spec_smart_retries'], {'_branch': 'factory/branch', '_head_sha': judged},
+                      {}, {}, {}, {}, 'main', verifier=SimpleNamespace(checkout=lambda b: work))
     assert not (work / '.factory').exists()
 
 
@@ -131,3 +134,25 @@ def test_integrator_uses_forge_receipt_instead_of_agent_report(tmp_path, root, e
     state = ctx.store.state(ctx.run_id)
     assert state.work_items[wid].cr_id == (42 if opens_pr else None)
     assert state.list_cost_usd == .5
+
+
+def test_evaluation_pr_is_forced_to_draft_and_labeled(tmp_path, root, examples):
+    from types import SimpleNamespace
+    from test_session_cutoff import _ctx, Driver, AutoQueue
+    from factory.gates import Decision
+    from factory.stages.integrate import make_open_change_request
+    from factory.forge import ChangeRequest
+    ctx = _ctx(tmp_path, root, examples, Driver(examples), AutoQueue(Decision.APPROVE))
+    ctx.evaluation_target = ('evaluation', 'a' * 40)
+    calls = []
+    def create(**kw):
+        calls.append(kw)
+        return ChangeRequest(42, 'https://example.test/pull/42', 'factory/branch', 'evaluation')
+    handler = make_open_change_request(ctx, SimpleNamespace(kind='github', create_change_request=create),
+                                      'spec_test', 'wi-test', 'factory/branch', 'evaluation')
+    handler({'source_branch': 'factory/branch', 'target_branch': 'evaluation', 'title': 'Change',
+             'description_markdown': 'Evidence', 'draft': False}, None)
+    assert calls[0]['draft'] is True
+    assert calls[0]['title'].startswith('[Factory evaluation]')
+    assert 'do not merge' in calls[0]['description']
+    assert 'a' * 40 in calls[0]['description']

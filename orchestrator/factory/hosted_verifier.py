@@ -230,7 +230,7 @@ class HostedVerifier:
                 row.update(exit_code=None, base_url=None, stderr_tail=f"not run: {reason}")
                 if entry.get("visual"):
                     row["visual"] = {**entry["visual"], "description": entry.get("description"), "status": "blocked",
-                                     "summary": f"Hosted browser check not run: {reason}", "media": []}
+                                     "summary": f"Hosted browser check not run: {reason}", "summary_source": "controller", "media": []}
                     if index in requests:
                         (requests[index][0] / "closed").touch()
                 e2e.append(row)
@@ -246,7 +246,7 @@ class HostedVerifier:
                 if evidence["status"] == "passed":
                     observed = _viewport_observed(directory)
                     if observed != request["viewport"]:
-                        evidence.update(status="blocked", summary=f"Browser evidence does not show the requested viewport "
+                        evidence.update(status="blocked", summary_source="controller", summary=f"Browser evidence does not show the requested viewport "
                                                                   f"{request['viewport']} (viewport_observed: {observed or 'missing'}).")
                 evidence["location"] = "hosted-sandbox"
                 (directory / "closed").touch()
@@ -275,7 +275,7 @@ class HostedVerifier:
         environment = CheckResult(ENVIRONMENT_CHECK, env_ok, env_detail, {"phases": record.get("phases", []), "baseline": baseline})
         hosted = {k: record.get(k) for k in ("status", "session_id", "profile_sha256", "environment_id", "app_id")}
         preview = preview_record(branch, record.get("head_sha"), hosted)
-        ctx.store.put_artifact(ctx.run_id, "implement", f"{sid}-r{record['round']}-hosted_verification.json",
+        ctx.store.put_derived_artifact(ctx.run_id, "implement", f"{sid}-r{record['round']}-hosted_verification.json",
                                json.dumps(record, indent=2, default=str).encode())
         ctx.event("verification.hosted", {"head_sha": record["head_sha"], "round": record["round"], "status": record["status"],
                                           "app_id": record.get("app_id"), "profile_sha256": record.get("profile_sha256"),
