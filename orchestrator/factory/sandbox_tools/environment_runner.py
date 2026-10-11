@@ -37,7 +37,9 @@ APP_HOST = "localhost"                # the origin the app is used at; see app_b
 HEALTH_HOST = "127.0.0.1"             # readiness probes only
 NEXT_SYSTEM_TLS = "NEXT_TURBOPACK_EXPERIMENTAL_USE_SYSTEM_TLS_CERTS"
 SHELL = ["/bin/bash", "-lc"]          # a login shell, as the recipe author tested it in the sandbox
-NODE_ID_RE = re.compile(r"^[^\s:]+::\S+$")
+# A pytest node id: a path, then `::`-joined names with no whitespace, then optional parametrize ids in brackets, which
+# may hold spaces (live emoji-smith: one `[`echo $GOOGLE_API_KEY`]` id invalidated a 369-test report).
+NODE_ID_RE = re.compile(r"^[^\s:]+::[^\s\[]+(?:\[[^\r\n]*\])?$")
 MEDIA_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".webm", ".mp4", ".gif"}
 MAX_NODE_IDS = 20000
 BUN_ID_RE = re.compile(r"^[^\n]+?\.[cm]?[jt]sx?::[^\n]+$")   # file::describe > ... > test name
@@ -392,8 +394,20 @@ def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: flo
         out["commands"].append(row)
     if change.get("collect_tests"):
         log = logs / "collect.log"
-        result = command('PY="$(command -v python || command -v python3)"; "$PY" -m pytest --collect-only -q', repo, spec_env, min(per_command, deadline - time.monotonic()), log)
-        ids = [ln.strip() for ln in log.read_text(errors="replace").splitlines() if NODE_ID_RE.match(ln.strip())][:MAX_NODE_IDS]
+        # A plugin prints each collected item's node id. `-q` alone is not enough: a repository whose addopts holds `-v`
+        # (emoji-smith's pytest.ini) cancels it, and pytest then prints a tree with no node ids at all.
+        plugin_dir = work / "pytest_plugin"
+        plugin_dir.mkdir(exist_ok=True)
+        (plugin_dir / "factory_node_ids.py").write_text(
+            "def pytest_collection_finish(session):\n"
+            "    for item in session.items:\n"
+            "        print('FACTORY_NODE_ID ' + item.nodeid, flush=True)\n")
+        collect_env = {**spec_env, "PYTHONPATH": os.pathsep.join(p for p in (str(plugin_dir), spec_env.get("PYTHONPATH", "")) if p)}
+        result = command('PY="$(command -v python || command -v python3)"; "$PY" -m pytest --collect-only -q -p factory_node_ids',
+                         repo, collect_env, min(per_command, deadline - time.monotonic()), log)
+        lines = [ln.strip() for ln in log.read_text(errors="replace").splitlines()]
+        ids = [ln.removeprefix("FACTORY_NODE_ID ") for ln in lines if ln.startswith("FACTORY_NODE_ID ")] or lines
+        ids = [i for i in ids if NODE_ID_RE.match(i)][:MAX_NODE_IDS]
         out["collected_tests"] = {"exit_code": result.get("exit_code"), "status": result["status"], "node_ids": ids}
     elif change.get("collect_skip_reason"):
         out["collected_tests"] = {"status": "skipped", "reason": str(change["collect_skip_reason"])[:300]}
