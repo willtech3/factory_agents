@@ -1,10 +1,10 @@
 """The forge: where the code lives and where change requests are reviewed.
 
 A *change request* (CR) is a GitHub pull request or a GitLab merge request. The orchestrator
-only ever needs the small slice of forge behaviour listed on the `Forge` protocol: branches and
-commits for the optional design CR, change requests for Gate 3,
-comments and labels for feedback, and read-only pipeline/deployment lookups for preview and dev
-URLs. Everything forge-specific lives in `forge/github.py` and `forge/gitlab.py`.
+only ever needs the small slice of forge behaviour listed on the `Forge` protocol: commits for seeding a
+repository, change requests for Gate 3, labels and comments on them, and read-only pipeline/deployment
+lookups for preview and dev URLs. Nothing is committed and no change request is opened before Gate 3
+(ADR-0011). Everything forge-specific lives in `forge/github.py` and `forge/gitlab.py`.
 
 Selection is by configuration (`FACTORY_FORGE=github|gitlab`, default github); see `make_forge`.
 The sandbox never holds the forge token: GitHub sessions mount the repository with the platform's
@@ -45,19 +45,15 @@ class Forge(Protocol):
     def repository_exists(self) -> bool: ...
     def create_repository(self, private: bool = True, description: str = "") -> dict[str, Any]: ...
 
-    # ---- branches and commits (optional design CR)
-    def create_branch(self, branch: str, ref: str) -> None: ...
+    # ---- commits (seeding a repository: `ensure_repository`)
     def commit_files(self, branch: str, message: str, files: dict[str, bytes]) -> str: ...
     def file_exists(self, branch: str, path: str) -> bool: ...
-    def file_url(self, branch: str, path: str) -> str: ...
 
-    # ---- change requests (Gate 3, and the design CR when the gate surface is the forge)
+    # ---- change requests (Gate 3)
     def create_change_request(self, *, source_branch: str, target_branch: str, title: str, description: str,
                               labels: list[str], reviewers: list[str], draft: bool = False) -> ChangeRequest: ...
     def change_request_state(self, cr_id: int) -> dict[str, Any]: ...
     def change_request_approved(self, cr_id: int) -> bool: ...
-    def change_request_comments(self, cr_id: int) -> list[dict[str, Any]]: ...
-    def change_request_discussions(self, cr_id: int) -> list[dict[str, Any]]: ...
     def add_labels(self, cr_id: int, labels: list[str]) -> None: ...
     def post_comment(self, cr_id: int, body: str) -> None: ...
 
@@ -74,28 +70,6 @@ class Forge(Protocol):
     def sandbox_git_instructions(self, repo_url: str, base_branch: str, branch: str, read_only: bool = False) -> str: ...
     # read_only: the clause for reviewers, the merge judge and the integrator, who read the branch and never commit or push
     def authenticated_url(self, repo_url: str) -> str: ...   # for the orchestrator's own clone (LocalVerifier)
-
-    # ---- feedback rendering
-    def render_feedback_md(self, comments: list[dict[str, Any]], discussions: list[dict[str, Any]]) -> str: ...
-
-
-def render_feedback_md(comments: list[dict[str, Any]], discussions: list[dict[str, Any]],
-                       title: str = "Human feedback from the design change request") -> str:
-    """Turn change-request comments into the feedback.md an agent reads on a re-run.
-
-    `discussions` are inline comments with `path`/`line`; `comments` are top-level. Both carry
-    `author` and `body`. Shared by every forge so the agent sees one shape.
-    """
-    lines = [f"# {title}", ""]
-    for d in discussions:
-        where = f" (`{d['path']}:{d['line']}`)" if d.get("path") else ""
-        lines.append(f"- **@{d['author']}**{where}: {d['body'].strip()}")
-    for n in comments:
-        if n.get("position"):
-            continue  # already covered as a discussion
-        lines.append(f"- **@{n['author']}**: {n['body'].strip()}")
-    lines += ["", "Address every item explicitly in your summary: either apply it, or explain why not."]
-    return "\n".join(lines)
 
 
 def parse_pipeline_webhook(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -219,4 +193,4 @@ def ref_slug(ref: str) -> str:
 
 
 __all__ = ["ChangeRequest", "Forge", "PIPELINE_TERMINAL", "ensure_repository", "make_forge", "parse_pipeline_webhook",
-           "ref_slug", "render_feedback_md", "repo_from_url"]
+           "ref_slug", "repo_from_url"]

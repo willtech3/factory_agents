@@ -208,7 +208,7 @@ def context(tmp_path, root, driver, **cfg):
     config = make_config(root, runs, **{"preview_mode": "managed", "app_id": "app_test", "test_vault_ids": ("vlt_test",), **cfg})
     ctx = RunContext(cfg=config, store=RunStore(runs), driver=driver, queue=InMemoryQueue(), notifier=LogNotifier(),
                      forge=None, policy=Policy(review_max_rounds=1), run_id=RUN_ID)
-    ctx.event("run.created", {"outcome_id": "o", "title": "t", "policy": {"preview_mode": "managed"}})
+    ctx.event("run.created", {"budget_usd": 50, "outcome_id": "o", "title": "t", "policy": {"preview_mode": "managed"}})
     ctx.event("artifact.produced", {"artifact_type": "decomposition", "revision": 1, "work_items": [{"work_item_id": "wi-hosted", "depends_on": []}]}, stage="decompose")
     for st in (WorkItemStage.SPEC_DRAFTING, WorkItemStage.SPEC_JUDGING, WorkItemStage.SPEC_APPROVED):
         ctx.event("work_item.stage", {"stage": st.value}, work_item_id="wi-hosted")
@@ -256,7 +256,7 @@ def test_managed_round_runs_everything_in_the_sandbox_and_passes_on_bound_eviden
     assert env["mode"] == "managed" and env["host"] == "anthropic-cloud" and env["app_id"] == "app_test" and env["bound"]
     assert env["profile_path"] == "ops/recipe.json" and env["profile_sha256"] == te.fingerprint(RECIPE)
     assert results["commands"][0]["exit_code"] == 0 and results["commands"][0]["location"] == "hosted-sandbox"
-    assert results["commands"][0]["pytest"]["passed"] == ["tests/test_a.py::test_a"]
+    assert results["commands"][0]["tests"]["passed"] == ["tests/test_a.py::test_a"]
     assert "tests/test_a.py::test_a" in results["collected_tests"]
     row = results["e2e"][0]
     assert row["exit_code"] == 0 and row["visual"]["status"] == "passed" and row["visual"]["head_sha"] == env["head_sha"]
@@ -412,7 +412,7 @@ def test_harness_reports_exit_codes_junit_outcomes_and_collection_without_raw_ou
     printing = "python -c \"print('printed-' + 'by-the-command')\"; exit 4"       # the output text is not in the command text
     report, _ = harness(tmp_path, RECIPE, {"commands": ["python -m pytest -q tests/test_a.py", printing], "e2e": [], "collect_tests": True})
     out = report["change"]["results"]
-    assert out["commands"][0]["exit_code"] == 0 and out["commands"][0]["pytest"]["passed"] == ["tests/test_a.py::test_a"]
+    assert out["commands"][0]["exit_code"] == 0 and out["commands"][0]["tests"]["passed"] == ["tests/test_a.py::test_a"]
     assert out["commands"][1]["exit_code"] == 4 and "printed-by-the-command" not in json.dumps(report)
     assert "tests/test_a.py::test_a" in out["collected_tests"]["node_ids"] and out["baseline"]["status"] == "passed"
 

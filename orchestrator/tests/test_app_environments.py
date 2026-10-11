@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from conftest import make_config
-from factory.app_environments import DISCOVERY_SHA256, AppEnvironments
+from factory.app_environments import DISCOVERY_PROFILE, AppEnvironments
 from factory.onboarding import AppOnboarding
 from factory.test_environments import ensure_environment, environment_config, fingerprint
 from factory.web.app import create_app
@@ -57,13 +57,14 @@ def screenshot_workspace(running=()):
     """The workspace from the report: a duplicated discovery environment, three Evergreen recipes, two proofs, and
     the hand-applied factory-cloud environment Factory must never touch."""
     test = lambda d: {"factory_purpose": "test", "profile_sha256": d}
+    discovery = {"factory_purpose": "discovery", "profile_sha256": fingerprint(DISCOVERY_PROFILE)}
     return Workspace([
-        env("env_disc_new", "factory-app-discovery-ec7d7bc4-ac66c1", "2026-10-11T11:59:00Z", test(DISCOVERY_SHA256)),
+        env("env_disc_new", "factory-app-discovery-ec7d7bc4-ac66c1", "2026-10-11T11:59:00Z", discovery),
         env("env_chat_new", "factory-evergreen-chat-31c1bb52-1558f3", "2026-10-11T10:00:00Z", test("31c1bb52" + "0" * 56)),
         env("env_chat_old", "factory-evergreen-chat-88a90ddb-37cb1b", "2026-10-11T09:50:00Z", test("88a90ddb" + "0" * 56)),
         env("env_synthetic", "factory-evergreen-synthetic-94d1e535-b44912", "2026-10-11T09:00:00Z", test("94d1e535" + "0" * 56)),
         env("env_proof", "factory-factory-onboarding-proof-d2b3a5d6-53a889", "2026-10-11T09:00:00Z", test("d2b3a5d6" + "0" * 56)),
-        env("env_disc_old", "factory-app-discovery-ec7d7bc4-a2bba6", "2026-10-11T09:00:00Z", test(DISCOVERY_SHA256)),
+        env("env_disc_old", "factory-app-discovery-ec7d7bc4-a2bba6", "2026-10-11T09:00:00Z", discovery),
         env("env_browser", "factory-greenfield-browser-proof-8f307277-db1146", "2026-10-11T09:00:00Z", test("8f307277" + "0" * 56)),
         env("env_cloud", "factory-cloud", "2026-10-10T19:00:00Z", {}),
     ], running)
@@ -187,14 +188,6 @@ def test_an_environment_labelled_for_another_app_keeps_its_owner(tmp_path, root)
                                environment_config(profile))])
     ensure_environment(workspace, profile, tmp_path, app={"app_id": "app_bbbbbbbbbbbb", "name": "B", "repository_url": "https://github.com/me/b"})
     assert workspace.envs["env_shared"].metadata["factory_app_id"] == "app_aaaaaaaaaaaa" and workspace.updates == []
-
-
-def test_discovery_reuses_a_legacy_discovery_environment_and_marks_it(tmp_path):
-    from factory.app_environments import DISCOVERY_PROFILE
-    workspace = Workspace([env("env_disc", "factory-app-discovery-ec7d7bc4-a2bba6", "2026-10-11T09:00:00Z",
-                               {"factory_purpose": "test", "profile_sha256": DISCOVERY_SHA256})])
-    assert ensure_environment(workspace, DISCOVERY_PROFILE, tmp_path, purpose="discovery") == "env_disc"
-    assert workspace.created == [] and workspace.envs["env_disc"].metadata["factory_purpose"] == "discovery"
 
 
 def test_api_lists_environments_and_guards_cleanup(tmp_path, root, monkeypatch):

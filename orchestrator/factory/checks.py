@@ -94,7 +94,6 @@ def protected_tests(
     deleted_files: Iterable[str],
     existing_test_files: Iterable[str],
     allowed_paths: Iterable[str],
-    spec_touches_tests: bool,
     named_test_files: Iterable[str] = (),
     removed_lines_by_file: dict[str, list[str]] | None = None,
 ) -> CheckResult:
@@ -105,15 +104,12 @@ def protected_tests(
     `test_weakening` still reads every added line. "None removed" must be proven: `removed_lines_by_file` has to hold an
     entry for the file (the diff parser records one, possibly empty, for every file whose header it read), so missing
     metadata, a binary or unparsed diff, or a quoted path the parser skipped all keep the file protected. Every other
-    existing test stays protected, including any a glob in allowed_paths would cover. `spec_touches_tests` keeps its older meaning (any existing test the
-    allowed paths cover may change) for a caller that sets it explicitly; the implement stage never does."""
+    existing test stays protected, including any a glob in allowed_paths would cover."""
     existing = set(existing_test_files)
     deleted = set(deleted_files)
     named = set(named_test_files)
     removed = removed_lines_by_file
     touched = [f for f in list(modified_files) + list(deleted) if f in existing and is_test_file(f)]
-    if spec_touches_tests:
-        touched = [f for f in touched if not path_allowed(f, allowed_paths)]
 
     def why_not(f: str) -> str | None:
         """Why a named test file is not merely extended, or None when the diff proves it is."""
@@ -243,35 +239,11 @@ def spec_traceability(spec: dict[str, Any], decomposition: dict[str, Any]) -> Ch
 
 
 def criteria_mapping(implementation_report: dict[str, Any]) -> dict[str, list[str]]:
-    """ac_id -> test ids from the implementation report.
-
-    The kickoff asks for `criteria: [{ac_id, tests: [...]}]`. Implementers have also written `criteria_to_tests`
-    (same list shape) and `acceptance_criteria` as a map `{ac_id: {pytest_node_ids|tests|test_ids: [...]}}` or a
-    list of `{ac_id, ...}`; every one of those is read, because the check is about whether the tests exist and
-    pass, not about which key the agent chose."""
+    """ac_id -> test ids from the implementation report's `criteria: [{ac_id, tests: [...]}]` (the schema's only shape)."""
     out: dict[str, list[str]] = {}
-
-    def add(ac_id: Any, entry: Any) -> None:
-        if not ac_id or not isinstance(entry, dict):
-            return
-        tests: Any = None
-        for key in ("tests", "pytest_node_ids", "test_ids", "node_ids", "test"):
-            if entry.get(key):
-                tests = entry[key]
-                break
-        if isinstance(tests, str):
-            tests = [tests]
-        out.setdefault(str(ac_id), []).extend(t for t in (tests or []) if isinstance(t, str) and t)
-
-    for key in ("criteria", "criteria_to_tests", "acceptance_criteria"):
-        block = implementation_report.get(key)
-        if isinstance(block, dict):
-            for ac_id, entry in block.items():
-                add(ac_id, entry)
-        elif isinstance(block, list):
-            for entry in block:
-                if isinstance(entry, dict):
-                    add(entry.get("ac_id"), entry)
+    for entry in implementation_report.get("criteria") or []:
+        if isinstance(entry, dict) and entry.get("ac_id") and isinstance(entry.get("tests"), list):
+            out.setdefault(str(entry["ac_id"]), []).extend(t for t in entry["tests"] if isinstance(t, str) and t)
     return out
 
 
@@ -295,6 +267,9 @@ def ac_test_mapping(spec: dict[str, Any], implementation_report: dict[str, Any],
     exist = set(tests_that_exist) if tests_that_exist is not None else None
     mapping = criteria_mapping(implementation_report)
     problems = []
+    if not isinstance(implementation_report.get("criteria"), list):
+        problems.append("implementation_report.json has no `criteria: [{ac_id, tests}]` list (implementation_report.schema.json), "
+                        "so no criterion maps to a test")
     for ac in spec["acceptance_criteria"]:
         if ac["verification"] != "automated_test":
             continue
@@ -460,7 +435,7 @@ def run_all_for_merge(
     *, spec: dict[str, Any], changed_files: list[str], deleted_files: list[str],
     existing_test_files: list[str], added_lines_by_file: dict[str, list[str]],
     implementation_report: dict[str, Any], passing_tests: list[str] | None, command_results: list[dict[str, Any]],
-    spec_touches_tests: bool = False, named_test_files: Iterable[str] = (), removed_lines_by_file: dict[str, list[str]] | None = None,
+    named_test_files: Iterable[str] = (), removed_lines_by_file: dict[str, list[str]] | None = None,
     manifest_path: Path | None = None, schema_dir: Path | None = None,
     e2e_results: list[dict[str, Any]] | None = None, tests_that_exist: list[str] | None = None,
     require_test_evidence: bool = False,
@@ -474,7 +449,7 @@ def run_all_for_merge(
     """
     out = [
         diff_scope(changed_files + deleted_files, spec["allowed_paths"]),
-        protected_tests(changed_files, deleted_files, existing_test_files, spec["allowed_paths"], spec_touches_tests,
+        protected_tests(changed_files, deleted_files, existing_test_files, spec["allowed_paths"],
                         named_test_files, removed_lines_by_file),
         test_weakening(added_lines_by_file),
         ac_test_mapping(spec, implementation_report, passing_tests, tests_that_exist,

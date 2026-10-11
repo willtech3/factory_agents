@@ -69,8 +69,8 @@ export ANTHROPIC_API_KEY=...                       # Console key for the workspa
 export ANTHROPIC_WORKSPACE_ID=wrkspc_...           # only when the key is not scoped to a workspace (the SDK then needs the header)
 export ANTHROPIC_WORKSPACE=default                 # only for Console deep links
 export FACTORY_FORGE=github                        # default
-export FORGE_REPO=<you>/<repo>                     # GITHUB_REPO also works
-export FORGE_TOKEN=github_pat_...                  # GITHUB_TOKEN also works
+export FORGE_REPO=<you>/<repo>
+export FORGE_TOKEN=github_pat_...
 export FACTORY_DEPLOY_WORKFLOW=preview.yml         # scope pipeline lookups to the template's workflow
 export FACTORY_PREVIEW_ENVIRONMENT_PREFIX=preview/ # matches the template
 export FACTORY_DEV_ENVIRONMENT=dev
@@ -111,8 +111,6 @@ The run id is printed first. The process blocks at each gate; keep a second term
 **From the Console.** `factory web` (in a third terminal, or before the run) serves http://127.0.0.1:8765/. The run appears on the board; the gate opens as a document with a sign-off rail; notes you leave under a work item or spec travel with Request changes. See [08-factory-console.md](08-factory-console.md). It writes to the same queue as the CLI.
 
 **From the CLI.** `factory gates` lists open gates and questions with their artifact hashes; `factory decide <gate_id> approve|request_changes|reject|approve_subset --comment "..." [--spec spec_x]` and `factory answer <question_id> "text"`. The CLI binds the hashes automatically. Both surfaces are polled; the first decision wins.
-
-**From the forge** (`FACTORY_GATE_SURFACE=forge`): the design PR holds the files for inline comments; the decision still comes from the CLI (or the tracker when both are configured).
 
 ## 8. What you see in the Anthropic Console
 

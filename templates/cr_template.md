@@ -1,6 +1,6 @@
 # {{spec_id}}: {{spec_title}}
 
-> Factory run `{{run_id}}` · outcome: {{outcome_title}} · [approved specification]({{artifact_links.spec_md}}){{#design_cr_url}} · design change request: {{design_cr_url}}{{/design_cr_url}}{{#tracker_url}} · tracker: {{tracker_url}}{{/tracker_url}}
+> Factory run `{{run_id}}` · outcome: {{outcome_title}} · [approved specification]({{artifact_links.spec_md}}){{#tracker_url}} · tracker: {{tracker_url}}{{/tracker_url}}
 
 ## Summary
 

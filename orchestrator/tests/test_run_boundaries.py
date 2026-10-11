@@ -160,12 +160,6 @@ def test_a_resumed_implementation_keeps_the_notes_and_refuses_a_changed_spec(par
         runner.resume(tgr.context(tmp_path, root, design_only=False))
 
 
-def test_runs_approved_before_approval_records_resume_without_guidance(tmp_path, root):
-    ctx = tgr.context(tmp_path, root)
-    ctx.event("run.created", {"outcome_id": "o", "title": "t"})
-    assert runner.approved_record(ctx, ctx.store.events(RUN), {"spec_a": {}}) == {}
-
-
 def test_the_implementer_receives_the_notes_as_an_upload_and_a_clause(tmp_path, root, monkeypatch):
     from test_implement_loop import _remote
 
@@ -182,7 +176,7 @@ def test_the_implementer_receives_the_notes_as_an_upload_and_a_clause(tmp_path, 
     runs = tmp_path / "runs"
     ctx = RunContext(cfg=make_config(root, runs), store=RunStore(runs), driver=None, queue=InMemoryQueue(), notifier=LogNotifier(),
                      forge=None, policy=Policy(), run_id=RUN)
-    ctx.event("run.created", {"outcome_id": "o", "title": "t"})
+    ctx.event("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     ctx.event("artifact.produced", {"artifact_type": "decomposition", "revision": 1, "work_items": [{"work_item_id": "wi-a", "depends_on": []}]})
     for st in ("spec_drafting", "spec_judging", "spec_approved"):
         ctx.event("work_item.stage", {"stage": st}, work_item_id="wi-a")

@@ -13,7 +13,7 @@ Each surface does one job. Reading is separated from deciding so that the thing 
 | **Artifact pages** (`runs/<run_id>/pages/gate_*.html`) | reading | owner, engineers | One self-contained page per gate: judge summary first, goal-coverage matrix, per-spec sections, open questions, the hash list. Local files; publishing as a claude.ai artifact is a stub | built (local) |
 | **Tracker** (Linear by default; Jira stub) | board and record | all | A project per run, an issue per work item whose state mirrors the pipeline, gates as comments with a label, decisions by label plus comment, questions as threaded comments | built, unverified live |
 | **Slack / email** | notifications | owner, engineers | Deep links to the page and the issue; blocking questions; optional approve button for low-risk gates | later (Milestone B) |
-| **Forge change request** (GitHub PR by default, GitLab MR) | from Gate 3 | engineers | Ordinary code review and merge, with the approved spec and verdicts linked from Factory’s artifact store. Optionally also Gates 1 and 2 as a draft design CR with inline comments (`FACTORY_GATE_SURFACE=forge`) | built, unverified live |
+| **Forge change request** (GitHub PR by default, GitLab MR) | from Gate 3 | engineers | Ordinary code review and merge, with the approved spec and verdicts linked from Factory’s artifact store.. Gates 1 and 2 never appear here ([ADR-0011](adr/0011-no-design-change-requests.md)) | built, unverified live |
 | **Anthropic Console session viewer** | trace | operator, curious engineers | Full trace of any session: tool calls, grader iterations, cost per thread. Every artifact's `produced_by.session_id` deep-links here | platform |
 | **`ant beta:sessions connect`** | live attach | operator | Attach a terminal to a live session to watch, nudge, or answer a paused tool call | platform |
 
@@ -37,7 +37,7 @@ Slack (later; today the Linear notification): *"Decomposition ready for review: 
 - coverage per metric, out-of-scope list, open questions with defaults, assumptions, risks
 - below the fold, the rubric scores the platform grader reached and the deterministic check results
 
-Priya reads it in a couple of minutes. She comments on the issue: *"Suspension timing isn't here. If Stripe retries for 3 weeks, when do we actually suspend?"* and applies the `factory:request-changes` label (on the forge surface she would leave the comment inline on the design change request; from a terminal, `factory decide`). The orchestrator pulls her comment into `feedback.md`, re-runs the decomposer with the prior decomposition attached, and bumps `revision` to 2. Twenty-five minutes later: revision 2 adds `wi-suspension-timing` with `human_judgement_required: true` and a note that she must set the maximum grace period. She approves.
+Priya reads it in a couple of minutes. She comments on the issue: *"Suspension timing isn't here. If Stripe retries for 3 weeks, when do we actually suspend?"* and applies the `factory:request-changes` label (in the Factory Console she would leave it as a note on the work item; from a terminal, `factory decide`). The orchestrator pulls her comment into `feedback.md`, re-runs the decomposer with the prior decomposition attached, and bumps `revision` to 2. Twenty-five minutes later: revision 2 adds `wi-suspension-timing` with `human_judgement_required: true` and a note that she must set the maximum grace period. She approves.
 
 Her approval is recorded with the sha256 of the exact files she saw: the gate comment lists them and the orchestrator copies them from its own comment into the decision. If the agent had rewritten the decomposition between her reading and her clicking, the decision would be rejected as stale and she would be asked to look again (Loopjacking defence; [practitioners.md §13](research/practitioners.md)).
 
@@ -95,7 +95,7 @@ Escalations open a gate with the reason and the relevant artifacts: a `blocked.m
 
 1. **Review design, then contracts, then code. Never skip code.** Plan-only review failed in production ([practitioners.md §1c](research/practitioners.md)).
 2. **Put the judge's critique next to the artifact.** Humans agree most with moderate, focused explanations ([academic-2026.md §6](research/academic-2026.md), Gao et al.).
-3. **Show what changed since the last review**, not the whole thing again. Revision diffs on the design change request do this for free; pages should grow a diff view.
+3. **Show what changed since the last review**, not the whole thing again. Pages and the Console should grow a diff view between revisions.
 4. **Interrupt only for blocking questions; batch the rest at gates.** Oversight capacity is finite ([academic-2026.md §6](research/academic-2026.md), Turan).
 5. **Bind every approval to what was shown.** Hash-bound decisions ([practitioners.md §13](research/practitioners.md), Loopjacking).
 6. **Never present a passing test as proof.** List which tests cover which criteria ([academic-2026.md §6](research/academic-2026.md), Dhanorkar et al.).

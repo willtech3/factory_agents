@@ -35,7 +35,7 @@ ROLE_NAME = {"decomposer": "decomposer", "spec_writer": "spec writer", "spec_jud
 
 def summarize(events: list[RunEvent], state: RunState, controller_alive: bool | None = None) -> dict[str, Any]:
     """One record per run for the history. `controller_alive` is what `controller_running` found for a run that is not
-    finished (None when unknown, as for runs started before controllers took the lock): False turns a run that looks
+    finished (None when there is no lock file, as for a run driven in-process): False turns a run that looks
     in progress into `stopped`, because nothing will move it or pick up a decision on its open gate."""
     created = next((ev.payload for ev in events if ev.kind == "run.created"), {})
     completed = next((ev.payload for ev in events if ev.kind == "run.completed"), None)
@@ -101,8 +101,7 @@ def summarize_run(store: Any, runs_dir: Path, run_id: str) -> dict[str, Any]:
 def controller_running(runs_dir: Path, run_id: str) -> bool | None:
     """Whether a controller (`factory run` or `factory resume`) holds the run's lock right now: True when another
     process holds it, False when the lock file exists and nobody holds it (a controller that exited without recording
-    why), None when there is no lock file (a run started before controllers took the lock, or driven in-process by
-    a test). Never creates the file: a read must not make a run directory look driven."""
+    why), None when there is no lock file (a run driven in-process, as by a test). Never creates the file: a read must not make a run directory look driven."""
     import fcntl
 
     path = runs_dir / run_id / "controller.lock"
@@ -132,7 +131,7 @@ def _status(state: RunState, controller_alive: bool | None) -> str:
 
 
 def _pull_requests(events: list[RunEvent], state: RunState, titles: dict[str, str]) -> list[dict[str, Any]]:
-    opened = {ev.work_item_id: ev.payload for ev in events if ev.kind == "cr.opened" and ev.work_item_id and not ev.payload.get("design")}
+    opened = {ev.work_item_id: ev.payload for ev in events if ev.kind == "cr.opened" and ev.work_item_id}
     out = []
     for wi in state.work_items.values():
         cr = opened.get(wi.work_item_id)

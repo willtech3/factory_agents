@@ -115,7 +115,7 @@ def protected(modified=(), deleted=(), named=(), removed=PROVEN, allowed=("tests
     """protected_tests with, by default, removal evidence that proves nothing was removed from any modified file."""
     existing = ["tests/models.test.ts", "tests/other.test.ts"]
     removed = {f: [] for f in modified} if removed is PROVEN else removed
-    return checks.protected_tests(modified, deleted, existing, allowed, False, named, removed)
+    return checks.protected_tests(modified, deleted, existing, allowed, named, removed)
 
 
 def test_a_named_existing_test_may_be_extended_but_nothing_else():
@@ -252,5 +252,5 @@ def test_the_run_cap_counts_verification_spend(tmp_path, root):
 
 def test_generator_of_deleted_tests_is_not_consumed_before_protection():
     result = checks.protected_tests([], iter(['tests/models.test.ts']), ['tests/models.test.ts'],
-                                    ['tests/models.test.ts'], False, ['tests/models.test.ts'], {})
+                                    ['tests/models.test.ts'], ['tests/models.test.ts'], {})
     assert not result.passed and result.data['touched'] == ['tests/models.test.ts']

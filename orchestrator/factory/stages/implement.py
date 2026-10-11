@@ -441,7 +441,7 @@ class LocalVerifier:
 
         Every pytest invocation inside a command also writes a junit report (appended through PYTEST_ADDOPTS, so
         `pytest`, `python -m pytest` and compound shell commands all get it); a command that produced one carries
-        `pytest: {passed, failed, skipped}` with the node ids, which is where the orchestrator's passing-test set
+        `tests: {framework: "pytest", report: "junit", status: "reported", passed, failed, skipped}` with the node ids, which is where the orchestrator's passing-test set
         comes from (post-mortem issue 5: the set used to be copied from the implementer's own report, so any
         mapping passed, fabricated ids included)."""
         results = []
@@ -457,7 +457,7 @@ class LocalVerifier:
             addopts = f"{env.get('PYTEST_ADDOPTS', '')} --junitxml={shlex.quote(str(junit))} -o junit_family=xunit1".strip()
             row: dict[str, Any] = {"command": cmd, **self._run_in_group(cmd, repo, {**env, "PYTEST_ADDOPTS": addopts}, timeout)}
             if junit.is_file():
-                row["pytest"] = parse_junit(junit.read_bytes())
+                row["tests"] = {"framework": "pytest", "report": "junit", "status": "reported", **parse_junit(junit.read_bytes())}
             results.append(row)
         return results
 
@@ -663,12 +663,10 @@ def _node_id(file: str | None, classname: str, name: str) -> str:
 
 
 def _reported(row: dict[str, Any]) -> dict[str, Any] | None:
-    """A command row's test outcomes: its framework-neutral `tests` evidence when it is a report (hosted rows, pytest or
-    Bun), else its pytest lists (rows of the local verifier and of older hosted harnesses)."""
+    """A command row's test outcomes: its framework-neutral `tests` evidence when it is a report (pytest or Bun, local or
+    hosted)."""
     tests = row.get("tests")
-    if isinstance(tests, dict):
-        return tests if tests.get("status") == "reported" else None
-    return row.get("pytest") or None
+    return tests if isinstance(tests, dict) and tests.get("status") == "reported" else None
 
 
 def passed_test_ids(command_results: list[dict[str, Any]]) -> tuple[list[str], list[str]] | None:
@@ -783,18 +781,12 @@ def preview_info(ctx: RunContext, branch: str, head_sha: str | None = None) -> d
 
 def review_evidence_prefix(ctx: RunContext, sid: str, round_no: int, pass_id: str,
                            base_sha: str, head_sha: str) -> tuple[str, dict[str, Any] | None]:
-    """Reuse only reviews of the exact diff; preserve older session outputs under their original names."""
-    legacy = f"{sid}-r{round_no}-{pass_id}-"
-    scoped = f"{sid}-r{round_no}-base{base_sha}-head{head_sha}-{pass_id}-"
-    for prefix in (scoped, legacy):
-        found = artifact_json_or_none(ctx, "review", prefix + "findings.json")
-        ref = (found or {}).get("diff_ref") or {}
-        if found is not None and ref.get("base_sha") == base_sha and ref.get("head_sha") == head_sha:
-            return prefix, found
-    directory = ctx.cfg.runs_dir / ctx.run_id / "artifacts" / "review"
-    if not any(directory.glob(legacy + "*")):
-        return legacy, None
-    return scoped, None
+    """The artifact prefix of one review pass, named for the exact diff it read (base and head), and its findings when
+    that pass already persisted them and they name the same diff: only a review of the same diff is reused."""
+    prefix = f"{sid}-r{round_no}-base{base_sha}-head{head_sha}-{pass_id}-"
+    found = artifact_json_or_none(ctx, "review", prefix + "findings.json")
+    ref = (found or {}).get("diff_ref") or {}
+    return prefix, found if ref.get("base_sha") == base_sha and ref.get("head_sha") == head_sha else None
 
 
 def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base_branch: str,

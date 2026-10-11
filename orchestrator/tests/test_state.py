@@ -9,7 +9,7 @@ def test_happy_path_run_state(tmp_path, examples):
     store = RunStore(tmp_path)
     run_id = "run_test000001"
     dec = examples["decomposition"]
-    store.append(run_id, "run.created", {"type": "orchestrator"}, {"outcome_id": "out_ledger0001"})
+    store.append(run_id, "run.created", {"type": "orchestrator"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "out_ledger0001"})
     store.append(run_id, "stage.entered", {"type": "orchestrator"}, {"stage": "decomposing"})
     store.append(run_id, "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
                                                                  "work_items": dec["work_items"]})
@@ -36,7 +36,7 @@ def test_happy_path_run_state(tmp_path, examples):
 
 def test_illegal_run_transition(tmp_path):
     store = RunStore(tmp_path)
-    store.append("run_x", "run.created", {"type": "orchestrator"}, {"outcome_id": "o"})
+    store.append("run_x", "run.created", {"type": "orchestrator"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o"})
     store.append("run_x", "stage.entered", {"type": "orchestrator"}, {"stage": "implementing"})  # intake -> implementing
     with pytest.raises(IllegalTransition):
         store.state("run_x")
@@ -44,7 +44,7 @@ def test_illegal_run_transition(tmp_path):
 
 def test_illegal_work_item_transition(tmp_path, examples):
     store = RunStore(tmp_path)
-    store.append("run_y", "run.created", {"type": "orchestrator"}, {"outcome_id": "o"})
+    store.append("run_y", "run.created", {"type": "orchestrator"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o"})
     store.append("run_y", "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
                                                                  "work_items": examples["decomposition"]["work_items"]})
     store.append("run_y", "work_item.stage", {"type": "orchestrator"}, {"stage": "merged"}, work_item_id="wi-smart-retries")
@@ -54,7 +54,7 @@ def test_illegal_work_item_transition(tmp_path, examples):
 
 def test_dependency_gating(tmp_path, examples):
     store = RunStore(tmp_path)
-    store.append("run_z", "run.created", {"type": "orchestrator"}, {"outcome_id": "o"})
+    store.append("run_z", "run.created", {"type": "orchestrator"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o"})
     store.append("run_z", "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
                                                                  "work_items": examples["decomposition"]["work_items"]})
     for wid in ("wi-smart-retries", "wi-dunning-emails"):
@@ -96,7 +96,7 @@ def _merge_item(store, run_id, wid):
 
 def test_deploy_stages_follow_merge(tmp_path, examples):
     store = RunStore(tmp_path)
-    store.append("run_d", "run.created", {"type": "orchestrator"}, {"outcome_id": "o"})
+    store.append("run_d", "run.created", {"type": "orchestrator"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o"})
     store.append("run_d", "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
                                                                  "work_items": examples["decomposition"]["work_items"]})
     _merge_item(store, "run_d", "wi-smart-retries")
@@ -121,7 +121,7 @@ def test_deploy_stages_follow_merge(tmp_path, examples):
 
 def test_deploy_failure_routes_back_to_implementing(tmp_path, examples):
     store = RunStore(tmp_path)
-    store.append("run_e", "run.created", {"type": "orchestrator"}, {"outcome_id": "o"})
+    store.append("run_e", "run.created", {"type": "orchestrator"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o"})
     store.append("run_e", "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
                                                                  "work_items": examples["decomposition"]["work_items"]})
     _merge_item(store, "run_e", "wi-smart-retries")
@@ -132,7 +132,7 @@ def test_deploy_failure_routes_back_to_implementing(tmp_path, examples):
 
 def test_illegal_deploy_transitions(tmp_path, examples):
     store = RunStore(tmp_path)
-    store.append("run_f", "run.created", {"type": "orchestrator"}, {"outcome_id": "o"})
+    store.append("run_f", "run.created", {"type": "orchestrator"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o"})
     store.append("run_f", "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
                                                                  "work_items": examples["decomposition"]["work_items"]})
     _merge_item(store, "run_f", "wi-smart-retries")
@@ -140,7 +140,7 @@ def test_illegal_deploy_transitions(tmp_path, examples):
     with pytest.raises(IllegalTransition):   # merged -> deployed_dev skips the observation
         store.state("run_f")
     store2 = RunStore(tmp_path / "g")
-    store2.append("run_g", "run.created", {"type": "orchestrator"}, {"outcome_id": "o"})
+    store2.append("run_g", "run.created", {"type": "orchestrator"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o"})
     store2.append("run_g", "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
                                                                   "work_items": examples["decomposition"]["work_items"]})
     _merge_item(store2, "run_g", "wi-smart-retries")
@@ -152,7 +152,7 @@ def test_illegal_deploy_transitions(tmp_path, examples):
 
 def test_design_only_runs_complete_at_gate_2(tmp_path):
     store = RunStore(tmp_path)
-    for kind, payload in (("run.created", {"outcome_id": "o"}), ("stage.entered", {"stage": "decomposing"}),
+    for kind, payload in (("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o"}), ("stage.entered", {"stage": "decomposing"}),
                           ("stage.entered", {"stage": "gate_1_decomposition"}), ("stage.entered", {"stage": "specifying"}),
                           ("stage.entered", {"stage": "gate_2_spec_readiness"}), ("run.completed", {"design_only": True})):
         store.append("run_design", kind, {"type": "orchestrator"}, payload)

@@ -1,6 +1,6 @@
 # ADR-0005: Gate decisions bind to artifact hashes
 
-**Status:** accepted · **Date:** 2026-10-09
+**Status:** accepted · **Date:** 2026-10-09 · The design change request below was removed by [ADR-0011](0011-no-design-change-requests.md).
 
 ## Context
 A human approves what they read. Between reading and clicking, or between clicking and the orchestrator acting, an agent re-run or a race could change the artifact. The "Loopjacking" work (arXiv:2609.21081) reproduced this in several agent frameworks: the human approves A, mutable state executes B. The fix is complete canonical rendering of what is approved and exact comparison at use time.

@@ -2,7 +2,7 @@
 
 The design is complete enough to iterate on. The order below was chosen so that each step de-risks the next and produces measurable output.
 
-**Progress (2026-10-10):** the core of spikes 1, 2 and 3 has run on the personal GitHub setup, through two pull requests (one merged); see the [post-mortem](postmortems/2026-10-10-first-live-runs.md). Not yet done: the Linear and `forge` gate surfaces (spike 2), real preview deployments (spike 2a), everything GitLab and Jira (spike 2b), and a dev deploy for Stage 5 to observe. What is live, stubbed or unused is tracked in [repo-map.md](repo-map.md#what-runs-and-what-does-not).
+**Progress (2026-10-10):** the core of spikes 1, 2 and 3 has run on the personal GitHub setup, through two pull requests (one merged); see the [post-mortem](postmortems/2026-10-10-first-live-runs.md). Not yet done: the Linear gate surface (spike 2), real preview deployments (spike 2a), everything GitLab and Jira (spike 2b), and a dev deploy for Stage 5 to observe. What is live, stubbed or unused is tracked in [repo-map.md](repo-map.md#what-runs-and-what-does-not).
 
 ## Spike 1: platform plumbing (1 to 2 days)
 Goal: one `decomposer` session end to end on the Ledgerline example outcome against a real (fork of a) repository, following [07-personal-e2e-setup.md](07-personal-e2e-setup.md) with a personal GitHub repository and Linear workspace.
@@ -17,7 +17,7 @@ Goal: one `decomposer` session end to end on the Ledgerline example outcome agai
 
 ## Spike 2: the spec loop and Gate 2 (2 to 3 days)
 - Run specify on the decomposition from spike 1. Watch the judge's round-1 verdict closely: it is the first real test of the rubric anchors.
-- Read `gate_2.html`; decide from Linear with `approve-subset`; test the request-changes round-trip through tracker comments. Then try `FACTORY_GATE_SURFACE=forge` once: design branch, multi-file commit through the Git Data API, draft PR, inline comments harvested into `feedback.md`.
+- Read `gate_2.html`; decide from Linear with `approve-subset`; test the request-changes round-trip through tracker comments.
 - Wire `evals/run_eval.py::produce` to the driver and grade the spike's outputs with `--from-artifacts` first.
 
 ## Spike 2a: GitHub Actions and Deployments (half a day)

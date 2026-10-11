@@ -76,7 +76,7 @@ def _ctx(tmp_path, root, forge, queue=None) -> RunContext:
 def _seed_cr_open(ctx: RunContext, examples) -> dict:
     """A run that reached a pull request: the shape `run_integrate` leaves behind, plus the approved spec in the store."""
     outcome = examples["outcome"]
-    ctx.event("run.created", {"outcome_id": outcome["outcome_id"], "title": outcome["title"]}, stage="intake")
+    ctx.event("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": outcome["outcome_id"], "title": outcome["title"]}, stage="intake")
     ctx.store.put_artifact(RUN, "intake", "outcome.json", json.dumps(outcome).encode())
     ctx.event("stage.entered", {"stage": "decomposing"})
     ctx.event("artifact.produced", {"artifact_type": "decomposition", "revision": 1,
@@ -327,17 +327,6 @@ def test_interrupted_observation_is_observed_again_without_moving_the_item_twice
     assert ctx.store.state(RUN).work_items[WID].stage == WorkItemStage.DEPLOYED_DEV
 
 
-def test_merged_item_from_before_merge_sha_existed_is_still_observed(tmp_path, root, examples):
-    """An item at MERGED whose cr.merged event carries the sha but whose state does not (older logs) still deploys."""
-    forge = FakeForge(cr_states=("merged",), pipeline=("success",))
-    ctx = _ctx(tmp_path, root, forge)
-    outcome = _seed_cr_open(ctx, examples)
-    ctx.event("cr.merged", {"id": CR, "merge_commit_sha": MERGE, "forge": "github"}, work_item_id=WID, spec_id=SID, actor="human")
-    ctx.event("work_item.stage", {"stage": "merged"}, work_item_id=WID, spec_id=SID)
-    r = Watcher(ctx, outcome, run_e2e=_ok_e2e, sleep=lambda s: None, heartbeat=False).tick()
-    assert r.deployed == [WID]
-
-
 def test_forge_errors_are_reported_and_retried_not_fatal(tmp_path, root, examples):
     class Broken(FakeForge):
         def change_request_state(self, cr_id):
@@ -357,12 +346,11 @@ def test_forge_errors_are_reported_and_retried_not_fatal(tmp_path, root, example
     assert not r.errors and r.polled[0]["state"] == "opened"
 
 
-def test_design_change_requests_and_items_without_a_number_are_not_watched(tmp_path, root, examples):
+def test_items_without_a_number_are_not_watched(tmp_path, root, examples):
     ctx = _ctx(tmp_path, root, FakeForge())
     outcome = examples["outcome"]
-    ctx.event("run.created", {"outcome_id": outcome["outcome_id"]})
+    ctx.event("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": outcome["outcome_id"]})
     ctx.event("artifact.produced", {"artifact_type": "decomposition", "revision": 1, "work_items": examples["decomposition"]["work_items"]}, actor="agent")
-    ctx.event("cr.opened", {"id": 1, "url": "u", "branch": f"factory/{RUN}/design", "design": True, "forge": "github"})
     for stage in ("spec_drafting", "spec_judging", "spec_approved", "implementing", "reviewing", "merge_judging", "integrating", "cr_open"):
         ctx.event("work_item.stage", {"stage": stage}, work_item_id=WID)       # cr_open without a cr_id: nothing to poll
     assert pending_work_items(ctx.store.state(RUN)) == []

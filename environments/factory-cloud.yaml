@@ -16,6 +16,6 @@ config:
     allowed_hosts:
       - github.com
       - api.github.com
-      # - gitlab.example.internal       # gitlab forge: your self-hosted GitLab host (also set FORGE_URL / GITLAB_URL)
+      # - gitlab.example.internal       # gitlab forge: your self-hosted GitLab host (also set FORGE_URL)
       # - "*.preview.example.internal"  # PLACEHOLDER: per-branch preview domain, so sessions can run test_plan.e2e
       # - dev.example.internal          # optional: dev host, if agents should be able to read it
