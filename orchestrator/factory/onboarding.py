@@ -440,8 +440,13 @@ class AppOnboarding:
                 schema_names=("onboarding_plan.schema.json", "test_environment.schema.json"))
             self._finished(app_id, {"session_id": result.session_id, "list_cost_usd": result.list_cost_usd, "stop_reason": result.stop_reason})
             raw = result.outputs.get("onboarding-plan.json")
-            if not raw or len(raw) > 2 * 1024 * 1024:
-                raise ValueError("The onboarding agent did not return a complete setup plan within its session limit")
+            if raw and len(raw) > 2 * 1024 * 1024:
+                raise ValueError("The onboarding agent's setup plan is over 2 MB; discover again and ask for a smaller recipe")
+            if not raw:
+                # The error becomes the next discovery's previous_attempt.error, so the agent's own words travel with it.
+                said = " ".join((getattr(result, "last_message", None) or "").split())
+                raise ValueError(f"The onboarding agent ended without writing a setup plan (stop: {result.stop_reason or 'unknown'}). "
+                                 + (f"Its last message: {said[:900]}{'…' if len(said) > 900 else ''}" if said else "It left no message; open the linked session."))
             try:
                 proposal = json.loads(raw)
                 self.update(app_id, last_proposal=proposal)
@@ -449,8 +454,13 @@ class AppOnboarding:
             except (json.JSONDecodeError, UnicodeError):
                 raise ValueError("The onboarding agent returned unreadable setup JSON") from None
             required = any(q["required"] and not r["answers"].get(q["id"]) for q in plan["questions"])
-            self.update(app_id, plan=plan, plan_sha256=fingerprint(plan), status="needs_input" if required else "setup_ready",
-                        phase="Answer the remaining setup questions" if required else "Review the setup, then verify it")
+            if not plan.get("profile"):
+                # No runnable recipe can never be verified, even when its blocking question was answered last time.
+                status, phase = "needs_input", ("Answer the remaining setup questions" if required else
+                                                "No runnable recipe yet; send feedback or discover again")
+            else:
+                status, phase = ("needs_input", "Answer the remaining setup questions") if required else ("setup_ready", "Review the setup, then verify it")
+            self.update(app_id, plan=plan, plan_sha256=fingerprint(plan), status=status, phase=phase)
         finally:
             driver.interrupt_active()
             if result is not None:
