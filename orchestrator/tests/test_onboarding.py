@@ -231,3 +231,22 @@ def test_custom_manifest_filename_is_used_for_selection(plan,tmp_path,root):
     (tmp_path/'factory-service.json').write_text(json.dumps({'test_environment':{'profile':'ops/active.json'}}))
     with pytest.raises(ValueError,match='change runner selects ops/active.json'):
         validate_plan(plan,'existing',tmp_path,root/'schemas','factory-service.json')
+
+
+def test_a_reonboarded_plan_publishes_after_the_last_setup_pr(manager,plan,monkeypatch):
+    """Live emoji-smith: a re-verified plan returned the merged setup PR instead of publishing its fix."""
+    from factory import onboarding as ob
+    started=[]
+    monkeypatch.setattr(ob.threading,'Thread',lambda target,args,**kw:SimpleNamespace(start=lambda:started.append(args[1])))
+    aid=create(manager)['app_id'];sha=fingerprint(plan)
+    passed={'status':'passed','plan_sha256':sha,'source_sha':'abc'}
+    manager.update(aid,plan=plan,plan_sha256=sha,source_sha='abc',verification=passed,status='ready',
+                   pr_url='https://github.com/example/app/pull/1',pr_state='open',pr_plan_sha256=sha)
+    manager.start(aid,'publish',sha)
+    assert started==[]                                   # the same plan's open PR is returned, not published twice
+    manager.update(aid,status='ready',pr_plan_sha256='an-earlier-plan')
+    manager.start(aid,'publish',sha)
+    assert started==['publish']
+    manager.update(aid,status='ready',pr_plan_sha256=None,pr_state='merged')   # a record from before pr_plan_sha256
+    manager.start(aid,'publish',sha)
+    assert started==['publish','publish']

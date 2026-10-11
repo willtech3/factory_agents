@@ -338,7 +338,10 @@ class AppOnboarding:
                     raise HTTPException(409, "The setup plan changed. Review the current plan before continuing.")
                 if operation == "verify" and (not r["plan"].get("profile") or any(q["required"] and not r["answers"].get(q["id"]) for q in r["plan"]["questions"])):
                     raise HTTPException(409, "Resolve the required setup questions and inspect the revised plan first")
-            if operation == "publish" and r.get("pr_url"):
+            # A repeat click on the same plan returns its pull request. A plan verified after re-onboarding is new work:
+            # live emoji-smith's fixed check could not be published while the record still named the merged setup PR.
+            if operation == "publish" and r.get("pr_url") and (
+                    r.get("pr_plan_sha256") == r.get("plan_sha256") if r.get("pr_plan_sha256") else r.get("pr_state") != "merged"):
                 return self.get(app_id)
             available = r["budget_usd"] - r["spent_usd"]
             cap = min(3.0 if operation == "discover" else 4.0, available)
@@ -627,7 +630,7 @@ class AppOnboarding:
             pr = forge.create_change_request(source_branch=branch, target_branch=(r.get("revision") or r.get("default_branch", "main")) if r["kind"] == "existing" and not re.fullmatch(r"[a-f0-9]{40}", r.get("revision", "")) else r.get("default_branch", "main"),
                 title="Add Factory onboarding and isolated app verification",
                 description=description, labels=[], reviewers=[], draft=True)
-            self.update(app_id, pr_url=pr.url, pr_state="open", status="ready_limited" if r["plan"]["limitations"] else "ready", phase=PR_PHASE["open"])
+            self.update(app_id, pr_url=pr.url, pr_state="open", pr_plan_sha256=r["plan_sha256"], status="ready_limited" if r["plan"]["limitations"] else "ready", phase=PR_PHASE["open"])
         finally:
             forge.http.close()
 
