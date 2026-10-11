@@ -434,6 +434,8 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
             merged_or_open.add(sid)   # Gate 3 (human review + merge) is tracked by the CR watcher, not this loop
             remaining.pop(sid)
 
+    if ctx.store.state(ctx.run_id).stage == RunStage.ESCALATED:
+        return RunStage.ESCALATED          # a spec escalated: the run waits for a person, it has not completed
     ctx.event("run.completed", {"specs_with_change_requests": sorted(merged_or_open)})
     return RunStage.COMPLETED
 

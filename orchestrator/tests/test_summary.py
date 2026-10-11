@@ -133,6 +133,17 @@ def test_escalated_and_paused_runs(store):
     s = summary_of(store, rid)
     assert s["status"] == "escalated" and s["headline"] == "Escalated: decomposition failed deterministic checks twice"
 
+    # run_8d9b17b4f5: the runner appended run.completed after a merge-judge escalation, and replay raised on
+    # escalated -> completed, so the Console answered 500 for the run. Such a log stays readable and escalated.
+    rid = "run_escal0000002"
+    store.append(rid, "run.created", ACTOR, {"outcome_id": "out_1", "title": "Upgrade models", "budget_usd": 60.0,
+                                              "policy": {"preview_mode": "managed"}}, stage="intake")
+    store.append(rid, "stage.entered", ACTOR, {"stage": "decomposing"})
+    store.append(rid, "run.escalated", ACTOR, {"reason": "spec_x: merge judge said escalate"}, stage="decompose")
+    store.append(rid, "run.completed", ACTOR, {"specs_with_change_requests": []})
+    s = summary_of(store, rid)
+    assert s["status"] == "escalated" and s["terminal"] is True
+
     rid = "run_paused000001"
     _run(store, rid)
     store.append(rid, "gate.opened", ACTOR, {"gate_id": "g1", "kind": "gate_1_decomposition", "artifacts": [], "assignees": [], "summary": "plan"})
