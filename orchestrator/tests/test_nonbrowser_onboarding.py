@@ -47,6 +47,10 @@ def committed(tmp_path, recipe=RECIPE):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "test_environment.json").write_text(json.dumps(recipe))
+    (repo / "service_manifest.json").write_text(json.dumps({
+        "service": "slack-webhook", "runtime": {"kind": "python", "version": "3.12", "entrypoint": "uvicorn app:app --port 8000",
+                                                "port": 8000},
+        "health": {"path": "/health"}, "env": [], "test_environment": {"profile": "test_environment.json"}}))
     for args in (["init", "-q"], ["config", "user.email", "t@example.invalid"], ["config", "user.name", "t"],
                  ["add", "."], ["commit", "-qm", "recipe"]):
         subprocess.run(["git", *args], cwd=repo, check=True)

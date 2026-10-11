@@ -106,6 +106,10 @@ def validate_plan(plan: dict, kind: str, repo: Path, schemas: Path, manifest_pat
         more = f"; and {len(errors) - 8} more" if len(errors) > 8 else ""
         raise ValueError("Onboarding agent returned an invalid plan (" + "; ".join(where) + more + "); discovery must be retried")
     paths = set()
+    manifest_name = safe_path(manifest_path)
+    # Apps built before the Factory rarely have the manifest the platform contract and `manifest_valid` require, and
+    # nothing else may add it: onboarding proposes one when the repository has none, and never edits an existing one.
+    may_add_manifest = not (repo / manifest_name).is_file()
     for f in plan["files"]:
         p = safe_path(f["path"])
         if p.startswith(".github/") or p in {"CLAUDE.md", "AGENTS.md"}:
@@ -113,7 +117,9 @@ def validate_plan(plan: dict, kind: str, repo: Path, schemas: Path, manifest_pat
         if p in paths:
             raise ValueError("Onboarding proposal contains duplicate file paths")
         paths.add(p)
-        if kind == "existing" and not (p.startswith(("verification/factory-onboarding/", ".factory/")) or p == "test_environment.json"):
+        if kind == "existing" and p == manifest_name and not may_add_manifest:
+            raise ValueError(f"Onboarding cannot change the existing {manifest_name}; ask the owner for a reviewed change")
+        if kind == "existing" and not (p.startswith(("verification/factory-onboarding/", ".factory/")) or p in {"test_environment.json", manifest_name}):
             raise ValueError("Existing-app proposal changes application or policy files outside onboarding scope")
         if len(f["content"].encode()) > 256 * 1024:
             raise ValueError("Onboarding file is too large")
@@ -126,7 +132,6 @@ def validate_plan(plan: dict, kind: str, repo: Path, schemas: Path, manifest_pat
         path = safe_path(path)
         # Verify the recipe the subsequent change run will actually select, rather than a disconnected file
         # that can pass onboarding but can never be used after its setup PR merges.
-        manifest_name = safe_path(manifest_path)
         manifest_text = next((f["content"] for f in plan["files"] if f["path"] == manifest_name), None)
         existing_manifest = repo / manifest_name
         if manifest_text is None and existing_manifest.is_file():
@@ -138,6 +143,14 @@ def validate_plan(plan: dict, kind: str, repo: Path, schemas: Path, manifest_pat
         if path != selected_path:
             raise ValueError(f"The change runner selects {selected_path}, not {path}. Use that recipe path, or request "
                              "a reviewed manifest change before verification; an unused recipe cannot onboard the app.")
+        if manifest_text is None:
+            raise ValueError(f"The repository has no {manifest_name}, which the platform contract requires; propose one "
+                             "(service, runtime, health, env names and test_environment.profile) with the recipe")
+        if any(f["path"] == manifest_name for f in plan["files"]):
+            from .checks import schema_valid
+            checked = schema_valid(manifest, schemas / "service_manifest.schema.json", schemas)
+            if not checked.passed:
+                raise ValueError(f"The proposed {manifest_name} is invalid: {checked.detail}"[:600])
         proposed = next((f["content"] for f in plan["files"] if f["path"] == path), None)
         p = repo / path
         if proposed is None and (not p.is_file() or p.is_symlink()):
@@ -433,8 +446,13 @@ class AppOnboarding:
                              "and the uploaded schemas. Do not run application commands. Reuse a valid existing recipe if present. "
                              f"The change runner selects {self.cfg.service_manifest_path} test_environment.profile, or "
                              "test_environment.json when that pointer is absent. profile_path must match that selection in the "
-                             "proposed source. Existing-app onboarding cannot change the manifest; ask a focused question if a "
-                             "manifest change or recipe edit outside the allowed onboarding paths is essential. "
+                             "proposed source. When the repository has no "
+                             f"{self.cfg.service_manifest_path}, propose one following service_manifest.schema.json "
+                             "(the service's entrypoint, port, health path, the NAMES of every environment variable it reads, "
+                             "and test_environment.profile set to profile_path). Existing-app onboarding never changes an "
+                             "existing manifest; ask a focused question if that or a recipe edit outside the allowed onboarding "
+                             "paths is essential. A check compares against the app's own constants and configuration, never a "
+                             "literal copy of a value the app owns, so a routine change to that value does not break it. "
                              "For an app without a browser UI, use a verification block whose verify command runs a script "
                              "you propose under verification/factory-onboarding/. It exercises real behaviour with synthetic "
                              "inputs (signed requests to the running service, the CLI on fixtures, the public API) and "
@@ -444,7 +462,7 @@ class AppOnboarding:
                              "credentials (emulator hosts or fakes the code supports); and declare a provider key as "
                              "required only when no synthetic or no-key baseline is possible." + repair),
                 rubric_md=None, max_iterations=1, budget_usd=cap, environment_id=env_id, vault_ids=[], metadata=app_labels(r),
-                schema_names=("onboarding_plan.schema.json", "test_environment.schema.json"))
+                schema_names=("onboarding_plan.schema.json", "test_environment.schema.json", "service_manifest.schema.json"))
             self._finished(app_id, {"session_id": result.session_id, "list_cost_usd": result.list_cost_usd, "stop_reason": result.stop_reason})
             raw = result.outputs.get("onboarding-plan.json")
             if raw and len(raw) > 2 * 1024 * 1024:
@@ -718,10 +736,16 @@ class AppOnboarding:
                 if obj.get("encoding") != "base64" or obj.get("size", 0) > 256 * 1024:
                     raise ValueError("Unsupported setup file")
                 return json.loads(base64.b64decode(obj["content"]))
-            manifest = read_json(self.cfg.service_manifest_path) if forge.file_exists(ref, self.cfg.service_manifest_path) else {}
+            if not forge.file_exists(ref, self.cfg.service_manifest_path):
+                # manifest_valid would fail the change after its implementation was paid for; say so before it starts.
+                raise HTTPException(409, f"The base branch has no {self.cfg.service_manifest_path}, which every change run "
+                                         "checks. Discover again so onboarding proposes one, then merge its setup PR.")
+            manifest = read_json(self.cfg.service_manifest_path)
             path = manifest.get("test_environment", {}).get("profile", "test_environment.json")
             if path != r["plan"]["profile_path"] or fingerprint(read_json(path)) != verified["profile_sha256"]:
                 raise ValueError("Recipe is not the verified version")
+        except HTTPException:
+            raise
         except Exception:
             raise HTTPException(409, "The selected base branch does not contain the verified setup. Merge its setup PR, or onboard and verify the current recipe before starting this run.") from None
         finally:
