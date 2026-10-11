@@ -459,3 +459,19 @@ def test_managed_prechecks_execute_nothing(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("subprocess on the controller")))
     pre = implement.managed_prechecks({"app/x.py": ["token = 'ghp_" + "a" * 36 + "'"]})
     assert pre["secret_scan"]["hits"] and pre["dependency_audit"]["status"] == "skipped" and pre["sast"]["status"] == "skipped"
+
+
+def test_spec_commands_run_in_the_virtualenv_the_recipe_built(tmp_path):
+    """Live emoji-smith: prepare ran `uv sync` into .venv, but the spec's bare `pytest` and `ruff` resolved to the
+    sandbox's own tools without the app's dependencies, so every importing module failed collection (exit 2)."""
+    build = ("mkdir -p .venv/bin && ln -s \"$(command -v python)\" .venv/bin/python && "
+             "printf '#!/bin/sh\\nexit 0\\n' > .venv/bin/venv-only-tool && chmod +x .venv/bin/venv-only-tool")
+    recipe = {**RECIPE, "commands": {**RECIPE["commands"], "prepare": build}}
+    report, _ = harness(tmp_path, recipe, {"commands": ["venv-only-tool", 'test "$VIRTUAL_ENV" = "$PWD/.venv"'],
+                                           "e2e": [{"index": 0, "command": "venv-only-tool"}], "collect_tests": False})
+    out = report["change"]["results"]
+    assert [c["exit_code"] for c in out["commands"]] == [0, 0] and out["e2e"][0]["exit_code"] == 0
+    assert out["command_environment"] == {"virtualenv": ".venv"}
+    report, _ = harness(tmp_path / "plain", RECIPE, {"commands": ["venv-only-tool"], "e2e": [], "collect_tests": False})
+    assert report["change"]["results"]["commands"][0]["exit_code"] == 127
+    assert report["change"]["results"]["command_environment"] == {"virtualenv": None}
