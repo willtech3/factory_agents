@@ -194,6 +194,22 @@ def apply_deploy_decision(ctx: RunContext, spec: dict[str, Any], obs: DeployObse
     return WorkItemStage.ESCALATED                 # APPROVE with re-observations exhausted: a human takes over
 
 
+def hosted_only(ctx: RunContext) -> bool:
+    # A run can switch to hosted verification during Gate 2 recovery. Watchers
+    # start separately and may use the machine's default preview mode, so retain
+    # that execution boundary from both creation and recovery events.
+    return ctx.cfg.preview_mode == "managed" or any(
+        (ev.kind == "run.created" and ev.payload.get("policy", {}).get("preview_mode") == "managed")
+        or (ev.kind == "run.resumed" and ev.payload.get("preview_mode") == "managed")
+        for ev in ctx.store.events(ctx.run_id))
+
+
+def managed_dev_blocked(entries):
+    return [{"command": e.get("command", "dev verification"), "target": "dev", "covers_ac": e.get("covers_ac", []),
+             "exit_code": None, "status": "blocked", "stderr_tail": "Hosted app baselines do not verify a deployed dev instance. Configure a separate hosted dev-test adapter; local execution is disabled for this run."}
+            for e in entries or [{}]]
+
+
 def observe_once(ctx: RunContext, spec: dict[str, Any], merge_sha: str, default_branch: str, source: PipelineSource,
                  run_e2e: E2ERunner, *, smoke_commands: tuple[str, ...] = (), poll_seconds: float = 15.0,
                  timeout_seconds: float = 3600.0, sleep: Callable[[float], None] = time.sleep,
@@ -220,7 +236,7 @@ def observe_once(ctx: RunContext, spec: dict[str, Any], merge_sha: str, default_
               work_item_id=wid, spec_id=sid, stage="deploy", actor="platform")
     entries = [e for e in spec.get("test_plan", {}).get("e2e", []) if e.get("target", "preview") == "preview"]
     entries += [{"covers_ac": [], "command": c, "target": "preview", "description": "smoke suite"} for c in smoke_commands]
-    obs.e2e_results = run_e2e(obs.environment_url, entries) if entries else []
+    obs.e2e_results = managed_dev_blocked(entries) if hosted_only(ctx) else (run_e2e(obs.environment_url, entries) if entries else [])
     failed = [r for r in obs.e2e_results if r.get("exit_code") != 0]
     kind = "e2e.dev_failed" if failed else "e2e.dev_passed"
     ctx.event(kind, {"environment_url": obs.environment_url, "sha": merge_sha,

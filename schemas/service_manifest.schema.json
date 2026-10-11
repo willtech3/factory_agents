@@ -6,6 +6,11 @@
   "type": "object",
   "required": ["service", "runtime", "health", "env"],
   "properties": {
+    "test_environment": {
+      "type": "object", "additionalProperties": false, "required": ["profile"],
+      "description": "Factory-managed isolated test setup. Used identically for onboarding an existing app and generating a greenfield scaffold.",
+      "properties": {"profile": {"type": "string", "minLength": 1, "description": "Repository-relative path to a test_environment.schema.json profile. No credentials."}}
+    },
     "service": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]{1,62}$",

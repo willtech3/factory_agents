@@ -27,7 +27,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, SecretStr
 
 from .. import visual
 from .. import checks
@@ -56,6 +56,32 @@ TIMELINE_KINDS = {"run.created", "repository.created", "stage.entered", "session
                   "work_item.stage"}
 
 
+class AppBody(BaseModel):
+    kind: str
+    name: str = Field(min_length=1, max_length=160)
+    repository_url: str = Field(max_length=500)
+    description: str = Field(min_length=1, max_length=12000)
+    budget_usd: float = 10
+    revision: str = ""
+
+
+class AppPlanBody(BaseModel):
+    plan_sha256: str
+
+
+class AppAnswersBody(BaseModel):
+    answers: dict[str, str]
+
+
+class AppFeedbackBody(BaseModel):
+    text: str
+
+
+class AppCredentialBody(BaseModel):
+    name: str
+    value: SecretStr
+
+
 class DecisionBody(BaseModel):
     decision: str
     comments: str = ""
@@ -74,6 +100,7 @@ class OutcomeBody(BaseModel):
 
 class StartRunBody(BaseModel):
     outcome_id: str
+    app_id: str | None = None
     mode: str = "demo"          # demo | design | live
     settings: dict[str, Any] = {}   # tunables from the Start screen; see SETTINGS_ENV
 
@@ -229,8 +256,15 @@ class Console:
         watch = {"pending": pending, "watchable": bool(pending) and not self.demo.is_demo(run_id),
                  "heartbeat": watcher_heartbeat(self.cfg.runs_dir, run_id)}
         created = next((ev.payload for ev in events if ev.kind == "run.created"), {})
-        policy = created.get("policy") or {"run_budget_usd": ((outcome or {}).get("constraints") or {}).get("budget_usd"),
-                                           "preview_mode": self.cfg.preview_mode, "recorded": False}
+        policy = dict(created.get("policy") or {"run_budget_usd": ((outcome or {}).get("constraints") or {}).get("budget_usd"),
+                                                "preview_mode": self.cfg.preview_mode, "recorded": False})
+        # A controller upgrade can move an existing run to hosted execution at an idle gate.
+        # Show the effective settings, keeping the immutable creation event as history.
+        for ev in events:
+            if ev.kind == "run.resumed" and ev.payload.get("preview_mode"):
+                for key in ("preview_mode", "app_id", "test_profile_sha256"):
+                    if key in ev.payload:
+                        policy[key] = ev.payload[key]
         return {"run_id": run_id, "title": self._title(run_id, events), "outcome": outcome, "stage": st.stage.value,
                 "cost": round(st.list_cost_usd, 2), "demo": self.demo.is_demo(run_id), "design_only": design_only, "work_items": items,
                 "resumable": resumable, "budget": budget, "resuming": self.resuming(run_id), "watch": watch, "crew": crew_roster(events), "policy": policy,
@@ -454,6 +488,7 @@ class Console:
                 continue
             out.append({"outcome_id": o.get("outcome_id"), "title": o.get("title"), "created_at": o.get("created_at"),
                         "owner": (o.get("owner") or {}).get("handle"), "runs": runs_by_outcome.get(o.get("outcome_id"), []),
+                        "target_repositories": o.get("target_repositories", []),
                         "path": str(p)})
         out.sort(key=lambda o: o.get("created_at") or "", reverse=True)
         return out
@@ -494,10 +529,17 @@ class Console:
             raise HTTPException(400, "mode must be demo, design, or live")
         design = body.mode == "design"
         repo_env = {}
+        if self.cfg.forge_token:
+            # Config may receive the authenticated token from the Console launcher instead of os.environ.
+            # Forward it only to the orchestrator child; never include it in the API response.
+            repo_env["FORGE_TOKEN"] = self.cfg.forge_token
         target = (outcome.get("target_repositories") or [{}])[0]
         if not design and self.cfg.forge == "github" and target.get("url"):
             # The Console selection is per run; do not inherit a different repository from server defaults.
             repo_env["FORGE_REPO"] = repository_name(target["url"], self.cfg)
+        if body.app_id:
+            from ..onboarding import AppOnboarding
+            repo_env.update(AppOnboarding(self.cfg).run_settings(body.app_id, target))
         gaps = cfgmod.missing(self.cfg, design_only=design)
         if gaps:
             raise HTTPException(409, f"the orchestrator is not configured for a {body.mode} run: {', '.join(gaps)}")
@@ -722,6 +764,9 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
     app = FastAPI(title="Factory Console", docs_url=None, redoc_url=None)
     app.state.console = console
     app.state.demo = console.demo
+    from ..onboarding import AppOnboarding
+    onboarding = AppOnboarding(cfg)
+    app.state.onboarding = onboarding
 
     @app.get("/", include_in_schema=False)
     def index():
@@ -734,6 +779,52 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
     @app.get("/api/repositories")
     def api_repositories(page: int = Query(1, ge=1, le=10000)):
         return list_repositories(console.cfg, page)
+
+    @app.get("/api/apps")
+    def api_apps():
+        return {"apps": onboarding.list()}
+
+    @app.post("/api/apps")
+    def api_create_app(body: AppBody):
+        return onboarding.create(**body.model_dump())
+
+    @app.get("/api/apps/{app_id}")
+    def api_app(app_id: str):
+        return onboarding.get(app_id)
+
+    @app.post("/api/apps/{app_id}/discover")
+    def api_app_discover(app_id: str):
+        return onboarding.start(app_id, "discover")
+
+    @app.post("/api/apps/{app_id}/answers")
+    def api_app_answers(app_id: str, body: AppAnswersBody):
+        return onboarding.answers(app_id, body.answers)
+
+    @app.post("/api/apps/{app_id}/verify")
+    def api_app_verify(app_id: str, body: AppPlanBody):
+        return onboarding.start(app_id, "verify", body.plan_sha256)
+
+    @app.post("/api/apps/{app_id}/publish")
+    def api_app_publish(app_id: str, body: AppPlanBody):
+        return onboarding.start(app_id, "publish", body.plan_sha256)
+
+    @app.post("/api/apps/{app_id}/feedback")
+    def api_app_feedback(app_id: str, body: AppFeedbackBody):
+        return onboarding.feedback(app_id, body.text)
+
+    @app.post("/api/apps/{app_id}/recover")
+    def api_app_recover(app_id: str):
+        return onboarding.recover(app_id)
+
+    @app.post("/api/apps/{app_id}/credentials")
+    def api_app_credential(app_id: str, body: AppCredentialBody):
+        return onboarding.credential(app_id, body.name, body.value.get_secret_value())
+
+    @app.get("/api/apps/{app_id}/evidence/{name}")
+    def api_app_evidence(app_id: str, name: str):
+        p = onboarding.evidence(app_id, name)
+        return FileResponse(p, media_type=visual.media_type(p) or "application/json",
+                            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
     @app.get("/api/runs")
     def api_runs():
@@ -834,6 +925,14 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
 
     @app.middleware("http")
     async def no_store(request, call_next):
+        # App setup can spend money and bind credentials. Refuse cross-origin mutation.
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path.startswith("/api/apps"):
+            from urllib.parse import urlparse
+            origin = request.headers.get("origin")
+            if origin and urlparse(origin).netloc != request.headers.get("host"):
+                return PlainTextResponse("Cross-origin app changes are not allowed", status_code=403)
+            if "application/json" not in request.headers.get("content-type", ""):
+                return PlainTextResponse("App changes require JSON", status_code=415)
         # A local tool that is edited and reloaded; never let a browser hold on to yesterday's script.
         response = await call_next(request)
         if request.url.path.startswith("/static") or request.url.path == "/":

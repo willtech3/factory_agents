@@ -234,6 +234,8 @@ def test_redaction_and_design_run_argv(client, monkeypatch, tmp_path, root):
         assert r2["mode"] == "live"
     assert calls[0][0][-2:] == [str(cfg.runs_dir / "_outcomes" / f"{oid}.json"), "--design-only"]
     assert "--design-only" not in calls[1][0] and calls[1][1]["env"]["FACTORY_RUNS_DIR"] == str(cfg.runs_dir)
+    assert calls[1][1]["env"]["FORGE_TOKEN"] == cfg.forge_token
+    assert "FORGE_TOKEN" not in json.dumps(r2)
     assert any(l["name"].endswith(".log") for l in c2.get("/api/logs").json()["logs"]) is False or True   # logs exist only once the child writes
 
 
@@ -485,6 +487,23 @@ def test_watch_is_offered_for_live_runs_with_open_pull_requests(client, examples
     d = client.get(f"/api/runs/{rid}").json()
     assert d["work_items"][0]["stage"] == "merged" and d["work_items"][0]["merge_sha"] == "c" * 40
     assert [e["kind"] for e in d["events"]][-2:] == ["cr.merged", "work_item.stage"] and d["watch"]["pending"] == [wid]
+
+
+def test_recovered_run_displays_effective_hosted_policy(client):
+    from factory.store import RunStore
+    store = RunStore(client.cfg.runs_dir)
+    rid = "run_policyrecovery"
+    actor = {"type": "controller"}
+    store.append(rid, "run.created", actor, {"outcome_id": "o", "title": "Recovered run", "policy": {
+        "preview_mode": "local", "run_budget_usd": 60, "reviewer_passes": 2}})
+    store.append(rid, "run.failed", actor, {"reason": "idle stop"})
+    store.append(rid, "run.resumed", actor, {"stage": "gate_2_spec_readiness", "preview_mode": "managed",
+        "app_id": "app_evergreen", "test_profile_sha256": "b" * 64})
+    policy = client.get(f"/api/runs/{rid}").json()["policy"]
+    assert policy["preview_mode"] == "managed" and policy["app_id"] == "app_evergreen"
+    assert policy["test_profile_sha256"] == "b" * 64 and policy["run_budget_usd"] == 60
+    assert policy["reviewer_passes"] == 2
+    assert store.events(rid)[0].payload["policy"]["preview_mode"] == "local"
 
 
 def test_crew_roster_board_and_settings_passthrough(client, monkeypatch):

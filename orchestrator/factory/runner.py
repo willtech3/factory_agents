@@ -13,18 +13,24 @@ Gate presentation depends on `cfg.gate_surface` (ADR-0007):
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import fcntl
+import hashlib
 import json
+import re
+import time
 import uuid
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from .budget import BudgetPaused, last_pause
-from .gates import Decision, GateDecision, GateKind, parse_budget
+from .config import managed_gaps
+from .gates import Decision, Gate, GateDecision, GateKind, parse_budget
 from .stages import RunContext
 from .stages.decompose import gate_1, run_decompose
-from .stages.common import artifact_json_or_none, public
+from .stages.common import artifact_json_or_none, gate_decision, public
 from .stages.implement import LocalVerifier, ResumePoint, run_implement_one
 from .stages.integrate import run_integrate
 from .stages.specify import gate_2, run_specify
@@ -170,37 +176,24 @@ def _from_decompose(ctx: RunContext, outcome: dict[str, Any], feedback: str | No
 
 def _from_specify(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[str, Any],
                   human_comments: dict[str, str] | None, prior_specs: dict[str, dict] | None,
-                  previous_verdict: dict[str, Any] | None = None, round_offset: int = 0) -> RunStage:
+                  previous_verdict: dict[str, Any] | None = None, round_offset: int = 0,
+                  pending: "PendingGate2 | None" = None) -> RunStage:
     """Stage 2 and Gate 2 (loop until approved or rejected), then implementation unless the run is design-only.
     `human_comments` are the owner's notes per work item (Gate 1 approval notes, or routed Gate 2 feedback with
     `prior_specs` as the drafts they were about). `previous_verdict` is the verdict the owner sent back, if any, and
     `round_offset` the last round already in the store: rounds keep counting across send-backs and resumes, so no
-    artefact name is reused."""
+    artefact name is reused. `pending` (a recovered controller, `resume`) is a Gate 2 already open on the verified
+    final artefacts: the first pass waits for the owner's decision on that very gate instead of writing and opening one."""
     # ---------------- Stage 2 + Gate 2
     while True:
-        specs, verdict = run_specify(ctx, outcome, decomposition, human_comments, prior_specs,
-                                     previous_verdict=previous_verdict, round_offset=round_offset)
-        # `final-*` point at the current candidate for the gate (replaced on every cycle); the per-round artefacts the
-        # owner decided on keep their names and are never overwritten.
-        spec_shas = {f"{sid}.json": ctx.store.put_artifact(ctx.run_id, "specify", f"final-{sid}.json",
-                                                            json.dumps(public(s), indent=2).encode(), replace=True)
-                     for sid, s in specs.items()}
-        spec_md = {sid: _spec_markdown(ctx, s) for sid, s in specs.items()}
-        for sid, md in spec_md.items():
-            if md:
-                ctx.store.put_artifact(ctx.run_id, "specify", f"final-{sid}.md", md.encode(), replace=True)
-        spec_shas["verdict.json"] = ctx.store.put_artifact(ctx.run_id, "judge", "final-verdict.json",
-                                                           json.dumps(verdict, indent=2).encode(), replace=True)
-        files = {**{f"specs/{sid}.json": json.dumps(public(s), indent=2).encode() for sid, s in specs.items()},
-                 **{f"specs/{sid}.md": spec_md[sid].encode() for sid in specs if spec_md[sid]},
-                 "verdict.json": json.dumps(verdict, indent=2).encode()}
-        page = render_gate2_page(ctx.run_id, outcome, {sid: public(s) for sid, s in specs.items()}, verdict, spec_shas, spec_md)
-        anchors = {f"specs/{sid}.json": f"spec-{sid}" for sid in specs}
-        anchors.update({f"specs/{sid}.md": f"spec-{sid}" for sid in specs})
-        design_cr_id, urls = _present(ctx, outcome, files, "specifications", "gate_2", page, anchors)
-        urls = {**urls, **{f"{sid}.json": urls.get(f"specs/{sid}.json", "") for sid in specs},
-                "verdict.json": urls.get("verdict.json", "")}
-        d = gate_2(ctx, outcome, specs, verdict, spec_shas, urls)
+        if pending is not None:
+            specs, verdict, spec_md = pending.specs, pending.verdict, pending.spec_md
+            design_cr_id = _design_cr_id(ctx)
+            d = wait_for_gate(ctx, pending.gate_id, pending.kind)
+            pending = None
+        else:
+            specs, verdict, spec_md, design_cr_id, d = _specify_and_gate(ctx, outcome, decomposition, human_comments, prior_specs,
+                                                                         previous_verdict, round_offset)
         if d.decision == Decision.REJECT:
             ctx.event("stage.entered", {"stage": RunStage.CLOSED.value}, stage="gate_2", actor="human")
             return RunStage.CLOSED
@@ -212,7 +205,7 @@ def _from_specify(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[
             specs = {sid: s for sid, s in specs.items() if sid in approved}
             break
         human_comments, prior_specs = _route_gate2_feedback(ctx, design_cr_id, d, specs)
-        previous_verdict, round_offset = verdict, int(verdict.get("round") or round_offset + 1)
+        previous_verdict, round_offset = verdict, max(int(verdict.get("round") or round_offset + 1), round_offset)
     spec_verdict = verdict
     if ctx.policy.design_only:
         ctx.event("run.completed", {"design_only": True, "approved_specs": sorted(specs),
@@ -220,6 +213,37 @@ def _from_specify(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[
         return RunStage.COMPLETED
 
     return implement_and_integrate(ctx, outcome, specs, spec_md, spec_verdict)
+
+
+def _specify_and_gate(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[str, Any], human_comments: dict[str, str] | None,
+                      prior_specs: dict[str, dict] | None, previous_verdict: dict[str, Any] | None, round_offset: int
+                      ) -> tuple[dict[str, dict], dict[str, Any], dict[str, str], int | None, GateDecision]:
+    """One specification pass and its Gate 2: write and judge the specs, publish them as the gate's `final-*`
+    artefacts, present them, and wait for the owner's decision."""
+    specs, verdict = run_specify(ctx, outcome, decomposition, human_comments, prior_specs,
+                                 previous_verdict=previous_verdict, round_offset=round_offset)
+    # `final-*` point at the current candidate for the gate (replaced on every cycle); the per-round artefacts the
+    # owner decided on keep their names and are never overwritten.
+    spec_shas = {f"{sid}.json": ctx.store.put_artifact(ctx.run_id, "specify", f"final-{sid}.json",
+                                                        json.dumps(public(s), indent=2).encode(), replace=True)
+                 for sid, s in specs.items()}
+    spec_md = {sid: _spec_markdown(ctx, s) for sid, s in specs.items()}
+    for sid, md in spec_md.items():
+        if md:
+            ctx.store.put_artifact(ctx.run_id, "specify", f"final-{sid}.md", md.encode(), replace=True)
+    spec_shas["verdict.json"] = ctx.store.put_artifact(ctx.run_id, "judge", "final-verdict.json",
+                                                       json.dumps(verdict, indent=2).encode(), replace=True)
+    files = {**{f"specs/{sid}.json": json.dumps(public(s), indent=2).encode() for sid, s in specs.items()},
+             **{f"specs/{sid}.md": spec_md[sid].encode() for sid in specs if spec_md[sid]},
+             "verdict.json": json.dumps(verdict, indent=2).encode()}
+    page = render_gate2_page(ctx.run_id, outcome, {sid: public(s) for sid, s in specs.items()}, verdict, spec_shas, spec_md)
+    anchors = {f"specs/{sid}.json": f"spec-{sid}" for sid in specs}
+    anchors.update({f"specs/{sid}.md": f"spec-{sid}" for sid in specs})
+    design_cr_id, urls = _present(ctx, outcome, files, "specifications", "gate_2", page, anchors)
+    urls = {**urls, **{f"{sid}.json": urls.get(f"specs/{sid}.json", "") for sid in specs},
+            "verdict.json": urls.get("verdict.json", "")}
+    d = gate_2(ctx, outcome, specs, verdict, spec_shas, urls)
+    return specs, verdict, spec_md, design_cr_id, d
 
 
 def _route_gate2_feedback(ctx: RunContext, design_cr_id: int | None, d: GateDecision, specs: dict[str, dict]
@@ -464,6 +488,205 @@ def _rounds(ctx: RunContext, stage: str, prefix: str, suffix: str) -> list[int]:
     return sorted(out)
 
 
+# ---------------------------------------------------------------- a controller stopped while idle at Gate 2
+
+GATE_POLL_SECONDS = 10.0
+GATE2_KINDS = (GateKind.SPEC_READINESS, GateKind.ESCALATION)
+GATE2_OPTIONS = {Decision.APPROVE, Decision.APPROVE_SUBSET, Decision.REQUEST_CHANGES, Decision.REJECT}
+_SAFE_SPEC_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_HELD_LOCKS: dict[str, Any] = {}
+
+
+class RunLocked(RuntimeError):
+    """Another controller holds the run's lock."""
+
+
+@contextlib.contextmanager
+def controller_lock(runs_dir: Path, run_id: str) -> Iterator[None]:
+    """A nonblocking exclusive lock on `runs/<run_id>/controller.lock`, held for the whole resumed drive, so two
+    recovering controllers never wait on (and consume) the same pending gate. Re-entrant within one process: the CLI
+    takes it before the drive and `resume` finds it held. Raises `RunLocked`, before anything is written, when another
+    process holds it. Controllers started by older code take no lock: stop them first (`run.failed` proves it)."""
+    if run_id in _HELD_LOCKS:
+        yield
+        return
+    path = runs_dir / run_id / "controller.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        raise RunLocked(f"another controller holds run {run_id} ({path}); stop it before resuming") from None
+    _HELD_LOCKS[run_id] = handle
+    try:
+        yield
+    finally:
+        _HELD_LOCKS.pop(run_id, None)
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
+
+
+@dataclasses.dataclass(frozen=True)
+class PendingGate2:
+    """A Gate 2 still waiting for its owner when its controller stopped, with the exact artefacts it presented."""
+    gate_id: str
+    kind: GateKind
+    presented: dict[str, str]                  # artefact name as presented -> sha256
+    specs: dict[str, dict]
+    spec_md: dict[str, str]
+    verdict: dict[str, Any]
+    decomposition: dict[str, Any]
+
+
+def _queued_gate(queue: Any, gate_id: str) -> Gate | None:
+    """The gate as the decision surface holds it (the record decisions are validated against), from any composed queue."""
+    for q in getattr(queue, "queues", [queue]):
+        finder = getattr(q, "gate", None)
+        gate = finder(gate_id) if callable(finder) else getattr(q, "gates", {}).get(gate_id)
+        if isinstance(gate, Gate):
+            return gate
+    return None
+
+
+def pending_gate2(ctx: RunContext, events: list[Any] | None = None) -> PendingGate2:
+    """The run's pending Gate 2 when its controller was stopped while idle at it, verified, or RuntimeError saying why
+    not. Nothing is written. The run must be `failed` with the last gate a still-undecided specification-readiness or
+    escalation gate, the only open gate; after it only the stop (`run.failed`, no session interrupted) and earlier
+    recoveries of this same gate. Every artefact the gate presented must be stored with exactly the presented sha256
+    (`specify/final-<spec_id>.json`, `judge/final-verdict.json`), and the gate surface's record of the gate must be the
+    one the log opened, so a decision is checked against what the owner was shown."""
+    st = ctx.store.state(ctx.run_id)
+    events = events if events is not None else ctx.store.events(ctx.run_id)
+    if st.stage != RunStage.FAILED:
+        raise RuntimeError(f"run {ctx.run_id} is {st.stage.value}; a pending Gate 2 can be recovered only after its controller "
+                           f"was stopped (the stop records run.failed)")
+    opened = [ev for ev in events if ev.kind == "gate.opened"]
+    if not opened or opened[-1].payload.get("kind") not in {k.value for k in GATE2_KINDS}:
+        raise RuntimeError(f"run {ctx.run_id} did not stop at Gate 2 (its last gate is {opened[-1].payload.get('kind') if opened else 'none'})")
+    gate_ev = opened[-1]
+    gate_id, kind = gate_ev.payload["gate_id"], GateKind(gate_ev.payload["kind"])
+    if set(st.open_gates) != {gate_id}:
+        raise RuntimeError(f"Gate 2 {gate_id} is not the run's only open gate (open: {sorted(st.open_gates) or 'none'}); "
+                           f"a decided gate is not recovered")
+    stage_before = next((ev.payload.get("stage") for ev in reversed(events) if ev.seq < gate_ev.seq and ev.kind == "stage.entered"), None)
+    if stage_before != RunStage.GATE_2_SPEC_READINESS.value:
+        raise RuntimeError(f"Gate 2 {gate_id} was opened outside the Gate 2 stage ({stage_before})")
+    after = [ev for ev in events if ev.seq > gate_ev.seq]
+    for ev in after:
+        if ev.kind == "run.failed" and not (ev.payload.get("interrupted_sessions") or []):
+            continue
+        if ev.kind == "run.resumed" and ev.payload.get("gate_id") == gate_id and ev.payload.get("stage") == RunStage.GATE_2_SPEC_READINESS.value:
+            continue
+        raise RuntimeError(f"{ev.kind} (event {ev.seq}) follows Gate 2 {gate_id}; only a controller stopped while idle at the gate is recovered")
+    if not after or after[-1].kind != "run.failed":
+        raise RuntimeError(f"run {ctx.run_id} has no stop recorded after Gate 2 {gate_id}")
+    presented = {a["name"]: a["sha256"] for a in gate_ev.payload.get("artifacts", [])}
+    sids = [n[:-len(".json")] for n in presented if n != "verdict.json"]
+    if "verdict.json" not in presented or not sids or any(not n.endswith(".json") or not _SAFE_SPEC_ID.match(n[:-len(".json")]) for n in presented if n != "verdict.json"):
+        raise RuntimeError(f"Gate 2 {gate_id} did not present one judge verdict and the specs as <spec_id>.json")
+
+    def verified(stage: str, name: str, presented_as: str) -> bytes:
+        try:
+            content = ctx.store.get_artifact(ctx.run_id, stage, name)
+        except FileNotFoundError:
+            raise RuntimeError(f"{stage}/{name}, presented at Gate 2 {gate_id} as {presented_as}, is missing") from None
+        if hashlib.sha256(content).hexdigest() != presented[presented_as]:
+            raise RuntimeError(f"{stage}/{name} no longer matches the sha256 Gate 2 {gate_id} presented as {presented_as}; "
+                               f"the owner was shown different bytes")
+        return content
+    specs = {sid: json.loads(verified("specify", f"final-{sid}.json", f"{sid}.json")) for sid in sids}
+    verdict = json.loads(verified("judge", "final-verdict.json", "verdict.json"))
+    if any(s.get("spec_id") != sid for sid, s in specs.items()):
+        raise RuntimeError(f"a spec stored for Gate 2 {gate_id} names a different spec_id")
+    if (kind == GateKind.SPEC_READINESS) != ((verdict.get("overall") or {}).get("result") == "pass"):
+        raise RuntimeError(f"Gate 2 {gate_id} is {kind.value} but the verdict it presented says {(verdict.get('overall') or {}).get('result')}")
+    queued = _queued_gate(ctx.queue, gate_id)
+    if queued is None:
+        raise RuntimeError(f"the gate surface holds no record of Gate 2 {gate_id}; a decision could not be checked against what it presented")
+    if queued.kind != kind or {a.name: a.sha256 for a in queued.artifacts} != presented or set(queued.options) != GATE2_OPTIONS:
+        raise RuntimeError(f"the gate surface's record of Gate 2 {gate_id} differs from the gate the run opened")
+    revs = _rounds(ctx, "decompose", "r", "-decomposition.json")
+    if not revs:
+        raise RuntimeError(f"run {ctx.run_id} holds no decomposition")
+    decomposition = json.loads(ctx.store.get_artifact(ctx.run_id, "decompose", f"r{max(revs)}-decomposition.json"))
+    items = {w["work_item_id"] for w in decomposition["work_items"]}
+    if any(s.get("work_item_id") not in items for s in specs.values()):
+        raise RuntimeError(f"a spec at Gate 2 {gate_id} belongs to no work item of the run's latest decomposition")
+    return PendingGate2(gate_id=gate_id, kind=kind, presented=presented, specs=specs,
+                        spec_md={sid: _spec_markdown(ctx, s) for sid, s in specs.items()}, verdict=verdict, decomposition=decomposition)
+
+
+def stopped_at_gate2(events: list[Any]) -> bool:
+    """The run stopped while in the Gate 2 stage (its last stage.entered), whatever `pending_gate2` then finds."""
+    last = next((ev.payload.get("stage") for ev in reversed(events) if ev.kind == "stage.entered"), None)
+    return last == RunStage.GATE_2_SPEC_READINESS.value
+
+
+def recorded_preview_mode(events: list[Any]) -> str | None:
+    """The preview mode the run was last driven in: run.created's policy, or a later resume that recorded one."""
+    mode = None
+    for ev in events:
+        if ev.kind == "run.created":
+            mode = (ev.payload.get("policy") or {}).get("preview_mode", mode)
+        elif ev.kind == "run.resumed" and ev.payload.get("preview_mode"):
+            mode = ev.payload["preview_mode"]
+    return mode
+
+
+def recovery_config_problems(cfg: Any) -> list[str]:
+    """What stops a recovered run from continuing into managed verification: the usual managed checks, plus the approved
+    recipe fingerprint, which a recovery must name explicitly (no base-commit fallback for an upgraded controller)."""
+    if cfg.preview_mode != "managed":
+        return []
+    gaps = list(managed_gaps(cfg))
+    if not cfg.test_profile_sha256:
+        gaps.append("the approved recipe fingerprint (FACTORY_TEST_PROFILE_SHA256 or --test-profile-sha256)")
+    return gaps
+
+
+def preflight(ctx: RunContext, events: list[Any] | None = None, budget_usd: float | None = None) -> None:
+    """Refusals `resume` would raise, checked before anything is written (the CLI calls it before the drive, so a
+    refusal never records run.failed): a managed run continued without managed verification, and every condition of
+    a pending Gate 2 recovery."""
+    events = events if events is not None else ctx.store.events(ctx.run_id)
+    if recorded_preview_mode(events) == "managed" and ctx.cfg.preview_mode != "managed":
+        raise RuntimeError(f"run {ctx.run_id} verifies in a hosted sandbox (preview mode managed); resume it with the managed "
+                           f"configuration, never with local or platform execution")
+    st = ctx.store.state(ctx.run_id)
+    if st.stage == RunStage.FAILED and stopped_at_gate2(events):
+        if budget_usd is not None:
+            raise RuntimeError("recovering a pending Gate 2 does not change the run budget; resume without --budget")
+        pending_gate2(ctx, events)
+        problems = recovery_config_problems(ctx.cfg)
+        if problems:
+            raise RuntimeError("cannot continue into managed verification: " + "; ".join(problems))
+
+
+def wait_for_gate(ctx: RunContext, gate_id: str, kind: GateKind) -> GateDecision:
+    """Poll an already open gate for the owner's decision; each surface validates it against the gate's presented hashes."""
+    while True:
+        d = gate_decision(ctx, gate_id, kind)
+        if d is not None:
+            return d
+        time.sleep(GATE_POLL_SECONDS)
+
+
+def _resume_pending_gate2(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
+    """Continue the same run at its pending Gate 2 on this controller: the gate is not reopened, nothing is regenerated,
+    no agent runs before the owner decides, and the decision then takes Gate 2's usual path."""
+    with controller_lock(ctx.cfg.runs_dir, ctx.run_id):
+        preflight(ctx)                                   # again, under the lock
+        pending = pending_gate2(ctx)
+        _, round_offset = _persisted_specify_rounds(ctx, pending.decomposition)
+        ctx.event("run.resumed", {"stage": RunStage.GATE_2_SPEC_READINESS.value, "from": RunStage.FAILED.value,
+                                  "gate_id": pending.gate_id, "kind": pending.kind.value, "artifacts": dict(sorted(pending.presented.items())),
+                                  "preview_mode": ctx.cfg.preview_mode, "app_id": ctx.cfg.app_id,
+                                  "test_profile_sha256": ctx.cfg.test_profile_sha256, "test_vaults": len(ctx.cfg.test_vault_ids)},
+                  stage="gate_2")
+        return _from_specify(ctx, outcome, pending.decomposition, None, None, round_offset=round_offset, pending=pending)
+
+
 def resume(ctx: RunContext, budget_usd: float | None = None) -> RunStage:
     """`factory resume <run_id>`: continue a run that stopped before reaching its pull requests.
 
@@ -475,12 +698,21 @@ def resume(ctx: RunContext, budget_usd: float | None = None) -> RunStage:
     cap and records `budget.raised`), then the run re-enters the stage the check interrupted. Implementation
     continues from its artefacts as above; a pause in decomposition or specification re-runs that stage from its
     start with the owner's last gate feedback, because the design stages are cheap and keep no partial state.
-    `budget_usd` given for a failed run just replaces the cap for the rest of it."""
+    `budget_usd` given for a failed run just replaces the cap for the rest of it.
+
+    A third case: a run whose controller was **stopped while idle at Gate 2** (`run.failed` right after the gate opened,
+    no session interrupted). The same run continues at that same gate (`pending_gate2` verifies it and every artefact
+    it presented): this controller waits for the owner's decision, then approve, approve_subset, request_changes and
+    reject take Gate 2's usual path. This is how a run moves to a newer controller (managed verification included,
+    which then needs the approved recipe fingerprint) before anyone approves implementation."""
     st = ctx.store.state(ctx.run_id)
     events = ctx.store.events(ctx.run_id)
     outcome = json.loads(ctx.store.get_artifact(ctx.run_id, "intake", "outcome.json"))
+    preflight(ctx, events, budget_usd)
     if st.stage == RunStage.PAUSED_BUDGET:
         return until_budget_pause(lambda: _resume_after_budget_pause(ctx, outcome, st, events, budget_usd))
+    if st.stage == RunStage.FAILED and stopped_at_gate2(events):
+        return until_budget_pause(lambda: _resume_pending_gate2(ctx, outcome))
     if st.stage not in (RunStage.FAILED, RunStage.IMPLEMENTING):
         raise RuntimeError(f"run {ctx.run_id} is {st.stage.value}; only a run that failed or stopped during implementation, "
                            f"or paused at its budget, can be resumed")

@@ -7,6 +7,10 @@ description: The contract between an application repository and the deployment p
 
 This repository is built and verified by the software factory's orchestrator on a developer machine. There is no container platform, no cloud project and no dev environment behind it yet. What follows is exactly what the orchestrator does, so a work item that respects it is deployable as far as this platform goes.
 
+## Hosted onboarding exception
+
+When the run explicitly selects managed verification, use the committed `test_environment.schema.json` recipe referenced by `service_manifest.json.test_environment.profile` (or `test_environment.json`). The Factory controller provisions an ephemeral Anthropic-hosted Linux session, synthetic services/data and the repository-approved browser runner. The local preview and host interpreter descriptions below apply only to legacy local mode. Never substitute a local run when hosted verification is required. Environment recipes are permitted onboarding artifacts; deployed infrastructure, production access, CI/security policies and human approval gates remain outside that permission. Do not claim a browser or native capability the recipe cannot exercise. See docs/09-app-onboarding.md.
+
 ## What the platform provides
 
 - **Source control**: GitHub, this repository. The factory works on branches named `factory/<run_id>/<spec_id>` cut from `main` (or from a dependency's branch when that dependency is still an open pull request) and opens one pull request per work item.

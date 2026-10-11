@@ -1,0 +1,324 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.example/schemas/test_environment.schema.json",
+  "title": "Factory test environment",
+  "description": "Portable application test recipe for existing and greenfield repositories. Commands run only in a provisioned test sandbox. Credentials are references, never values.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "name",
+    "runtime",
+    "commands",
+    "services",
+    "secrets",
+    "data",
+    "network",
+    "timeout_seconds"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,62}$"
+    },
+    "runtime": {
+      "const": "linux"
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prepare",
+        "start",
+        "seed",
+        "verify",
+        "stop"
+      ],
+      "properties": {
+        "prepare": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seed": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verify": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Browser recipes write browser-result.json {status:passed,steps:[{description,status:passed,viewport:{width,height},screenshot:unique_filename}],demo:filename} and media into the absolute FACTORY_EVIDENCE_DIR supplied by the controller. Each declared viewport requires an observed step and unique screenshot. API/CLI/worker/library recipes write verification-result.json {status,checks:[{id,status,observation}]}. No outputs in another folder satisfy verification. Screenshot and video names must be flat filenames (no subdirectories), and every step must include viewport. The top-level fields are steps and demo, not runs or demo_video. Preserve all browser assertions and write extra detail to a separate file if needed."
+        },
+        "stop": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "services": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "port",
+          "health_path"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 65535
+          },
+          "health_path": {
+            "type": "string",
+            "pattern": "^/[^?#]*$"
+          },
+          "expect_status": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 599,
+            "default": 200
+          }
+        }
+      },
+      "description": "Browser recipes must include the browser target service with id app. BASE_URL uses that service port."
+    },
+    "secrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "required",
+          "allowed_hosts",
+          "injection"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "allowed_hosts": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/host"
+            }
+          },
+          "injection": {
+            "enum": [
+              "header",
+              "body",
+              "header-and-body"
+            ]
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "authentication"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "synthetic",
+            "isolated-test"
+          ]
+        },
+        "authentication": {
+          "enum": [
+            "none-required",
+            "test-identity",
+            "production-equivalent"
+          ]
+        }
+      }
+    },
+    "browser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runner",
+        "viewports",
+        "record_demo"
+      ],
+      "properties": {
+        "runner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "record_demo": {
+          "type": "boolean"
+        },
+        "viewports": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "width",
+              "height"
+            ],
+            "properties": {
+              "width": {
+                "type": "integer",
+                "minimum": 320,
+                "maximum": 3840
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 320,
+                "maximum": 2160
+              }
+            }
+          }
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed_hosts",
+        "allow_package_managers"
+      ],
+      "properties": {
+        "allowed_hosts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/host"
+          }
+        },
+        "allow_package_managers": {
+          "type": "boolean"
+        }
+      }
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 30,
+      "maximum": 3600
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "checks"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "api",
+            "worker",
+            "library",
+            "cli"
+          ]
+        },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "description"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]+$"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "host": {
+      "type": "string",
+      "pattern": "^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z]{2,63}$"
+    }
+  },
+  "oneOf": [
+    {
+      "required": [
+        "browser"
+      ],
+      "not": {
+        "required": [
+          "verification"
+        ]
+      }
+    },
+    {
+      "required": [
+        "verification"
+      ],
+      "not": {
+        "required": [
+          "browser"
+        ]
+      }
+    }
+  ],
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "browser"
+        ]
+      },
+      "then": {
+        "properties": {
+          "services": {
+            "contains": {
+              "properties": {
+                "id": {
+                  "const": "app"
+                }
+              },
+              "required": [
+                "id"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

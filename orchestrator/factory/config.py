@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 AGENT_FILES = {
+    "app_onboarding": "./agents/app_onboarding.md",
     "codebase_researcher": "./agents/codebase_researcher.md",
     "decomposer": "./agents/decomposer.md",
     "spec_writer": "./agents/spec_writer.md",
@@ -34,7 +36,7 @@ AGENT_FILES = {
 }
 ENVIRONMENT_FILE = "./environments/factory-cloud.yaml"
 # Agents a run can do without: when not applied, the orchestrator skips their pass and says so.
-OPTIONAL_AGENTS = {"security_reviewer"}
+OPTIONAL_AGENTS = {"security_reviewer", "app_onboarding"}
 
 FORGES = ("github", "gitlab")
 GATE_SURFACES = ("forge", "tracker", "file", "web")   # web = the Factory Console over the file queue
@@ -66,7 +68,7 @@ class Config:
     service_manifest_path: str          # fixed path in the app repo, named by the platform contract
     dev_environment_name: str           # environment the default branch deploys to
     preview_environment_prefix: str     # environment name prefix for per-branch previews
-    preview_mode: str                   # platform (read the forge's deployment record) | local (the orchestrator starts the service itself)
+    preview_mode: str                   # platform (the forge's deployment record) | local (the orchestrator starts the service) | managed (an Anthropic-hosted sandbox from the app's test recipe)
     smoke_commands: tuple[str, ...]     # optional suite run against dev after every deploy ($BASE_URL substituted)
     console_workspace: str
     workspace_id: str | None            # ANTHROPIC_WORKSPACE_ID: required when the API key is not scoped to a workspace
@@ -76,6 +78,11 @@ class Config:
     templates_dir: Path
     pin_agent_versions: bool
     skills_dir: Path = REPO_ROOT / "skills"   # platform-contract skill, uploaded into every session and seeded into repositories
+    # preview_mode "managed": every verification of a candidate head runs in a hosted sandbox built from the app's recipe
+    app_id: str | None = None                 # FACTORY_APP_ID: the onboarded app this run changes (recorded, not an authority)
+    test_profile_sha256: str | None = None    # FACTORY_TEST_PROFILE_SHA256: the approved recipe; the candidate's must hash to it
+    test_vault_ids: tuple[str, ...] = ()      # FACTORY_TEST_VAULT_IDS: explicit test-only vaults; never the forge's vault
+    managed_verify_budget_usd: float = 4.0    # FACTORY_MANAGED_VERIFY_BUDGET_USD: cap per hosted verification session
 
     def console_session_url(self, session_id: str) -> str:
         return f"https://platform.claude.com/workspaces/{self.console_workspace}/sessions/{session_id}"
@@ -83,6 +90,39 @@ class Config:
     @property
     def repo_url(self) -> str:
         return f"{self.forge_url.rstrip('/')}/{self.forge_repo}"
+
+
+PREVIEW_MODES = ("platform", "local", "managed")
+
+
+def _float_env(name: str, default: float) -> float:
+    """A float from the environment; an unparsable value becomes NaN, which `missing` reports instead of guessing."""
+    raw = os.environ.get(name)
+    if raw in (None, ""):
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return float("nan")
+
+
+def managed_gaps(cfg: Config) -> list[str]:
+    """What is wrong with the preview choice. Managed mode needs a sane per-session cap and well-formed references;
+    the recipe, its fingerprint and the vaults' contents are checked against the candidate at verification time."""
+    if cfg.preview_mode not in PREVIEW_MODES:
+        return [f"FACTORY_PREVIEW={cfg.preview_mode!r} (expected {'|'.join(PREVIEW_MODES)})"]
+    if cfg.preview_mode != "managed":
+        return []
+    gaps = []
+    if not (0 < cfg.managed_verify_budget_usd <= 60):
+        gaps.append("FACTORY_MANAGED_VERIFY_BUDGET_USD (a cap above 0 and at most 60 USD per hosted verification)")
+    if cfg.test_profile_sha256 and not re.fullmatch(r"[0-9a-f]{64}", cfg.test_profile_sha256):
+        gaps.append("FACTORY_TEST_PROFILE_SHA256 (the approved recipe's 64-character sha256)")
+    if cfg.vault_id and cfg.vault_id in cfg.test_vault_ids:
+        gaps.append("FACTORY_TEST_VAULT_IDS must not include the forge vault FACTORY_VAULT_ID")
+    if any(not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", v) for v in cfg.test_vault_ids):
+        gaps.append("FACTORY_TEST_VAULT_IDS (comma-separated vault ids)")
+    return gaps
 
 
 def _first(*names: str, default: str | None = None) -> str | None:
@@ -168,6 +208,10 @@ def load(lock_path: Path | None = None, dotenv_path: Path | None = None) -> Conf
         dev_environment_name=os.environ.get("FACTORY_DEV_ENVIRONMENT", "dev"),
         preview_environment_prefix=os.environ.get("FACTORY_PREVIEW_ENVIRONMENT_PREFIX", "preview/"),
         preview_mode=(os.environ.get("FACTORY_PREVIEW") or "platform").lower(),
+        app_id=os.environ.get("FACTORY_APP_ID") or None,
+        test_profile_sha256=(os.environ.get("FACTORY_TEST_PROFILE_SHA256") or "").strip().lower() or None,
+        test_vault_ids=tuple(v.strip() for v in os.environ.get("FACTORY_TEST_VAULT_IDS", "").split(",") if v.strip()),
+        managed_verify_budget_usd=_float_env("FACTORY_MANAGED_VERIFY_BUDGET_USD", 4.0),
         smoke_commands=tuple(c for c in os.environ.get("FACTORY_SMOKE_COMMANDS", "").split(";") if c.strip()),
         console_workspace=os.environ.get("ANTHROPIC_WORKSPACE", "default"),
         workspace_id=os.environ.get("ANTHROPIC_WORKSPACE_ID"),
@@ -227,6 +271,7 @@ def missing(cfg: Config, design_only: bool = False) -> list[str]:
         gaps.append("ANTHROPIC_API_KEY (the Console workspace the agents live in)")
     if design_only:
         return gaps + _surface_gaps(cfg)
+    gaps += managed_gaps(cfg)
     if cfg.forge not in FORGES:
         gaps.append(f"FACTORY_FORGE={cfg.forge!r} (expected github|gitlab)")
     if not cfg.forge_token:

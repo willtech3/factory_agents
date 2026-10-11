@@ -116,10 +116,12 @@ class SessionDriver:
             resources.append({"type": "file", "file_id": f.id, "mount_path": "/" + rel_path.lstrip("/")})
         return resources
 
-    def standard_uploads(self) -> dict[str, bytes]:
+    def standard_uploads(self, schema_names: tuple[str, ...] | None = None) -> dict[str, bytes]:
         """Schemas and the sandbox validator are mounted into every session."""
         out: dict[str, bytes] = {}
         for p in self.cfg.schemas_dir.glob("*.schema.json"):
+            if schema_names is not None and p.name not in schema_names:
+                continue
             out[f"schemas/{p.name}"] = p.read_bytes()
         out["tools/validate.py"] = (Path(__file__).parent / "sandbox_tools" / "validate.py").read_bytes()
         return out
@@ -143,13 +145,21 @@ class SessionDriver:
         model_override: dict[str, Any] | None = None,
         metadata: dict[str, str] | None = None,
         repository: dict[str, Any] | None = None,
+        environment_id: str | None = None,
+        vault_ids: list[str] | None = None,
+        system_override: str | None = None,
+        schema_names: tuple[str, ...] | None = None,
     ) -> StageResult:
         """`repository` is a session resource from `Forge.session_repository_resource` (the native
         `github_repository` mount, cloned through Anthropic's git proxy at /workspace/repo) or None when
         the forge has no native resource and the agent clones with the vault credential (GitLab, ADR-0003)."""
         agent_ref = self.cfg.agents[agent_key]
-        if model_override:
-            agent: Any = {"type": "agent_with_overrides", "id": agent_ref.id, "model": model_override}
+        if model_override or system_override:
+            agent: Any = {"type": "agent_with_overrides", "id": agent_ref.id}
+            if model_override:
+                agent["model"] = model_override
+            if system_override:
+                agent["system"] = system_override
             if agent_ref.version and self.cfg.pin_agent_versions:
                 agent["version"] = agent_ref.version
         elif agent_ref.version and self.cfg.pin_agent_versions:
@@ -157,7 +167,7 @@ class SessionDriver:
         else:
             agent = agent_ref.id
 
-        all_uploads = {**self.standard_uploads(), **uploads}
+        all_uploads = {**self.standard_uploads(schema_names), **uploads}
         resources = self._upload_tree(all_uploads)
         if repository:
             resources.append(repository)
@@ -174,10 +184,12 @@ class SessionDriver:
 
         session = self.client.beta.sessions.create(
             agent=agent,
-            environment_id=self.cfg.environment_id,
+            environment_id=environment_id or self.cfg.environment_id,
             title=title,
             resources=resources,
-            vault_ids=[self.cfg.vault_id] if (self.cfg.vault_id and not repository) else None,
+            # App test vaults are independent of forge authentication. An explicit []
+            # also prevents a test session inheriting the controller's forge vault.
+            vault_ids=vault_ids if vault_ids is not None else ([self.cfg.vault_id] if (self.cfg.vault_id and not repository) else None),
             budget={"type": "limit", "max_list_cost": {"amount": str(int(round(budget_usd * 100))), "currency": "USD"}},
             metadata={"run_id": run_id, "stage": stage, **({"work_item_id": work_item_id} if work_item_id else {}),
                       **(metadata or {})},

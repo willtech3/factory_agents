@@ -195,3 +195,35 @@ def test_wait_for_preview_polls_until_ready(tmp_path, root, examples):
     assert info["status"] == "ready" and info["url"].startswith("https://") and ctx.forge.n == 3
     ctx.forge = None
     assert wait_for_preview(ctx, "b", SHA, sleep=lambda s: None)["status"] == "unavailable"
+
+
+def test_managed_deploy_never_executes_local_callback(tmp_path,root,examples):
+    from dataclasses import replace
+    from factory.stages.deploy_observe import observe_once
+    ctx=_ctx(tmp_path,root,InMemoryQueue());ctx.cfg=replace(ctx.cfg,preview_mode='managed')
+    _seed_merged(ctx,examples)
+    def forbidden(*args): raise AssertionError('local app execution attempted')
+    obs=observe_once(ctx,examples['spec_smart_retries'],SHA,'main',ScriptedSource(['success']),forbidden,poll_seconds=0,sleep=lambda s:None)
+    assert not obs.passed and obs.e2e_results[0]['status']=='blocked'
+
+
+@pytest.mark.parametrize("watcher_mode", ["platform", "local"])
+def test_deploy_preserves_hosted_mode_after_gate_recovery(tmp_path, root, examples, watcher_mode):
+    """A fresh watcher must honor the hosted mode recorded by a recovered controller."""
+    from dataclasses import replace
+    from factory.stages.deploy_observe import observe_once
+
+    ctx = _ctx(tmp_path, root, InMemoryQueue())
+    ctx.cfg = replace(ctx.cfg, preview_mode=watcher_mode)
+    _seed_merged(ctx, examples)
+    ctx.event("run.failed", {"reason": "controller stopped at Gate 2"})
+    ctx.event("run.resumed", {"stage": "gate_2_spec_readiness", "preview_mode": "managed"})
+
+    def forbidden(*args):
+        raise AssertionError("an upgraded hosted run executed checks on the watcher host")
+
+    obs = observe_once(ctx, examples["spec_smart_retries"], SHA, "main", ScriptedSource(["success"]),
+                       forbidden, poll_seconds=0, sleep=lambda s: None)
+    assert not obs.passed
+    assert all(row["status"] == "blocked" for row in obs.e2e_results)
+    assert "e2e.dev_passed" not in _kinds(ctx)

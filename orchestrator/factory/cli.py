@@ -11,6 +11,7 @@
     factory resume <run_id> --budget 80 # ... raising the run budget (or --outcome file.json to read it from there)
     factory watch <run_id> [--once]     # Gate 3 and Stage 5: follow the run's pull requests to the merge and the dev deploy
     factory web [--port 8765] [--demo]  # the Factory Console: outcomes, runs board, inbox, gate review
+    factory run outcome.json --preview managed --app-id app_x --test-profile-sha256 <sha> --test-vault vlt_a   # hosted verification
     factory browser list|claim|submit|block|doctor|smoke   # attach a Claude in Chrome session to browser checks
 
 Local mode uses a file-backed queue under the runs directory so two processes can talk. With
@@ -35,6 +36,33 @@ from .surfaces.filequeue import FileQueue  # noqa: E402  (the `file`/`web` gate 
 from .browser_worker import cli as browser_cli  # noqa: E402
 
 app.add_typer(browser_cli, name="browser")
+
+environment_cli = typer.Typer(no_args_is_help=True, help="Validate application recipes and test them in Anthropic-hosted sandboxes.")
+app.add_typer(environment_cli, name="environment")
+
+
+@environment_cli.command("check")
+def environment_check(profile: Path):
+    """Check a recipe's structure. This does not provision or mark an app ready."""
+    from .test_environments import validate_profile
+    errors = validate_profile(json.loads(profile.read_text()), cfgmod.REPO_ROOT / "schemas")
+    typer.echo(json.dumps({"status": "invalid" if errors else "valid-plan", "errors": errors}, indent=2))
+    if errors:
+        raise typer.Exit(1)
+
+
+@environment_cli.command("verify")
+def environment_verify(repo: Path, output: Path, budget: float = typer.Option(..., "--budget"),
+                       profile: str = "test_environment.json", revision: str = "HEAD",
+                       vault: list[str] = typer.Option([], "--vault")):
+    """Run committed app + database + browser in the cloud. Never on this machine."""
+    from .test_environments import run_hosted
+    cfg = cfgmod.load()
+    result = run_hosted(cfg, repo, output, profile_relative=profile, revision=revision,
+                        budget_usd=budget, vault_ids=tuple(vault))
+    typer.echo(json.dumps(result, indent=2))
+    if result["status"] != "passed":
+        raise typer.Exit(1)
 
 
 def _bind_forge(cfg, outcome: dict, want_forge: bool):
@@ -183,14 +211,33 @@ def _drive(ctx, pipeline):
         raise
 
 
+def apply_preview_choice(cfg, preview: str | None = None, app_id: str | None = None, test_profile_sha256: str | None = None,
+                         test_vaults: list[str] | None = None, verify_budget: float | None = None):
+    """Command-line preview choice over the environment's (FACTORY_PREVIEW, FACTORY_APP_ID, FACTORY_TEST_PROFILE_SHA256,
+    FACTORY_TEST_VAULT_IDS, FACTORY_MANAGED_VERIFY_BUDGET_USD). Validation is `config.missing`'s, as for the environment."""
+    import dataclasses
+    changes = {k: v for k, v in {
+        "preview_mode": preview.lower() if preview else None, "app_id": app_id,
+        "test_profile_sha256": test_profile_sha256.strip().lower() if test_profile_sha256 else None,
+        "test_vault_ids": tuple(v.strip() for v in test_vaults if v.strip()) if test_vaults else None,
+        "managed_verify_budget_usd": verify_budget}.items() if v is not None}
+    return dataclasses.replace(cfg, **changes) if changes else cfg
+
+
 @app.command()
 def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the forge (change requests, pipelines)"),
         design_only: bool = typer.Option(False, "--design-only", help="Real agents through Gate 2 (decompose, specs, judge); "
-                                                                      "no implementation, no forge needed")):
+                                                                      "no implementation, no forge needed"),
+        preview: str | None = typer.Option(None, "--preview", help="platform | local | managed (verify every candidate in a hosted "
+                                                                  "sandbox from the app's approved test recipe); default FACTORY_PREVIEW"),
+        app_id: str | None = typer.Option(None, "--app-id", help="managed: the onboarded app this run changes"),
+        test_profile_sha256: str | None = typer.Option(None, "--test-profile-sha256", help="managed: fingerprint of the approved test recipe"),
+        test_vault: list[str] = typer.Option([], "--test-vault", help="managed: an explicit test-only vault id (repeatable); never the forge's"),
+        verify_budget: float | None = typer.Option(None, "--verify-budget", help="managed: USD cap per hosted verification session (default 4)")):
     """Start a run from an outcome.json. Blocks at human gates; decide from another terminal, the Console, or the tracker."""
     from .runner import new_run_id, run as run_pipeline
 
-    cfg = cfgmod.load()
+    cfg = apply_preview_choice(cfgmod.load(), preview, app_id, test_profile_sha256, test_vault, verify_budget)
     gaps = cfgmod.missing(cfg, design_only=design_only)
     if gaps:
         typer.echo("cannot run; missing: " + ", ".join(gaps))
@@ -219,16 +266,23 @@ def resume(run_id: str, forge: bool = typer.Option(True, help="Talk to the forge
                                                                    "this is the decision (no gate decision needed); for a "
                                                                    "failed run it replaces the cap for the rest of the run."),
            outcome_file: Path | None = typer.Option(None, "--outcome", help="Read the new budget from this outcome file's "
-                                                                         "constraints.budget_usd instead of --budget")):
-    """Continue a run that failed or was stopped during implementation, or that paused at its budget. Nothing before
-    Gate 2 is re-run for a failed run: the approved specs come from the store, and each one picks up at the round
-    whose work was persisted (a finished implementer session is not repeated; the orchestrator's own verification of
-    its head is). A budget pause applies the owner's decision on the budget gate (approve with `budget_usd: N`, or
-    reject to close) or --budget / --outcome, records the raised cap, and re-enters the stage it interrupted."""
-    from .runner import budget_decision, resume as resume_pipeline
-    from .state import RunStage
+                                                                         "constraints.budget_usd instead of --budget"),
+           preview: str | None = typer.Option(None, "--preview", help="platform | local | managed; default FACTORY_PREVIEW"),
+           app_id: str | None = typer.Option(None, "--app-id", help="managed: the onboarded app this run changes"),
+           test_profile_sha256: str | None = typer.Option(None, "--test-profile-sha256", help="managed: fingerprint of the approved test recipe"),
+           test_vault: list[str] = typer.Option([], "--test-vault", help="managed: an explicit test-only vault id (repeatable); never the forge's"),
+           verify_budget: float | None = typer.Option(None, "--verify-budget", help="managed: USD cap per hosted verification session")):
+    """Continue a run that failed or was stopped during implementation, that paused at its budget, or whose controller
+    was stopped while it waited at Gate 2. Nothing before Gate 2 is re-run for a failed run: the approved specs come
+    from the store, and each one picks up at the round whose work was persisted (a finished implementer session is not
+    repeated; the orchestrator's own verification of its head is). A budget pause applies the owner's decision on the
+    budget gate (approve with `budget_usd: N`, or reject to close) or --budget / --outcome, records the raised cap, and
+    re-enters the stage it interrupted. A run stopped at Gate 2 waits on that same gate, its artefacts verified against
+    the hashes it presented, and continues with the owner's decision; --preview managed then needs the approved recipe
+    fingerprint. One controller per run: a second `factory resume` is refused while the first holds the run's lock."""
+    from .runner import RunLocked, controller_lock
 
-    cfg = cfgmod.load()
+    cfg = apply_preview_choice(cfgmod.load(), preview, app_id, test_profile_sha256, test_vault, verify_budget)
     store = RunStore(cfg.runs_dir)
     try:
         outcome = json.loads(store.get_artifact(run_id, "intake", "outcome.json"))
@@ -250,6 +304,25 @@ def resume(run_id: str, forge: bool = typer.Option(True, help="Talk to the forge
             raise typer.Exit(1)
     current = st.budget_usd if st.budget_usd is not None else (outcome.get("constraints") or {}).get("budget_usd")
     ctx = _context(cfg, outcome, run_id, forge=forge, design_only=design_only, budget_usd=current)
+    try:
+        with controller_lock(cfg.runs_dir, run_id):
+            _resume_locked(ctx, run_id, st, events, current, new_budget)
+    except RunLocked as e:
+        typer.echo(str(e))
+        raise typer.Exit(1)
+
+
+def _resume_locked(ctx, run_id: str, st, events, current, new_budget) -> None:
+    """`factory resume` once the run's controller lock is held: every refusal before the drive, so none writes run.failed."""
+    from .runner import budget_decision, preflight, resume as resume_pipeline
+    from .state import RunStage
+
+    cfg = ctx.cfg
+    try:
+        preflight(ctx, events, budget_usd=new_budget)
+    except RuntimeError as e:
+        typer.echo(f"cannot resume run {run_id}: {e}")
+        raise typer.Exit(1)
     if st.stage == RunStage.PAUSED_BUDGET:
         try:                      # refuse here, before any event is written, when nothing has decided the pause yet
             action, raised_to, _ = budget_decision(ctx, st, events, new_budget)
@@ -259,7 +332,7 @@ def resume(run_id: str, forge: bool = typer.Option(True, help="Talk to the forge
         typer.echo(f"run {run_id} paused at its budget (${st.list_cost_usd:.2f} spent of ${current or 0:.2f}): "
                    + ("closing it as the owner decided" if action == "close" else f"raising the budget to ${raised_to:.2f} and continuing"))
     else:
-        typer.echo(f"run {run_id} resuming from {st.stage.value} (forge={cfg.forge if ctx.forge else 'none'}"
+        typer.echo(f"run {run_id} resuming from {st.stage.value} (forge={cfg.forge if ctx.forge else 'none'}, preview={cfg.preview_mode}"
                    + (f", budget raised to ${new_budget:.2f}" if new_budget is not None else "") + ")")
     final = _drive(ctx, lambda c: resume_pipeline(c, budget_usd=new_budget))
     _report_final(ctx, run_id, final)
