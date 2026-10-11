@@ -243,7 +243,8 @@ class Console:
         return out
 
     def run_detail(self, run_id: str) -> dict[str, Any]:
-        if not RUN_ID.match(run_id) or not (self.cfg.runs_dir / run_id / "events.jsonl").is_file():
+        if (not RUN_ID.match(run_id) or not (self.cfg.runs_dir / run_id / "events.jsonl").is_file()
+                or (self.cfg.runs_dir / run_id / "demo.json").is_file()):
             raise HTTPException(404, f"no run {run_id}")       # checked first: RunStore.events would create the directory
         events = self.store.events(run_id)
         if not events:
