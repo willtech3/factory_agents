@@ -25,6 +25,7 @@ from pathlib import Path
 from collections.abc import Callable, Iterator
 from typing import Any
 
+from .approvals import approval_guidance, subset_problems
 from .budget import BudgetPaused, last_pause
 from .config import managed_gaps
 from .gates import Decision, Gate, GateDecision, GateKind, parse_budget
@@ -199,10 +200,17 @@ def _from_specify(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[
             return RunStage.CLOSED
         if d.decision in (Decision.APPROVE, Decision.APPROVE_SUBSET):
             approved = set(d.approved_subset) if d.decision == Decision.APPROVE_SUBSET else set(specs)
-            for sid in approved:
+            problems = subset_problems(specs, d.approved_subset) if d.decision == Decision.APPROVE_SUBSET else []
+            if problems:
+                # The decision surfaces refuse such a selection; one that still arrives never starts any implementation.
+                raise RuntimeError(f"Gate 2 {d.gate_id}: the approved selection is not dependency-valid ({'; '.join(problems)}); "
+                                   f"nothing was implemented")
+            selected = {sid: s for sid, s in specs.items() if sid in approved}
+            guidance = record_approval(ctx, d, selected)
+            for sid in sorted(approved):
                 ctx.event("work_item.stage", {"stage": WorkItemStage.SPEC_APPROVED.value, "spec_id": sid},
                           work_item_id=specs[sid]["work_item_id"], spec_id=sid, actor="human")
-            specs = {sid: s for sid, s in specs.items() if sid in approved}
+            specs = selected
             break
         human_comments, prior_specs = _route_gate2_feedback(ctx, design_cr_id, d, specs)
         previous_verdict, round_offset = verdict, max(int(verdict.get("round") or round_offset + 1), round_offset)
@@ -212,7 +220,42 @@ def _from_specify(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[
                                     "note": "design-only run: no implementation stage was requested"}, stage="gate_2")
         return RunStage.COMPLETED
 
-    return implement_and_integrate(ctx, outcome, specs, spec_md, spec_verdict)
+    return implement_and_integrate(ctx, outcome, specs, spec_md, spec_verdict, guidance=guidance)
+
+
+def record_approval(ctx: RunContext, d: GateDecision, approved: dict[str, dict]) -> dict[str, str]:
+    """Keep what Gate 2 approved and the owner's notes with it: the sha256 of each approved spec as stored for the gate
+    (`specify/final-<spec_id>.json`) and the bounded per-spec guidance from the decision's comments. The implementer gets
+    the guidance; a resume re-reads both and refuses a spec whose bytes no longer match what was approved."""
+    hashes = {sid: hashlib.sha256(ctx.store.get_artifact(ctx.run_id, "specify", f"final-{sid}.json")).hexdigest()
+              for sid in sorted(approved)}
+    if any(sha not in d.artifact_shas for sha in hashes.values()):
+        raise RuntimeError(f"Gate 2 {d.gate_id}: stored specs no longer match the approved artifacts")
+    record = {"gate_id": d.gate_id, "decision": d.decision.value, "decided_by": d.decided_by,
+              "approved": hashes,
+              "guidance": approval_guidance(d.comments, approved)}
+    name = f"approval-{d.gate_id}.json"
+    ctx.store.put_artifact(ctx.run_id, "gate_2", name, json.dumps(record, indent=2).encode())
+    ctx.event("artifact.produced", {"artifact_type": "gate2_approval", "path": f"gate_2/{name}", "gate_id": d.gate_id,
+                                    "approved": sorted(approved), "guidance_for": sorted(record["guidance"])}, stage="gate_2")
+    return record["guidance"]
+
+
+def approved_record(ctx: RunContext, events: list[Any], specs: dict[str, dict]) -> dict[str, str]:
+    """The guidance a resumed implementation carries, after checking each approved spec is still the approved bytes. Runs
+    approved before approvals were recorded resume without guidance, as they did before."""
+    produced = next((ev.payload for ev in reversed(events) if ev.kind == "artifact.produced"
+                     and ev.payload.get("artifact_type") == "gate2_approval"), None)
+    if produced is None:
+        return {}
+    record = json.loads(ctx.store.get_artifact(ctx.run_id, "gate_2", Path(produced["path"]).name))
+    if set(record["approved"]) != set(specs):
+        raise RuntimeError(f"the specs marked approved ({sorted(specs)}) differ from Gate 2 {record['gate_id']}'s approval "
+                           f"({sorted(record['approved'])})")
+    for sid, sha in record["approved"].items():
+        if hashlib.sha256(ctx.store.get_artifact(ctx.run_id, "specify", f"final-{sid}.json")).hexdigest() != sha:
+            raise RuntimeError(f"specify/final-{sid}.json no longer matches the spec Gate 2 {record['gate_id']} approved")
+    return {sid: text for sid, text in record.get("guidance", {}).items() if sid in specs}
 
 
 def _specify_and_gate(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[str, Any], human_comments: dict[str, str] | None,
@@ -349,9 +392,11 @@ def _hms(seconds: int | None) -> str:
 
 
 def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dict[str, dict], spec_md: dict[str, str],
-                            spec_verdict: dict[str, Any] | None, resume: dict[str, ResumePoint] | None = None) -> RunStage:
+                            spec_verdict: dict[str, Any] | None, resume: dict[str, ResumePoint] | None = None,
+                            guidance: dict[str, str] | None = None) -> RunStage:
     """Stage 3 + 4 per approved spec, in dependency waves. `resume` (from `factory resume`) says where each spec's
-    implement/review loop continues; specs whose change request is already open are not touched again."""
+    implement/review loop continues; specs whose change request is already open are not touched again. `guidance` is the
+    owner's bounded Gate 2 approval notes per spec (`record_approval`), handed to that spec's implementer."""
     repo = outcome["target_repositories"][0]
     if resume is None:
         ctx.event("stage.entered", {"stage": RunStage.IMPLEMENTING.value}, stage="implement")
@@ -380,7 +425,8 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
                                                 "note": "the dependency's change request is open but not merged; this item is built on its branch"},
                           work_item_id=spec["work_item_id"], spec_id=sid, stage="implement")
             verdict = run_implement_one(ctx, spec, repo["url"], base_branch, verifier, deps,
-                                        spec_md=spec_md.get(sid, ""), resume_from=(resume or {}).get(sid))
+                                        spec_md=spec_md.get(sid, ""), resume_from=(resume or {}).get(sid),
+                                        guidance=(guidance or {}).get(sid, ""))
             if verdict["result"] != "ready":
                 ctx.event("run.escalated", {"reason": f"{sid}: merge judge said {verdict['result']}",
                                             "summary": verdict.get("summary_for_human", verdict.get("reason"))},
@@ -729,11 +775,12 @@ def _resume_implementation(ctx: RunContext, outcome: dict[str, Any], events: lis
     specs = {sid: json.loads(ctx.store.get_artifact(ctx.run_id, "specify", f"final-{sid}.json")) for sid in dict.fromkeys(approved)}
     spec_verdict = artifact_json_or_none(ctx, "judge", "final-verdict.json")
     spec_md = {sid: _spec_markdown(ctx, s) for sid, s in specs.items()}
+    guidance = approved_record(ctx, events, specs)
     points = resume_points(ctx, specs)
     ctx.event("run.resumed", {"stage": RunStage.IMPLEMENTING.value, "from": from_stage.value,
                               "points": {sid: {"round": pt.round_no, "implementer_done": pt.report is not None} for sid, pt in points.items()}},
               stage="implement")
-    return implement_and_integrate(ctx, outcome, specs, spec_md, spec_verdict, resume=points)
+    return implement_and_integrate(ctx, outcome, specs, spec_md, spec_verdict, resume=points, guidance=guidance)
 
 
 # ---------------------------------------------------------------- budget pauses

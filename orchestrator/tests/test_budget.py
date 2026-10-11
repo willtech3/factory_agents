@@ -315,7 +315,7 @@ def test_implementation_pauses_before_the_implementer_and_resumes_from_its_artef
 
     seen = {}
 
-    def fake_implement(c, outcome, specs, spec_md, spec_verdict, resume=None):
+    def fake_implement(c, outcome, specs, spec_md, spec_verdict, resume=None, guidance=None):
         seen.update(specs=sorted(specs), resume=resume, budget=c.policy.run_budget_usd)
         c.event("run.completed", {"specs_with_change_requests": sorted(specs)})
         return RunStage.COMPLETED

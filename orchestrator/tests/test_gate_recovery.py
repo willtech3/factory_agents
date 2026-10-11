@@ -124,7 +124,7 @@ def test_approve_subset_continues_into_managed_implementation_with_only_those_sp
     gate, _ = park(tmp_path, root, design_only=False)
     seen = {}
 
-    def implement(ctx, outcome, specs, spec_md, spec_verdict, resume=None):
+    def implement(ctx, outcome, specs, spec_md, spec_verdict, resume=None, guidance=None):
         seen.update(cfg=ctx.cfg, specs=sorted(specs), md=spec_md)
         return RunStage.COMPLETED
     monkeypatch.setattr(runner, "implement_and_integrate", implement)
