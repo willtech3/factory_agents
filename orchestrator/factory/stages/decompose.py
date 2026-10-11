@@ -43,7 +43,8 @@ def repository_mount(ctx: RunContext, outcome: dict[str, Any]) -> dict[str, Any]
 
 
 def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | None = None,
-                  prior_decomposition: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
+                  prior_decomposition: dict[str, Any] | None = None,
+                  retried: bool = False) -> tuple[dict[str, Any], dict[str, str]]:
     if ctx.store.state(ctx.run_id).stage != RunStage.DECOMPOSING:   # the automatic retry stays in the same stage
         ctx.event("stage.entered", {"stage": RunStage.DECOMPOSING.value}, stage="decompose")
     uploads = {"outcome.json": json.dumps(outcome, indent=2).encode(),
@@ -87,10 +88,11 @@ def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | N
                                     "work_items": decomposition["work_items"],
                                     "checks": [r.to_dict() for r in results]}, stage="decompose")
     if failed:
-        # One automatic retry with the failures as feedback; then escalate.
-        if not feedback_md:
-            fb = "# Deterministic check failures\n" + "\n".join(f"- {r.check}: {r.detail}" for r in failed)
-            return run_decompose(ctx, outcome, feedback_md=fb, prior_decomposition=decomposition)
+        # One automatic retry with the failures as feedback, after the owner's own when there was some; then escalate.
+        if not retried:
+            fb = (f"{feedback_md.rstrip()}\n\n" if feedback_md else "") + "# Deterministic check failures\n" + \
+                "\n".join(f"- {r.check}: {r.detail}" for r in failed)
+            return run_decompose(ctx, outcome, feedback_md=fb, prior_decomposition=decomposition, retried=True)
         ctx.event("run.escalated", {"reason": "decomposition failed deterministic checks twice",
                                     "checks": [r.to_dict() for r in failed]}, stage="decompose")
         raise RuntimeError("decomposition failed deterministic checks twice; escalated")

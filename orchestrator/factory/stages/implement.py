@@ -526,19 +526,9 @@ class LocalVerifier:
 
 
 def measure_size(repo: Path, base_sha: str, head_sha: str, spec: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """Hand-written and generated changed lines between two commits (`size.measure`), reading only git: the numstat and
-    the head's .gitattributes. `spec` adds the files it declares regenerated."""
-    try:
-        numstat = _git(repo, "diff", "--numstat", f"{base_sha}..{head_sha}")
-    except (subprocess.CalledProcessError, OSError):
-        return None
-    try:
-        attributes = _git(repo, "show", f"{head_sha}:.gitattributes")
-    except (subprocess.CalledProcessError, OSError):
-        attributes = ""
-    from .. import pr_description
-    return size.measure(pr_description.diff_stats(numstat), gitattributes=attributes,
-                        regenerated=(spec or {}).get("regenerated") or [])
+    """Hand-written and generated changed lines between two commits (`size.measure_repo`), reading only git: the
+    numstat and git's own linguist-generated attributes at the head. `spec` adds the files it declares regenerated."""
+    return size.measure_repo(repo, base_sha, head_sha, (spec or {}).get("regenerated") or [])[1]
 
 
 def _diff_lines(unified: str) -> tuple[dict[str, list[str]], dict[str, list[str]]]:

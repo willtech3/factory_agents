@@ -60,6 +60,28 @@ def test_decompose_retry_does_not_reenter_the_stage(tmp_path, root, examples):
     assert kinds.count("stage.entered") == 1 and ctx.store.state(ctx.run_id).stage == RunStage.DECOMPOSING
 
 
+def test_decompose_retries_once_after_owner_feedback(tmp_path, root, examples):
+    """A re-run after the owner's feedback still gets its one automatic retry; the retry carries both texts."""
+    from factory.stages import decompose as dec
+
+    ctx = _ctx(tmp_path, root, None)
+    ctx.event("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
+    bad = dict(examples["decomposition"], coverage=[])
+    produced, feedback = iter([bad, examples["decomposition"]]), []
+
+    class Driver:
+        def run(self, **kw):
+            import json
+            feedback.append(kw["uploads"].get("prior/feedback.md", b"").decode())
+            return SimpleNamespace(session_id="s", agent_id="a", agent_version=1, outcome_result="satisfied", outcome_iterations=1,
+                                   list_cost_usd=1.0, stop_reason="end_turn", events_seen=1, custom_tool_calls=[],
+                                   outputs={"decomposition.json": json.dumps(next(produced)).encode(), "decomposition.md": b"# d"})
+
+    ctx.driver = Driver()
+    decomposition, _ = dec.run_decompose(ctx, examples["outcome"], "Split the importer.", examples["decomposition"])
+    assert decomposition["coverage"] and len(feedback) == 2
+    assert feedback[1].startswith("Split the importer.") and "metric_coverage" in feedback[1]
+
 def test_driver_interrupts_sessions_still_in_flight(tmp_path, root):
     """A session the driver started and has not finished gets user.interrupt when the orchestrator is stopped."""
     from factory.sessions import SHORT_CALL_TIMEOUT, SessionDriver
