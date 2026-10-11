@@ -4,6 +4,51 @@ Open **Apps → Add an app** in Factory Console. Choose an accessible GitHub rep
 
 The App Onboarding managed agent reads pinned committed source, dependency declarations, existing CI/tests and setup recipes. It proposes a schema-valid plan and asks only unresolved questions. For a new app it proposes a minimal working scaffold. Discovery has no network access, no credentials, and cannot execute the application. An agent proposal is not evidence that the app works.
 
+## The path of an onboarding
+
+`AppOnboarding` (`orchestrator/factory/onboarding.py`) runs each step as a background job on the Console. Discovery is capped at $3 per session and verification at $4, both within the app's budget. Verify and publish refuse to start unless the caller names the current `plan_sha256`, so nobody acts on a plan they have not seen. Each node names the function that does the step.
+
+```mermaid
+flowchart TD
+  add(["Console: Apps → Add an app<br/>existing GitHub repository, or a description of a new app"]) --> create["AppOnboarding.create<br/>status connected; budget $10 by default, at most $60"]
+  create --> disc
+
+  subgraph D["Discover · start('discover') → _discover"]
+    disc["Clear the old plan and verification; keep them as previous_attempt.<br/>source(): tarball of a pinned commit from GitHub<br/>(a new app gets a README stub)"] --> dsess["app_onboarding session in the shared discovery environment:<br/>no network, no vaults, nothing executed.<br/>Uploads the source and onboarding-request.json<br/>(answers, feedback, previous_attempt)"]
+    dsess --> vplan["validate_plan: schema, onboarding recipe paths only,<br/>recipe path = the manifest's test_environment.profile<br/>→ plan + plan_sha256"]
+  end
+  vplan --> q{"Required questions unanswered?"}
+  q -- "yes: needs_input" --> ans["Owner answers or leaves feedback<br/>(plan_sha256 cleared)"]
+  ans --> disc
+  q -- "no: setup_ready" --> review["Owner reviews the plan"]
+  review --> creds["credential(): one Anthropic vault per secret<br/>the recipe declares, scoped to its allowed hosts"]
+  creds --> ver
+
+  subgraph V["Verify · start('verify', plan_sha256) → _verify → test_environments.run_hosted"]
+    ver["Guards: plan_sha256 current, required questions answered,<br/>required credentials connected"] --> cand["_candidate: source + the plan's proposed files,<br/>committed in a fresh git snapshot"]
+    cand --> env["ensure_environment: reuse the workspace environment<br/>with the same recipe fingerprint, or create one"]
+    env --> hsess["Fresh hosted session with the vaults attached;<br/>uploads the source archive, the request<br/>and the sandbox_tools/environment_runner.py harness"]
+    hsess --> harness["Harness: prepare → start → health checks → seed<br/>→ verify (browser journeys or functional checks) → stop.<br/>On failure the session writes diagnosis.json"]
+    harness --> bindchk{"Controller: bound to head, profile and source hashes?<br/>Every phase passed? Required evidence present?"}
+  end
+  bindchk -- "no" --> fail["status failed: phases, service readiness,<br/>check rows and diagnosis shown"]
+  fail -- "Improve or repair the setup" --> disc
+  bindchk -- "yes" --> ready["status ready, or ready_limited when the plan states<br/>limitations or unavailable capabilities.<br/>AppEnvironments.settle labels the environment verified<br/>and archives the app's other environments"]
+  ready --> pub
+
+  subgraph P["Publish · start('publish', plan_sha256) → _publish"]
+    pub{"Verification still matches<br/>the current plan and source?"} --> files{"Plan proposes files?"}
+    files -- "no: an existing recipe is reused" --> nopr(["ready; nothing to publish"])
+    files -- "yes" --> branch["Existing app: branch factory/onboarding-&lt;id&gt; from the pinned commit.<br/>New app: create the private repository first, branch from its default branch"]
+    branch --> draft["Commit the files and open a draft setup PR<br/>(fingerprints, session, journeys, limitations)"]
+  end
+  draft --> poll["refresh_setup_pr re-reads the PR state<br/>every few minutes while it is open"]
+  poll --> merged(["Owner merges the setup PR"])
+
+  merged --> later(["Later change runs on the repository:<br/>binding_for → run_settings checks the verified recipe is on the base branch,<br/>then forces managed mode with its vaults<br/>→ HostedVerifier in Stage 3"])
+  nopr --> later
+```
+
 ## The reviewed contract
 
 `onboarding_plan.schema.json` describes journeys, planned capabilities, questions, proposed files and limitations. Existing-app changes are confined to onboarding recipe paths; application, CI and security-policy changes require separate work. A recipe can be reused without a new commit or PR. Its path must match the service manifest's `test_environment.profile`, or `test_environment.json` when there is no pointer; a disconnected recipe is rejected before cloud verification. Answering questions invalidates the reviewed plan fingerprint and requires another discovery pass.
