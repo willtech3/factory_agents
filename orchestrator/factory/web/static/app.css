@@ -439,6 +439,13 @@ pre.log { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; 
 .decide .recorded { animation: pop 160ms ease-out; }
 @media (prefers-reduced-motion: reduce) { .decide .recorded { animation: none; } }
 
+.visual-check { min-width: 0; }
+.visual-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.visual-heading h3 { margin:0; }
+.visual-demo { display:block; width:100%; max-height:480px; object-fit:contain; background:#101820; border-radius:10px; margin:12px 0; }
+.visual-label { font-weight:700; margin-bottom:4px; }
+.visual-check summary { cursor:pointer; font-weight:600; margin-top:12px; }
+.visual-check li { margin:8px 0; }
 .repo-choice { display: grid; cursor: default; min-width: 0; }
 .repo-choice > label { font-weight: 700; cursor: pointer; }
 .repo-choice select, .repo-choice input { max-width: 100%; }
@@ -447,3 +454,5 @@ pre.log { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; 
 .repo-choice > .stack > label { display: grid; gap: 6px; font-size: 13px; color: var(--text-2); }
 .repo-choice input:not([type=radio]), .repo-choice select { width: 100%; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; box-sizing: border-box; }
 .repo-choice input[hidden] { display: none; }
+
+@media (max-width: 600px) { .visual-evidence-card .card-head { flex-direction: column; align-items: flex-start; gap: 6px; } }

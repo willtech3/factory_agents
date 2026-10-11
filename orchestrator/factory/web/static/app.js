@@ -419,6 +419,10 @@
 
     frag.append(card(null, lineStrip(r), null, "soft"));
 
+    for (const check of r.browser_checks_pending || []) frag.append(card("Browser check in progress",
+      el("div", null, el("p", null, check.description), el("p", { class: "explain" }, `${check.persona} · ${check.environment.name} · waiting for browser observations and screenshots`))));
+    if ((r.visual_evidence || []).length) frag.append(visualEvidenceCard(r));
+
     // roster
     const roster = el("div", { class: "roster" });
     for (const m of r.crew || []) {
@@ -526,6 +530,40 @@
     if (!(TERMINAL[r.stage] || r.stage === "completed") || r.stage === "paused_budget") startPoll(refreshWhenChanged("run", async () => runKey(await api(`/api/runs/${runId}`)), () => viewRun(runId)), 4000);
     else stopPoll();
   }
+  function visualEvidenceCard(r) {
+    const body = el("div", { class: "stack" });
+    const url = artifact => `/api/artifacts/${encodeURIComponent(r.run_id)}/${artifact.split("/").map(encodeURIComponent).join("/")}`;
+    for (const evidence of r.visual_evidence) {
+      const box = el("section", { class: "visual-check" });
+      box.append(el("div", { class: "visual-heading" }, el("h3", null, evidence.description || "Browser check"),
+        el("span", { class: `tag ${evidence.current && evidence.status === "passed" ? "live" : "warn"}` }, evidence.current ? words(evidence.status) : "Earlier commit")));
+      box.append(el("p", null, evidence.summary));
+      box.append(el("p", { class: "explain" }, `${evidence.persona || "Browser user"} · ${(evidence.head_sha || "").slice(0, 10)} · ${evidence.viewport ? `${evidence.viewport.width} × ${evidence.viewport.height}` : "viewport unavailable"}`));
+      const media = (evidence.media || []).filter(m => m.artifact);
+      const demo = media.find(m => m.role === "demo"), still = media.find(m => m.role === "screenshot");
+      if (demo && demo.mime_type.startsWith("video/")) {
+        box.append(el("p", { class: "visual-label" }, "Watch the enhancement"), el("video", {
+          controls: true, preload: "metadata", playsinline: true, class: "visual-demo", src: url(demo.artifact),
+          ...(still ? { poster: url(still.artifact) } : {}), "aria-label": `Demonstration: ${evidence.description || "enhancement"}`
+        }));
+      } else if (demo) {
+        // GIFs stay collapsed until requested; no autoplaying motion on the run page.
+        box.append(el("details", null, el("summary", null, "Watch the demonstration (GIF)"),
+          el("img", { class: "visual-demo", loading: "lazy", src: url(demo.artifact), alt: demo.caption || "Recorded browser demonstration" })));
+      } else if (still) {
+        box.append(el("img", { class: "visual-demo", loading: "lazy", src: url(still.artifact), alt: still.caption || evidence.description }),
+          el("p", { class: "explain" }, evidence.demo_note || "Recording unavailable; screenshot evidence is shown."));
+      }
+      const details = el("details", null, el("summary", null, "Coverage and test environment"));
+      if (evidence.environment) details.append(el("p", { class: "explain" }, `${evidence.environment.name} · ${words(evidence.environment.data)} · ${words(evidence.environment.authentication)}`));
+      const steps = el("ol");
+      for (const step of evidence.steps_observed || []) steps.append(el("li", null, `${words(step.status)}: ${step.step} — ${step.observation}`));
+      details.append(steps);
+      for (const m of media) details.append(el("p", null, el("a", { href: url(m.artifact), target: "_blank", rel: "noopener" }, m.caption || m.name)));
+      box.append(details); body.append(box);
+    }
+    return card("See the change", body, "Browser evidence is separate from code tests. Earlier recordings do not verify a new commit.", "visual-evidence-card");
+  }
   function tunePair(k, v) { return el("div", null, el("dt", null, k), el("dd", null, String(v))); }
   function crewAsleepText(role, r) {
     const past = STAGES.findIndex(s => s[0] === r.stage);
@@ -539,7 +577,7 @@
   function runKey(r) {
     const hb = r.watch && r.watch.heartbeat;
     return JSON.stringify([r.updated_at, r.stage, r.gates.map(g => [g.gate_id, !!g.recorded]), r.questions.map(q => q.question_id),
-      hb ? [hb.alive, hb.last_poll_at] : null, (r.crew || []).map(c => c.state), r.resuming || null]);
+      hb ? [hb.alive, hb.last_poll_at] : null, (r.browser_checks_pending || []).map(c => c.id), (r.crew || []).map(c => c.state), r.resuming || null]);
   }
   function storyEntries(r) {
     const out = [];

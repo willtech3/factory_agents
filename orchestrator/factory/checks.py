@@ -328,6 +328,13 @@ def e2e_coverage(spec: dict[str, Any]) -> CheckResult:
         problems.append(f"user_visible criteria with no e2e entry: {missing}")
     if dangling:
         problems.append(f"e2e entries cover unknown criteria: {dangling}")
+    visual_covered = {ac for e in entries if e.get("visual") and e.get("target") == "preview" for ac in e.get("covers_ac", [])}
+    has_ui = any(i.get("kind") == "ui" for i in spec.get("interfaces", []))
+    missing_visual = sorted(ac["ac_id"] for ac in spec["acceptance_criteria"]
+                            if (ac.get("surface") == "ui" or (has_ui and ac.get("user_visible") and not ac.get("surface")))
+                            and ac["ac_id"] not in visual_covered)
+    if missing_visual:
+        problems.append(f"UI criteria without visual browser coverage: {missing_visual}")
     return CheckResult("e2e_coverage", not problems,
                        "every user_visible criterion has an e2e entry" if not problems else "; ".join(problems),
                        {"missing": missing, "dangling": dangling})
@@ -336,11 +343,26 @@ def e2e_coverage(spec: dict[str, Any]) -> CheckResult:
 def e2e_passed(results: list[dict[str, Any]], target: str = "preview") -> CheckResult:
     """Every e2e entry for `target` exited 0 when the orchestrator ran it against the environment URL."""
     relevant = [r for r in results if r.get("target", target) == target]
-    failed = [r["command"] for r in relevant if r.get("exit_code", 1) != 0]
+    failed = [r["command"] for r in relevant if r.get("exit_code", 1) != 0 or (r.get("visual") and r["visual"].get("status") != "passed")]
     skipped = [r["command"] for r in relevant if r.get("exit_code") is None]
     detail = (f"all {len(relevant)} e2e entries exit 0 on {target}" if not failed and not skipped
               else f"failed on {target}: {failed}" + (f"; not run: {skipped}" if skipped else ""))
     return CheckResult(f"e2e_{target}", not failed and not skipped, detail, {"failed": failed, "skipped": skipped})
+
+
+def visual_passed(spec: dict[str, Any], results: list[dict[str, Any]]) -> CheckResult:
+    missing = []
+    for entry in spec.get("test_plan", {}).get("e2e", []):
+        if not entry.get("visual"):
+            continue
+        matching = [r for r in results if r.get("command") == entry["command"] and r.get("target") == entry["target"]
+                    and set(r.get("covers_ac", [])) == set(entry.get("covers_ac", []))
+                    and all(r.get("visual", {}).get(k) == entry["visual"].get(k)
+                            for k in ("persona", "viewport", "steps", "environment"))]
+        if not matching or not all(r.get("exit_code") == 0 and r.get("visual", {}).get("status") == "passed" for r in matching):
+            missing.append(entry.get("description") or entry["command"])
+    return CheckResult("visual_e2e", not missing, "All required browser checks have current visual evidence" if not missing
+                       else "Browser verification missing or blocked: " + "; ".join(missing))
 
 
 def run_all_for_merge(
@@ -365,6 +387,7 @@ def run_all_for_merge(
         ac_test_mapping(spec, implementation_report, passing_tests, tests_that_exist),
         commands_passed(command_results),
         e2e_coverage(spec),
+        visual_passed(spec, e2e_results or []),
         secret_scan(added_lines_by_file),
     ]
     if manifest_path is not None and schema_dir is not None:

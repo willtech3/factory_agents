@@ -59,3 +59,38 @@ Nothing in the factory creates a service account, edits a firewall rule, changes
 4. **Approvals bind to what was shown.** Gate decisions bind to artifact hashes (ADR-0005). A deploy triggered by an agent after approval would be a second action the human never saw. Observing the platform's own pipeline for the merged sha keeps the approved artifact and the deployed artifact the same thing.
 
 The trade-off is accepted in [ADR-0006](adr/0006-observed-deployment-not-agent-driven.md): the factory cannot fix a broken deploy itself and depends on the platform's pipeline being reliable. When it is not, a human sees a `DEPLOY_FAILURE` gate with the log, which is the right person seeing the right thing.
+
+
+## Visual browser verification
+
+UI criteria (`surface: ui`, or user-visible criteria in a spec with a UI interface) require a preview e2e entry with a `visual` contract: persona, viewport, ordered steps, and environment name/data/authentication. Existing service checks continue to work. The app may run locally in a per-run checkout or in a platform preview of the exact head. Credentials and service setup belong to the host environment; the spec contains required environment variable names only. Use synthetic data or an isolated test tenant. Health HTTP 200 alone does not prove dependent services, authentication, or the UI.
+
+A repository-approved browser adapter runs as the e2e command. The controller provides `FACTORY_VISUAL_REQUEST` and `FACTORY_EVIDENCE_DIR`; the former JSON contains id, exact head_sha, base_url, repository_path, covers_ac, persona, viewport, steps, and environment. Never substitute a deployed main URL for the branch under test. The adapter must inspect the live browser visually and follow the repository's permitted tool policy. For example, Evergreen requires Claude in Chrome, so do not silently substitute Playwright.
+
+For an attached browser worker, use command `factory:browser`. The controller publishes `runs/<run>/verify/visual/<id>/request.json`, keeps its local preview alive, and waits up to the e2e deadline (default 900 seconds). Pending requests are visible in the Console run API (`browser_checks_pending`) and page. A worker reads the request, performs the steps in the actual browser, and atomically writes `result.json` in that directory. This handoff does not launch another paid agent or change any browser permissions. A missing worker times out as blocked. A `closed` marker or expired request means do not submit more evidence. Autonomous deployments must supply a browser adapter/worker; Managed Agents' built-in browser tool is not currently available, so cloud compute alone does not satisfy this dependency.
+
+The supported worker today is an **attached Claude Code session with Claude in Chrome connected** (`orchestrator/factory/browser_worker.py`). From that session: `factory browser list` shows open requests, `factory browser claim <id>` claims one exactly once and prints a brief with a report draft, the session drives Chrome and saves a screenshot per step (`save_to_disk`), and `factory browser submit <id> --draft <file>` publishes media and then `result.json` atomically. `submit` runs the controller's own `visual.collect` on a staging copy first, and refuses: an overall status the steps do not support, a passed step without its own screenshot or at a measured viewport other than the requested one, media older than the claim, a checkout that is not exactly the requested commit (moved HEAD, uncommitted or untracked source; ignored build output is fine), a non-loopback app, and a closed or expired request. `factory browser block <id> --reason ...` reports a check that could not run, so the controller stops waiting. `resize_window` sets the window's outer size, so the worker measures the outer-minus-inner difference and re-measures until the page viewport is exact. In a visible window this reached 1024×700. A narrow 412×915 responsive viewport was also reached, but Chrome's minimum window width kept this setup at 406 px or wider, so 390 px checks are reported `blocked`. There is no device emulation, so a narrow viewport is not a phone (no touch, no mobile user agent). Unattended workers are not available: Chrome integration needs a claude.ai login in the standalone CLI, and `factory browser doctor` reports whether one exists. GIF export goes through Chrome's downloads, so a profile set to ask where to save shows a native Save dialog that a person must confirm. See [claude-browser-worker-handoff.md](claude-browser-worker-handoff.md).
+
+The result format is:
+
+```json
+{
+  "request_id": "copy the controller request id",
+  "head_sha": "copy the tested commit from the request",
+  "status": "passed",
+  "runner": "Claude in Chrome",
+  "summary": "Observed behavior, including any coverage limitations",
+  "steps": [{"status": "passed", "observation": "What was actually visible for the corresponding requested step"}],
+  "media": [
+    {"file": "result.png", "role": "screenshot", "caption": "The selected model is visible"},
+    {"file": "enhancement.mp4", "role": "demo", "caption": "A short recording of the enhancement"}
+  ],
+  "demo_note": "Explain when a recording was unavailable"
+}
+```
+
+Every planned step needs an observation and status (`passed`, `failed`, `blocked`). A pass needs a successful command, all steps passed, and at least one screenshot. Video is optional; preserve a short successful demo, not only failure recordings. PNG/JPEG/WebP screenshots and MP4/WebM/GIF demonstrations are supported. Use captions and step observations as the text equivalent. Do not record real personal conversations or keys. Files are bounded to 30 MiB each, 64 MiB per check, 12 files; filenames are basenames, symlinks are rejected. Media fingerprints and controller-owned request identity are stored immutably. This validates provenance and coverage, not the semantic truth of a worker's claims: an independent visual reviewer still assesses the images and experience.
+
+The Crew run page puts **See the change** above the roster, with native video controls and no autoplay. Expand coverage/environment details for the full steps. Older-commit recordings are labeled and never satisfy a new verification. The artifact endpoint serves binary media with MIME validation and range support. The existing Console is a local, unauthenticated tool; media stays in its local run store. Do not expose this server publicly.
+
+Evergreen is the first intended integration: choose its repository, refresh the curated frontier model catalog using current provider evidence, and demonstrate opening the picker, selecting an eligible new model, sending a synthetic prompt, observing streaming, and reopening the saved test conversation. Run mobile/keyboard and error/BYOK paths as separate checks. Its IAP/Convex identity and isolation must be tested in an appropriate test environment; a localhost auth shortcut cannot count as production-auth coverage.

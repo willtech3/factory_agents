@@ -11,6 +11,7 @@
     factory resume <run_id> --budget 80 # ... raising the run budget (or --outcome file.json to read it from there)
     factory watch <run_id> [--once]     # Gate 3 and Stage 5: follow the run's pull requests to the merge and the dev deploy
     factory web [--port 8765] [--demo]  # the Factory Console: outcomes, runs board, inbox, gate review
+    factory browser list|claim|submit|block|doctor|smoke   # attach a Claude in Chrome session to browser checks
 
 Local mode uses a file-backed queue under the runs directory so two processes can talk. With
 `FACTORY_GATE_SURFACE=tracker` the same gate is also opened on the tracker (Linear) and a decision
@@ -31,6 +32,9 @@ app = typer.Typer(no_args_is_help=True, add_completion=False)
 
 
 from .surfaces.filequeue import FileQueue  # noqa: E402  (the `file`/`web` gate surface)
+from .browser_worker import cli as browser_cli  # noqa: E402
+
+app.add_typer(browser_cli, name="browser")
 
 
 def _bind_forge(cfg, outcome: dict, want_forge: bool):
