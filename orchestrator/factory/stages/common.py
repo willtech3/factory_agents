@@ -325,7 +325,7 @@ def gate_decision(ctx: RunContext, gate_id: str, kind: GateKind, work_item_id: s
     d = ctx.queue.decision(gate_id)
     if d is not None:
         ctx.event("gate.decided", {"gate_id": gate_id, "kind": kind.value, "decision": d.decision.value,
-                                   "comments": d.comments, "approved_subset": list(d.approved_subset),
+                                   "comments": d.comments, "approved_subset": list(d.approved_subset), "decided_by": d.decided_by,
                                    "artifact_shas": list(d.artifact_shas)}, stage=kind.value, actor="human",
                   work_item_id=work_item_id)
     return d

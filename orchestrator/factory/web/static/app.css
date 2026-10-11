@@ -646,4 +646,5 @@ summary.explain { cursor: pointer; }
 @keyframes belt { from { background-position: 0 0; } to { background-position: -48px 0; } }
 @keyframes pop { from { transform: translateY(2px); opacity: 0; } to { transform: none; opacity: 1; } }
 .decide .recorded { animation: pop var(--t-base) ease-out; }
+html[data-motion="off"] .crew, html[data-motion="off"] .crew *, html[data-motion="off"] .human, html[data-motion="off"] .line .belt { animation: none !important; }
 @media (prefers-reduced-motion: reduce) { .crew, .crew *, .human, .line .belt, .decide .recorded { animation: none !important; } }

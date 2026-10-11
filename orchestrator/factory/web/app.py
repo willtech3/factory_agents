@@ -635,7 +635,7 @@ class Console:
             for q in questions.values():
                 if q["run_id"] == run_id and q["question_id"] in st.open_questions and not q["answered"]:
                     row = "eng" if q.get("asked_by") in ("implementer", "reviewer", "security_reviewer", "merge_judge") else "po"
-                    cards.append({"column": column, "row": row, "kind": "question", "question_id": q["question_id"], "title": q["question"][:140], "since": q.get("asked_at"), "blocking": q.get("blocking")})
+                    cards.append({"column": column, "row": row, "kind": "question", "question_id": q["question_id"], "title": q["question"], "since": q.get("asked_at"), "blocking": q.get("blocking")})
             for wi in st.work_items.values():
                 if wi.stage.value == "cr_open":
                     cr = next((ev.payload for ev in events if ev.kind == "cr.opened" and ev.work_item_id == wi.work_item_id), {})
