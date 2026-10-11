@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import visual
-from .. import checks, security
+from .. import checks, security, size
 from ..hosted_verifier import ENVIRONMENT_CHECK, HostedVerifier, preview_record
 from ..budget import reserve_budget
 from ..checks import CheckResult
@@ -525,6 +525,12 @@ class LocalVerifier:
         return results
 
 
+def measure_size(repo: Path, base_sha: str, head_sha: str, spec: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Hand-written and generated changed lines between two commits (`size.measure_repo`), reading only git: the
+    numstat and git's own linguist-generated attributes at the head. `spec` adds the files it declares regenerated."""
+    return size.measure_repo(repo, base_sha, head_sha, (spec or {}).get("regenerated") or [])[1]
+
+
 def _diff_lines(unified: str) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     """Added lines per new path and removed lines per old path from `git diff --unified=0`. The ---/+++ headers are read
     only before a file's first hunk, so a content line that itself starts with -- or ++ is never taken for a header. Every
@@ -930,6 +936,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             added_lines_by_file=diff["added_lines"], implementation_report=report, passing_tests=passing_tests,
             tests_that_exist=tests_known, command_results=cmd_results, manifest_path=manifest_path,
             schema_dir=ctx.cfg.schemas_dir, e2e_results=e2e_results, require_test_evidence=managed,
+            size=measure_size(repo, base_sha, head_sha, spec), size_budget_lines=ctx.policy.size_budget_lines,
             # the approved spec's exact test paths may be extended (never reduced); every other existing test stays protected
             named_test_files=checks.named_test_paths(spec["allowed_paths"]), removed_lines_by_file=diff.get("removed_lines"),
         )

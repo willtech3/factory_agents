@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from .. import pr_description, run_record, visual
+from .. import pr_description, run_record, size, visual
 from ..budget import reserve_budget
 from ..forge import Forge
 from ..sessions import SessionContext
@@ -105,6 +105,7 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
     # No integration commit: the PR must contain the exact candidate the judge reviewed.
     head_sha = judged_sha
     stats: dict[str, Any] | None = None
+    measured: dict[str, Any] | None = None
     beyond: dict[str, Any] | None = None
     default_branch = _normal_default_branch(ctx, base_branch)
     if verifier is not None:
@@ -116,10 +117,16 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
             if _git(base, "rev-parse", "HEAD").strip() != ctx.evaluation_target[1]:
                 raise RuntimeError("evaluation comparison branch moved after review")
             repo = verifier.checkout(branch)
-        stats = _numstat_since(verifier, base_branch, judged_sha, base_sha=verdict.get("_base_sha"), repo=repo)
+        base_sha = verdict.get("_base_sha") or _merge_base(repo, base_branch, judged_sha)
+        if base_sha:
+            stats, measured = size.measure_repo(repo, base_sha, judged_sha, spec.get("regenerated") or [])
         if ctx.evaluation_target and stats is not None:
             beyond = _numstat_beyond(verifier, default_branch, judged_sha, [f["path"] for f in stats["files"]])
             verifier.checkout(branch)
+    budget = getattr(ctx.policy, "size_budget_lines", None) or size.DEFAULT_BUDGET
+    estimate = size.estimate_of(spec)
+    sized = {"diff": stats, "measured": measured, "estimate": estimate, "budget": dict(budget),
+             "flag": size.flag(measured, estimate, budget), "line": size.line(measured, estimate, budget)}
     ctx.store.put_artifact(ctx.run_id, "integrate", f"{sid}-approved-merge_readiness.json",
                            json.dumps(verdict, indent=2).encode())
 
@@ -128,12 +135,13 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
                 if e.get("spec_id") == sid]
     record = run_record.build(run_id=ctx.run_id, spec=spec, verdict=verdict, findings=findings, response=response,
                               test_results=test_results if isinstance(test_results, dict) else {}, run_summary=run_summary,
-                              visual_evidence=evidence, diff_stats=stats, base_branch=base_branch, artifact_links=links)
+                              visual_evidence=evidence, size=sized, base_branch=base_branch, artifact_links=links)
     run_record.store(ctx, record)
 
     record_url = pr_description.run_record_url(ctx.cfg.artifact_base_url, ctx.run_id, sid)
     facts = pr_description.facts(spec=spec, verdict=verdict, test_results=test_results if isinstance(test_results, dict) else {},
-                                 preview_mode=ctx.cfg.preview_mode, head_sha=judged_sha, diff_stats=stats, record_url=record_url)
+                                 preview_mode=ctx.cfg.preview_mode, head_sha=judged_sha, diff_stats=stats, record_url=record_url,
+                                 size_line=sized["line"])
     draft = pr_description.render(facts, ctx.cfg.templates_dir / "cr_template.md")
     banner = evaluation_banner(ctx.evaluation_target[1], default_branch, beyond) if ctx.evaluation_target else ""
     allowed_words = [str(spec.get("title") or ""), str(spec.get("goal") or "")]
@@ -193,18 +201,11 @@ def _ref(repo: Path, branch: str) -> str | None:
                                    check=False).returncode == 0), None)
 
 
-def _numstat_since(verifier: Any, branch: str, head_sha: str, *, base_sha: str | None = None,
-                   repo: Path | None = None) -> dict[str, Any] | None:
-    """Lines the head adds beyond `branch` (from their merge base, as the forge shows a change request), or from
-    `base_sha` when the judge recorded it; None when git cannot say."""
+def _merge_base(repo: Path, branch: str, head_sha: str) -> str | None:
+    """Where `head_sha` left `branch` (as the forge shows a change request); None when git cannot say."""
     try:
-        repo = repo or verifier.checkout(branch)
-        if not base_sha:
-            ref = _ref(repo, branch)
-            if ref is None:
-                return None
-            base_sha = _git(repo, "merge-base", ref, head_sha).strip()
-        return pr_description.diff_stats(_git(repo, "diff", "--numstat", f"{base_sha}..{head_sha}"))
+        ref = _ref(repo, branch)
+        return _git(repo, "merge-base", ref, head_sha).strip() if ref else None
     except (subprocess.CalledProcessError, OSError):
         return None
 

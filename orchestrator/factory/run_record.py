@@ -23,7 +23,7 @@ def name(spec_id: str) -> str:
 
 def build(*, run_id: str, spec: dict[str, Any], verdict: dict[str, Any], findings: dict[str, Any] | None,
           response: dict[str, Any] | None, test_results: dict[str, Any] | None, run_summary: dict[str, Any] | None,
-          visual_evidence: list[dict[str, Any]], diff_stats: dict[str, Any] | None, base_branch: str,
+          visual_evidence: list[dict[str, Any]], size: dict[str, Any] | None, base_branch: str,
           artifact_links: dict[str, str] | None = None) -> dict[str, Any]:
     findings, response, test_results, run_summary = findings or {}, response or {}, test_results or {}, run_summary or {}
     summary = verdict.get("pr_summary") if isinstance(verdict.get("pr_summary"), dict) else {}
@@ -39,7 +39,7 @@ def build(*, run_id: str, spec: dict[str, Any], verdict: dict[str, Any], finding
         "media": media(visual_evidence, head),
         "residual_risks": list(verdict.get("residual_risks") or []),
         "judge_summary": verdict.get("summary_for_human"),
-        "size": diff_stats,
+        "size": size,
         "provenance": provenance(run_summary),
         "artifact_links": artifact_links or {},
         "pull_request": None,

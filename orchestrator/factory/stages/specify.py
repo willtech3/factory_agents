@@ -31,7 +31,7 @@ from ..budget import reserve_budget
 from ..gates import Decision, GateKind
 from ..state import RunStage, WorkItemStage
 from . import RunContext
-from .common import hosted_planning_clause, make_ask_human, open_gate_and_wait, persist_outputs, platform_skill, public, require_json, rubric_text, run_session, stamp_provenance
+from .common import hosted_planning_clause, make_ask_human, size_clause, open_gate_and_wait, persist_outputs, platform_skill, public, require_json, rubric_text, run_session, stamp_provenance
 
 WRITER_DESCRIPTION = """Write the specification for work item {work_item_id} ({title}).
 Inputs are under /mnt/session/uploads/ (outcome.json, decomposition.json, work_item.json, sibling_specs/,
@@ -78,7 +78,7 @@ def _write_one(ctx: RunContext, outcome, decomposition, work_item, sibling_specs
         ctx, prefix=f"{wid}-r{round_no}-",
         agent_key="spec_writer", title=f"{ctx.run_id} spec {wid} r{round_no}", run_id=ctx.run_id, stage="specify",
         uploads={**uploads, **skill_uploads},
-        description=WRITER_DESCRIPTION.format(work_item_id=wid, title=work_item["title"], repo_clause=repo_clause, skill_clause=skill_clause) + hosted_planning_clause(ctx),
+        description=WRITER_DESCRIPTION.format(work_item_id=wid, title=work_item["title"], repo_clause=repo_clause, skill_clause=skill_clause) + size_clause(ctx) + hosted_planning_clause(ctx),
         rubric_md=rubric_text(ctx, "spec", repo_available), max_iterations=ctx.policy.outcome_max_iterations,
         budget_usd=ctx.policy.stage_budget_usd["specify"], work_item_id=wid,
         custom_tools={"ask_human": make_ask_human(ctx, "spec_writer")}, repository=mount,
@@ -125,7 +125,7 @@ def _judge(ctx: RunContext, outcome, decomposition, specs: dict[str, dict], roun
         agent_key="spec_judge", title=f"{ctx.run_id} spec-judge r{round_no}", run_id=ctx.run_id, stage="judge",
         uploads={**uploads, **skill_uploads},
         description=JUDGE_DESCRIPTION.format(round=round_no, repo_clause=JUDGE_REPO_MOUNTED if repo_available else JUDGE_REPO_ABSENT,
-                                             owner_clause=OWNER_CLAUSE if owner_comments else "", skill_clause=skill_clause) + hosted_planning_clause(ctx),
+                                             owner_clause=OWNER_CLAUSE if owner_comments else "", skill_clause=skill_clause) + size_clause(ctx) + hosted_planning_clause(ctx),
         rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["judge"], repository=mount,
     )
     verdict = require_json(res, "verdict.json")
@@ -178,7 +178,8 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
                               work_item_id=w, stage="specify")
         # Deterministic pre-checks: schema and traceability, cheap and before the judge spends tokens.
         det = {sid: [checks.schema_valid(public(s), ctx.cfg.schemas_dir / "spec.schema.json", ctx.cfg.schemas_dir),
-                     checks.spec_traceability(s, decomposition)] for sid, s in specs.items()}
+                     checks.spec_traceability(s, decomposition),
+                     checks.spec_size_estimate(s, ctx.policy.size_budget_lines)] for sid, s in specs.items()}
         owner_notes = "\n\n".join(f"## {w}\n{c}" for w, c in (human_comments_by_item or {}).items()) or None
         verdict = _judge(ctx, outcome, decomposition, specs, round_no, verdict, owner_notes)
         # Merge deterministic failures into the verdict as blocking issues so the writer sees them.

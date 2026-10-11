@@ -102,7 +102,8 @@ def run_record_url(base_url: str, run_id: str, spec_id: str) -> str:
 
 
 def facts(*, spec: dict[str, Any], verdict: dict[str, Any], test_results: dict[str, Any] | None, preview_mode: str,
-          head_sha: str, diff_stats: dict[str, Any] | None, record_url: str, media_markdown: str = "") -> dict[str, Any]:
+          head_sha: str, diff_stats: dict[str, Any] | None, record_url: str, media_markdown: str = "",
+          size_line: str | None = None) -> dict[str, Any]:
     """Everything the template needs, already worded. The merge judge's `pr_summary` supplies the narrative (what
     changed, what the tests cover, the decisions, where to start reading); everything countable comes from the
     orchestrator's own records, never from an agent's prose."""
@@ -130,13 +131,14 @@ def facts(*, spec: dict[str, Any], verdict: dict[str, Any], test_results: dict[s
                           head_sha, str(summary.get("how_tested") or "").strip()),
         "commands": commands,
         "has_commands": bool(commands),
-        "size_line": size_line(diff_stats),
+        "size_line": size_line or plain_size_line(diff_stats),
         "read_first": read_first,
         "run_record_url": record_url,
     }
 
 
-def size_line(diff_stats: dict[str, Any] | None) -> str:
+def plain_size_line(diff_stats: dict[str, Any] | None) -> str:
+    """Changed lines without the hand-written/generated split, for a caller with no size measurement (`size.line`)."""
     if not diff_stats:
         return "Not measured for this change; the run record has the diff."
     files = len(diff_stats.get("files", []))
@@ -261,4 +263,4 @@ def _prose(text: str) -> str:
     return re.sub(r"https?://\S+", "", text)
 
 
-__all__ = ["MAX_LINES", "diff_stats", "facts", "lint", "render", "render_template", "run_record_url", "size_line", "title_problems"]
+__all__ = ["MAX_LINES", "diff_stats", "facts", "lint", "plain_size_line", "render", "render_template", "run_record_url", "title_problems"]
