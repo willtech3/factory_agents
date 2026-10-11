@@ -39,7 +39,7 @@ A **run** takes one business outcome and ends with one or more change requests (
                                                                 ▣ DEPLOY_FAILURE gate (log excerpt; back to implementing | close)
 ```
 
-## The five design commitments
+## The six design commitments
 
 1. **Humans decide at three points, and the third is real code review.** Gate 1 approves the shape of the work; Gate 2 approves the contracts; Gate 3 is an ordinary change request (pull request or merge request) that an engineer reads. The team that popularised "review the plan, not the code" ran a lights-off factory for five months and reinstated code review ([practitioners.md §1c](research/practitioners.md)); the upstream gates exist to make Gate 3 cheap, not to remove it.
 2. **Judges are separate from authors, in separate sessions.** The spec judge never sees the spec writer's reasoning; the reviewer never sees the implementer's; the merge judge sees both artifacts but neither transcript. Self-grading skews positive regardless of model capability ([academic-2026.md §1](research/academic-2026.md)).
@@ -50,16 +50,6 @@ A **run** takes one business outcome and ends with one or more change requests (
 
 ## What is in this repository
 
-| Path | What | Status |
-|---|---|---|
-| `docs/` | this design: pipeline, agents, human gates and UX, platform mapping, evaluation, principles, roadmap, ADRs | complete draft |
-| `schemas/` | JSON Schema for every artifact, plus a placeholder service-manifest schema the platform team replaces | complete; validated by tests |
-| `agents/` | Managed Agents definitions in `ant apply` format | complete draft; not yet applied to a workspace |
-| `rubrics/` | per-criterion rubrics with 0 to 3 anchors, including deployability and end-to-end coverage | complete draft |
-| `skills/` | `platform-contract`: a placeholder for the platform team's existing skill (headings only) | placeholder by design |
-| `orchestrator/` | Python outer loop: state machine, gates, checks, session driver, stages (including the observed dev deploy), the change-request watcher (`factory watch`), forge (GitHub, GitLab), gate surfaces (Linear tracker, artifact pages, Jira stub), the Factory Console (`factory web`), CLI | state machine, checks, gates, graders, deploy observation, watcher, forge shapes, tracker mapping, pages, run record, console API and run history tested (178 tests); session driver, forge clients, and tracker written against documented APIs but not yet run live |
-| `evals/` | four-level eval plan, dataset specs with sample rows, graders, runner | graders tested; runner's produce step is a stub until the live spike |
-| `templates/` | change-request template; GitHub Actions preview workflow recording Deployments | placeholder deploy step |
-| `examples/ledgerline/` | one complete schema-valid run on a fictional invoicing product | complete |
+The layout, which module does what, and what is live, stubbed or unused are kept in one place: [repo-map.md](repo-map.md).
 
-Start with [01-pipeline.md](01-pipeline.md) for the mechanics, [03-human-in-the-loop-ux.md](03-human-in-the-loop-ux.md) for what a person experiences, [05-platform-and-deployment.md](05-platform-and-deployment.md) for the platform boundary, [07-personal-e2e-setup.md](07-personal-e2e-setup.md) to run it with a personal GitHub repo and Linear workspace, [08-factory-console.md](08-factory-console.md) for the console, and [roadmap.md](roadmap.md) for what to build first.
+Start with [01-pipeline.md](01-pipeline.md) for the mechanics, [03-human-in-the-loop-ux.md](03-human-in-the-loop-ux.md) for what a person experiences, [05-platform-and-deployment.md](05-platform-and-deployment.md) for the platform boundary, [07-personal-e2e-setup.md](07-personal-e2e-setup.md) to run it with a personal GitHub repo and Linear workspace, [08-factory-console.md](08-factory-console.md) for the console, [09-app-onboarding.md](09-app-onboarding.md) for hosted verification, and [roadmap.md](roadmap.md) for what to build first.

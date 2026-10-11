@@ -1,70 +1,76 @@
 # factory_agents
 
-A design, and the beginnings of an implementation, for a **software factory**: a pipeline of Claude Managed Agents with humans in the loop that takes a business outcome and ends with reviewed change requests (GitHub pull requests by default, GitLab merge requests at work) and an observed deploy to dev.
+A **software factory** built on Claude Managed Agents, with people deciding at three gates. It takes a business outcome written in plain terms and ends with reviewed pull requests, then watches the platform deploy them to dev. A deterministic Python controller runs the pipeline. Agents work in separate sandboxed sessions and coordinate only through schema-validated files. Checks that no agent can override sit between every stage.
 
+```mermaid
+flowchart TD
+  outcome(["outcome.json"]) --> decompose[Decomposer]
+  decompose --> g1{{"Gate 1<br/>owner approves the work items"}}
+  g1 --> specify["Spec writers ⇄ spec judge"]
+  specify --> g2{{"Gate 2<br/>owner approves the specs"}}
+  g2 --> implement["Implementer ⇄ reviewers<br/>→ merge judge"]
+  implement --> integrate["Integrator opens the PR"]
+  integrate --> g3{{"Gate 3<br/>engineer reviews and merges"}}
+  g3 --> deploy["Observed deploy to dev<br/>+ end-to-end checks"]
 ```
-outcome ─► decompose ─► ▣ human ─► specify ⇄ judge ─► ▣ human ─► implement ⇄ adversarial review ─► merge judge ─► change request ─► ▣ human review + merge ─► observed deploy to dev + e2e
+
+Each box is its own agent session. Every arrow passes a JSON artifact through the controller, which validates it and runs deterministic checks before the next stage starts. Judges never share a session with the authors they grade. No agent deploys or touches infrastructure. [docs/00-overview.md](docs/00-overview.md) explains the reasoning.
+
+## Status (2026-10-10)
+
+- **It has run live.** Real runs went from an outcome to a pull request on personal GitHub repositories: [factory-sample-app#1](https://github.com/willtech3/factory-sample-app/pull/1) (merged) and [factory-switchboard#2](https://github.com/willtech3/factory-switchboard/pull/2). Hosted verification and app onboarding have also run against real apps. Findings from those runs are in the [post-mortem](docs/postmortems/2026-10-10-first-live-runs.md).
+- **Not yet proven live:** the dev-deploy stage (the personal setup has no dev environment), the Linear and GitLab integrations, and the security reviewer (wired in, but its agent definition is not on `main`). Jira and eval-driving are stubs.
+
+[docs/repo-map.md](docs/repo-map.md) has the full status table.
+
+## Repository layout
+
+| Path | What |
+|---|---|
+| [`orchestrator/`](orchestrator/) | **The running code.** The Python controller, the `factory` CLI, and the Factory Console (web UI) |
+| [`agents/`](agents/) | One Managed Agents definition per role, deployed with `ant apply` (IDs in `claude-lock.json`) |
+| [`environments/`](environments/) | The sandbox definition every agent session runs in |
+| [`schemas/`](schemas/) | JSON Schema for every artifact the stages hand each other |
+| [`rubrics/`](rubrics/) | The criteria the judges score against |
+| [`skills/platform-contract/`](skills/platform-contract/) | What the deployment platform provides and requires, uploaded to every agent |
+| [`templates/`](templates/) | The PR description template and the preview workflow seeded into new repositories |
+| [`examples/`](examples/) | Outcomes to start runs from (`sample-app`, `switchboard`) and test fixtures (`ledgerline`) |
+| [`evals/`](evals/) | The evaluation plan, datasets, graders, and a reference run |
+| [`docs/`](docs/) | Design, setup guides, decisions (ADRs), research, post-mortems |
+
+[docs/repo-map.md](docs/repo-map.md) covers which module does what, how the pieces connect, where each piece executes, and which code is live, stubbed, or unused.
+
+## Quick start
+
+```bash
+cd orchestrator
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/pytest -q -m "not network"      # no API key needed; drop -m to include the one package-install test
+.venv/bin/factory web                     # Factory Console at http://127.0.0.1:8765/
 ```
 
-Three human gates. Judges in separate sessions from authors. Every finding falsifiable and execution-grounded. Deterministic checks between every stage that no agent can override. Coordination through schema-validated artifacts, never chat. End-to-end checks against the branch's preview environment before merge and against dev after it; no agent deploys or touches infrastructure.
+To run real agents, put `ANTHROPIC_API_KEY` (and `ANTHROPIC_WORKSPACE_ID` if your key is not scoped to a workspace) in `.env` at the repository root. Then start a **design run** from the Console's Outcomes page. A design run goes through Gate 2 with no repository. You can also start one from a terminal:
 
-## Read this first
+```bash
+.venv/bin/factory doctor                                            # what is configured and what is missing
+.venv/bin/factory run ../examples/sample-app/outcome.json --design-only
+```
+
+A full run that opens pull requests also needs a GitHub token and a target repository. Follow [docs/07-personal-e2e-setup.md](docs/07-personal-e2e-setup.md). To change the agents, edit `agents/*.md` and run `ant apply`, as described in [agents/README.md](agents/README.md).
+
+## Docs
 
 | If you want... | Read |
 |---|---|
-| The whole shape in one page | [docs/00-overview.md](docs/00-overview.md) |
-| How a run moves, stage by stage, with budgets and failure handling | [docs/01-pipeline.md](docs/01-pipeline.md) |
-| What each agent does and why the boundaries sit where they do | [docs/02-agents.md](docs/02-agents.md), definitions in [agents/](agents/) |
-| What a human sees and does, walked through on an example | [docs/03-human-in-the-loop-ux.md](docs/03-human-in-the-loop-ux.md) |
-| How this maps onto Managed Agents primitives | [docs/04-managed-agents-mapping.md](docs/04-managed-agents-mapping.md) |
-| The platform boundary: contract placeholder, preview environments, the observed deploy to dev | [docs/05-platform-and-deployment.md](docs/05-platform-and-deployment.md) |
-| How to evaluate it: levels, datasets, deterministic and stochastic methods | [docs/06-evaluation.md](docs/06-evaluation.md), details in [evals/](evals/README.md) |
-| The principles and the evidence behind each | [docs/design-principles.md](docs/design-principles.md) |
-| What practitioners and 2026 research actually say | [docs/research/practitioners.md](docs/research/practitioners.md), [docs/research/academic-2026.md](docs/research/academic-2026.md) |
-| Decisions and their trade-offs | [docs/adr/](docs/adr/) |
-| What to build first | [docs/roadmap.md](docs/roadmap.md) |
-| Run it yourself with a personal GitHub repo and Linear workspace | [docs/07-personal-e2e-setup.md](docs/07-personal-e2e-setup.md) |
-| Onboard existing or new apps and verify them in hosted test sandboxes | [docs/09-app-onboarding.md](docs/09-app-onboarding.md) |
-| Write outcomes and decide Gates 1 and 2 in a browser | [docs/08-factory-console.md](docs/08-factory-console.md) |
-
-## What is here and how real it is
-
-- **`schemas/`** JSON Schema for every artifact handed between stages. Validated by tests; the example run in `examples/ledgerline/` conforms.
-- **`agents/`** One `ant apply` file per agent (YAML frontmatter is the Managed Agents config, Markdown body is the system prompt). Eight agents, each under 80 lines of instructions.
-- **`rubrics/`** Per-criterion rubrics with 0 to 3 anchors, used by the platform's outcome grader inside sessions and by the factory's judges between them. Includes deployability (S11), end-to-end coverage (S12), and e2e-on-preview (I9).
-- **`skills/`** `platform-contract`, a placeholder for the platform team's existing skill: frontmatter and the headings the factory expects, no contract content. The matching `schemas/service_manifest.schema.json` is a placeholder too.
-- **`orchestrator/`** Python. An event-sourced run state machine, hash-bound human gates, deterministic checks, a Managed Agents session driver, one module per stage (including the observed deploy to dev), a pluggable forge (`forge/`: GitHub default, GitLab second), pluggable gate surfaces (`surfaces/`: Linear tracker, artifact pages, Jira stub, the file queue), the Factory Console (`web/`: a local web app that opens on the run history, with outcomes, the board, the approval inbox, and Gate 1 and 2 review; `summary.py` derives each run's status and result from its event log), and a CLI. The state machine, checks, gates, graders, deploy observation, forge request shapes, tracker mapping, page rendering, and the run-record commit are tested (`pytest`: 83 passing). The session driver and forge clients follow the documented APIs but have not been run live yet; pipeline and deployment reads are unverified on both forges.
-- **`evals/`** A four-level evaluation plan, dataset specifications with sample rows, deterministic and stochastic graders (kappa, bootstrap and Bayesian intervals, pass^k, paired discrimination), and a runner whose session-producing step is a stub until the live spike.
-- **`templates/`** The change-request description template and a GitHub Actions preview workflow that records Deployments the orchestrator reads.
-- **`examples/sample-app/`** A small FastAPI todo service with tests, a manifest, the preview workflow, and an outcome written for it: the real end-to-end test case, meant to be pushed to a repository of your own.
-- **`examples/ledgerline/`** A complete fictional run: outcome, decomposition, a spec, a judge verdict, review findings, the implementer's response, and a merge-readiness verdict.
-
-## Running the tests
-
-```bash
-cd orchestrator && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]" && .venv/bin/pytest -q
-```
-
-## Opening the Console
-
-```bash
-cd orchestrator && .venv/bin/factory web            # http://127.0.0.1:8765/
-.venv/bin/factory runs                              # the same run history in the terminal
-```
-
-The Console opens on the run history: every run under `runs/`, unfinished ones first, with its status (needs you, running, paused at budget, stopped, done, closed, failed, escalated) and what came out of it (the pull requests and how far each got, the decisions you took, or why it ended). With `ANTHROPIC_API_KEY` in `.env`, **Design only** on an outcome runs the real decomposer, spec writers, and judge through Gate 2 with no repository needed. See [docs/08-factory-console.md](docs/08-factory-console.md).
-
-## Applying the agents (when ready to spike)
-
-```bash
-brew install anthropics/tap/ant              # the ant CLI, once
-ant apply --dry-run -v agents environments   # review the plan
-ant apply --yes agents environments          # creates agents + environment, writes claude-lock.json (commit it)
-cd orchestrator && .venv/bin/factory doctor  # reconciles IDs, forge, gate surface
-```
-
-Then follow [docs/07-personal-e2e-setup.md](docs/07-personal-e2e-setup.md) for a first run with a personal GitHub repository and Linear workspace. See [environments/README.md](environments/README.md) for the allowed hosts and the GitLab credential setup used at work.
-
-## Status
-
-Design complete to the point of being iterable. Not yet run against the live platform. The honest list of gaps is at the bottom of [docs/roadmap.md](docs/roadmap.md).
+| The whole shape on one page | [00-overview.md](docs/00-overview.md) |
+| What code lives where, and what is live | [repo-map.md](docs/repo-map.md) |
+| How a run moves, stage by stage, with budgets and failure handling | [01-pipeline.md](docs/01-pipeline.md) |
+| What each agent does and why | [02-agents.md](docs/02-agents.md), [agents/README.md](agents/README.md) |
+| What a person sees at each gate | [03-human-in-the-loop-ux.md](docs/03-human-in-the-loop-ux.md), [08-factory-console.md](docs/08-factory-console.md) |
+| How it maps onto Managed Agents | [04-managed-agents-mapping.md](docs/04-managed-agents-mapping.md) |
+| Preview environments, the dev deploy, and the platform boundary | [05-platform-and-deployment.md](docs/05-platform-and-deployment.md) |
+| Running it with your own GitHub repository | [07-personal-e2e-setup.md](docs/07-personal-e2e-setup.md) |
+| Onboarding an app for hosted verification | [09-app-onboarding.md](docs/09-app-onboarding.md) |
+| Evaluation | [06-evaluation.md](docs/06-evaluation.md), [evals/README.md](evals/README.md) |
+| Decisions and the evidence behind them | [adr/](docs/adr/), [design-principles.md](docs/design-principles.md), [research/](docs/research/) |
+| What to build next | [roadmap.md](docs/roadmap.md) |
