@@ -225,6 +225,9 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
         # emitted by persist_outputs for decomposition.json / decomposition.md) are informational only.
         state.decomposition_revision = p["revision"]
         # (Re)register work items; a re-decomposition replaces pending items but keeps merged ones.
+        current_ids = {item["work_item_id"] for item in p["work_items"]}
+        state.work_items = {wid: wi for wid, wi in state.work_items.items()
+                            if wid in current_ids or wi.stage in MERGED_STAGES | {WorkItemStage.CR_OPEN}}
         for item in p["work_items"]:
             existing = state.work_items.get(item["work_item_id"])
             if existing is None or existing.stage not in MERGED_STAGES | {WorkItemStage.CR_OPEN}:

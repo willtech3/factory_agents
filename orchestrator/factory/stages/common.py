@@ -49,6 +49,11 @@ def run_session(ctx: RunContext, *, stage: str, prefix: str = "", spec_id: str |
     `SessionTruncated`. Before this, live run 1's cut-off judge verdict drove a writer round and a decomposer that
     exhausted its grader would have reached Gate 1 unflagged."""
     res = ctx.driver.run(stage=stage, **kw)
+    if res.stop_reason in {"terminated", "interrupted", "unreachable"} or res.outcome_result in {"interrupted", "failed"}:
+        persist_outputs(ctx, stage, res, prefix=f"{prefix}unfinished{attempt}-",
+                        work_item_id=kw.get("work_item_id"), spec_id=spec_id)
+        raise SessionTruncated(f"{stage} session {res.session_id} did not finish: "
+                               f"{res.outcome_result or res.stop_reason}; its outputs were retained, not accepted")
     reason = truncation_reason(res, graded=kw.get("rubric_md") is not None)
     if reason is None:
         return res
@@ -207,11 +212,15 @@ def persist_outputs(ctx: RunContext, stage: str, res: StageResult, prefix: str =
         shas[name] = ctx.store.put_artifact(ctx.run_id, stage, prefix + name, content)
         ctx.event("artifact.produced", {"artifact_type": Path(name).stem, "path": f"{stage}/{prefix}{name}",
                                         "sha256": shas[name]}, stage=stage, work_item_id=work_item_id, spec_id=spec_id)
-    ctx.event("session.finished", {"session_id": res.session_id, "agent_id": res.agent_id,
+    # A truncated result is saved before its gate, then saved under the normal prefix
+    # if the owner accepts it. Both artifact sets are useful; the spend is counted once.
+    if not getattr(res, "finish_recorded", False):
+        ctx.event("session.finished", {"session_id": res.session_id, "agent_id": res.agent_id,
                                    "agent_version": res.agent_version, "list_cost_usd": res.list_cost_usd,
                                    "outcome_result": res.outcome_result, "stop_reason": res.stop_reason,
                                    "outcome_iterations": res.outcome_iterations},
-              stage=stage, actor="platform", work_item_id=work_item_id, spec_id=spec_id)
+                  stage=stage, actor="platform", work_item_id=work_item_id, spec_id=spec_id)
+        res.finish_recorded = True
     return shas
 
 
@@ -267,6 +276,9 @@ def make_ask_human(ctx: RunContext, role: str, poll_seconds: float = 5.0, timeou
                                      "default": q.default_if_unanswered, "asked_by": role}, stage=sctx.stage,
                   actor="agent")
         if not q.blocking:
+            ctx.event("question.answered", {"question_id": q.question_id, "answer": q.default_if_unanswered,
+                                            "answered_by": "default", "reason": "non_blocking"},
+                      stage=sctx.stage, work_item_id=sctx.work_item_id)
             return json.dumps({"answer": q.default_if_unanswered, "note": "non-blocking: default applied; "
                                "the human will see this question at the next gate"})
         deadline = time.time() + timeout_hours * 3600
@@ -277,6 +289,9 @@ def make_ask_human(ctx: RunContext, role: str, poll_seconds: float = 5.0, timeou
                                                 "answered_by": a.answered_by}, stage=sctx.stage, actor="human")
                 return json.dumps({"answer": a.answer, "answered_by": a.answered_by})
             time.sleep(poll_seconds)
+        ctx.event("question.answered", {"question_id": q.question_id, "answer": q.default_if_unanswered,
+                                        "answered_by": "default", "reason": "timeout"},
+                  stage=sctx.stage, work_item_id=sctx.work_item_id)
         return json.dumps({"answer": q.default_if_unanswered, "note": "no human answer within SLA; default applied"})
     return handler
 

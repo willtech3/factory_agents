@@ -926,12 +926,13 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
     def api_demo_tick():
         return {"ticked": console.demo.tick_all()}
 
-    @app.get("/api/artifacts/{run_id}/{stage}/{name}")
+    @app.get("/api/artifacts/{run_id}/{stage}/{name:path}")
     def api_artifact(run_id: str, stage: str, name: str):
-        root = cfg.runs_dir.resolve()
-        p = root / run_id / "artifacts" / stage / name
-        if (not p.is_file() or p.is_symlink() or not p.resolve().is_relative_to(root)
-                or any(x in (".", "..") for x in (run_id, stage, name))):
+        root = (cfg.runs_dir / run_id / "artifacts").resolve()
+        p = root / stage / name
+        if (not root.is_relative_to(cfg.runs_dir.resolve()) or not p.is_file() or p.is_symlink()
+                or not p.resolve().is_relative_to(root)
+                or any(x in (".", "..") for x in (run_id, stage, *Path(name).parts))):
             raise HTTPException(404, "no such artifact")
         mime = visual.media_type(p)
         if mime:
