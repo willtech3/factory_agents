@@ -1445,8 +1445,10 @@
     const frag = document.createDocumentFragment();
     frag.append(pageHead("Apps", "An app is a repository the factory has learned to build, run and test. Onboarding finds that setup, verifies it once in a hosted sandbox, and proposes it as a pull request. Runs on the app then use it to check their work.",
       [el("a", { class: "btn primary", href: "#/apps/new" }, "Add an app")]));
+    const cloudBox = el("div", { role: "status", "aria-live": "polite" }, el("p", { class: "explain", style: "margin:0" }, "Reading the workspace's execution environments…"));
+    const cloudCard = card("In the cloud", cloudBox, "execution environments, one per onboarded app");
     if (!apps.length) {
-      frag.append(card(null, el("div", { class: "empty" }, crewFigure("codebase_researcher", "asleep", "l"), el("h3", null, "No apps yet"),
+      frag.append(cloudCard, card(null, el("div", { class: "empty" }, crewFigure("codebase_researcher", "asleep", "l"), el("h3", null, "No apps on this Console yet"),
         el("div", null, "Add an existing GitHub repository, or describe a new app. An agent works out how to test it; you review before anything is verified or published."),
         el("a", { class: "btn primary", href: "#/apps/new" }, "Add an app"))));
     } else {
@@ -1458,13 +1460,97 @@
           el("td", null, appStatusTag(a), a.phase ? el("div", { class: "explain" }, a.phase) : null),
           el("td", null, appMoney(a)), el("td", { class: "explain" }, ago(a.updated_at))));
       }
-      frag.append(card("All apps", tbl, plural(apps.length, "app")));
+      frag.append(card("On this Console", tbl, plural(apps.length, "app")), cloudCard);
     }
     frag.append(onboardingFacts());
     $main.replaceChildren(frag);
+    api("/api/apps/environments").then(v => cloudEnvironments(cloudBox, v))
+      .catch(e => cloudBox.replaceChildren(el("div", { class: "notice bad" }, `The workspace could not be read: ${e.message}`)));
     const listKey = list => JSON.stringify(list.map(a => [a.app_id, a.status, a.phase, a.updated_at, a.spent_usd]));
     state.lastKey.apps = listKey(apps);
     startPoll(refreshWhenChanged("apps", async () => listKey((await api("/api/apps")).apps || []), viewApps), apps.some(a => APP_BUSY.has(a.status)) ? 4000 : 15000);
+  }
+
+  // Two clicks for anything that cannot be undone from here: the confirming button appears in place of the first.
+  function twoStep(label, confirmLabel, run, cls) {
+    const line = el("span", { class: "explain", role: "status", "aria-live": "polite" });
+    const first = el("button", { class: `btn ${cls || "sm"}`, type: "button" }, label);
+    const yes = el("button", { class: `btn call ${cls || "sm"}`, type: "button" }, confirmLabel);
+    const no = el("button", { class: `btn ${cls || "sm"}`, type: "button" }, "Cancel");
+    const confirmBox = el("span", { hidden: true, style: "display:inline-flex;gap:6px;flex-wrap:wrap" }, yes, no);
+    first.onclick = () => { first.hidden = true; confirmBox.hidden = false; yes.focus(); };
+    no.onclick = () => { confirmBox.hidden = true; first.hidden = false; first.focus(); };
+    yes.onclick = async () => {
+      yes.disabled = no.disabled = true; line.textContent = "Working…";
+      try { await run(); } catch (e) { line.textContent = e.message; yes.disabled = no.disabled = false; }
+    };
+    return el("span", { style: "display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap" }, first, confirmBox, line);
+  }
+
+  // The apps' execution environments as the shared Anthropic workspace holds them: one per onboarded app, whichever
+  // Console or checkout onboarded it, plus what earlier attempts left behind.
+  function cloudEnvironments(box, v) {
+    const reload = async refresh => cloudEnvironments(box, await api(`/api/apps/environments${refresh ? "?refresh=true" : ""}`));
+    if (!v.configured) { box.replaceChildren(el("p", { class: "explain", style: "margin:0" }, v.error)); return; }
+    const again = el("button", { class: "btn sm", type: "button" }, "Check again");
+    again.onclick = async () => { again.disabled = true; try { await reload(true); } catch (e) { again.disabled = false; again.textContent = `Check again (${e.message})`; } };
+    const parts = [el("p", { class: "explain", style: "margin:0 0 10px" },
+      "Each onboarded app runs its hosted checks in one execution environment in the Anthropic workspace (Claude Console, Environments). Every Console and checkout using this workspace sees the same apps. ",
+      v.checked_at ? `Checked ${ago(v.checked_at) || "just now"}. ` : "", again)];
+    if (v.error) parts.push(el("div", { class: "notice bad" }, v.error));
+    const apps = v.apps || [];
+    if (apps.length) {
+      const tbl = el("table", null, el("tr", null, el("th", null, "App"), el("th", null, "Execution environment"), el("th", null, "State"), el("th", null, "")));
+      for (const a of apps) {
+        const e = a.environment;
+        const here = a.local_app_id;
+        const actions = [];
+        if (!here && GITHUB_HTTPS.test(a.repository_url || "")) {
+          actions.push(el("button", { class: "btn sm", type: "button", onclick: () => { state.appPrefill = { url: a.repository_url, name: a.name }; location.hash = "#/apps/new"; } }, "Onboard on this Console"));
+        }
+        if (!e.current && !e.in_use) {
+          actions.push(twoStep("Archive…", "Confirm: archive", async () => {
+            const r = await api(`/api/apps/environments/${encodeURIComponent(e.id)}/archive`, { body: {} });
+            cloudEnvironments(box, r.environments);
+          }));
+        }
+        tbl.append(el("tr", null,
+          el("td", null, el("div", { class: "title" }, here ? el("a", { href: appHref(here) }, a.name) : el("b", null, a.name)),
+            el("div", { class: "explain mono" }, a.repository_url ? repoName(a.repository_url) : "repository not recorded")),
+          el("td", null, /^https:\/\//.test(e.console_url || "") ? el("a", { class: "mono", href: e.console_url, target: "_blank", rel: "noopener" }, e.name) : el("span", { class: "mono" }, e.name),
+            el("div", { class: "explain" }, `Created ${ago(e.created_at) || "just now"}`, a.leftover_count ? ` · ${plural(a.leftover_count, "older one")} below` : "")),
+          el("td", null, el("span", { class: `tag ${here ? "ok" : ""}` }, here ? "On this Console" : "Onboarded elsewhere"),
+            e.verified_at ? el("span", { class: "tag ok" }, `Verified ${ago(e.verified_at)}`) : null,
+            e.in_use ? el("span", { class: "tag crew" }, "Session running") : null),
+          el("td", null, el("div", { style: "display:flex;flex-direction:column;align-items:flex-start;gap:6px" }, actions))));
+      }
+      parts.push(tbl);
+      if (apps.some(a => !a.local_app_id)) {
+        parts.push(el("p", { class: "explain", style: "margin:10px 0 0;font-size:12.5px" },
+          "Apps onboarded elsewhere keep their plan, evidence and test credentials on the Console that onboarded them. To request changes from here, onboard the app on this Console: an unchanged recipe reuses its environment, so the app still has one."));
+      }
+    } else if (!v.error) {
+      parts.push(el("p", { class: "explain", style: "margin:0" }, "No app has an execution environment in this workspace yet. Verifying an app's setup creates one."));
+    }
+    if (v.discovery) {
+      parts.push(el("p", { class: "explain", style: "margin:10px 0 0;font-size:12.5px" }, "Discovery reads source in one shared, network-less environment: ",
+        el("a", { class: "mono", href: v.discovery.console_url, target: "_blank", rel: "noopener" }, v.discovery.name), "."));
+    }
+    const retire = v.retire || [];
+    if (retire.length) {
+      const list = el("ul", { class: "facts", style: "margin:8px 0" }, retire.map(e => el("li", null, el("span", { class: "mono" }, e.name), " · ",
+        e.reason === "duplicate" ? "a duplicate of " : "replaced by ", el("span", { class: "mono" }, e.replaced_by_name),
+        e.purpose === "discovery" ? " (discovery)" : e.app_name ? ` (${e.app_name})` : "")));
+      parts.push(el("div", { class: "notice warn", style: "margin-top:12px" },
+        el("b", null, `${plural(retire.length, "environment")} left over from earlier attempts. `),
+        "An app needs one execution environment. These hold older recipes or copies of the same one, and no session is running in them. Archived environments stay listed under Archived in the Claude Console; no new session starts in them. Repositories are not touched.",
+        list, twoStep(`Archive ${plural(retire.length, "leftover")}`, `Confirm: archive ${retire.length}`, async () => {
+          const r = await api("/api/apps/environments/cleanup", { body: { environment_ids: retire.map(e => e.id) } });
+          cloudEnvironments(box, r.environments);
+          if ((r.failed || []).length) box.prepend(el("div", { class: "notice bad" }, `${plural(r.failed.length, "environment")} could not be archived; the list shows what remains.`));
+        })));
+    }
+    box.replaceChildren(...parts);
   }
 
   // The authenticated GitHub repository list, searchable and paged, with a typed URL as the alternative.
@@ -1517,7 +1603,8 @@
     const node = el("div", { class: "stack" },
       el("label", { class: "lab", for: "app-repo-search" }, "Find a repository"), search,
       el("label", { class: "lab", for: "app-repo-select" }, "GitHub repository"), select, details, status, more, manual);
-    return { node, load };
+    const prefill = url => { typed.value = url; manual.open = true; typed.oninput(); };
+    return { node, load, prefill };
   }
 
   async function viewAppNew() {
@@ -1619,6 +1706,13 @@
       onboardingFacts());
     frag.append(el("div", { class: "start" }, el("div", { class: "start-main" }, whichCard, aboutCard, budgetCard), aside));
     $main.replaceChildren(frag);
+    // From "Onboard on this Console" on an app found in the workspace: its repository and name, nothing else.
+    const prefill = state.appPrefill;
+    state.appPrefill = null;
+    if (prefill) {
+      picker.prefill(prefill.url);
+      if (prefill.name) { name.value = prefill.name; nameTouched = true; }
+    }
     syncKind();
     picker.load();
   }
@@ -1666,6 +1760,7 @@
         el("dt", null, "Available"), el("dd", null, appLeft(a))),
       a.reserved_usd ? el("p", { class: "explain" }, `${money(a.reserved_usd)} is reserved for the current session.`) : null,
       a.cost_warning ? el("p", { class: "notice warn" }, a.cost_warning) : null,
+      a.cleanup_warning ? el("p", { class: "notice warn" }, a.cleanup_warning) : null,
       (a.sessions || []).length ? el("div", null, el("h3", { class: "mini-h" }, "Charged sessions"), sessions)
         : el("p", { class: "explain", style: "margin:8px 0 0;font-size:12.5px" }, "No agent session has run yet."));
   }
@@ -1923,6 +2018,8 @@
           el("dt", null, "Source branch or commit"), el("dd", { class: "mono" }, a.revision || "the default branch"),
           el("dt", null, "Default branch"), el("dd", { class: "mono" }, a.default_branch || "not known until discovery reads the repository"),
           el("dt", null, "Source commit inspected"), el("dd", { class: "mono" }, a.source_sha || "not known until discovery reads the repository"),
+          el("dt", null, "Execution environment"), el("dd", { class: "mono" }, a.environment_id || (a.verification || {}).environment_id || "created when the setup is verified",
+            (a.retired_environments || []).length ? el("span", { class: "explain" }, ` · ${plural(a.retired_environments.length, "earlier environment")} archived after verification`) : null),
           el("dt", null, "App id"), el("dd", { class: "mono" }, a.app_id)));
     }
 
