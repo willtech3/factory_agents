@@ -2,7 +2,16 @@
 
 2026-10-11. Scope: the local worktree's UI changes and isolated Console fixtures. No deployment, paid run, real gate decision, or provider mutation was performed.
 
-## Automated checks
+## PR baseline update
+
+Before opening the PR, the branch was rebased onto `main` at `d0b46cf`. The newer run-record rendering, record deep links, policy requirements, rubric labels, and evidence-source handling were retained.
+
+- Updated non-network Python suite: **523 passed, 2 skipped, 1 network test deselected**.
+- State-presentation JavaScript suite: **14 passed**.
+- Fresh browser check against the rebased server: active and completed run-record deep links opened their disclosures; two individual sessions remained visible; the budget input rendered; no browser errors were returned.
+- The preview is a collection of seeded states with **no advancing controller**. It can inspect visual states and local interactions, but submitting a fixture answer/decision does not drive a full run. Real-controller behavioral validation remains outstanding.
+
+## Original audit checks
 
 - Full non-network Python suite: **473 passed, 1 skipped, 1 network test deselected**.
 - Pure JavaScript state-presentation suite: **14 passed**. It covers concurrent same-role sessions, researcher visibility, completion versus delivery, stopped/terminal activity, resumes, blocking versus optional questions, recorded versus applied decisions, causal matching, unknown evidence, role changes, and stale activity.

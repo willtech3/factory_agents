@@ -1,4 +1,5 @@
 """Isolated Console design preview. Uses test fixtures; never starts paid sessions.
+These are seeded states with no advancing controller; answers and decisions are stored locally only.
 
 Run from the repository: python orchestrator/tests/support/preview_console.py
 The printed temporary folder contains the fixture IDs and an offline switch.
