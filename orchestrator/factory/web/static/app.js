@@ -94,7 +94,7 @@
     if (s < 3600) return `${Math.round(s / 60)} min`;
     return `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`;
   }
-  function clock(iso) { return iso ? iso.slice(11, 16) : ""; }
+  function clock(iso) { return iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZoneName: "short" }) : ""; }
   function money(n) { return n == null ? "" : `$${Number(n).toFixed(2)}`; }
   function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
   function words(s) { return String(s ?? "").replace(/_/g, " "); }
@@ -302,7 +302,7 @@
     const w = waitingOf(live);
     const waitingLabel = [w.decisions ? plural(w.decisions, "decision") : null, w.reviews ? plural(w.reviews, "pull request") : null].filter(Boolean).join(", ");
     const frag = document.createDocumentFragment();
-    frag.append(pageHead("The board", "Columns are the pipeline. Rows are who owns the work. A card only sits in its owner's row, so whose turn it is is the row, not a label.",
+    frag.append(pageHead("The board", "Active work and decisions that need you.",
       [waitingLabel ? el("span", { class: "tag gate" }, `${waitingLabel} waiting`) : el("span", { class: "tag ok" }, "Nothing waiting on a person"),
        el("a", { class: "btn primary", href: "#/start" }, "Start a run")]));
     if (!live.length) {
@@ -319,15 +319,14 @@
           const cell = el("div", { class: "cell" });
           for (const r of live) {
             for (const c of r.cards.filter(c => c.row === row && c.column === col)) cell.append(boardCard(r, c));
-            // quiet placeholders that say what will happen next for a human, so an empty row still answers "when is it my turn"
-            if (row === "eng" && col === "ship" && r.column !== "ship" && !r.cards.some(c => c.kind === "pr")) cell.append(el("div", { class: "k quiet" }, el("span", { class: "run" }, r.title), el("span", { class: "t" }, "Review the pull request"), el("span", { class: "s" }, "after Build and Review")));
+
           }
           g.append(cell);
         }
       }
       frag.append(card(null, el("div", { class: "board" }, g, el("div", { class: "legend" }, el("span", null, [active ? `${plural(active, "run")} in progress.` : null, handedOff ? `${plural(handedOff, "finished run")} with pull requests to review.` : null, "Finished runs are under Runs."].filter(Boolean).join(" ")))), null));
     }
-    frag.append(card("How a run moves", el("div", null, roleLegend(), el("p", { class: "explain", style: "margin-top:12px" }, "The crew do the stages between the gates. The two gates are the product owner's: nothing is built until the plan and then the contracts are approved. The engineer reviews and merges the pull request. Ops watches the deploy.")), null, "soft"));
+
     $main.replaceChildren(frag);
     state.lastKey.inbox = boardKey(b);
     startPoll(refreshWhenChanged("inbox", async () => boardKey(await api("/api/board")), viewInbox), 5000);
@@ -362,7 +361,7 @@
       [el("a", { class: "btn primary", href: "#/start" }, "Start a run")]));
     if (!runs.length) {
       frag.append(card(null, el("div", { class: "empty" }, crewFigure("decomposer", "asleep", "l"), el("h3", null, "No runs yet"),
-        el("div", null, "Start one from an outcome, or run the sample outcome as a demo to see how the gates work."),
+        el("div", null, "Start a run from an outcome."),
         el("a", { class: "btn primary", href: "#/start" }, "Start a run"))));
     } else {
       const tbl = el("table", null, el("tr", null, el("th", null, "Outcome"), el("th", null, "Where"), el("th", null, "Items"), el("th", null, "Spend"), el("th", null, "Last activity")));
@@ -437,7 +436,7 @@
     const consoleUrl = sid => state.config && state.config.console_session_url && !r.demo ? state.config.console_session_url.replace("SESSION_ID", sid) : null;
     const liveMember = (r.crew || []).find(m => m.state === "working" && m.session_id);
     const rosterCard = card("The crew", el("div", null, roster,
-      el("p", { class: "explain", style: "margin-top:10px;font-size:12.5px" }, "Asleep means not started or finished for this run.", liveMember && consoleUrl(liveMember.session_id) ? [" ", el("a", { href: consoleUrl(liveMember.session_id), target: "_blank", rel: "noopener" }, "Open the live session in the Anthropic Console.")] : null)));
+      el("p", { class: "explain", style: "margin-top:10px;font-size:12.5px" }, liveMember && consoleUrl(liveMember.session_id) ? [el("a", { href: consoleUrl(liveMember.session_id), target: "_blank", rel: "noopener" }, "Open the live session in the Anthropic Console.")] : null)));
 
     // the story so far
     const story = el("div", { class: "story" });
@@ -470,7 +469,7 @@
       const pendingGate = r.stage === "decomposing" || r.stage === "intake" ? "approve the plan (Gate 1)" : r.stage === "specifying" ? "approve the contracts (Gate 2)" : null;
       if (pendingGate) up.append(el("span", null, el("b", { class: "po" }, "Product owner"), `: ${pendingGate}, when the crew is done`));
       if (!r.design_only) up.append(el("span", null, el("b", { class: "eng" }, "Engineer"), r.stage === "completed" ? ": review and merge the pull request" : ": review the pull request, after Build and Review"));
-      up.append(el("span", null, el("b", { class: "ops" }, "Ops"), r.watch && r.watch.pending && r.watch.pending.length ? ": the dev deploy is being watched" : ": nothing in this setup"));
+      if (r.watch && r.watch.pending && r.watch.pending.length) up.append(el("span", null, "Waiting for merge or deployment."));
       turn.append(up);
     }
     if (r.resumable && r.resuming) turn.append(el("div", { class: "notice info", style: "margin:0" }, el("b", null, "Resuming. "), "The orchestrator is re-checking the branch; this page follows it."));
@@ -488,7 +487,7 @@
       el("dl", null,
         tunePair("Run budget", p.run_budget_usd ? `$${p.run_budget_usd}` : "from the outcome"), tunePair("Preview", p.preview_mode || "platform"),
         tunePair("Reviewer passes", p.reviewer_passes ?? "default"), tunePair("Review rounds", p.review_max_rounds ?? "default"),
-        tunePair("Security reviewer", p.security_review === false ? "off" : "on"), tunePair("Items built at once", p.parallel_implementations ?? "default"),
+        tunePair("Security reviewer", p.security_review === false ? "off" : "on"),
         tunePair("Grader iterations", p.outcome_max_iterations ?? "default"), tunePair("Cap per implementer", caps.implement ? `$${caps.implement}` : "default"),
         tunePair("Cap per judge", caps.judge ? `$${caps.judge}` : "default"), tunePair("Cap per review", caps.review ? `$${caps.review}` : "default")),
       el("p", { class: "explain", style: "margin:10px 0 0;font-size:12.5px" }, "Settings are fixed for a run once it starts. ", el("a", { href: "#/start" }, "Tune the next run on the Start screen.")));
@@ -780,7 +779,7 @@
   // ------------------------------------------------------------------ start a run: three guardrails visible, the rest two clicks away
   async function viewStart(params) {
     setNav("start");
-    const [outs, cfg, examples] = await Promise.all([api("/api/outcomes"), state.config || api("/api/config"), api("/api/outcomes/examples")]);
+    const [outs, cfg] = await Promise.all([api("/api/outcomes"), state.config || api("/api/config")]);
     state.config = cfg;
     let app = null, appNotice = null, apps = [];
     if (!params.get("app")) { try { apps = (await api("/api/apps")).apps || []; } catch (e) { apps = []; } }
@@ -789,8 +788,7 @@
       catch (e) { appNotice = el("div", { class: "notice bad" }, el("b", null, "The app did not load. "), `${e.message}. Return to Apps before starting this app run.`); }
     }
     const frag = document.createDocumentFragment();
-    frag.append(pageHead("Start a run", "Three things decide how a run goes: what, where, and the guardrails. Everything else has defaults from the last calibration.",
-      [el("span", { style: "display:inline-flex;align-items:center;gap:10px" }, crewFigure("implementer", "working", "s"), el("span", { class: "explain" }, "The crew is ready."))]));
+    frag.append(pageHead("Start a run", "Choose the outcome, repository and budget."));
     if (appNotice) frag.append(appNotice);
 
     // 1. what
@@ -802,6 +800,7 @@
     const pickOutcome = async (id) => {
       outcomeId = id; choiceNodes.forEach(n => n.classList.toggle("on", n.dataset.id === id));
       try { outcome = (await api(`/api/outcomes/${id}`)).outcome; } catch (e) { outcome = null; }
+      budget.value = (outcome && outcome.constraints && outcome.constraints.budget_usd) ?? 60;
       syncRepo(); syncWho(); syncSummary();
     };
     for (const o of appOutcomes) {
@@ -810,8 +809,8 @@
         el("span", { class: "txt" }, el("b", null, o.title || o.outcome_id), el("span", null, `${o.runs.length ? plural(o.runs.length, "run") + " so far." : "No runs yet."}${o.owner ? " Owner " + o.owner + "." : ""}`)));
       choiceNodes.push(n); choices.append(n);
     }
-    const exampleLinks = el("div", { class: "actions", style: "margin-top:10px" }, app ? null : examples.examples.map(e => el("a", { class: "btn sm", href: `#/outcomes/new?example=${encodeURIComponent(e.name)}`, title: e.title }, `Load the ${e.name} example`)), el("a", { class: "btn sm", href: `#/outcomes/new${app ? '?app=' + encodeURIComponent(app.app_id) : ''}` }, "Write a new outcome"));
-    const whatCard = card("1. What should be built", el("div", null, appOutcomes.length ? choices : el("p", { class: "explain" }, app ? "No saved outcomes for this app yet. Describe the change you want." : "No saved outcomes yet. Load an example or write one."), exampleLinks));
+    const newOutcome = el("a", { class: "btn sm", style:"margin-top:12px", href: `#/outcomes/new${app ? '?app=' + encodeURIComponent(app.app_id) : ''}` }, "New outcome");
+    const whatCard = card("1. Outcome", el("div", null, appOutcomes.length ? choices : el("p", { class: "explain" }, "Describe the change you want to make."), newOutcome));
 
     // 2. where: browse the repositories visible to the configured GitHub account. An onboarded app's repository binds to
     // its verified hosted setup on every start path; the server decides, this only says so before you click.
@@ -872,17 +871,20 @@
       selectedRepo = repositories.find(r => r.url === repoUrl.value) || null;
       repoDetails.textContent = repo.url ? `Selected: ${repo.url} · ${selectedRepo ? selectedRepo.default_branch : repo.default_branch || "main"}` : "";
       renderRepos(); syncRepoChoice();
+      if (!app) { whereSummary.textContent = repo.url ? `${repoName(repo.url)} · ${repo.default_branch || "main"}` : "Choose a repository"; whereDetails.open = !repo.url; }
     };
-    const whereCard = app ? card("2. Where it is built", el("div", {class:"stack"},
+    const whereSummary = el("p", {class:"mono", style:"margin:0"});
+    const whereDetails = el("details", null, el("summary", null, "Change repository"), el("div", {class:"stack", style:"margin-top:12px"}, existingChoice, newChoice));
+    const whereCard = app ? card("2. Repository", el("div", {class:"stack"},
       el("a", {href:app.repository_url, target:"_blank", rel:"noopener"}, repoName(app.repository_url)),
       el("p", {class:"explain"}, `Base branch: ${app.default_branch || 'main'}. Uses this app's verified hosted setup.`)))
-      : card("2. Where it is built", el("div", { class: "stack" }, existingChoice, newChoice, bindNote,
-      el("p", { class: "explain", style: "margin:0;font-size:13px" }, "Only repositories this GitHub connection can access are shown. Archived and read-only repositories cannot be selected. The run works on a separate branch and opens a pull request.")));
+
+      : card("2. Repository", el("div", { class: "stack" }, whereSummary, whereDetails, bindNote));
 
     // 3. guardrails
-    const budget = el("input", { type: "number", min: "5", step: "5", value: 60 });
+    const budget = el("input", { type: "number", min: "1", step: "1", value: 60 });
     const hostedOption = el("option", { value: "managed", selected: !!app, hidden: !app }, "Hosted sandbox · verified app setup");
-    const preview = el("select", { disabled: !!app }, hostedOption, el("option", { value: "local", selected: !app }, "Local, started by the orchestrator"), el("option", { value: "platform" }, "Platform deploy workflow"));
+    const preview = el("select", { disabled: !!app }, hostedOption, el("option", { value: "local", selected: !app }, "Local (this computer)"), el("option", { value: "platform" }, "Deployed preview"));
     const previewHelp = el("span", { class: "h" }, app ? "Application, database and browser tests run in a fresh hosted sandbox." : "Local runs app commands on this computer. Platform uses the repository deploy workflow.");
     const syncBinding = () => {
       if (app) return;
@@ -900,31 +902,22 @@
         : bound ? [el("div", { class: "notice bad", style: "margin:0" }, el("b", null, `Onboarded app ${bound.name || bound.app_id} is not ready (${words(bound.status)}). `),
           "Verify its setup on the app page before a live run; a design-only run still works.")] : []));
     };
-    const owner = (outcome && outcome.owner) || {};
     const whoBox = el("div", { class: "who" });
+    const editOutcome = el("a", {href:"#/outcomes", style:"font-size:13px"}, "Edit outcome");
     const syncWho = () => { const ow = (outcome && outcome.owner) || {}; whoBox.replaceChildren(
-      el("span", null, el("b", { class: "po" }, "Product owner"), el("span", null, ow.name || ow.handle || "the outcome's owner")),
-      el("span", null, el("b", { class: "eng" }, "Engineer"), el("span", null, ow.handle || "the outcome's owner")),
-      el("span", null, el("b", { class: "ops" }, "Ops"), el("span", { class: "explain" }, "nobody yet"))); };
+      el("span", null, ow.name || ow.handle || "Set an owner on the outcome"));
+      editOutcome.href = outcomeId ? `#/outcomes/new?outcome=${encodeURIComponent(outcomeId)}` : "#/outcomes"; };
     const guards = el("div", { class: "guards" },
-      el("label", null, "Run budget (USD)", budget, el("span", { class: "h" }, "The last one-item run cost about $33. The run pauses and asks before it goes over.")),
-      el("label", null, "Preview", preview, previewHelp),
-      el("div", null, el("span", { style: "font-size:13px;color:var(--text-3);display:block;margin-bottom:6px" }, "Who decides"), whoBox, el("a", { href: "#/outcomes", style: "font-size:13px;font-weight:700" }, "Change on the outcome")));
-    // more
+      el("label", null, "Run budget (USD)", budget, el("span", { class: "h" }, "Pauses before the next step exceeds this limit.")),
+      app ? el("div", null, el("b", null, "Verification"), el("p", {class:"explain"}, "Hosted sandbox")) : el("label", null, "Verification", preview, previewHelp),
+      el("div", null, el("b", null, "Owner"), whoBox, editOutcome));
     const passes = el("input", { type: "number", min: "1", max: "4", value: 2 }), rounds = el("input", { type: "number", min: "1", max: "4", value: 2 });
-    const security = el("input", { type: "checkbox", checked: true }), parallel = el("input", { type: "number", min: "1", max: "6", value: 3 });
-    const scale = el("input", { type: "number", min: "0.2", max: "3", step: "0.1", value: 1 });
-    const more = el("div", { class: "tier", hidden: true },
-      el("label", null, "Reviewer passes per round", passes), el("label", null, "Review rounds before the judge", rounds),
-      el("label", { class: "check" }, security, "Security reviewer on every round"),
-      el("label", null, "Items built at once", parallel), el("label", null, "Scale every per-stage cap by", scale));
+    const security = el("input", { type: "checkbox", checked: true });
     const iterations = el("input", { type: "number", min: "1", max: "6", value: 3 });
-    const expert = el("div", { class: "tier", hidden: true },
-      el("label", null, "Grader iterations per stage", iterations),
-      el("div", { class: "explain", style: "grid-column:1 / -1;font-size:12.5px" }, "Effort per agent and the platform timeouts live in the agent definitions and the orchestrator's environment; they are not per-run knobs yet."));
-    const moreBtn = el("button", { class: "btn link", type: "button", onclick: () => { more.hidden = !more.hidden; moreBtn.textContent = more.hidden ? "More controls: passes, rounds, caps" : "Fewer controls"; if (more.hidden) { expert.hidden = true; expertBtn.hidden = true; } else expertBtn.hidden = false; } }, "More controls: passes, rounds, caps");
-    const expertBtn = el("button", { class: "btn link", type: "button", hidden: true, onclick: () => { expert.hidden = !expert.hidden; expertBtn.textContent = expert.hidden ? "Expert: iterations" : "Hide expert settings"; } }, "Expert: iterations");
-    const guardsCard = card("3. Guardrails", el("div", { class: "stack" }, guards, el("div", null, moreBtn), more, el("div", null, expertBtn), expert));
+    const advanced = el("details", null, el("summary", null, "Review settings"), el("div", {class:"tier"},
+      el("label", null, "Reviewer passes", passes), el("label", null, "Maximum review rounds", rounds),
+      el("label", null, "Grader iterations", iterations), el("label", {class:"check"}, security, "Security review")));
+    const guardsCard = card("3. Budget and review", el("div", {class:"stack"}, guards, advanced));
 
     // summary + start
     const summary = el("ul", { class: "summary-list" });
@@ -935,13 +928,11 @@
       summary.replaceChildren(
         el("li", null, el("b", null, outcome ? outcome.title : "No outcome selected")),
         el("li", null, "Into ", el("span", { class: "mono" }, repo.replace(/^https:\/\/github\.com\//, ""))),
-        el("li", null, `Up to $${budget.value}; the run asks before going over`),
-        el("li", null, "You decide at Gate 1 (plan) and Gate 2 (contracts); you review the pull request"),
-        el("li", null, `${passes.value} reviewer${passes.value === "1" ? "" : "s"}${security.checked ? " and the security reviewer" : ""} on every round`));
+        el("li", null, `Budget: $${budget.value}`));
     };
     [budget, passes, security, repoUrl, newName].forEach(i => i.addEventListener("input", syncSummary));
     const settings = () => ({ budget_usd: Number(budget.value) || undefined, preview: preview.value, reviewer_passes: Number(passes.value) || undefined, review_rounds: Number(rounds.value) || undefined,
-      security_review: security.checked, parallel_items: Number(parallel.value) || undefined, grader_iterations: Number(iterations.value) || undefined, budget_scale: Number(scale.value) !== 1 ? Number(scale.value) : undefined });
+      security_review: security.checked, grader_iterations: Number(iterations.value) || undefined });
     async function saveRepo() {
       if (!outcome) return;
       const repo = (outcome.target_repositories || [{}])[0] || {};
@@ -962,20 +953,17 @@
       btn.disabled = true;
       try {
         await saveRepo();
-        const s = await api("/api/runs", { body: { outcome_id: outcomeId, app_id: app ? app.app_id : (mode === "live" && bound ? bound.app_id : undefined), mode, settings: mode === "demo" ? {} : settings() } });
+        const s = await api("/api/runs", { body: { outcome_id: outcomeId, app_id: app ? app.app_id : (mode === "live" && bound ? bound.app_id : undefined), mode, settings: settings() } });
         if (s.run_id) location.hash = `#/runs/${s.run_id}`;
         else { notice.append(el("div", { class: "notice ok" }, el("b", null, "Run started. "), "The crew is waking up; the run appears under Runs within a minute.")); setTimeout(() => { location.hash = "#/runs"; }, 4000); }
       } catch (e) { notice.append(el("div", { class: "notice bad" }, e.message)); btn.disabled = false; }
     }
     const startBtn = el("button", { class: "btn call", type: "button", style: "min-height:48px;font-size:16px", disabled: !cfg.can_run_live, title: cfg.can_run_live ? "" : "Needs the code host configured; see Settings", onclick: ev => go("live", ev.currentTarget) }, "Start the run");
     const designBtn = el("button", { class: "btn", type: "button", disabled: !cfg.can_run_design, title: cfg.can_run_design ? "" : "Needs the crew and API key; see Settings", onclick: ev => go("design", ev.currentTarget) }, "Design only: stop after Gate 2");
-    const demoBtn = el("button", { class: "btn sm", type: "button", onclick: ev => go("demo", ev.currentTarget) }, "Run as a demo");
     const aside = el("aside", null,
       card("This run", el("div", { class: "stack" }, summary, el("div", { class: "btn-col" }, startBtn, designBtn), notice,
-        el("p", { class: "explain", style: "margin:0;font-size:12.5px" }, "A design-only run costs about $8 and needs no repository access. ", demoBtn),
-        (!cfg.can_run_live || !cfg.can_run_design) ? el("p", { class: "explain", style: "margin:0;font-size:12.5px" }, el("a", { href: "#/settings" }, "What is missing to run")) : null)),
-      card(null, el("div", { class: "explain", style: "font-size:13px" }, el("b", { style: "display:block;color:var(--text);font-size:14px;margin-bottom:4px" }, "What you are not asked"),
-        "Model choices, iteration caps, timeouts and per-stage budgets have defaults from the last calibration and live under More and Expert. A run never needs them changed to succeed.")));
+        el("p", { class: "explain", style: "margin:0;font-size:12.5px" }, "Design only stops after contract approval."),
+        (!cfg.can_run_live || !cfg.can_run_design) ? el("p", { class: "explain", style: "margin:0;font-size:12.5px" }, el("a", { href: "#/settings" }, "What is missing to run")) : null)));
 
     frag.append(el("div", { class: "start" }, el("main", null, whatCard, whereCard, guardsCard), aside));
     $main.replaceChildren(frag);
@@ -1000,7 +988,7 @@
     const notes = new Map();
     const picks = new Map();
     const frag = document.createDocumentFragment();
-    frag.append(pageHead(GATE_NAME[rec.kind] || rec.kind, g.run_title, rec.kind === "budget" ? null : [el("a", { class: "btn", href: `/gates/${gateId}/page`, target: "_blank", rel: "noopener" }, "Open as a page")],
+    frag.append(pageHead(rec.kind === "budget" && !rv.budget ? "Session limit: continue or stop" : GATE_NAME[rec.kind] || rec.kind, g.run_title, rec.kind === "budget" ? null : [el("a", { class: "btn", href: `/gates/${gateId}/page`, target: "_blank", rel: "noopener" }, "Open as a page")],
       [el("a", { href: "#/inbox" }, "Board"), " / ", el("a", { href: `#/runs/${g.run_id}` }, g.run_title), " / opened ", ago(rec.opened_at)]));
 
     const doc = el("div", { class: "stack" });
@@ -1184,6 +1172,10 @@
   }
 
   function renderBudget(doc, rv, rec, g) {
+    if (!rv.budget) {
+      doc.append(card("Session needs a decision", el("p", {class:"reading"}, rec.summary)));
+      return;
+    }
     const p = rv.budget || {}, next = p.next || {};
     doc.append(card("What you are deciding", el("div", { class: "stack" },
       el("p", { class: "explain" }, el("strong", null, "The run stopped before starting an agent session that could take it past its budget. "),
@@ -1202,13 +1194,13 @@
 
   function buildDecide(g, notes, picks) {
     const rec = g.gate;
-    const comment = el("textarea", { id: "decide-comment", placeholder: "Optional for Approve. Required for Request changes: say what should change." });
+    const comment = el("textarea", { id: "decide-comment", placeholder: rec.options.includes("request_changes") ? "Required for Request changes; optional otherwise." : "Optional note about your decision." });
     const status = el("div");
     const error = el("div", { class: "err", role: "alert" });
     const counts = el("div", { class: "explain", style: "margin-top:6px" });
     const confirmBox = el("div", { class: "confirm", hidden: true });
 
-    const isBudget = rec.kind === "budget";
+    const isBudget = rec.kind === "budget" && !!(g.review || {}).budget;
     const needed = isBudget ? Number(((g.review || {}).budget || {}).needed_usd || 0) : 0;
     const budgetInput = isBudget ? el("input", { id: "decide-budget", type: "number", min: String(Math.ceil(needed)), step: "1", value: String(Math.ceil(needed)), "aria-label": "New budget in USD", style: "max-width:140px" }) : null;
     const composeComments = () => {
@@ -1240,6 +1232,10 @@
       deploy_failure: { approve: "The failure was the platform's; the next deploy is watched.", request_changes: "An agent fixes it on a new branch; a follow-up pull request follows.", reject: "This work item is closed." },
       budget: { approve: "The run's budget becomes the amount above; when continued, it picks up at the step it stopped before.", reject: "The run closes when continued. Nothing more is built; the files stay." },
     }[rec.kind] || {};
+    if (rec.kind === "budget" && !isBudget) {
+      consequences.approve = "Continue according to the session decision described above.";
+      consequences.reject = "Stop this run without accepting the unfinished session output.";
+    }
     const buttons = rec.options.map(opt => el("button", { class: `btn block ${opt === "approve" || opt === "approve_subset" ? "approve" : opt === "request_changes" ? "changes" : "danger"}`,
       type: "button", dataset: { decision: opt }, onclick: () => arm(opt) }, DECISION_LABEL[opt] || opt));
 
@@ -1279,13 +1275,11 @@
     }
 
     const form = el("div", null,
-      el("p", { class: "explain" }, Object.entries(consequences).filter(([k]) => rec.options.includes(k) && consequences[k]).map(([k, v]) => el("span", { style: "display:block;margin-bottom:4px" }, el("b", null, DECISION_LABEL[k] + ": "), v))),
       isBudget ? el("div", { style: "margin-bottom:10px" }, el("label", { for: "decide-budget" }, "New budget in USD"), budgetInput) : null,
       el("label", { for: "decide-comment" }, "Your comment"), comment, counts,
       confirmBox, el("div", { class: "btn-col", style: "margin-top:12px" }, buttons), error,
-      el("details", null, el("summary", null, "Why this is safe to approve"),
-        el("div", { class: "explain", style: "margin-top:6px" }, "Your decision is tied to the exact files you are looking at, by fingerprint. If an agent changed one after this page loaded, the decision is refused and the gate reopens, so you can never approve something you did not read."),
-        el("ul", { class: "files" }, rec.artifacts.map(a => el("li", null, el("span", null, a.name), el("code", { title: a.sha256 }, a.sha256.slice(0, 10)))))));
+      rec.artifacts.length ? el("details", null, el("summary", null, "Artifacts tied to this decision"),
+        el("ul", { class: "files" }, rec.artifacts.map(a => el("li", null, el("span", null, a.name), el("code", { title: a.sha256 }, a.sha256.slice(0, 10)))))) : null);
     const node = el("aside", { class: "decide" }, card("Your call", el("div", null, status, form), null, "call"));
     if (g.decided) showDecided(g.decided);
     else if (rec.recorded) showRecorded(rec.recorded);
@@ -1298,11 +1292,11 @@
     setNav("outcomes");
     const [outs, cfg] = [(await api("/api/outcomes")).outcomes, state.config || await api("/api/config")];
     const frag = document.createDocumentFragment();
-    frag.append(pageHead("Outcomes", "An outcome is the business result you want, with metrics. Each run starts from one.",
-      [el("a", { class: "btn", href: "#/outcomes/new?example=sample-app" }, "Load the sample app outcome"), el("a", { class: "btn", href: "#/outcomes/new?example=switchboard" }, "Load the Switchboard example"), el("a", { class: "btn primary", href: "#/outcomes/new" }, "New outcome")]));
+    frag.append(pageHead("Outcomes", "Saved briefs for new runs.",
+      [el("a", { class: "btn primary", href: "#/outcomes/new" }, "New outcome")]));
     if (!outs.length) {
-      frag.append(card(null, el("div", { class: "empty" }, el("h3", null, "No outcomes saved yet"), el("div", null, "Write one in your own words, or load an example."),
-        el("a", { class: "btn primary", href: "#/outcomes/new?example=sample-app" }, "Load the sample app outcome"))));
+      frag.append(card(null, el("div", { class: "empty" }, el("h3", null, "No outcomes saved yet"), el("div", null, "Describe the change you want to make."),
+        el("a", { class: "btn primary", href: "#/outcomes/new" }, "New outcome"))));
     } else {
       const list = el("ul", { class: "list" });
       for (const o of outs) {
@@ -1318,12 +1312,9 @@
 
   async function viewOutcomeForm(params) {
     setNav("outcomes");
-    const which = params.get("example") === "1" ? "sample-app" : params.get("example");
-    const t = (await api(`/api/outcomes/template${which ? "?example=" + encodeURIComponent(which) : ""}`)).outcome;
-    const example = t._example;
+    const t = (await api("/api/outcomes/template")).outcome;
     const cfg = state.config || await api("/api/config");
     let o = JSON.parse(JSON.stringify(t)); delete o._example;
-    if (which) o = JSON.parse(JSON.stringify(example));
     if (params.get("outcome")) { try { o = (await api(`/api/outcomes/${params.get("outcome")}`)).outcome; } catch (e) { /* fall through */ } }
     let savedId = params.get("outcome") && o.outcome_id ? o.outcome_id : null;
     const app = params.get("app") ? await api(appPath(params.get("app"))) : null;
@@ -1334,41 +1325,43 @@
     }
 
     const frag = document.createDocumentFragment();
-    frag.append(pageHead(savedId ? o.title : "New outcome", "Describe the result you want in your own words. The factory decomposes it into work items; you approve the plan before anything is specified or built.", null,
+    frag.append(pageHead(savedId ? o.title : "New outcome", "Describe the change and how you will know it worked.", null,
       [el("a", { href: "#/outcomes" }, "Outcomes"), " / ", savedId ? "Edit" : "New"]));
 
     const form = el("form", { class: "form stack", onsubmit: e => e.preventDefault() });
     const f = {};
+    const labelControl = (label, input) => el("label", {class:"field-label"}, el("span", {class:"help"}, label), input);
     const field = (key, label, help, input) => { f[key] = input; input.id = `f-${key}`; return el("div", { class: "field" }, el("label", { class: "lab", for: input.id }, label), help ? el("p", { class: "help" }, help) : null, input); };
     const statement = el("textarea", { class: "big" }); statement.value = o.statement || "";
     form.append(card("The outcome", el("div", null,
-      field("statement", "What should be true when this is done?", "Plain language, from the business side. The decomposer reads this first.", statement),
+      field("statement", "What should be true when this is done?", null, statement),
       field("title", "Short title", null, el("input", { type: "text", value: o.title || "" })))));
 
     const metricsBox = el("div");
     const metricRows = [];
     const addMetric = (m = {}) => {
-      const row = { metric: el("input", { type: "text", value: m.metric || "", placeholder: "Involuntary churn rate" }),
-        baseline: el("input", { type: "text", value: m.baseline || "", placeholder: "4.1% per month (leave empty if unknown)" }),
-        target: el("input", { type: "text", value: m.target || "", placeholder: "Below 2.9% within two months" }),
+      const row = { original: m, metric: el("input", { type: "text", value: m.metric || "", placeholder: "What improves?" }),
+        baseline: el("input", { type: "text", value: m.baseline || "", placeholder: "Optional" }),
+        target: el("input", { type: "text", value: m.target || "", placeholder: "What counts as success?" }),
         measurement: el("input", { type: "text", value: m.measurement || "", placeholder: "Where it is read from" }) };
       const node = el("div", { class: "metric" },
-        el("div", { class: "grid2" }, el("div", null, el("label", { class: "help" }, "Metric"), row.metric), el("div", null, el("label", { class: "help" }, "Target"), row.target)),
-        el("div", { class: "grid2" }, el("div", null, el("label", { class: "help" }, "Baseline today"), row.baseline), el("div", null, el("label", { class: "help" }, "How it is measured"), row.measurement)),
+        el("div", { class: "grid2" }, labelControl("Metric", row.metric), labelControl("Target", row.target)),
+        el("details", {open: !!(m.baseline || m.measurement)}, el("summary", null, "Measurement details (optional)"),
+          el("div", { class: "grid2" }, labelControl("Baseline today", row.baseline), labelControl("How it is measured", row.measurement))),
         el("button", { class: "rm", type: "button", onclick: () => { node.remove(); metricRows.splice(metricRows.indexOf(row), 1); } }, "Remove this metric"));
       metricRows.push(row); metricsBox.append(node);
     };
     (o.success_metrics && o.success_metrics.length ? o.success_metrics : [{}]).forEach(addMetric);
-    form.append(card("Success metrics", el("div", null, el("p", { class: "help" }, "Each needs a target. A vague metric is refused."), metricsBox, el("button", { class: "add", type: "button", onclick: () => addMetric() }, "Add a metric"))));
+    form.append(card("Success metrics", el("div", null, el("p", { class: "help" }, "Define at least one measurable target."), metricsBox, el("button", { class: "add", type: "button", onclick: () => addMetric() }, "Add a metric"))));
 
     const c = o.constraints || {};
     f.must_not = el("textarea"); f.must_not.value = (c.must_not || []).join("\n");
     f.compliance = el("textarea"); f.compliance.value = (c.compliance || []).join("\n");
     f.budget = el("input", { type: "number", min: "1", value: c.budget_usd ?? 150 });
     f.deadline = el("input", { type: "date", value: c.deadline || "" });
-    form.append(card("Constraints", el("div", null,
-      el("div", { class: "grid2" }, el("div", null, el("label", { class: "help" }, "Must not (one per line)"), f.must_not), el("div", null, el("label", { class: "help" }, "Compliance (one per line)"), f.compliance)),
-      el("div", { class: "grid2", style: "margin-top:10px" }, el("div", null, el("label", { class: "help" }, "Budget in USD for agent spend"), f.budget), el("div", null, el("label", { class: "help" }, "Deadline"), f.deadline)))));
+    form.append(el("details", { class: "card optional-fields", open: !!((c.must_not || []).length || (c.compliance || []).length || c.deadline) }, el("summary", null, "Constraints and default budget"), el("div", {class:"card-body"},
+      el("div", { class: "grid2" }, labelControl("Must not (one per line)", f.must_not), labelControl("Compliance (one per line)", f.compliance)),
+      el("div", { class: "grid2", style: "margin-top:10px" }, labelControl("Budget in USD for agent spend", f.budget), labelControl("Deadline", f.deadline)))));
 
     const repo = (o.target_repositories || [{}])[0] || {};
     f.repo = el("input", { type: "text", value: repo.url || "", placeholder: "https://github.com/you/app" });
@@ -1376,37 +1369,49 @@
     f.paths = el("textarea"); f.paths.value = (repo.paths_in_scope || []).join("\n");
     f.create = el("input", { type: "checkbox", checked: !!repo.create });
     f.visibility = el("select", null, el("option", { value: "private", selected: repo.visibility !== "public" }, "private"), el("option", { value: "public", selected: repo.visibility === "public" }, "public"));
-    form.append(card("Repository the agents will change", el("div", null,
-      el("p", { class: "help" }, "An existing repository, or one the factory creates for you on the code host before the run starts. The URL names it either way."),
-      el("div", { class: "grid2" }, el("div", null, el("label", { class: "help" }, "HTTPS URL"), f.repo), el("div", null, el("label", { class: "help" }, "Default branch"), f.branch)),
-      el("div", { class: "grid2", style: "margin-top:10px" },
-        el("label", { class: "pick", style: "font-weight:500" }, f.create, "Create this repository if it does not exist"),
-        el("div", null, el("label", { class: "help" }, "Visibility when created"), f.visibility)),
-      el("label", { class: "help", style: "margin-top:10px" }, "Paths in scope (one per line, globs allowed). Agents may only change these. Leave empty for a new repository."), f.paths)));
+    const visibilityField = labelControl("Visibility when created", f.visibility);
+    visibilityField.hidden = !f.create.checked;
+    f.create.addEventListener("change", () => { visibilityField.hidden = !f.create.checked; });
+    form.append(card("Repository", el("div", null,
+      el("p", { class: "help" }, "The repository this outcome applies to."),
+      labelControl("HTTPS URL", f.repo),
+      el("details", {open: !!(repo.create || (repo.paths_in_scope || []).length || (repo.default_branch && repo.default_branch !== "main"))}, el("summary", null, "Branch, scope and repository creation"),
+        labelControl("Default branch", f.branch),
+        el("div", { class: "grid2", style: "margin-top:10px" },
+          el("label", { class: "pick", style: "font-weight:500" }, f.create, "Create this repository if it does not exist"), visibilityField),
+        labelControl("Allowed paths (optional, one per line)", f.paths)))));
 
     const ow = o.owner || {};
-    f.oname = el("input", { type: "text", value: ow.name || "" }); f.ohandle = el("input", { type: "text", value: ow.handle || "", placeholder: "your GitHub login" }); f.orole = el("input", { type: "text", value: ow.role || "" });
-    form.append(card("Owner (who decides the gates)", el("div", { class: "grid3" }, el("div", null, el("label", { class: "help" }, "Name"), f.oname), el("div", null, el("label", { class: "help" }, "Code host handle"), f.ohandle), el("div", null, el("label", { class: "help" }, "Role"), f.orole))));
+    f.oname = el("input", { type: "text", value: ow.name || "" }); f.ohandle = el("input", { type: "text", value: ow.handle || "", placeholder: "your GitHub login" });
+    form.append(card("Owner (who decides the gates)", el("div", { class: "grid2" }, labelControl("Name", f.oname), labelControl("Code host handle", f.ohandle))));
 
     const notice = el("div");
     const lines = ta => ta.value.split("\n").map(s => s.trim()).filter(Boolean);
     const collect = () => ({
       outcome_id: savedId || "", title: f.title.value.trim(), statement: f.statement.value.trim(),
-      success_metrics: metricRows.map(r => ({ metric: r.metric.value.trim(), baseline: r.baseline.value.trim() || null, target: r.target.value.trim(), measurement: r.measurement.value.trim() })).filter(m => m.metric || m.target),
+      success_metrics: metricRows.map(r => ({ ...r.original, metric: r.metric.value.trim(), baseline: r.baseline.value.trim() || null, target: r.target.value.trim(), measurement: r.measurement.value.trim() })).filter(m => m.metric || m.target),
       constraints: { must_not: lines(f.must_not), compliance: lines(f.compliance), budget_usd: Number(f.budget.value) || undefined, deadline: f.deadline.value || undefined },
       context_links: o.context_links || [], clarifications: o.clarifications || [],
-      target_repositories: [{ url: f.repo.value.trim(), default_branch: f.branch.value.trim() || "main", paths_in_scope: lines(f.paths),
-        create: f.create.checked || undefined, visibility: f.create.checked ? f.visibility.value : undefined }],
-      owner: { name: f.oname.value.trim(), handle: f.ohandle.value.trim(), role: f.orole.value.trim() },
+      target_repositories: [{ ...repo, url: f.repo.value.trim(), default_branch: f.branch.value.trim() || "main", paths_in_scope: lines(f.paths),
+        create: f.create.checked || undefined, visibility: f.create.checked ? f.visibility.value : undefined }, ...(o.target_repositories || []).slice(1)],
+      owner: { name: f.oname.value.trim(), handle: f.ohandle.value.trim(), ...(ow.role ? {role: ow.role} : {}) },
       created_at: o.created_at || undefined,
     });
     async function save() {
       notice.replaceChildren();
+      saveBtn.disabled = startLink.disabled = true;
+      try {
       const r = await api("/api/outcomes", { body: { outcome: collect() } });
       if (!r.ok) { notice.replaceChildren(el("div", { class: "notice bad" }, el("b", null, "Not saved yet. "), ...r.errors.map(e => el("div", null, e)))); return null; }
       savedId = r.outcome_id;
       notice.replaceChildren(el("div", { class: "notice ok" }, el("b", null, "Saved. "), el("a", { href: `#/start?outcome=${savedId}${appQuery}` }, "Start a run from it.")));
       return r;
+      } catch (e) {
+        notice.replaceChildren(el("div", {class:"notice bad", role:"alert"}, `Could not save: ${e.message}`));
+        return null;
+      } finally {
+        saveBtn.disabled = startLink.disabled = false;
+      }
     }
     const saveBtn = el("button", { class: "btn primary", type: "button", onclick: save }, "Save");
     const startLink = el("button", { class: "btn call", type: "button", onclick: async () => { const r = await save(); if (r) location.hash = `#/start?outcome=${savedId}${appQuery}`; } }, "Save and start a run");
@@ -1455,18 +1460,18 @@
   function appLeft(a) { return money(a.remaining_usd ?? Math.max(0, (a.budget_usd || 0) - (a.spent_usd || 0))); }
   function appKey(a) { return JSON.stringify([a.status, a.phase, a.updated_at, a.plan_sha256, a.spent_usd, (a.sessions || []).length, (a.credentials || []).map(c => [c.name, c.status]), a.pr_url, a.error]); }
   function onboardingFacts() {
-    return card("What onboarding does, and what it does not", el("ul", { class: "facts" },
-      el("li", null, el("b", null, "Runs hosted. "), "Discovery and verification are agent sessions in a hosted sandbox, not on this computer."),
-      el("li", null, el("b", null, "Synthetic data only. "), "Verification uses generated test data and test-only keys, never production data or real accounts."),
-      el("li", null, el("b", null, "Charged to the app's budget. "), "Discovery and verification spend from the budget you set. Each session and its cost is listed on the app page."),
-      el("li", null, el("b", null, "People still decide. "), "The setup arrives as a pull request for an engineer to review and merge. Gate 1 (the plan), Gate 2 (the contracts) and every merge stay with people.")), null, "soft");
+    return card("Before you start", el("ul", { class: "facts" },
+      el("li", null, el("b", null, "Runs hosted. "), "Discovery and tests run in a hosted sandbox."),
+      el("li", null, el("b", null, "Synthetic data only. "), "Use generated data and test credentials."),
+      el("li", null, el("b", null, "Charged to the app's budget. "), "Agent sessions use this app's budget."),
+      el("li", null, el("b", null, "People still decide. "), "Review the setup pull request before merging.")), null, "soft");
   }
 
   async function viewApps() {
     setNav("apps");
     const apps = (await api("/api/apps")).apps || [];
     const frag = document.createDocumentFragment();
-    frag.append(pageHead("Apps", "An app is a repository the factory has learned to build, run and test. Onboarding finds that setup, verifies it once in a hosted sandbox, and proposes it as a pull request. Runs on the app then use it to check their work.",
+    frag.append(pageHead("Apps", "Repositories and their verified test setups.",
       [el("a", { class: "btn primary", href: "#/apps/new" }, "Add an app")]));
     const cloudBox = el("div", { role: "status", "aria-live": "polite" }, el("p", { class: "explain", style: "margin:0" }, "Reading the workspace's execution environments…"));
     const cloudCard = card("In the cloud", cloudBox, "execution environments, one per onboarded app");
@@ -1485,7 +1490,7 @@
       }
       frag.append(card("On this Console", tbl, plural(apps.length, "app")), cloudCard);
     }
-    frag.append(onboardingFacts());
+
     $main.replaceChildren(frag);
     api("/api/apps/environments").then(v => cloudEnvironments(cloudBox, v))
       .catch(e => cloudBox.replaceChildren(el("div", { class: "notice bad" }, `The workspace could not be read: ${e.message}`)));
@@ -2096,7 +2101,7 @@
     }
     function schedule() { startPoll(tick, busy() ? 3000 : 12000); }
 
-    const aside = el("aside", null, card("Agent status", statusBox), onboardingFacts());
+    const aside = el("aside", null, card("Agent status", statusBox));
     $main.replaceChildren(headBox, updateBar, el("div", { class: "start" }, body, aside));
     paint(app);
   }
@@ -2107,12 +2112,12 @@
     const [c, logs] = await Promise.all([api("/api/config"), api("/api/logs")]);
     state.config = c;
     const frag = document.createDocumentFragment();
-    frag.append(pageHead("Settings", "What this Console can do depends on what the orchestrator has been given. Set these as environment variables where you run `factory web`."));
+    frag.append(pageHead("Settings", "Connections, agent sessions and diagnostics."));
     const platformGaps = gapsMatching(c.design_gaps, ["agent:", "environment_id", "ANTHROPIC_API_KEY"]);
     const forgeGaps = forgeGapsOf(c);
     const surfaceGaps = gapsMatching(c.gaps, ["LINEAR", "FACTORY_GATE_SURFACE", "FACTORY_PAGE_PUBLISHER"]);
     const r = (title, ok, desc, gaps, how, label) => el("div", { class: "r" }, el("h3", null, title), el("div", { class: `status ${ok ? "ok" : "warn"}` }, ok ? "Ready" : (label || "Not configured")),
-      el("p", { class: "explain", style: "margin-top:6px" }, desc), gaps.length ? el("ul", null, gaps.map(x => el("li", null, x))) : null, how ? el("p", { class: "explain" }, how) : null);
+      el("p", { class: "explain", style: "margin-top:6px" }, desc), gaps.length ? el("ul", null, gaps.map(x => el("li", null, x))) : null, !ok && how ? el("p", { class: "explain" }, how) : null);
     const agentsCard = r("The crew and the platform", !platformGaps.length, "The agents and the sandbox environment in your Console workspace, plus the API key the orchestrator uses to start sessions.", platformGaps, "Run `ant apply agents environments` once and put ANTHROPIC_API_KEY (and ANTHROPIC_WORKSPACE_ID if the key is not workspace-scoped) in .env at the repository root.", "Checking...");
     frag.append(card("Readiness", el("div", { class: "readiness" },
       agentsCard,
@@ -2129,21 +2134,21 @@
       if (p.agents && p.agents.length) {
         const t = el("table", null, el("tr", null, el("th", null, "Agent"), el("th", null, "Id"), el("th", null, "On the platform")));
         for (const a of p.agents) t.append(el("tr", null, el("td", null, el("span", { style: "display:inline-flex;align-items:center;gap:8px" }, crewFigure(a.key, "still", "s"), CREW_NAME[a.key] || a.key)), el("td", { class: "mono explain" }, a.id), el("td", null, el("span", { class: `tag ${a.found ? "ok" : "bad"}` }, a.found ? `found${a.name ? ": " + a.name : ""}` : "missing"))));
-        parts.push(t);
+        parts.push(el("details", {open: !p.ok}, el("summary", null, `${p.agents.length} configured agents`), t));
       }
       if (p.sessions && p.sessions.length) {
         const t = el("table", { class: "platform-sessions" }, el("tr", null, el("th", null, "Session"), el("th", null, "Status"), el("th", null, "Run"), el("th", null, "Created")));
         for (const s of p.sessions) t.append(el("tr", null, el("td", null, el("a", { href: s.url, target: "_blank", rel: "noopener" }, s.title || s.id)), el("td", null, el("span", { class: "tag" }, s.status || "?")),
-          el("td", null, s.run_id ? el("a", { href: `#/runs/${s.run_id}` }, s.run_id) : el("span", { class: "explain" }, "not a factory run")), el("td", { class: "explain" }, s.created_at ? ago(s.created_at) : "")));
+          el("td", null, s.local_url ? el("a", { href: s.local_url }, s.run_id) : el("span", { class: "explain", title: s.run_id ? "Not stored on this Console; open the platform session for its trace." : "" }, s.run_id || "not a factory run")), el("td", { class: "explain" }, s.created_at ? ago(s.created_at) : "")));
         parts.push(el("h3", { style: "font-size:13px;margin:14px 0 6px" }, "Recent sessions in the workspace"), t);
       } else if (!p.error) parts.push(el("p", { class: "explain" }, p.sessions_error ? `Sessions could not be listed: ${p.sessions_error}` : "No sessions yet. Start a design run to see the decomposer appear here and in the Anthropic Console."));
       platformBox.replaceChildren(...parts);
     }).catch(e => platformBox.replaceChildren(el("div", { class: "notice bad" }, e.message)));
-    frag.append(card("Runs directory", el("dl", { class: "kv" }, el("dt", null, "Path"), el("dd", { class: "mono" }, c.runs_dir), el("dt", null, "Decisions"), el("dd", null, "Written to _queue/ under it; a running orchestrator polls that directory."), el("dt", null, "Workspace"), el("dd", null, c.workspace_id ? el("span", { class: "mono" }, c.workspace_id) : el("span", { class: "explain" }, "ANTHROPIC_WORKSPACE_ID not set (needed when the API key is not scoped to a workspace)")))));
+    frag.append(el("details", {class:"card optional-fields"}, el("summary", null, "Local storage and workspace"), el("dl", { class: "kv" }, el("dt", null, "Path"), el("dd", { class: "mono" }, c.runs_dir), el("dt", null, "Decisions"), el("dd", null, "Written to _queue/ under it; a running orchestrator polls that directory."), el("dt", null, "Workspace"), el("dd", null, c.workspace_id ? el("span", { class: "mono" }, c.workspace_id) : el("span", { class: "explain" }, "ANTHROPIC_WORKSPACE_ID not set (needed when the API key is not scoped to a workspace)")))));
     if (logs.logs.length) {
       const body = el("div", { class: "stack" }, logs.logs.map(l => el("div", null, el("div", { class: "title" }, el("span", { class: "mono" }, l.name), l.run_id ? el("a", { href: `#/runs/${l.run_id}` }, l.run_id) : el("span", { class: "tag" }, "no run id yet"), el("span", { class: "explain" }, ago(l.modified_at))),
         el("pre", { class: "log" }, l.tail))));
-      frag.append(card("Live orchestrator logs", body, "started from this Console"));
+      frag.append(el("details", {class:"card optional-fields"}, el("summary", null, "Orchestrator logs"), el("div",{class:"card-body"},body)));
     }
     $main.replaceChildren(frag);
     startPoll(viewSettings, 30000);

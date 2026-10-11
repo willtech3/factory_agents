@@ -76,6 +76,10 @@ h1, h2, h3, h4 { margin: 0; line-height: 1.2; font-family: var(--display); lette
 .side .theme:hover { color: var(--text); border-color: var(--text-3); }
 .platform-sessions td { font-size: 13px; }
 .content { padding: 24px 28px 60px; max-width: 1440px; width: 100%; }
+[hidden] { display: none !important; }
+.field-label { display: flex; flex-direction: column; gap: 6px; }
+.optional-fields > summary { padding: 16px 20px; font-weight: 650; cursor: pointer; }
+
 /* phones: the page never scrolls sideways; wide tables scroll inside their own box, label/value lists stack */
 @media (max-width: 860px) { table { display: block; overflow-x: auto; max-width: 100%; } table th:first-child, table td:first-child { min-width: 170px; } .side .foot { margin-top: 10px; padding: 4px 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; } .side .foot br { display: none; } .side .foot b { display: inline; } .side .foot span { margin-right: 10px; } .side .theme { margin-top: 0; } .kv { grid-template-columns: minmax(0, 1fr); gap: 2px 0; } .kv dd + dt { margin-top: 8px; } }
 @media (max-width: 860px) { .app { grid-template-columns: minmax(0, 1fr); } .side { position: static; height: auto; } .side nav { flex-direction: row; flex-wrap: wrap; } .content { padding: 16px 16px 40px; } }
