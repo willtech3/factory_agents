@@ -248,3 +248,9 @@ def test_the_run_cap_counts_verification_spend(tmp_path, root):
     _, _, ctx = hv.run_verifier(tmp_path, root, {"app/main.py": "X = 1\n"})
     state = ctx.store.state(hv.RUN_ID)
     assert state.sessions_finished == 1 and state.list_cost_usd > 0
+
+
+def test_generator_of_deleted_tests_is_not_consumed_before_protection():
+    result = checks.protected_tests([], iter(['tests/models.test.ts']), ['tests/models.test.ts'],
+                                    ['tests/models.test.ts'], False, ['tests/models.test.ts'], {})
+    assert not result.passed and result.data['touched'] == ['tests/models.test.ts']

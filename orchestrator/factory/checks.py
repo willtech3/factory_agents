@@ -111,7 +111,7 @@ def protected_tests(
     deleted = set(deleted_files)
     named = set(named_test_files)
     removed = removed_lines_by_file
-    touched = [f for f in list(modified_files) + list(deleted_files) if f in existing and is_test_file(f)]
+    touched = [f for f in list(modified_files) + list(deleted) if f in existing and is_test_file(f)]
     if spec_touches_tests:
         touched = [f for f in touched if not path_allowed(f, allowed_paths)]
 
