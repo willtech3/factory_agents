@@ -82,6 +82,7 @@ body { margin: 0; font: var(--fs-base)/var(--lh) var(--sans); -webkit-font-smoot
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
+h1[tabindex]:focus { outline: none; }   /* a route change moves focus here for readers; the ring would be noise */
 button { font: inherit; color: inherit; }
 code, .mono { font-family: var(--mono); font-size: 0.86em; }
 :not(pre) > code { overflow-wrap: anywhere; }   /* long paths and commands break instead of widening their section */
@@ -182,7 +183,7 @@ textarea:focus, input:focus, select:focus { border-color: var(--ink); }   /* the
 .field-error { color: var(--bad-text); font-size: var(--fs-md); font-weight: 700; margin: 4px 0 0; }
 [aria-invalid="true"] { border-color: var(--bad-text) !important; box-shadow: 0 0 0 1px var(--bad-text); }
 .error-list { margin: 6px 0 0; padding-left: 18px; }
-.error-list .btn.link { min-height: 0; padding: 2px 0; white-space: normal; text-align: left; text-decoration: underline; font-weight: 400; }
+.error-list .btn.link { min-height: 32px; padding: 4px 0; white-space: normal; text-align: left; text-decoration: underline; font-weight: 400; }
 
 /* ---------- 5. sections, lists, tables */
 .card { background: var(--surface); border-radius: var(--radius); }
@@ -422,10 +423,10 @@ summary.explain { cursor: pointer; }
 .summary-card { background: var(--surface-2); border-radius: var(--radius-ctl); padding: 16px 18px; }
 .summary-card h2 { font-size: var(--fs-sm); color: var(--text-3); font-weight: 700; margin-bottom: 8px; font-family: var(--sans); }
 .summary-card .text { font-size: var(--fs-base); line-height: 1.6; white-space: pre-wrap; }
-.summary-card .text.clamp { max-height: 7.5em; overflow: hidden; position: relative; }
+.summary-card .text.clamp { max-height: 8em; overflow: hidden; position: relative; }
 .summary-card .more { margin-top: 8px; }
 /* at-a-glance numbers: a row of figures, no boxes */
-.glance { display: flex; flex-wrap: wrap; gap: 8px 32px; }
+.glance { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px 24px; }
 .glance .g { display: flex; flex-direction: column; gap: 2px; min-width: 120px; }
 .glance .g .v { font-size: var(--fs-xl); font-weight: 700; line-height: 1.1; font-family: var(--display); }
 .glance .g .v.warn { color: var(--warn-text); }
@@ -523,7 +524,7 @@ summary.explain { cursor: pointer; }
 @media (max-width: 700px) { .form .grid2, .form .grid3 { grid-template-columns: minmax(0, 1fr); } }
 .metric { border-top: 1px solid var(--hair); padding: 12px 0; margin: 10px 0; }
 .metric .grid2 + .grid2 { margin-top: 8px; }
-.metric .rm { font-size: var(--fs-sm); color: var(--text-3); background: none; border: 0; cursor: pointer; padding: 0; margin-top: 8px; text-decoration: underline; }
+.metric .rm { font-size: var(--fs-sm); color: var(--text-3); background: none; border: 0; cursor: pointer; padding: 6px 0; min-height: 32px; margin-top: 8px; text-decoration: underline; }
 .form .add { background: none; border: 1px dashed var(--line-2); padding: 8px 12px; border-radius: var(--radius-ctl); cursor: pointer; color: var(--text-2); }
 .form .add:hover { color: var(--text); border-color: var(--text-2); }
 .new-repo { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }

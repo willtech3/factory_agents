@@ -227,7 +227,7 @@ def render_gate1_page(run_id: str, outcome: dict[str, Any], decomposition: dict[
             + (f"<h2 id=\"full\">decomposition.md</h2>{md_to_html(decomposition_md)}" if decomposition_md else ""))
     nav = [("summary", "Summary"), ("coverage", "Coverage"), ("work-items", "Work items"), ("questions", "Questions"),
            ("artifacts", "Artifacts")] + ([("full", "Full text")] if decomposition_md else [])
-    return _page(f"Gate 1 · {outcome.get('title', run_id)}", f"Gate 1 · the plan · run {run_id}", nav, body)
+    return _page(f"Gate 1 · {outcome.get('title', run_id)}", f"Gate 1 · the plan · {run_id}", nav, body)
 
 
 def render_gate2_page(run_id: str, outcome: dict[str, Any], specs: dict[str, dict[str, Any]], verdict: dict[str, Any],
@@ -292,4 +292,4 @@ def render_gate2_page(run_id: str, outcome: dict[str, Any], specs: dict[str, dic
             f"<h2 id=\"coverage\">Goal coverage</h2><table><tr><th>Metric</th><th>Assessment</th><th>Covering acceptance criteria</th><th>Note</th></tr>{gc_rows}</table>"
             + (f"<h2 id=\"coherence\">Coherence</h2>{coh_html}" if coh_html else "")
             + spec_sections + _questions_section(all_questions, "Open questions across specs") + _artifacts_section(shas))
-    return _page(f"Gate 2 · {outcome.get('title', run_id)}", f"Gate 2 · the contracts · run {run_id}", nav, body)
+    return _page(f"Gate 2 · {outcome.get('title', run_id)}", f"Gate 2 · the contracts · {run_id}", nav, body)

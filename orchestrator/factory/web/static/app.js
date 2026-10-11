@@ -364,7 +364,8 @@
       const [c, board] = await Promise.all([api("/api/config"), api("/api/board")]);
       state.config = c;
       const w = waitingOf(onBoard(board)), n = w.total;
-      $inboxCount.textContent = n; $inboxCount.classList.toggle("zero", n === 0);
+      $inboxCount.textContent = n; $inboxCount.hidden = n === 0; $inboxCount.classList.toggle("zero", n === 0);
+      $inboxCount.closest("a").setAttribute("aria-label", n ? `Board, ${n} waiting on a person` : "Board");
       const dark = document.documentElement.dataset.theme === "dark", still = document.documentElement.dataset.motion === "off";
       const forgeOk = !forgeGapsOf(c).length;
       // rebuilt only when something in it changed: a poll must not recreate the button a person is about to press
@@ -524,7 +525,7 @@
       for (const r of shown) {
         const prs = (r.pull_requests || []).filter(p => p.url);
         const sentence = statusSentence(r, false);
-        if (r.status === "completed" && prs.length) sentence.append(" ", el("span", { class: "prs" }, prs.flatMap((p, i) => [i ? ", " : "", el("a", { href: p.url, target: "_blank", rel: "noopener", title: `${p.title || p.work_item_id}: ${p.state}`, onclick: ev => ev.stopPropagation() }, `#${p.cr_id}`), ` ${p.state}`]), "."));
+        if (r.status === "completed" && prs.length) sentence.append(" ", el("span", { class: "prs" }, prs.map(p => `#${p.cr_id} ${p.state}`).join(", "), "."));   // no link inside the row's link; the run page has them
         list.append(el("a", { class: "run-row", href: `#/runs/${r.run_id}`, title: r.run_id }, lineStrip(r, "mini"),
           el("span", { class: "what" }, el("span", { class: "t" }, r.title, r.design_only ? el("span", { class: "muted" }, " · design run") : null), sentence),
           el("span", { class: "meta" }, el("span", null, `${money(r.cost_usd)}${r.budget_usd != null ? ` of ${money(r.budget_usd)}` : ""}`),
@@ -575,16 +576,17 @@
 
   function askBlock(q, onDone) {
     const ta = el("textarea", { placeholder: "Your answer", "aria-label": "Your answer" });
-    const status = el("div", { class: "explain" });
+    const status = el("div", { class: "explain", role: "status" });
     const options = el("div", { class: "options" }, q.options.map(o => el("button", { class: "btn sm", type: "button", onclick: () => { ta.value = o; ta.focus(); } }, o)));
     const send = el("button", { class: "btn call mt-2", type: "button", onclick: async () => {
       if (!ta.value.trim()) { status.textContent = "Type or pick an answer first."; return; }
-      send.disabled = true;
+      send.disabled = true; send.textContent = "Sending…";
       try { await api(`/api/questions/${q.question_id}/answer`, { body: { answer: ta.value.trim(), by: "console" } });
-        box.replaceChildren(el("div", { class: "q" }, q.question), el("div", { class: "done" }, `Answered: ${ta.value.trim()}`),
-          el("div", { class: "explain" }, "The agent continues with your answer."));
+        const done = el("div", { class: "done", tabindex: "-1" }, `Answered: ${ta.value.trim()}`);
+        box.replaceChildren(el("div", { class: "q" }, q.question), done, el("div", { class: "explain" }, "The agent continues with your answer."));
+        done.focus();
         if (onDone) onDone();
-      } catch (e) { status.textContent = e.message; send.disabled = false; }
+      } catch (e) { status.textContent = e.message; send.disabled = false; send.textContent = "Send answer"; }
     } }, "Send answer");
     const box = el("div", { class: "ask", id: "q" },
       el("div", { class: "q" }, q.question),
@@ -605,7 +607,8 @@
     const b = r.budget || {};
     const started = r.created_at;
     const s = r.summary || {};
-    const head = pageHead(r.title, null, null, [el("a", { href: "#/runs" }, "Runs"), " / ", el("span", { class: "mono" }, r.run_id), r.design_only ? " · design run" : ""]);
+    const oc = r.outcome && r.outcome.outcome_id ? el("a", { href: `#/outcomes/new?outcome=${encodeURIComponent(r.outcome.outcome_id)}`, title: r.outcome.statement || null }, "Outcome") : null;
+    const head = pageHead(r.title, null, null, [el("a", { href: "#/runs" }, "Runs"), " / ", el("span", { class: "mono" }, r.run_id), r.design_only ? " · design run" : "", oc ? " · " : null, oc]);
     head.querySelector("div").append(el("div", { class: "now" }, el("p", { class: "sentence" }, statusSentence({ ...s, cost_usd: r.cost }, true)),
       el("p", { class: "meta" }, metaLine({ ...s, cost_usd: r.cost, budget_usd: b.budget_usd != null ? b.budget_usd : s.budget_usd })),
       r.stage === "implementing" && (r.work_items || []).length ? el("p", { class: "meta" }, itemsLine(r.work_items)) : null));
@@ -739,7 +742,7 @@
       el("td", { class: "explain mono" }, a.sha256 ? a.sha256.slice(0, 12) : "")));
     const more = el("details", { class: "more mt-4" }, el("summary", { class: "explain" }, `Work items (${r.work_items.length}), every event (${r.events.length}) and every file (${r.artifacts.length})`),
       el("div", { class: "stack mt-3" }, card("Work items", r.work_items.length ? items : el("p", { class: "explain" }, "Work items appear once the decomposition exists.")),
-        el("div", { class: "grid-2" }, card("Every event", tl, "newest first"), card("Files produced", r.artifacts.length ? files : el("p", { class: "explain" }, "None yet.")))));
+        el("div", { class: "grid-2" }, card("Every event", tl, "newest first · your clock, date on hover"), card("Files produced", r.artifacts.length ? files : el("p", { class: "explain" }, "None yet.")))));
     frag.append(more);
 
     if (!paint(frag, nav)) return;
@@ -970,8 +973,8 @@
     const recorded = b.decision;
     const box = el("div", { class: "stack" });
     box.append(glance([[money(p.spent_usd), `spent across ${plural(p.sessions_finished || b.sessions || 0, "session")}`],
-      [money(p.budget_usd), "the run's budget", "warn"], [money(next.cap_usd), `next: ${next.label || next.stage} (${plural(next.sessions || 1, "session")}), at most`],
-      [money(needed), "needed to continue", "bad"]]));
+      [money(p.budget_usd), "the run's budget"], [money(next.cap_usd), `next: ${next.label || next.stage} (${plural(next.sessions || 1, "session")}), at most`],
+      [money(needed), "needed to continue"]]));
     box.append(el("p", { class: "explain" }, "Every agent session carries its own hard cap, so the check is spent plus the next step's caps: the run can never go past the budget, and a step is refused before it starts rather than cut off midway. The caps are conservative; a step usually costs less than its cap."));
     const status = el("div");
     const err = el("div", { class: "err", role: "alert" });
@@ -1247,13 +1250,13 @@
       if (!outcomeId) { notice.append(el("div", { class: "notice bad" }, "Pick an outcome first.")); return; }
       if (params.get("app") && !app) { notice.append(el("div", {class:"notice bad"}, "The app could not be loaded. Return to Apps before continuing.")); return; }
       if (app && (repoNew.checked || normRepo(repoUrl.value) !== normRepo(app.repository_url))) { notice.append(el("div", {class:"notice bad"}, "This setup belongs to a different repository. Open the matching app or start a separate run.")); return; }
-      btn.disabled = true;
+      const was = btn.textContent; startBtn.disabled = designBtn.disabled = true; btn.textContent = "Starting…";
       try {
         await saveRepo();
         const s = await api("/api/runs", { body: { outcome_id: outcomeId, app_id: app ? app.app_id : (mode === "live" && bound ? bound.app_id : undefined), mode, settings: settings() } });
         if (s.run_id) location.hash = `#/runs/${s.run_id}`;
         else { notice.append(el("div", { class: "notice ok" }, el("b", null, "Run started. "), "The crew is waking up; the run appears under Runs within a minute.")); setTimeout(() => { location.hash = "#/runs"; }, 4000); }
-      } catch (e) { notice.append(el("div", { class: "notice bad" }, e.message)); btn.disabled = false; }
+      } catch (e) { notice.append(el("div", { class: "notice bad" }, e.message)); btn.textContent = was; startBtn.disabled = !cfg.can_run_live; designBtn.disabled = !cfg.can_run_design; }
     }
     const startBtn = el("button", { class: "btn primary lg", type: "button", disabled: !cfg.can_run_live, onclick: ev => go("live", ev.currentTarget) }, "Start the run");
     const designBtn = el("button", { class: "btn", type: "button", disabled: !cfg.can_run_design, onclick: ev => go("design", ev.currentTarget) }, "Design only: stop after Gate 2");
@@ -1288,7 +1291,7 @@
     const picks = new Map();
     const frag = document.createDocumentFragment();
     const head = pageHead(rec.kind === "budget" && !rv.budget ? "Session limit: continue or stop" : GATE_NAME[rec.kind] || rec.kind, null, rec.kind === "budget" ? null : [el("a", { class: "btn", href: `/gates/${gateId}/page`, target: "_blank", rel: "noopener" }, "Open as a page")],
-      [el("a", { href: "#/inbox" }, "Board"), " / ", el("a", { href: `#/runs/${g.run_id}` }, g.run_title)]);
+      [el("a", { href: "#/board" }, "Board"), " / ", el("a", { href: `#/runs/${g.run_id}` }, g.run_title)]);
     // the same sentence and line as the run page, so the person deciding sees where the run is and who waits on whom
     if (g.summary) head.querySelector("div").append(el("div", { class: "now" }, el("p", { class: "sentence" }, statusSentence(g.summary, true)), el("p", { class: "meta" }, metaLine(g.summary))));
     frag.append(head);
@@ -1328,13 +1331,13 @@
   function summaryCard(label, text) {
     if (String(text || "").length <= 1200) return el("div", { class: "summary-card" }, el("h2", null, label), el("div", { class: "text" }, text));   // short enough to read whole
     const body = el("div", { class: "text clamp" }, text);
-    const more = el("button", { class: "btn sm more", type: "button", onclick: () => { body.classList.toggle("clamp"); more.textContent = body.classList.contains("clamp") ? "Read the whole summary" : "Show less"; } }, "Read the whole summary");
+    const more = el("button", { class: "btn sm more", type: "button", "aria-expanded": "false", onclick: () => { body.classList.toggle("clamp"); const open = !body.classList.contains("clamp"); more.textContent = open ? "Show less" : "Read the whole summary"; more.setAttribute("aria-expanded", String(open)); } }, "Read the whole summary");
     const node = el("div", { class: "summary-card" }, el("h2", null, label), body, more);
     requestAnimationFrame(() => { if (body.scrollHeight <= body.clientHeight + 4) { body.classList.remove("clamp"); more.remove(); } });
     return node;
   }
   function noteField(id, placeholder, notes) {
-    const ta = el("textarea", { placeholder, "aria-label": `Note on ${id}` });
+    const ta = el("textarea", { placeholder, rows: "1", "aria-label": `Note on ${id}` });
     notes.set(id, ta);
     return el("div", { class: "note" }, el("label", null, "Your note on this item"), ta);
   }
@@ -1369,7 +1372,7 @@
       ["Items that need your judgement", judgement.length ? `${judgement.map(w => w.title).join("; ")}. Read these closely: they contain a product decision.` : "None flagged."],
       ["Scope", `${(d.explicitly_out_of_scope || []).length} things are explicitly out of scope. Make sure nothing you expected is there.`],
       ["Open questions and their defaults", openQ.length ? `${openQ.length} questions will use their default unless you say otherwise in a note.` : "None."],
-    ])));
+    ])), "for your own reading; nothing is recorded");
 
     const tbl = el("table", { class: "coverage" }, el("tr", null, el("th", null, "Success metric"), el("th", null, "Target"), el("th", null, "Work items that move it"), el("th", null, "Why")));
     for (const m of (metrics.length ? metrics : Object.keys(cov))) {
@@ -1381,6 +1384,7 @@
 
     const lvl = waves(items);
     const ordered = [...items].sort((a, b) => (lvl[a.work_item_id] - lvl[b.work_item_id]) || items.indexOf(a) - items.indexOf(b));
+    const titleOf = id => (items.find(x => x.work_item_id === id) || {}).title || id;
     const wrap = el("div");
     ordered.forEach((w, i) => {
       wrap.append(el("div", { class: "item-card", id: `wi-${w.work_item_id}` },
@@ -1391,7 +1395,7 @@
           el("div", { class: "intent" }, w.intent),
           el("div", { class: "facts" },
             el("span", null, el("b", null, "Moves: "), (w.contributes_to_metrics || []).join("; ") || "no metric"),
-            el("span", null, el("b", null, "After: "), (w.depends_on || []).join(", ") || "nothing, can start first")),
+            el("span", null, el("b", null, "After: "), (w.depends_on || []).map(titleOf).join("; ") || "nothing, can start first")),
           (w.touches || []).length ? el("details", null, el("summary", null, "Where it touches the code"), el("div", null, el("ul", { class: "paths" }, w.touches.map(t => el("li", null, typeof t === "string" ? t : JSON.stringify(t)))))) : null,
           noteField(w.work_item_id, "What should change about this item?", notes))));
     });
@@ -1454,7 +1458,7 @@
       el("p", { class: "explain" }, el("strong", null, "The crew wrote one contract per work item; an independent judge checked the set. "), "A contract is what an agent will build to: acceptance criteria, interfaces, and which files it may touch. Approving a contract starts its implementation."),
       summaryCard("The judge's summary", ov.summary_for_human || ""),
       glance([[words(ov.result), "judge's verdict", ov.result === "pass" ? "ok" : "warn"], [Object.keys(specs).length, "contracts"],
-        [`${totalAC} (${userVisible} user-visible)`, "acceptance criteria"], [sev("blocking") ? `${sev("blocking")} blocking` : sev("major") ? `${sev("major")} major` : allIssues.length, "issues the judge flagged", sev("blocking") ? "bad" : sev("major") ? "warn" : ""],
+        [totalAC, `acceptance criteria · ${userVisible} user-visible`], [sev("blocking") ? `${sev("blocking")} blocking` : sev("major") ? `${sev("major")} major` : allIssues.length, "issues the judge flagged", sev("blocking") ? "bad" : sev("major") ? "warn" : ""],
         [`${(v.goal_coverage || []).length - notCovered.length}/${(v.goal_coverage || []).length}`, byPeople.length ? `metrics covered · ${byPeople.length} measured by people` : "metrics covered by criteria", notCovered.length ? "warn" : "ok"]]))));
 
     doc.append(card("What to check", checklist([
@@ -1463,10 +1467,12 @@
       ["Product decisions hiding in the criteria", "Customer-facing wording, limits, timings, and defaults in a criterion are decisions you are making by approving."],
       ["Where each agent may change code", "Each contract lists allowed paths. If one reaches into something it should not, request changes."],
       ["Open questions and their defaults", openQ.length ? `${openQ.length} questions across the contracts will use their defaults unless you say otherwise.` : "None."],
-    ])));
+    ])), "for your own reading; nothing is recorded");
 
+    const byContract = acs => { const m = {}; for (const x of acs || []) { const [sid, ac] = String(x).split("/"); (m[sid] = m[sid] || []).push(ac || x); }
+      return Object.entries(m).map(([sid, list]) => `${(specs[sid] || {}).title || sid}: ${list.join(", ")}`).join(" · "); };
     const gc = el("table", { class: "coverage" }, el("tr", null, el("th", null, "Success metric"), el("th", null, "Covered?"), el("th", null, "By which criteria"), el("th", null, "Judge's note")));
-    for (const g of v.goal_coverage || []) gc.append(el("tr", null, el("td", null, el("b", null, g.metric)), el("td", { class: g.assessment === "covered" ? "ok" : g.assessment === "not_measurable_by_code" ? "" : "gap" }, g.assessment === "not_measurable_by_code" ? "measured by people" : words(g.assessment)), el("td", { class: "mono explain" }, (g.covering_acs || []).join(", ")), el("td", null, g.note || "")));
+    for (const g of v.goal_coverage || []) gc.append(el("tr", null, el("td", null, el("b", null, g.metric)), el("td", { class: g.assessment === "covered" ? "ok" : g.assessment === "not_measurable_by_code" ? "" : "gap" }, g.assessment === "not_measurable_by_code" ? "measured by people" : words(g.assessment)), el("td", { class: "explain" }, byContract(g.covering_acs)), el("td", null, g.note || "")));
     const coh = Object.entries(v.coherence || {}).flatMap(([bucket, items]) => (items || []).map(it => ({ bucket, it })));
     doc.append(card("Metrics and how the contracts fit together", el("div", { class: "stack" }, gc,
       coh.length ? el("div", null, el("h3", null, "Across the set"), el("ul", { class: "reading" }, coh.map(({ bucket, it }) => el("li", null,
@@ -1492,19 +1498,19 @@
       const blocking = (ps.issues || []).filter(x => x.severity === "blocking").length;
       const acTable = el("table", null, el("tr", null, el("th", null, "Criterion"), el("th", null, "Given, when, then"), el("th", null, "Verified by")));
       for (const ac of acs) acTable.append(el("tr", { class: "ac-row" },
-        el("td", null, el("code", null, ac.ac_id), el("div", null, el("span", { class: `tag ${ac.user_visible ? "gate" : ""}` }, ac.user_visible ? "user-visible" : "internal"))),
+        el("td", null, el("code", null, ac.ac_id), el("div", null, el("span", { class: "tag" }, ac.user_visible ? "user-visible" : "internal"))),
         el("td", { class: "gwt" }, el("b", null, "Given"), ac.given, " ", el("b", null, "When"), ac.when, " ", el("b", null, "Then"), ac.then),
         el("td", null, words(ac.verification))));
       const issues = (ps.issues || []).map(x => el("div", { class: "issue" }, el("span", { class: `sev ${x.severity}` }, x.severity), x.description, x.suggested_resolution ? el("div", { class: "fix" }, "Suggested: " + x.suggested_resolution) : null));
       const tp = s.test_plan || {};
       wrap.append(el("div", { class: "item-card", id: `spec-${sid}` },
         el("div", { class: "ih" }, el("span", { class: "num" }, i + 1), el("span", { class: "t" }, s.title), el("span", { class: "id" }, sid),
-          el("span", { class: "right" }, blocking ? el("span", { class: "tag bad" }, `${blocking} blocking`) : (ps.issues || []).length ? el("span", { class: "tag warn" }, plural((ps.issues || []).length, "issue")) : el("span", { class: "tag ok" }, "no issues"),
+          el("span", { class: "right" }, blocking ? el("span", { class: "tag bad" }, `${blocking} blocking`) : (ps.issues || []).length ? el("span", { class: "tag warn" }, plural((ps.issues || []).length, "issue")) : null,
             subsetAllowed ? el("label", { class: "pick" }, cb, "Approve this contract", el("span", { class: "sr-only" }, `(${s.title || sid})`)) : null)),
         el("div", { class: "ib" },
           el("div", { class: "intent" }, s.goal),
           el("div", { class: "facts" }, el("span", null, el("b", null, `${acs.length} criteria`), `, ${uv} user-visible`), el("span", null, el("b", null, "Size: "), s.estimated_size || "?"),
-            el("span", null, el("b", null, "After: "), ((s.dependencies || {}).specs || []).join(", ") || "nothing"), el("span", null, el("b", null, "May edit: "), plural((s.allowed_paths || []).length, "path"))),
+            el("span", null, el("b", null, "After: "), ((s.dependencies || {}).specs || []).map(d => (specs[d] || {}).title || d).join("; ") || "nothing"), el("span", null, el("b", null, "May edit: "), plural((s.allowed_paths || []).length, "path"))),
           issues.length ? el("div", null, el("h3", { class: "sub-h" }, "What the judge flagged"), ...issues) : null,
           el("details", { open: !several }, el("summary", null, `Acceptance criteria (${acs.length}, ${uv} user-visible)`), el("div", null, acTable)),
           el("details", null, el("summary", null, `Interfaces (${(s.interfaces || []).length}), allowed paths (${(s.allowed_paths || []).length}), test plan`), el("div", null,
@@ -1528,8 +1534,8 @@
     doc.append(card("What you are deciding", el("div", { class: "stack" },
       el("p", { class: "explain" }, el("strong", null, "The run stopped before starting an agent session that could take it past its budget. "),
         "Nothing is running. Approve with a new budget to continue from exactly where it stopped, or reject to close the run; the work so far stays in the files either way."),
-      glance([[money(p.spent_usd), `spent across ${plural(p.sessions_finished || 0, "session")}`], [money(p.budget_usd), "the run's budget", "warn"],
-        [money(next.cap_usd), `next: ${next.label || next.stage} (${plural(next.sessions || 1, "session")}), at most`], [money(p.needed_usd), "needed to continue", "bad"]]),
+      glance([[money(p.spent_usd), `spent across ${plural(p.sessions_finished || 0, "session")}`], [money(p.budget_usd), "the run's budget"],
+        [money(next.cap_usd), `next: ${next.label || next.stage} (${plural(next.sessions || 1, "session")}), at most`], [money(p.needed_usd), "needed to continue"]]),
       el("p", { class: "explain" }, `Paused in the ${words(p.run_stage || "")} stage. Every session carries its own hard cap, so the check is spent plus the next step's caps: the run can never go past the budget. A step usually costs less than its cap.`),
       el("p", { class: "explain" }, "The decision is applied by the controller when the run is continued: from the ", el("a", { href: `#/runs/${g.run_id}` }, "run page"), ", or with ", el("code", null, `factory resume ${g.run_id}`), "."))));
   }
@@ -1550,6 +1556,7 @@
     let armed = null;
 
     const isBudget = rec.kind === "budget" && !!(g.review || {}).budget;
+    const label = opt => isBudget && opt === "approve" ? "Raise the budget and continue" : isBudget && opt === "reject" ? "Close the run" : DECISION_LABEL[opt] || opt;
     const needed = isBudget ? Number(((g.review || {}).budget || {}).needed_usd || 0) : 0;
     const budgetInput = isBudget ? el("input", { id: "decide-budget", type: "number", min: String(Math.ceil(needed)), step: "1", value: String(Math.ceil(needed)), "aria-label": "New budget in USD", class: "w-narrow" }) : null;
     const composeComments = () => {
@@ -1567,7 +1574,6 @@
       buttons.forEach(b => {
         if (b.dataset.decision === "approve_subset") b.hidden = picked === picks.size;
         if (b.dataset.decision === "approve" && picks.size) b.hidden = picked !== picks.size;
-        if (b.dataset.decision === "request_changes") b.disabled = !composeComments();
       });
     };
     notes.forEach(ta => ta.addEventListener("input", refresh));
@@ -1586,18 +1592,18 @@
       consequences.reject = "Stop this run without accepting the unfinished session output.";
     }
     const buttons = rec.options.map(opt => el("button", { class: `btn block ${opt === "approve" || opt === "approve_subset" ? "approve" : opt === "request_changes" ? "changes" : "danger"}`,
-      type: "button", dataset: { decision: opt }, onclick: () => arm(opt) }, DECISION_LABEL[opt] || opt));
+      type: "button", dataset: { decision: opt }, onclick: () => arm(opt) }, label(opt)));
 
     function arm(opt) {
       error.textContent = "";
       const comments = composeComments();
-      if (opt === "request_changes" && !comments) { error.textContent = "Say what should change first."; return; }
+      if (opt === "request_changes" && !comments) { error.textContent = "Say what should change first."; comment.focus(); return; }
       if (isBudget && opt === "approve" && !(Number(budgetInput.value) >= needed)) { error.textContent = `The next step needs at least ${money(needed)}.`; return; }
       buttons.forEach(b => b.hidden = true);
       armed = opt;
       // the comment and the notes are read again when the decision is confirmed, so an edit made after arming is never lost
-      const go = el("button", { class: `btn block ${opt === "reject" ? "danger" : opt === "request_changes" ? "changes" : "approve"}`, type: "button", disabled: true, "aria-describedby": "confirm-why", onclick: () => decide(opt, composeComments() || comments) }, `Yes, ${(DECISION_LABEL[opt] || opt).toLowerCase()}`);
-      confirmBox.replaceChildren(el("div", { class: "what", id: "confirm-what" }, `${DECISION_LABEL[opt] || opt}?`),
+      const go = el("button", { class: `btn block ${opt === "reject" ? "danger" : opt === "request_changes" ? "changes" : "approve"}`, type: "button", disabled: true, "aria-describedby": "confirm-why", onclick: () => decide(opt, composeComments() || comments) }, `Yes, ${label(opt).toLowerCase()}`);
+      confirmBox.replaceChildren(el("div", { class: "what", id: "confirm-what" }, `${label(opt)}?`),
         el("div", { class: "explain", id: "confirm-why" }, consequences[opt] || ""),
         el("div", { class: "btn-col mt-3" }, go, el("button", { class: "btn block", type: "button", onclick: disarm }, "Cancel")));
       confirmBox.hidden = false;
@@ -1637,6 +1643,7 @@
       isBudget ? null : el("p", { class: "explain m-0 fs-sm" }, "Notes on items go to the agent: as feedback with Request changes, as guidance with Approve."),
       confirmBox, el("div", { class: "btn-col mt-3" }, buttons), error,
       rec.artifacts.length ? el("details", null, el("summary", null, `Bound to the ${plural(rec.artifacts.length, "file")} you are reading`),
+        el("p", { class: "explain m-0" }, "Your decision is recorded with these fingerprints. If a file no longer matches them when the run picks the decision up, the decision is refused and you are asked to look again."),
         el("ul", { class: "files" }, rec.artifacts.map(a => el("li", null, el("span", null, a.name), el("code", { title: a.sha256 }, a.sha256.slice(0, 10)))))) : null);
     // a stopped run's decision is recorded but not picked up: say so before the buttons, not after
     const stoppedNote = g.run_status === "stopped" ? el("div", { class: "notice bad m-0 mb-3" }, el("b", null, "The controller is stopped. "),
@@ -1863,6 +1870,7 @@
 
   // ------------------------------------------------------------------ apps: learn once how to build, run and test an app, then runs use it
   const APP_STATUS = {
+    verified: ["Verified", "The setup ran green in the hosted environment.", "ok"],   // records from before ready / ready_limited
     connected: ["Connected", "Added. Discovery has not run yet.", ""],
     discovering: ["Discovering", null, "crew"],
     needs_input: ["Needs your input", "Discovery stopped at questions only you can answer.", "gate"],
@@ -1893,7 +1901,7 @@
     const [label, text, cls] = APP_STATUS[a.status] || [words(a.status), "", ""];
     const discovering = a.kind === "greenfield" ? "An agent is proposing a scaffold and test setup from your description."
       : "An agent is reading the committed source and the existing test setup.";
-    return { label, text: text || discovering, cls };
+    return { label, text: text || (APP_BUSY.has(a.status) ? discovering : ""), cls };
   }
   function appStatusTag(a) { const s = appStatusText(a); return el("span", { class: `tag ${s.cls}` }, s.label); }
   function appMoney(a) { return `${money(a.spent_usd || 0)} of ${money(a.budget_usd)}`; }
@@ -2594,8 +2602,8 @@
 
     function show(a) {
       app = a; pending = null; updateBar.hidden = true;
-      headBox.replaceChildren(pageHead(a.name || a.app_id, a.description || null,
-        [el("span", { class: "tag" }, appKind(a.kind)), appStatusTag(a), el("span", { class: "tag" }, appMoney(a))],
+      headBox.replaceChildren(pageHead(a.name || a.app_id, [appKind(a.kind), a.description].filter(Boolean).join(" · ") || null,
+        null,
         [el("a", { href: "#/apps" }, "Apps"), " / ", el("span", { class: "mono" }, repoName(a.repository_url) || a.app_id)]), card(null, appStepper(a), null, "soft"));
       statusBox.replaceChildren(appStatusBody(a));
       body.replaceChildren(...sections(a));
@@ -2709,7 +2717,7 @@
       else if (path === "/apps/new") await viewAppNew();
       else if (path.startsWith("/apps/")) await viewApp(decodeURIComponent(path.slice(6)));
       else if (path === "/settings") await viewSettings();
-      else { paint(card(null, el("div", { class: "empty" }, el("h3", null, "No such page"), backToRuns())), nav); stopPoll(); }
+      else { setNav(null); paint(card(null, el("div", { class: "empty" }, el("h3", null, "No such page"), backToRuns())), nav); stopPoll(); }
     } catch (e) {
       if (nav !== state.nav) return;
       stopPoll();
