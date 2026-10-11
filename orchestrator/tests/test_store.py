@@ -39,6 +39,19 @@ def test_event_seqs_are_contiguous_when_threads_append_at_once(tmp_path):
     assert store.state(run_id).last_seq == 100                      # replay accepts the log
 
 
+def test_reverification_keeps_old_and_new_evidence_without_unlocking_raw_outputs(tmp_path):
+    store = RunStore(tmp_path)
+    run, stage, name = "run_reverify", "implement", "spec_a-r2-test_results.json"
+    old = store.put_artifact(run, stage, name, b"old proof")
+    new = store.put_derived_artifact(run, stage, name, b"new proof")
+    assert store.get_artifact(run, stage, name) == b"new proof"
+    assert store.get_artifact(run, "history", f"{stage}/{name}/{old}") == b"old proof"
+    assert store.get_artifact(run, "history", f"{stage}/{name}/{new}") == b"new proof"
+    assert store.put_derived_artifact(run, stage, name, b"new proof") == new
+    with pytest.raises(ValueError):
+        store.put_derived_artifact(run, stage, "spec_a-r2-implementation_report.json", b"replacement")
+
+
 def test_event_seqs_stay_contiguous_across_store_instances(tmp_path):
     """The Console and `factory resume` append from other processes: a second RunStore over the same directory (its own
     cache, its own lock) must still get the next seq, and a line longer than the tail chunk must not confuse it."""

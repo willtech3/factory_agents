@@ -37,7 +37,7 @@ How each factory concept lands on a platform primitive, and where the orchestrat
 
 ## Permission policy
 
-Agent toolset at `auto` everywhere. The sandbox is disposable and holds no secrets, so the server's own risk evaluation is the right tier: it runs safe calls, denies high-risk ones (the agent gets an error and continues), and pauses on indeterminate ones. In unattended runs the orchestrator **denies** paused calls with a `deny_message` telling the agent to record the blocker and continue; a human can attach with `ant beta:sessions connect` to allow instead. No tool is `always_ask` because no in-sandbox action is irreversible outside it: the only irreversible actions (change-request creation, design-branch and run-record commits) are custom tools or direct calls the orchestrator executes.
+Agent toolset at `auto` everywhere. The sandbox is disposable and holds no secrets, so the server's own risk evaluation is the right tier: it runs safe calls, denies high-risk ones (the agent gets an error and continues), and pauses on indeterminate ones. In unattended runs the orchestrator **denies** paused calls with a `deny_message` telling the agent to record the blocker and continue; a human can attach with `ant beta:sessions connect` to allow instead. No tool is `always_ask` because no in-sandbox action is irreversible outside it: the only irreversible actions (change-request creation, optional design-branch commits) are custom tools or direct calls the orchestrator executes.
 
 ## What the orchestrator does that the platform does not
 
@@ -46,7 +46,7 @@ Agent toolset at `auto` everywhere. The sandbox is disposable and holds no secre
 3. **Authoritative verification.** Running the spec's test commands in a clean checkout the agent did not touch, running `test_plan.e2e` against the preview URL read from the forge, and computing deterministic checks (including `manifest_valid`, `e2e_coverage`, `e2e_preview`). In production this is a CI job on the branch; locally it is `LocalVerifier`.
 4. **Merging independent reviewer passes.** Two sessions, one findings file.
 5. **Routing judge issues to the specs that own them**, so only failing specs are rewritten.
-6. **The forge and the gate surfaces.** Change requests, the run record on the branch, the optional design CR, tracker issues and pages, comment harvesting into `feedback.md`, CR state webhooks.
+6. **The forge and the gate surfaces.** Change requests, the external Factory run record, the optional design CR, tracker issues and pages, comment harvesting into `feedback.md`, CR state webhooks.
 7. **Evals.** Pinning agent versions, replaying frozen inputs, grading.
 8. **Watching the platform's deploy.** Workflow-run and deployment reads on the forge (unverified shapes on both GitHub and GitLab), dev e2e runs, and the `DEPLOY_FAILURE` gate. The factory never deploys ([ADR-0006](adr/0006-observed-deployment-not-agent-driven.md)).
 

@@ -105,7 +105,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 | `decompose.py` | 1. Outcome to work items, then Gate 1 |
 | `specify.py` | 2. Parallel spec writers, a judge loop, then Gate 2 |
 | `implement.py` | 3. Per spec: implementer, reviewer and security-reviewer passes, then the merge judge. Also holds `LocalVerifier`, `LocalPreview` and the findings merge |
-| `integrate.py` | 4. Commits the run record to the branch, then the integrator opens the PR |
+| `integrate.py` | 4. The integrator opens the PR at the exact head the merge judge approved. The approved spec and verdicts stay in Factory's artifact store and are linked from the PR, not committed to the branch ([ADR-0010](adr/0010-external-integration-records.md)) |
 | `deploy_observe.py` | 5. Watches the platform deploy `main` to dev and runs e2e against it. Driven by `watcher.py` |
 | `common.py` | Shared helpers: run a session, persist outputs, provenance, open and wait on gates |
 | `watcher.py` (top level) | `factory watch`: follows open PRs to merge (Gate 3), then hands each one to Stage 5 |
@@ -150,8 +150,7 @@ Tests live in `orchestrator/tests/`, one file per area. `tests/support/scripted_
 | Status | What |
 |---|---|
 | **Run live** (first live runs on 2026-10-10, see the [post-mortem](postmortems/2026-10-10-first-live-runs.md)) | The session driver and stages 1–4 with the deployed agents. GitHub repository creation, branches, commits and PRs: [factory-sample-app#1](https://github.com/willtech3/factory-sample-app/pull/1) was merged, [factory-switchboard#2](https://github.com/willtech3/factory-switchboard/pull/2) is open. The Console and the file-queue gate surface. `local` and `managed` preview modes. `factory resume`. App onboarding (draft setup PR on `factory-onboarding-proof`) |
-| **Tested, not confirmed live** | `factory watch` and Stage 5 (the personal setup has no dev deploy, so nothing to observe yet). The `platform` preview mode and the GitHub Actions and Deployments reads it depends on. The Linear tracker surface. The `forge` gate surface (design PR). The Claude in Chrome browser worker (smoke-tested interactively, not unattended) |
-| **Wired but not deployed on `main`** | The security reviewer. `implement.py` runs it when it is in `claude-lock.json`, but `agents/security_reviewer.md` exists only on the `greenfield-test` branch, so on `main` the pass is skipped |
+| **Tested, not confirmed live** | `factory watch` and Stage 5 (the personal setup has no dev deploy, so nothing to observe yet). The `platform` preview mode and the GitHub Actions and Deployments reads it depends on. The Linear tracker surface. The `forge` gate surface (design PR). The Claude in Chrome browser worker (smoke-tested interactively, not unattended). The security reviewer pass (`agents/security_reviewer.md`, registered in `claude-lock.json`) |
 | **Stub** | `surfaces/jira.py` (every method raises `NotImplementedError`). `ClaudeArtifactPublisher` in `artifact_pages.py` (writes local files). `evals/run_eval.py::produce` (does not drive agents yet) |
 | **Written, never run** | `forge/gitlab.py` and the GitLab vault credential path (ADR-0003) |
 | **Not used by code** | `examples/ledgerline/` is test fixture data only. `examples/greenfield-browser/` is a recipe to try by hand with `factory environment verify` |

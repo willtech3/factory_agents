@@ -36,7 +36,7 @@ Goal: confirm the read-only calls Stage 5 and the preview lookup depend on, agai
 - Implement one spec on the fork. Replace `LocalVerifier` with a CI job on the factory branch (same interface: commands, exit codes, diff).
 - Watch the reviewer: are findings falsifiable, do refutation conditions make sense, how many are withdrawn? Tune `reviewer.md` from what you see, one rule per observed failure.
 - Watch the preview loop: does `preview.json` become `ready` before the implementer finishes, do the `preview` e2e entries run in the sandbox, does `e2e_preview` agree with what the implementer reported?
-- Open the pull request; confirm the run record (`.factory/runs/<run_id>/`) is on the branch with a reproducible commit sha. Have a real engineer review it and time them. Merge it with `factory watch <run_id>` running (or started from the Console's run page) and watch Stage 5 end at `DEPLOYED_DEV`; break the next one deliberately and confirm the `DEPLOY_FAILURE` gate carries a useful log excerpt.
+- Open the pull request; confirm the PR links to Factory’s external run record and its head equals the verified and judged candidate. Have a real engineer review it and time them. Merge it with `factory watch <run_id>` running (or started from the Console's run page) and watch Stage 5 end at `DEPLOYED_DEV`; break the next one deliberately and confirm the `DEPLOY_FAILURE` gate carries a useful log excerpt.
 
 ## Milestone A: unattended end-to-end on factory-bench `lintr` (week 3)
 - Build the smallest `factory-bench` repo (the Python CLI) with two outcomes and hidden suites.
