@@ -475,3 +475,23 @@ def test_spec_commands_run_in_the_virtualenv_the_recipe_built(tmp_path):
     report, _ = harness(tmp_path / "plain", RECIPE, {"commands": ["venv-only-tool"], "e2e": [], "collect_tests": False})
     assert report["change"]["results"]["commands"][0]["exit_code"] == 127
     assert report["change"]["results"]["command_environment"] == {"virtualenv": None}
+
+
+def test_a_parametrize_id_with_spaces_is_a_valid_pytest_node_id():
+    """Live emoji-smith: one `[`echo $GOOGLE_API_KEY`]` id made the controller discard a 369-test JUnit report."""
+    good = "tests/security/test_v.py::TestV::test_injection[`echo $GOOGLE_API_KEY`]"
+    import factory.hosted_verifier as hv
+    from factory.stages import implement
+    assert er.NODE_ID_RE.match(good) and hv.NODE_ID_RE is er.NODE_ID_RE and implement.NODE_ID_RE is er.NODE_ID_RE
+    for bad in ("not an id", "tests/a.py::test a", "tests/a.py::test_a[x]\nevil", "tests/a.py::"):
+        assert not er.NODE_ID_RE.match(bad)
+    evidence = hv._test_evidence({"framework": "pytest", "status": "reported", "passed": [good, "tests/a.py::test_a"],
+                                  "failed": [], "skipped": []})
+    assert evidence["status"] == "reported" and good in evidence["passed"]
+
+
+def test_collection_lists_node_ids_when_addopts_asks_for_verbose_output(tmp_path):
+    """Live emoji-smith: pytest.ini's `addopts = -v` cancelled `--collect-only -q`, and collection found no ids."""
+    recipe = {**RECIPE, "commands": {**RECIPE["commands"], "prepare": "printf '[pytest]\\naddopts = -v\\n' > pytest.ini"}}
+    report, _ = harness(tmp_path, recipe, {"commands": [], "e2e": [], "collect_tests": True})
+    assert "tests/test_a.py::test_a" in report["change"]["results"]["collected_tests"]["node_ids"]

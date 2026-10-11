@@ -638,7 +638,7 @@ def _install_plan(repo: Path, setup_cmd: str | None, python: Path, uv: str | Non
             "description": f"dependencies from pyproject ({', '.join(['project'] + extras)}): {' '.join(deps)}"}
 
 
-NODE_ID_RE = re.compile(r"^[^\s:]+::\S+$")
+from ..sandbox_tools.environment_runner import NODE_ID_RE  # noqa: E402  one definition of a pytest node id
 
 
 def parse_junit(xml: bytes) -> dict[str, list[str]]:

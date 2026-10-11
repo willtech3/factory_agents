@@ -32,7 +32,7 @@ from .sandbox_tools import environment_runner as er
 SETUP_CHECK = "verification_setup"          # the same name LocalVerifier.prepare_environment reports
 ENVIRONMENT_CHECK = "hosted_environment"
 VERIFY_STAGE = "verify"
-NODE_ID_RE = re.compile(r"^[^\s:]+::\S+$")
+NODE_ID_RE = er.NODE_ID_RE                 # one definition: the sandbox runner writes ids, this side checks them
 BUN_ID_RE = re.compile(r"^[^\n]+?\.[cm]?[jt]sx?::[^\n]+$")    # file::outer describe > inner describe > test name
 TEST_ID_RE = {"pytest": NODE_ID_RE, "bun": BUN_ID_RE}
 UNSUPPORTED_COMMANDS = {"factory:browser": "the attached-browser worker (factory:browser) runs on a person's machine and cannot "
