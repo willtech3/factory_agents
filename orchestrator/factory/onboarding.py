@@ -27,7 +27,8 @@ from fastapi import HTTPException
 from .config import anthropic_client
 from .forge.github import GitHubForge
 from .sessions import SessionDriver
-from .test_environments import fingerprint, snapshot, validate_profile, run_hosted, ensure_environment, recipe_relative
+from .test_environments import fingerprint, snapshot, validate_profile, run_hosted, ensure_environment, recipe_relative, app_labels
+from .app_environments import DISCOVERY_PROFILE, AppEnvironments, links_from_records
 
 BUSY = {"discovering", "verifying", "publishing"}
 APP_ID = re.compile(r"app_[a-f0-9]{12}")
@@ -190,6 +191,10 @@ class AppOnboarding:
 
     def list(self):
         return sorted((self.get(p.parent.name) for p in self.root.glob("app_*/app.json")), key=lambda r: r["updated_at"], reverse=True)
+
+    def environment_links(self):
+        """Which of this Console's apps used which cloud environment (see app_environments.links_from_records)."""
+        return links_from_records(p.parent for p in self.root.glob("app_*/app.json") if APP_ID.fullmatch(p.parent.name))
 
     def create(self, *, kind, name, repository_url, description, budget_usd, revision=""):
         from .web.repositories import repository_name
@@ -357,9 +362,8 @@ class AppOnboarding:
                    "instructions": "Inspect source only and propose a setup. No execution, external access or readiness claims."}
         driver = SessionDriver(self.cfg, client=self.client,
             on_session_started=lambda x: self._started(app_id, x), on_session_finished=lambda x: self._finished(app_id, x))
-        # Discovery needs no outbound network or credentials; use a separate limited environment.
-        env_profile = {"name": "app-discovery", "network": {"allowed_hosts": [], "allow_package_managers": False}}
-        env_id = ensure_environment(self.client, env_profile, self.cfg.runs_dir / "_test_environments")
+        # Discovery needs no outbound network or credentials: one shared limited environment, not one per app.
+        env_id = ensure_environment(self.client, DISCOVERY_PROFILE, self.cfg.runs_dir / "_test_environments", purpose="discovery")
         result = None
         try:
             result = driver.run(agent_key="app_onboarding", title="Onboard " + r["name"], run_id=app_id, stage="onboarding-discovery",
@@ -370,7 +374,7 @@ class AppOnboarding:
                              "test_environment.json when that pointer is absent. profile_path must match that selection in the "
                              "proposed source. Existing-app onboarding cannot change the manifest; ask a focused question if a "
                              "manifest change or recipe edit outside the allowed onboarding paths is essential."),
-                rubric_md=None, max_iterations=1, budget_usd=cap, environment_id=env_id, vault_ids=[],
+                rubric_md=None, max_iterations=1, budget_usd=cap, environment_id=env_id, vault_ids=[], metadata=app_labels(r),
                 schema_names=("onboarding_plan.schema.json", "test_environment.schema.json"))
             self._finished(app_id, {"session_id": result.session_id, "list_cost_usd": result.list_cost_usd, "stop_reason": result.stop_reason})
             raw = result.outputs.get("onboarding-plan.json")
@@ -446,7 +450,7 @@ class AppOnboarding:
         out = self.folder(app_id) / ("evidence-" + uuid.uuid4().hex[:10])
         result = run_hosted(self.cfg, candidate, out, profile_relative=r["plan"]["profile_path"], budget_usd=cap,
                             vault_ids=vaults, client=self.client, on_started=lambda x: self._started(app_id, x),
-                            on_finished=lambda x: self._finished(app_id, x))
+                            on_finished=lambda x: self._finished(app_id, x), app=r)
         result.update(source_sha=r["source_sha"], plan_sha256=r["plan_sha256"])
         try:
             report = json.loads((out / "environment-result.json").read_text())
@@ -464,6 +468,14 @@ class AppOnboarding:
         self.update(app_id, status=status, phase="Baseline verified with stated limits" if status == "ready_limited" else "Baseline verified" if status == "ready" else "Hosted verification needs attention",
                     verification=result, evidence=evidence, evidence_dir=out.name,
                     error=None if result["status"] == "passed" else result["detail"])
+        if result["status"] == "passed":
+            # Once onboarded, an app keeps one execution environment: the one its recipe just verified in.
+            try:
+                retired = AppEnvironments(self.cfg, self).settle(r, result["environment_id"])
+                self.update(app_id, environment_id=result["environment_id"], retired_environments=retired)
+            except Exception as exc:  # noqa: BLE001  (readiness stands; leftovers stay listed on the Apps tab)
+                self.update(app_id, environment_id=result["environment_id"],
+                            cleanup_warning=f"Earlier environments of this app were not archived ({type(exc).__name__}). Clean them up from Apps.")
 
     def credential(self, app_id, name, value):
         if not value or len(value) > 32000 or any(c in value for c in "\r\n\0"):

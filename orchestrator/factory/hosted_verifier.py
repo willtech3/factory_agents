@@ -135,7 +135,10 @@ class HostedVerifier:
                       source_sha256=hashlib.sha256(source).hexdigest(), vaults_attached=len(self.cfg.test_vault_ids), cap_usd=cap)
         reserve_budget(ctx, VERIFY_STAGE, cap_usd=cap)
         client = ctx.driver.client
-        environment_id = te.ensure_environment(client, profile, self.cfg.runs_dir / "_test_environments")
+        # An unchanged recipe reuses the environment the app was onboarded in; a changed one is labelled with the app.
+        app = ({"app_id": self.cfg.app_id, "repository_url": self.cfg.repo_url if self.cfg.forge_repo else ""}
+               if self.cfg.app_id else None)
+        environment_id = te.ensure_environment(client, profile, self.cfg.runs_dir / "_test_environments", app=app)
         descriptor = {"head_sha": head, "profile_sha256": digest, "source_sha256": record["source_sha256"], "profile_path": relative,
                       "spec_sha256": te.fingerprint({k: v for k, v in spec.items() if not k.startswith("_")}),
                       "environment_id": environment_id, "provider": "anthropic-cloud",

@@ -65,6 +65,34 @@ def environment_verify(repo: Path, output: Path, budget: float = typer.Option(..
         raise typer.Exit(1)
 
 
+@environment_cli.command("prune")
+def environment_prune(yes: bool = typer.Option(False, "--yes", help="Archive the leftovers listed; without it, only list them.")):
+    """List each onboarded app's execution environment in the workspace and archive what earlier attempts left behind."""
+    from .app_environments import AppEnvironments
+    from .onboarding import AppOnboarding
+    cfg = cfgmod.load()
+    environments = AppEnvironments(cfg, AppOnboarding(cfg))
+    view = environments.snapshot(refresh=True)
+    if view["error"]:
+        typer.echo(view["error"], err=True)
+        raise typer.Exit(1)
+    for a in view["apps"]:
+        typer.echo(f"app      {a['name']:<32} {a['environment']['name']}  {a['repository_url'] or '(repository not recorded)'}")
+    if view["discovery"]:
+        typer.echo(f"discovery {view['discovery']['name']}")
+    for e in view["retire"]:
+        typer.echo(f"leftover {e['name']}  ({e['reason']}; keeps {e['replaced_by_name']})")
+    if not view["retire"]:
+        typer.echo("Nothing to archive: every app has one execution environment.")
+    elif not yes:
+        typer.echo(f"{len(view['retire'])} leftover environment(s). Re-run with --yes to archive them.")
+    else:
+        out = environments.cleanup([e["id"] for e in view["retire"]])
+        typer.echo(f"Archived {len(out['archived'])}; {len(out['failed'])} failed.")
+        if out["failed"]:
+            raise typer.Exit(1)
+
+
 def _bind_forge(cfg, outcome: dict, want_forge: bool):
     """The forge for this run, bound to the outcome's repository. FORGE_REPO may be left unset: it is derived from
     the outcome's repository url (and must match it when set). A repository marked `create: true` that does not

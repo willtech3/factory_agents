@@ -104,17 +104,25 @@ def no_host_execution(monkeypatch):
 
 class FakeClient:
     def __init__(self):
-        self.archived, self.created = [], []
-        self.beta = SimpleNamespace(environments=SimpleNamespace(create=self._create, retrieve=self._retrieve),
+        self.archived, self.created, self.metadata = [], [], []
+        self.beta = SimpleNamespace(environments=SimpleNamespace(create=self._create, retrieve=self._retrieve, list=self._list),
                                     sessions=SimpleNamespace(archive=lambda sid, timeout=None: self.archived.append(sid)))
 
     def _create(self, name, config, metadata, timeout=None):
         self.created.append(config)
+        self.metadata.append(metadata)
         return SimpleNamespace(id="env_hosted")
 
-    def _retrieve(self, env_id, timeout=None):
+    def _env(self, env_id):
         config = self.created[-1]
-        return SimpleNamespace(id=env_id, archived_at=None, config=SimpleNamespace(model_dump=lambda exclude_none=True: config))
+        return SimpleNamespace(id=env_id, archived_at=None, created_at="2026-10-10T00:00:00Z", metadata=self.metadata[-1],
+                               config=SimpleNamespace(model_dump=lambda exclude_none=True: config))
+
+    def _retrieve(self, env_id, timeout=None):
+        return self._env(env_id)
+
+    def _list(self, limit=None, include_archived=False, timeout=None):
+        return SimpleNamespace(data=[self._env("env_hosted")] if self.created else [], has_next_page=lambda: False)
 
 
 def result(outputs: dict[str, bytes], cost=0.4):
