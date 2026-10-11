@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import base64
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 
 from . import ChangeRequest, PIPELINE_TERMINAL, ref_slug
 
+EVIDENCE_BRANCH = "factory-evidence"     # orphan, never merged: screenshots and demos for change request descriptions
 BOT_MARKER = "<!-- factory:bot -->"   # prefixed to every comment the orchestrator posts, so it can skip its own
 
 GIT_SETUP = """Git access: the repository is mounted at /workspace/repo (branch {base_branch}) through the platform's
@@ -96,6 +97,40 @@ class GitHubForge:
         r = self.http.patch(self._r(f"/git/refs/heads/{branch}"), json={"sha": commit["sha"], "force": False})
         r.raise_for_status()
         return commit["sha"]
+
+    # ---- media for change request descriptions
+    def publish_media(self, folder: str, items: list[Any]) -> str:
+        """Commit `items` under `<folder>/` on the orphan evidence branch and return Markdown that shows them.
+
+        The branch (EVIDENCE_BRANCH, created on first use with no history in common with the code) is never merged and
+        never the base or head of a change request, so the media never appear in a diff or on the default branch.
+        Images are referenced by blob URL with `?raw=true`, which renders inline in a private repository for anyone
+        who can read it. GitHub plays video inline only for files uploaded as its own attachments, which no API
+        offers, so a video demo is a link; a GIF demo renders inline. Trade-off (ADR-0012): the evidence lives in the
+        repository's git storage and branch list, outside every diff, rather than on a service the owner must run."""
+        if not items:
+            return ""
+        branch = EVIDENCE_BRANCH
+        self._ensure_orphan(branch)
+        self.commit_files(branch, f"factory: evidence for {folder}", {f"{folder}/{m.name}": m.content for m in items})
+        lines = []
+        for m in items:
+            url = f"{self.url}/{self.repo}/blob/{branch}/{quote(f'{folder}/{m.name}')}?raw=true"
+            if m.mime_type.startswith("video/"):
+                lines.append(f"[▶ {m.alt} ({m.name.rsplit('.', 1)[-1].upper()} recording)]({url})")
+            else:
+                lines.append(f"![{m.alt}]({url})")
+        return "\n\n".join(lines)
+
+    def _ensure_orphan(self, branch: str) -> None:
+        if self.http.get(self._r(f"/git/ref/heads/{branch}")).status_code == 200:
+            return
+        readme = ("Screenshots and demos the software factory shows in pull request descriptions. This branch shares no "
+                  "history with the code, is never merged, and is safe to delete.\n")
+        blob = self._post("/git/blobs", {"content": base64.b64encode(readme.encode()).decode(), "encoding": "base64"})
+        tree = self._post("/git/trees", {"tree": [{"path": "README.md", "mode": "100644", "type": "blob", "sha": blob["sha"]}]})
+        commit = self._post("/git/commits", {"message": "factory: evidence branch (never merged)", "tree": tree["sha"], "parents": []})
+        self._post("/git/refs", {"ref": f"refs/heads/{branch}", "sha": commit["sha"]})
 
     def file_exists(self, branch: str, path: str) -> bool:
         return self.http.get(self._r(f"/contents/{path}"), params={"ref": branch}).status_code == 200

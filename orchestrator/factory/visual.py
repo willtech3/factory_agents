@@ -29,6 +29,7 @@ def new_request(workdir: Path, repo: Path, head: str, url: str, entry: dict) -> 
     request = {"version": 1, "id": directory.name, "head_sha": head, "base_url": url,
                "repository_path": str(repo), "covers_ac": entry.get("covers_ac", []),
                "description": entry.get("description", "Browser check"), **entry["visual"],
+               "factory_runner": str(entry.get("command", "")).startswith("factory:journey"),
                "created_at": datetime.now(timezone.utc).isoformat()}
     (directory / "request.json").write_text(json.dumps(request, indent=2))
     return directory, request
@@ -78,6 +79,14 @@ def collect(directory: Path, request: dict, exit_code: int | None) -> dict:
         if not isinstance(report.get("summary"), str) or not report["summary"].strip():
             raise ValueError("browser observation summary is missing")
         result.update(status=status, summary=report["summary"][:2000], summary_source="worker", runner=str(report.get("runner", "unspecified"))[:120])
+        # Credential hygiene: no media from a check during which a test credential was on screen; the factory's own
+        # runner must say so either way (post-mortem 2026-10-11 §1).
+        seen = report.get("viewport_observed")
+        if isinstance(seen, dict) and all(isinstance(seen.get(k), int) and not isinstance(seen.get(k), bool) for k in ("width", "height")):
+            result["viewport_observed"] = {"width": seen["width"], "height": seen["height"]}
+        if report.get("secret_seen") is True or (request.get("factory_runner") and report.get("secret_seen") is not False):
+            result["credential_seen"] = True
+            raise ValueError("a test credential was visible during the check (or the runner did not say), so no media from it is kept")
         steps = report.get("steps", [])
         if not isinstance(steps, list) or len(steps) != len(request["steps"]):
             raise ValueError("browser report must account for every planned step")

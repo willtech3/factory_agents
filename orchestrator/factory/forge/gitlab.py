@@ -85,6 +85,19 @@ class GitLabForge:
                 found.add(p)
         return found
 
+    # ---- media for change request descriptions
+    def publish_media(self, folder: str, items: list[Any]) -> str:
+        """Upload `items` with the project uploads API (POST /projects/:id/uploads) and return Markdown that shows them.
+        Uploads belong to the project, not to any branch, so nothing reaches a diff; GitLab renders an uploaded image
+        and plays an uploaded MP4 or WebM inline in a merge request description. UNVERIFIED live."""
+        lines = []
+        for m in items:
+            r = self.http.post(self._p("/uploads"), files={"file": (m.name, m.content, m.mime_type)})
+            r.raise_for_status()
+            url = r.json()["url"]
+            lines.append(f"![{m.alt}]({url})")
+        return "\n\n".join(lines)
+
     def file_exists(self, branch: str, path: str) -> bool:
         return self.http.head(self._p(f"/repository/files/{quote(path, safe='')}"), params={"ref": branch}).status_code == 200
 

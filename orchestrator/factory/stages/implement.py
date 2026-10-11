@@ -203,11 +203,20 @@ your pushed head in a separate Anthropic-hosted test sandbox built from the app'
 manifest's test_environment.profile, default test_environment.json): the recipe's prepare/start/seed and baseline check,
 every test_plan command, pytest collection, and every test_plan.e2e entry with target "preview" against the app inside that
 sandbox ($BASE_URL). Only that run counts. Do not change the recipe: its approved fingerprint is pinned and a changed recipe
-blocks verification. An e2e entry with a visual contract must be a command that drives a browser inside that sandbox and
-writes result.json (with viewport_observed) and its screenshots to $FACTORY_EVIDENCE_DIR for the request at
-$FACTORY_VISUAL_REQUEST; `factory:browser` cannot run there. Bun tests count only from a direct `bun test ...` test_plan
+blocks verification. An e2e entry `factory:journey <name>` runs the factory's own browser runner on the journey you write
+to /mnt/session/outputs/journeys/<name>.json (the format is in the platform-contract skill): one step per step of the
+entry's visual contract, acting by role, label or text, with the expectations that prove the criterion. The journey is a
+run artifact the orchestrator uploads and binds by hash; never commit browser-test code or anything that reads
+FACTORY_VISUAL_REQUEST or FACTORY_EVIDENCE_DIR (the factory_proof_in_diff check refuses it). Bun tests count only from a direct `bun test ...` test_plan
 command (no package script, pipeline, environment prefix or reporter of its own): the sandbox adds its own JUnit reporter to
 it. Run what you can in this sandbox and record the results."""
+
+JOURNEY_REVIEW_CLAUSE = """
+The change's journeys are at /mnt/session/uploads/journeys/: run artifacts the factory's browser runner executed in the hosted
+sandbox, not part of the diff. Review them as the evidence for their criteria: a journey that would still pass with the
+behaviour broken leaves its criterion unproven, which is a finding against the change. A finding about a journey's own
+plumbing only (how it reports a failure, its wording, a tighter check that proves nothing more) carries
+"target": "verification"; it is recorded for the factory and never blocks the change or starts another round."""
 
 MANAGED_PREVIEW_REVIEW_CLAUSE = """No preview URL is reachable from this sandbox (/mnt/session/uploads/preview.json: status
 "hosted_sandbox", url null). The orchestrator verified this head in a separate Anthropic-hosted sandbox built from the app's
@@ -509,14 +518,16 @@ class LocalVerifier:
                 head = _git(repo, "rev-parse", "HEAD").strip()
                 directory, request = visual.new_request(self.workdir, repo, head, preview_url, e)
                 missing = [k for k in e["visual"]["environment"].get("required_env", []) if not env.get(k)]
-                if missing:
+                if cmd.startswith("factory:journey"):
+                    outcome = {"exit_code": None, "stderr_tail": "factory journeys run in the hosted sandbox (FACTORY_PREVIEW=managed)"}
+                elif missing:
                     outcome = {"exit_code": None, "stderr_tail": "Missing test environment variables: " + ", ".join(missing)}
                 else:
                     env.update(FACTORY_VISUAL_REQUEST=str(directory / "request.json"), FACTORY_EVIDENCE_DIR=str(directory))
                     outcome = (visual.wait_for_browser(directory, timeout) if cmd == "factory:browser" else
                                self._run_in_group(cmd, repo, env, timeout))
                 evidence = visual.collect(directory, request, outcome.get("exit_code"))
-                if missing:
+                if missing or cmd.startswith("factory:journey"):
                     evidence["summary"] = outcome["stderr_tail"]
                 (directory / "closed").touch()
                 results.append({**row, **outcome, "visual": evidence})
@@ -837,6 +848,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     # Set when the previous round's only standing findings were failed deterministic checks: the implementer's
     # response is re-verified and, if the checks now pass, goes straight to the merge judge without a review round.
     det_only_response = resume_from is not None and findings is not None and _deterministic_only(findings["findings"])
+    journeys = latest_journeys(ctx, sid)        # the change's journeys, run artifacts carried from round to round
 
     for round_no in range(resume_from.round_no if resume_from else 1, ctx.policy.review_max_rounds + 2):
         resumed_round = resume_from is not None and round_no == resume_from.round_no
@@ -893,6 +905,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 stamp_provenance(response, ctx, res, "Implementer", "claude-opus-5-5")
                 res.outputs["review_response.json"] = json.dumps(response, indent=2).encode()
             persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-", work_item_id=wid, spec_id=sid)
+            journeys = latest_journeys(ctx, sid)
         if findings and response is not None:
             response["round"] = round_no - 1
             ctx.event("review.response", {"round": round_no - 1, "dispositions": [r["disposition"] for r in response["responses"]]},
@@ -911,7 +924,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             # Every execution happens in the hosted sandbox; this host only read git above. Missing, unbound or
             # unsupported evidence comes back as not-run rows, which the checks below fail.
             hosted = HostedVerifier(ctx, verifier.workdir).verify(repo, base_sha, head_sha, spec, branch=branch,
-                                                                  round_no=round_no, work_item_id=wid)
+                                                                  round_no=round_no, work_item_id=wid, journeys=journeys)
             setup, cmd_results, e2e_results, preview, collected = hosted.setup, hosted.commands, hosted.e2e, hosted.preview, hosted.collected
             extra_det = [hosted.environment]
             environment = {**hosted.record, "detail": hosted.setup.detail}
@@ -991,14 +1004,17 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 reserve_budget(ctx, "review", len(to_run), extra={"security_review": 1} if run_sec else None)
             else:
                 reserve_budget(ctx, "security_review", 1)
+        journey_uploads = {f"journeys/{name}.json": content for name, content in sorted(journeys.items())}
         rev_uploads = {"spec.json": uploads["spec.json"], **({"spec.md": uploads["spec.md"]} if "spec.md" in uploads else {}), **skill_uploads,
-                       "diff.patch": diff["patch"].encode(), **visual_uploads,
+                       "diff.patch": diff["patch"].encode(), **visual_uploads, **journey_uploads,
                        "implementation_report.json": json.dumps(report, indent=2).encode(),
                        "preview.json": json.dumps(preview, indent=2).encode(),
                        "deterministic_checks.json": json.dumps([d.to_dict() for d in det], indent=2).encode()}
         rev_preview_clause = (MANAGED_PREVIEW_REVIEW_CLAUSE if preview.get("mode") == "managed" else
                               PREVIEW_CLAUSE if preview["status"] == "ready" and preview.get("mode") != "local" else
                               LOCAL_PREVIEW_REVIEW_CLAUSE if preview.get("mode") == "local" else NO_PREVIEW_CLAUSE)
+        if journeys:
+            rev_preview_clause += JOURNEY_REVIEW_CLAUSE
         second = ""
         if findings and response:
             rev_uploads["previous_findings.json"] = json.dumps(findings, indent=2).encode()
@@ -1063,6 +1079,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         findings["findings"] = apply_deterministic(findings["findings"], deterministic_findings(det, cmd_results, e2e_results, managed=managed))
         ctx.store.put_derived_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-findings.merged.json",
                                json.dumps(findings, indent=2).encode())
+        record_verification_findings(ctx, sid, round_no, findings["findings"])
         ctx.event("review.findings", {"round": round_no, "count": len(findings["findings"]),
                                       "blocking": sum(f["severity"] == "blocking" for f in findings["findings"])},
                   work_item_id=wid, spec_id=sid, actor="agent")
@@ -1085,6 +1102,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     enter_item_stage(ctx, wid, sid, WorkItemStage.MERGE_JUDGING)
     mj_uploads = {
         "spec.json": json.dumps(public(spec), indent=2).encode(), "diff.patch": diff["patch"].encode(), **visual_uploads,
+        **{f"journeys/{name}.json": content for name, content in sorted(journeys.items())},
         **({"spec.md": spec_md.encode()} if spec_md else {}),
         "findings.json": json.dumps(findings or {"findings": []}, indent=2).encode(),
         "review_response.json": json.dumps(response or {"responses": []}, indent=2).encode(),
@@ -1116,6 +1134,34 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     persist_outputs(ctx, "merge_judge", res, prefix=f"{sid}-r{round_no}-", work_item_id=wid, spec_id=sid)
     ctx.event("merge.verdict", {"result": verdict["result"], "round": round_no}, work_item_id=wid, spec_id=sid, actor="agent")
     return verdict
+
+
+def latest_journeys(ctx: RunContext, sid: str) -> dict[str, bytes]:
+    """name -> content of the newest `journeys/<name>.json` any implementer round of this spec wrote (a later round may
+    rewrite one journey and leave the others)."""
+    root = ctx.cfg.runs_dir / ctx.run_id / "artifacts" / "implement"
+    found: dict[str, tuple[int, Path]] = {}
+    for path in root.glob(f"{sid}-r*-journeys/*.json") if root.is_dir() else []:
+        m = re.fullmatch(re.escape(sid) + r"-r(\d+)-journeys", path.parent.name)
+        if m and (path.stem not in found or int(m.group(1)) > found[path.stem][0]):
+            found[path.stem] = (int(m.group(1)), path)
+    return {name: path.read_bytes() for name, (_, path) in sorted(found.items())}
+
+
+def record_verification_findings(ctx: RunContext, sid: str, round_no: int, findings: list[dict[str, Any]]) -> None:
+    """Findings about the journey's own plumbing (`target: verification`) never block the change; keep them in the run
+    and append them to the factory's backlog (runs/_backlog/verification-findings.jsonl) for the runner's owners."""
+    mine = [f for f in findings if f.get("target") == "verification" and f.get("status") in ("open", "upheld")]
+    if not mine:
+        return
+    ctx.store.put_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-verification_findings.json", json.dumps(mine, indent=2).encode(),
+                           replace=True)
+    backlog = ctx.cfg.runs_dir / "_backlog"
+    backlog.mkdir(parents=True, exist_ok=True)
+    with (backlog / "verification-findings.jsonl").open("a") as f:
+        for finding in mine:
+            f.write(json.dumps({"run_id": ctx.run_id, "spec_id": sid, "round": round_no, "finding": finding}) + "\n")
+    ctx.event("verification.backlog", {"round": round_no, "count": len(mine), "finding_ids": [f["finding_id"] for f in mine]}, spec_id=sid)
 
 
 def _require_recorded_preview_mode(ctx: RunContext) -> None:
@@ -1359,10 +1405,11 @@ def tag_pass(findings: dict[str, Any], label: str) -> dict[str, Any]:
 def standing_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Findings the implementer must answer before the merge judge: open or upheld, and either blocking/major or a
     reproduced security, concurrency or data-integrity defect whatever label the reviewer put on it (reviewers
-    under-rate rare races; see docs/postmortems/2026-10-10-first-live-runs.md issue 8)."""
+    under-rate rare races; see docs/postmortems/2026-10-10-first-live-runs.md issue 8). A finding about the journey's own
+    plumbing (`target: verification`) never stands: it is recorded for the factory (post-mortem 2026-10-11 §1)."""
     out = []
     for f in findings:
-        if f["status"] not in ("open", "upheld"):
+        if f["status"] not in ("open", "upheld") or f.get("target") == "verification":
             continue
         reproduced = bool((f.get("evidence") or {}).get("reproduction"))
         if f["severity"] in ("blocking", "major") or (f["category"] in ("security", "concurrency", "data_integrity") and reproduced):

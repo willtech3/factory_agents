@@ -15,7 +15,6 @@ BANNED = [r"\bAC-\d", r"\bF-\d", r"\bDET-", r"(?i)merge judge", r"(?i)orchestrat
 def _integrate(tmp_path, root, examples, *, evaluation=False, extra_files=None):
     from test_session_cutoff import AutoQueue, _ctx
 
-    from factory.forge import ChangeRequest
     from factory.gates import Decision
     from factory.stages.integrate import run_integrate
     from factory.state import WorkItemStage
@@ -32,12 +31,7 @@ def _integrate(tmp_path, root, examples, *, evaluation=False, extra_files=None):
     spec = case.spec()
     rows = case.browser_evidence(ctx, tmp_path, spec, head)
 
-    def create(**kw):
-        created.append(kw)
-        return ChangeRequest(120, "https://github.com/willtech3/evergreen_chat/pull/120", kw["source_branch"], kw["target_branch"])
-    ctx.forge = type("Forge", (), {"kind": "github", "create_change_request": staticmethod(create),
-                                   "sandbox_git_instructions": staticmethod(lambda *a, **k: "read only"),
-                                   "session_repository_resource": staticmethod(lambda *a: None)})()
+    ctx.forge, api = github(created)
     if evaluation:
         ctx.evaluation_target = ("main", base)
         ctx.event("artifact.produced", {"artifact_type": "evaluation_target", "branch": "main", "base_sha": base, "normal_target": "main"})
@@ -45,7 +39,29 @@ def _integrate(tmp_path, root, examples, *, evaluation=False, extra_files=None):
     run_integrate(ctx, spec, case.verdict(base, head), case.findings(), case.response(), case.test_results(rows, head),
                   case.run_summary(), "main", verifier=verifier)
     ctx.event("run.completed", {"specs_with_change_requests": [case.SPEC_ID]})
+    ctx.api_calls = api.calls
     return ctx, created[0], head
+
+
+def github(created):
+    """The real GitHub client against a scripted API: the orphan evidence branch for the media, then the pull request."""
+    from test_forge import Seq, _forge
+    repo = "/repos/willtech3/evergreen_chat"
+
+    def pull(body, params):
+        created.append({"title": body["title"], "description": body["body"], "draft": body["draft"],
+                        "source_branch": body["head"], "target_branch": body["base"]})
+        return {"number": 120, "html_url": "https://github.com/willtech3/evergreen_chat/pull/120"}
+    routes = {f"GET {repo}/git/ref/heads/factory-evidence": Seq([(404, {}), (200, {"object": {"sha": "orphan1"}})]),
+              f"POST {repo}/git/blobs": (201, {"sha": "blob1"}), f"POST {repo}/git/trees": (201, {"sha": "tree1"}),
+              f"POST {repo}/git/commits": (201, {"sha": "commit1"}), f"POST {repo}/git/refs": (201, {}),
+              f"GET {repo}/git/commits/orphan1": {"tree": {"sha": "tree0"}},
+              f"PATCH {repo}/git/refs/heads/factory-evidence": {"object": {"sha": "commit1"}},
+              f"POST {repo}/pulls": (201, pull), f"POST {repo}/issues/120/labels": (200, []),
+              f"POST {repo}/pulls/120/requested_reviewers": (201, {})}
+    forge, api = _forge(routes)
+    forge.repo = "willtech3/evergreen_chat"
+    return forge, api
 
 
 def test_the_pull_request_is_short_and_written_for_the_reviewer(tmp_path, root, examples):
@@ -58,7 +74,13 @@ def test_the_pull_request_is_short_and_written_for_the_reviewer(tmp_path, root, 
     for pattern in BANNED:
         assert not re.search(pattern, prose), (pattern, re.search(pattern, prose).group(0))
     assert "127.0.0.1" not in body.replace(record_url, "") and body.count(record_url) == 1
-    assert len(re.findall(r"!\[", body)) <= 3 and len(re.findall(r"\.(?:gif|mp4|webm)\b", body)) <= 1
+    # see it: three screenshots and one demo, from passing checks, served from the evidence branch, never from the diff
+    see_it = body.split("## See it")[1].split("##")[0]
+    images = re.findall(r"!\[([^\]]*)\]\(([^)]+)\)", see_it)
+    assert len(images) == 4 and sum(u.split("?")[0].endswith(".gif") for _, u in images) == 1
+    assert all(u.startswith("https://github.com/willtech3/evergreen_chat/blob/factory-evidence/") and u.endswith("?raw=true") for _, u in images)
+    assert images[-1][0] == "Demo: Picking a model and chatting"
+    assert not any(p.endswith("/heads/main") or "/contents/" in p for _, p, _, _ in ctx.api_calls)
     assert "|---" not in body and "Provenance" not in body
     # the product decision leads; every decision carries its file and line
     decisions = body.split("## Needs your decision")[1].split("##")[0].strip().splitlines()
@@ -90,9 +112,11 @@ def test_the_run_record_holds_everything_the_description_leaves_out(tmp_path, ro
         assert all(len(m["media"]) == 3 and len(m["steps_observed"]) == 3 for m in record["media"])
         demo = next(x for x in record["media"][0]["media"] if x["role"] == "demo")
         served = client.get(f"/api/artifacts/{ctx.run_id}/{demo['artifact']}")
-        assert served.status_code == 200 and served.content.startswith(b"\x1aE\xdf\xa3")
+        assert served.status_code == 200 and served.content.startswith(b"GIF89a")
         assert len(run["visual_evidence"]) == 3            # "See the change" shows the same checks
         assert run["summary"]["pull_requests"][0]["url"] == record["pull_request"]["url"]
+        assert record["published_media"] == {"status": "published", "reason": "3 screenshots and 1 demo",
+                                             "files": record["published_media"]["files"]} and len(record["published_media"]["files"]) == 4
         js = client.get("/static/app.js").text
         assert "function runRecordBlock" in js and "#record-" in js
 

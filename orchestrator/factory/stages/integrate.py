@@ -1,7 +1,9 @@
 """Open a reviewed change request; keep the approved record in Factory's artifact store.
 
 The change request is written for its code reviewer (`pr_description.py`, post-mortem 2026-10-11 §4-§6); the full
-evidence goes to the spec's run record (`run_record.py`), which the description links once."""
+evidence goes to the spec's run record (`run_record.py`), which the description links once. Nothing is committed to the
+change's branch or the default branch; the description's screenshots and demo are published through the forge outside
+every diff (`Forge.publish_media`: an orphan evidence branch on GitHub, the uploads API on GitLab; ADR-0012)."""
 from __future__ import annotations
 
 import json
@@ -10,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from .. import pr_description, run_record, size, visual
+from .. import pr_description, pr_media, run_record, size, visual
 from ..budget import reserve_budget
 from ..forge import Forge
 from ..sessions import SessionContext
@@ -26,8 +28,9 @@ the run-record link), spec.json and merge_readiness.json. The branch {branch} is
 {git}
 Send pr_description.md as it is unless pr_lint.json lists problems; then rephrase only the sentences it names, in the
 app's own terms, and keep every section and the one run-record link. open_change_request refuses a description that
-breaks those rules and says why. Everything the description leaves out is already in the run record. Do not write or
-commit .factory files to the target repository. Write cr.json to /mnt/session/outputs/."""
+breaks those rules and says why. Everything the description leaves out is already in the run record, and the screenshots
+in pr_description.md are already published outside the diff. Do not write or commit anything to the target repository.
+Write cr.json to /mnt/session/outputs/."""
 
 
 def artifact_links(ctx: RunContext, spec_id: str) -> dict[str, str]:
@@ -134,12 +137,13 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
     record = run_record.build(run_id=ctx.run_id, spec=spec, verdict=verdict, findings=findings, response=response,
                               test_results=test_results if isinstance(test_results, dict) else {}, run_summary=run_summary,
                               visual_evidence=evidence, size=sized, base_branch=base_branch, artifact_links=links)
+    media_markdown = publish_media(ctx, sid, judged_sha, evidence, record)
     run_record.store(ctx, record)
 
     record_url = pr_description.run_record_url(ctx.cfg.artifact_base_url, ctx.run_id, sid)
     facts = pr_description.facts(spec=spec, verdict=verdict, test_results=test_results if isinstance(test_results, dict) else {},
                                  preview_mode=ctx.cfg.preview_mode, head_sha=judged_sha, diff_stats=stats, record_url=record_url,
-                                 size_line=sized["line"])
+                                 size_line=sized["line"], media_markdown=media_markdown)
     draft = pr_description.render(facts, ctx.cfg.templates_dir / "cr_template.md")
     banner = evaluation_banner(ctx.evaluation_target[1], default_branch, beyond) if ctx.evaluation_target else ""
     allowed_words = [str(spec.get("title") or ""), str(spec.get("goal") or "")]
@@ -183,6 +187,27 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
     ctx.event("work_item.stage", {"stage": WorkItemStage.CR_OPEN.value, "cr_id": cr.get("id", cr.get("iid"))},
               work_item_id=wid, spec_id=sid)
     return cr
+
+
+def publish_media(ctx: RunContext, sid: str, head_sha: str, evidence: list[dict[str, Any]], record: dict[str, Any]) -> str:
+    """Up to three screenshots and one demo for the description's "See it" section, published through the forge where it
+    keeps them out of every diff (`Forge.publish_media`; ADR-0012). A failure to publish leaves the section out and is
+    recorded; it never blocks the change request."""
+    if not ctx.cfg.pr_media or not hasattr(ctx.forge, "publish_media"):
+        record["published_media"] = {"status": "off"}
+        return ""
+    items, why = pr_media.select(evidence, head_sha, ctx.cfg.runs_dir / ctx.run_id / "artifacts")
+    if not items:
+        record["published_media"] = {"status": "none", "reason": why}
+        return ""
+    try:
+        markdown = ctx.forge.publish_media(f"{ctx.run_id}/{sid}/{head_sha[:10]}", items)
+    except Exception as exc:  # noqa: BLE001  (the forge's HTTP errors)
+        record["published_media"] = {"status": "failed", "reason": str(exc)[:300]}
+        ctx.event("media.publish_failed", {"reason": str(exc)[:300]}, spec_id=sid, stage="integrate")
+        return ""
+    record["published_media"] = {"status": "published", "reason": why, "files": [{"name": i.name, "role": i.role} for i in items]}
+    return markdown
 
 
 def _show(repo: Path, ref: str) -> str:

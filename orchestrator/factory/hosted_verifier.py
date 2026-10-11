@@ -26,6 +26,7 @@ from . import test_environments as te
 from . import visual
 from .budget import reserve_budget
 from .checks import CheckResult
+from .sandbox_tools import browser_runner as br
 from .sandbox_tools import environment_runner as er
 
 SETUP_CHECK = "verification_setup"          # the same name LocalVerifier.prepare_environment reports
@@ -35,7 +36,15 @@ NODE_ID_RE = re.compile(r"^[^\s:]+::\S+$")
 BUN_ID_RE = re.compile(r"^[^\n]+?\.[cm]?[jt]sx?::[^\n]+$")    # file::outer describe > inner describe > test name
 TEST_ID_RE = {"pytest": NODE_ID_RE, "bun": BUN_ID_RE}
 UNSUPPORTED_COMMANDS = {"factory:browser": "the attached-browser worker (factory:browser) runs on a person's machine and cannot "
-                                           "run in a hosted sandbox; name a command that drives a browser inside the sandbox"}
+                                           "run in a hosted sandbox; use `factory:journey <name>` with a journey the implementer writes"}
+# `factory:journey <name>`: the factory's own browser runner on the change's journey, a run artifact the implementer wrote
+# to /mnt/session/outputs/journeys/<name>.json. It is uploaded and bound by sha256, never committed (post-mortem 2026-10-11 §1).
+JOURNEY_RE = re.compile(r"^factory:journey\s+([A-Za-z0-9][A-Za-z0-9_.-]{0,80})$")
+
+
+def journey_name(command: str) -> str | None:
+    m = JOURNEY_RE.match(command.strip())
+    return m.group(1) if m else None
 
 DESCRIPTION = """Run `python3 -I /mnt/session/uploads/tools/environment_runner.py` once and report its exit status. It verifies
 candidate {head} of {spec_id} (round {round}) from the uploaded source archive and recipe. All application, database
@@ -101,7 +110,7 @@ class HostedVerifier:
 
     # ------------------------------------------------------------ the round
     def verify(self, repo: Path, base_sha: str, head_sha: str, spec: dict[str, Any], *, branch: str, round_no: int,
-               work_item_id: str | None = None) -> HostedRun:
+               work_item_id: str | None = None, journeys: dict[str, bytes] | None = None) -> HostedRun:
         ctx, sid = self.ctx, spec["spec_id"]
         record: dict[str, Any] = {"mode": "managed", "host": "anthropic-cloud", "app_id": self.cfg.app_id, "head_sha": head_sha,
                                   "spec_id": sid, "round": round_no, "status": "blocked", "phases": []}
@@ -116,6 +125,8 @@ class HostedVerifier:
         requests: dict[int, tuple[Path, dict]] = {}
         blocked: dict[int, str] = {}
         sandbox_entries = []
+        bound_journeys: dict[str, str] = {}
+        journey_uploads: dict[str, bytes] = {}
         for index, entry in _entries(spec):
             if entry.get("target") not in ("local", "preview"):
                 blocked[index] = "unsupported e2e target; expected local or preview inside the hosted sandbox"
@@ -126,11 +137,23 @@ class HostedVerifier:
             if base_url is None and (entry.get("visual") or entry["target"] == "preview"):
                 blocked[index] = "the approved recipe declares no service with id \"app\" for e2e entries to run against"
                 continue
+            name = journey_name(entry["command"])
+            journey_ref = None
+            if entry["command"].startswith("factory:journey"):
+                problem = _journey_problem(name, (journeys or {}).get(name or ""), entry)
+                if problem:
+                    blocked[index] = problem
+                    continue
+                content = journeys[name]
+                journey_ref = {"name": name, "sha256": hashlib.sha256(content).hexdigest()}
+                bound_journeys[name] = journey_ref["sha256"]
+                journey_uploads[f"journeys/{name}.json"] = content
             visual_request = None
             if entry.get("visual"):
                 directory, visual_request = visual.new_request(self.workdir, repo, head, base_url, entry)
                 requests[index] = (directory, visual_request)
-            sandbox_entries.append({"index": index, "command": entry["command"], "target": entry["target"], "visual_request": visual_request})
+            sandbox_entries.append({"index": index, "command": entry["command"], "target": entry["target"], "visual_request": visual_request,
+                                    **({"journey": journey_ref} if journey_ref else {})})
         cap = float(self.cfg.managed_verify_budget_usd)
         record.update(profile_path=relative, profile_sha256=digest, approved_profile_sha256=approved,
                       source_sha256=hashlib.sha256(source).hexdigest(), vaults_attached=len(self.cfg.test_vault_ids), cap_usd=cap)
@@ -142,11 +165,12 @@ class HostedVerifier:
         environment_id = te.ensure_environment(client, profile, self.cfg.runs_dir / "_test_environments", app=app)
         descriptor = {"head_sha": head, "profile_sha256": digest, "source_sha256": record["source_sha256"], "profile_path": relative,
                       "spec_sha256": te.fingerprint({k: v for k, v in spec.items() if not k.startswith("_")}),
-                      "environment_id": environment_id, "provider": "anthropic-cloud",
+                      "environment_id": environment_id, "provider": "anthropic-cloud", "journeys": bound_journeys,
                       "change": {"spec_id": sid, "round": round_no, "commands": list(spec["test_plan"]["commands"]),
                                  **pytest_collection(spec["test_plan"]["commands"]),
                                  "e2e": sandbox_entries, "command_timeout_seconds": 900}}
         record["spec_sha256"] = descriptor["spec_sha256"]
+        record["journeys"] = [{"name": n, "sha256": s} for n, s in sorted(bound_journeys.items())]
         record["app_base_url"] = base_url
         record["environment_id"] = environment_id
         # late import: the stages package imports this module
@@ -155,7 +179,9 @@ class HostedVerifier:
             ctx, stage=VERIFY_STAGE, prefix=f"{sid}-r{round_no}-hosted-", spec_id=sid,
             agent_key="implementer", title=f"{ctx.run_id} verify {sid} r{round_no} (hosted)", run_id=ctx.run_id,
             uploads={"test-source.tar": source, "environment-request.json": json.dumps(descriptor).encode(),
-                     "tools/environment_runner.py": (Path(__file__).parent / "sandbox_tools/environment_runner.py").read_bytes()},
+                     "tools/environment_runner.py": (Path(__file__).parent / "sandbox_tools/environment_runner.py").read_bytes(),
+                     **({"tools/browser_runner.py": (Path(__file__).parent / "sandbox_tools/browser_runner.py").read_bytes(),
+                         **journey_uploads} if journey_uploads else {})},
             work_item_id=work_item_id, description=DESCRIPTION.format(head=head, spec_id=sid, round=round_no),
             rubric_md=None, max_iterations=1, budget_usd=cap, environment_id=environment_id,
             vault_ids=list(self.cfg.test_vault_ids), system_override=te.SYSTEM,
@@ -171,7 +197,7 @@ class HostedVerifier:
         except ValueError:
             report = {}
         report = report if isinstance(report, dict) else {}
-        bound = all(report.get(k) == descriptor[k] for k in ("head_sha", "profile_sha256", "source_sha256", "spec_sha256"))
+        bound = all(report.get(k) == descriptor[k] for k in ("head_sha", "profile_sha256", "source_sha256", "spec_sha256", "journeys"))
         results = ((report.get("change") or {}).get("results") or {}) if bound else {}
         if bound and report.get("missing_secrets"):
             record["missing_secrets"] = [str(x) for x in report["missing_secrets"]][:20]
@@ -280,6 +306,22 @@ class HostedVerifier:
                                           "detail": (record.get("detail") or env_detail)[:500]}, spec_id=sid)
         return HostedRun(setup=setup, environment=environment, commands=commands, e2e=e2e, collected=collected, preview=preview,
                          record={**record, "ready": setup_ok, "environment_ready": env_ok})
+
+
+def _journey_problem(name: str | None, content: bytes | None, entry: dict[str, Any]) -> str | None:
+    """Why a `factory:journey` entry cannot run, or None. Checked before the session so a missing or malformed journey
+    costs nothing and comes back to the implementer as a not-run row with the reason."""
+    if name is None:
+        return "a journey entry is `factory:journey <name>` with a name of letters, digits, dots, dashes or underscores"
+    if not entry.get("visual"):
+        return "a journey entry needs the spec's visual contract (persona, viewport, steps, environment)"
+    if content is None:
+        return f"the implementer wrote no journeys/{name}.json to /mnt/session/outputs/"
+    try:
+        problems = br.validate_journey(json.loads(content), entry["visual"].get("steps"))
+    except ValueError as exc:
+        problems = [f"not JSON: {exc}"]
+    return f"journeys/{name}.json is not a runnable journey: " + "; ".join(problems[:6]) if problems else None
 
 
 def pytest_collection(commands: list[str]) -> dict[str, Any]:
