@@ -1,28 +1,30 @@
-"""The Factory Console API and the demo driver, through FastAPI's TestClient. No network, no platform."""
+"""The Factory Console API through FastAPI's TestClient, with runs driven by the scripted Ledgerline run
+(tests/support/scripted_run.py) or written straight into the store. No network, no platform."""
 import json
 
 import pytest
-from conftest import make_config
+from conftest import EXAMPLES, make_config
 from fastapi.testclient import TestClient
 
 from factory import checks
 from factory.surfaces.filequeue import FileQueue
 from factory.web.app import create_app
+from support.scripted_run import ScriptedRun
 
 
 @pytest.fixture
 def client(tmp_path, root):
     cfg = make_config(root, tmp_path / "runs", gate_surface="web")
-    app = create_app(cfg, demo_thread=False)
+    app = create_app(cfg)
     with TestClient(app) as c:
         c.console = app.state.console
-        c.demo = app.state.demo
+        c.scripted = ScriptedRun(cfg.runs_dir, cfg.schemas_dir, EXAMPLES)
         c.cfg = cfg
         yield c
 
 
 def _seed(client):
-    run_id = client.demo.seed_example()
+    run_id = client.scripted.seed_example()
     return run_id
 
 
@@ -52,21 +54,22 @@ def test_empty_board(client):
     assert client.get("/api/gates/gate_nope").status_code == 404
 
 
-def test_demo_run_walks_question_gate1_gate2_to_change_requests(client, schemas_dir):
+def test_scripted_run_walks_question_gate1_gate2_to_change_requests(client, schemas_dir):
     run_id = _seed(client)
     runs = client.get("/api/runs").json()["runs"]
-    assert runs[0]["run_id"] == run_id and runs[0]["demo"] and runs[0]["stage"] == "decomposing"
+    assert runs[0]["run_id"] == run_id and runs[0]["stage"] == "decomposing" and runs[0]["mode"] == "live"
+    assert runs[0]["status"] == "needs_you" and runs[0]["headline"] == "1 question from the crew waiting on you."
     assert runs[0]["waiting"] == {"gates": 0, "questions": 1}
 
     # a blocking question is waiting; nothing moves until it is answered
     inbox = client.get("/api/inbox").json()
     assert len(inbox["questions"]) == 1 and inbox["questions"][0]["blocking"]
     qid = inbox["questions"][0]["question_id"]
-    assert client.demo.tick(run_id) == "awaiting_answer"
+    assert client.scripted.tick(run_id) == "awaiting_answer"
     assert client.post(f"/api/questions/{qid}/answer", json={"answer": "   "}).status_code == 400
     assert client.post("/api/questions/q_nope/answer", json={"answer": "x"}).status_code == 404
     assert client.post(f"/api/questions/{qid}/answer", json={"answer": "Stripe Smart Retries", "by": "priya"}).json()["ok"]
-    assert client.demo.tick(run_id) == "gate_1"
+    assert client.scripted.tick(run_id) == "gate_1"
 
     # Gate 1 is open with hashes; the review payload has the decomposition and its checks
     detail = client.get(f"/api/runs/{run_id}").json()
@@ -91,7 +94,7 @@ def test_demo_run_walks_question_gate1_gate2_to_change_requests(client, schemas_
     assert r["ok"] and sorted(r["recorded"]["artifact_shas"]) == sorted(a["sha256"] for a in g["gate"]["artifacts"])
     assert client.post(f"/api/gates/{gid}/decision", json={"decision": "approve"}).status_code == 409   # already recorded
     assert client.get(f"/api/gates/{gid}").json()["gate"]["recorded"]["decision"] == "request_changes"
-    assert client.demo.tick(run_id) == "gate_1"                                                       # revision 2, new gate
+    assert client.scripted.tick(run_id) == "gate_1"                                                       # revision 2, new gate
     detail = client.get(f"/api/runs/{run_id}").json()
     gid2 = detail["gates"][0]["gate_id"]
     assert gid2 != gid
@@ -103,7 +106,7 @@ def test_demo_run_walks_question_gate1_gate2_to_change_requests(client, schemas_
 
     # approve: specs are written and judged, Gate 2 opens
     assert client.post(f"/api/gates/{gid2}/decision", json={"decision": "approve", "by": "priya"}).json()["ok"]
-    assert client.demo.tick(run_id) == "gate_2"
+    assert client.scripted.tick(run_id) == "gate_2"
     detail = client.get(f"/api/runs/{run_id}").json()
     assert detail["stage"] == "gate_2_spec_readiness" and detail["cost"] > 6
     gid3 = detail["gates"][0]["gate_id"]
@@ -120,7 +123,7 @@ def test_demo_run_walks_question_gate1_gate2_to_change_requests(client, schemas_
     r = client.post(f"/api/gates/{gid3}/decision", json={"decision": "approve_subset", "by": "sam",
                                                           "approved_subset": ["spec_smart-retries", "spec_at-risk-admin"]}).json()
     assert r["ok"]
-    assert client.demo.tick(run_id) == "done"
+    assert client.scripted.tick(run_id) == "done"
     detail = client.get(f"/api/runs/{run_id}").json()
     assert detail["stage"] == "completed"
     by_id = {w["work_item_id"]: w for w in detail["work_items"]}
@@ -132,7 +135,7 @@ def test_demo_run_walks_question_gate1_gate2_to_change_requests(client, schemas_
     assert any(a["name"] == "final-verdict.json" for a in detail["artifacts"])
     raw = client.get(f"/api/artifacts/{run_id}/judge/final-verdict.json")
     assert raw.status_code == 200 and json.loads(raw.text)["round"] == 1
-    # every event the demo wrote validates against the run_event schema
+    # every event the scripted run wrote validates against the run_event schema
     for ev in client.console.store.events(run_id):
         assert checks.schema_valid(ev.to_dict(), schemas_dir / "run_event.schema.json", schemas_dir).passed, ev.kind
 
@@ -141,10 +144,10 @@ def test_reject_closes_the_run(client):
     run_id = _seed(client)
     qid = client.get("/api/inbox").json()["questions"][0]["question_id"]
     client.post(f"/api/questions/{qid}/answer", json={"answer": "Own schedule"})
-    client.demo.tick(run_id)
+    client.scripted.tick(run_id)
     gid = client.get(f"/api/runs/{run_id}").json()["gates"][0]["gate_id"]
     client.post(f"/api/gates/{gid}/decision", json={"decision": "reject", "comments": "not now"})
-    assert client.demo.tick(run_id) == "closed"
+    assert client.scripted.tick(run_id) == "closed"
     assert client.get(f"/api/runs/{run_id}").json()["stage"] == "closed"
 
 
@@ -153,7 +156,7 @@ def test_decisions_land_in_the_same_queue_the_cli_reads(client):
     run_id = _seed(client)
     qid = client.get("/api/inbox").json()["questions"][0]["question_id"]
     client.post(f"/api/questions/{qid}/answer", json={"answer": "Stripe Smart Retries"})
-    client.demo.tick(run_id)
+    client.scripted.tick(run_id)
     gid = client.get(f"/api/runs/{run_id}").json()["gates"][0]["gate_id"]
     client.post(f"/api/gates/{gid}/decision", json={"decision": "approve", "by": "priya"})
     fresh = FileQueue(client.cfg.runs_dir / "_queue")       # a different process would build this
@@ -163,7 +166,7 @@ def test_decisions_land_in_the_same_queue_the_cli_reads(client):
     assert fresh.answer(qid).answer == "Stripe Smart Retries"
 
 
-def test_outcome_form_validation_and_demo_start(client):
+def test_outcome_form_validation_and_run_start(client):
     t = client.get("/api/outcomes/template").json()["outcome"]
     assert t["_example"]["title"].startswith("Todos with due dates") and t["success_metrics"][0]["metric"] == ""
     assert client.get("/api/outcomes/template?example=ledgerline").json()["outcome"]["_example"]["title"].startswith("Cut involuntary churn")
@@ -181,23 +184,23 @@ def test_outcome_form_validation_and_demo_start(client):
     listed = client.get("/api/outcomes").json()["outcomes"]
     assert listed[0]["outcome_id"] == r["outcome_id"] and listed[0]["runs"] == []
     assert client.get(f"/api/outcomes/{r['outcome_id']}").json()["outcome"]["title"] == "Try the console"
-    assert client.post("/api/runs", json={"outcome_id": "out_nope", "mode": "demo"}).status_code == 404
+    assert client.post("/api/runs", json={"outcome_id": "out_nope", "mode": "live"}).status_code == 404
     assert client.post("/api/runs", json={"outcome_id": r["outcome_id"], "mode": "live"}).status_code == 409   # not configured
     assert client.post("/api/runs", json={"outcome_id": r["outcome_id"], "mode": "design"}).status_code == 409  # no agents in this cfg
     assert client.post("/api/runs", json={"outcome_id": r["outcome_id"], "mode": "weird"}).status_code == 400
-    started = client.post("/api/runs", json={"outcome_id": r["outcome_id"], "mode": "demo"}).json()
-    assert started["mode"] == "demo" and started["run_id"].startswith("run_")
-    assert client.get("/api/outcomes").json()["outcomes"][0]["runs"] == [started["run_id"]]
+    assert client.post("/api/runs", json={"outcome_id": r["outcome_id"], "mode": "demo"}).status_code == 400   # the demo is gone
+    # a run of the saved outcome (here scripted into the store) is listed under it and in the history
+    run_id = client.scripted.seed(client.get(f"/api/outcomes/{r['outcome_id']}").json()["outcome"])
+    assert client.get("/api/outcomes").json()["outcomes"][0]["runs"] == [run_id]
     assert client.get("/api/runs").json()["runs"][0]["title"] == "Try the console"
-    assert client.post("/api/demo/tick").json()["ticked"] == [(started["run_id"], "awaiting_answer")] or \
-        client.post("/api/demo/tick").json()["ticked"][0][1] == "awaiting_answer"
+    assert client.post("/api/demo/tick").status_code in (404, 405)
 
 
 def test_run_ids_are_validated_and_reads_create_nothing(client):
     assert client.get("/api/runs/run_nope").status_code == 404
     assert client.get("/api/runs/..%2F..%2Fetc").status_code == 404
     assert not (client.cfg.runs_dir / "run_nope").exists()           # a read never creates a run directory
-    assert client.post("/api/runs", json={"outcome_id": "../x", "mode": "demo"}).status_code == 404
+    assert client.post("/api/runs", json={"outcome_id": "../x", "mode": "live"}).status_code == 404
 
 
 def test_host_header_is_checked(client):
@@ -218,7 +221,7 @@ def test_redaction_and_design_run_argv(client, monkeypatch, tmp_path, root):
                       agents={k: AgentRef("agent_" + k, 1) for k in ("codebase_researcher", "decomposer", "spec_writer", "spec_judge",
                                                                      "implementer", "reviewer", "merge_judge", "integrator")})
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    app2 = webapp.create_app(cfg, demo_thread=False)
+    app2 = webapp.create_app(cfg)
     calls = []
 
     class FakeProc:
@@ -263,13 +266,13 @@ def test_platform_success_path_with_fake_client(client, monkeypatch, tmp_path, r
     monkeypatch.setattr(cfgmod, "anthropic_client", lambda cfg: FakeClient())
     cfg = make_config(root, tmp_path / "runs3", workspace_id="wrkspc_1",
                       agents={"decomposer": AgentRef("agent_dec", 1), "reviewer": AgentRef("agent_missing", 1)})
-    with TestClient(webapp.create_app(cfg, demo_thread=False)) as c:
+    with TestClient(webapp.create_app(cfg)) as c:
         p = c.get("/api/platform").json()
     assert p["ok"] is False and "not found on the platform" in p["error"]
     assert [a["found"] for a in p["agents"]] == [True, False]
     assert p["sessions"][0]["run_id"] == "run_x" and p["sessions"][0]["url"].endswith("/sessions/sesn_1")
     cfg_ok = make_config(root, tmp_path / "runs4", workspace_id="wrkspc_1", agents={"decomposer": AgentRef("agent_dec", 1)})
-    with TestClient(webapp.create_app(cfg_ok, demo_thread=False)) as c:
+    with TestClient(webapp.create_app(cfg_ok)) as c:
         assert c.get("/api/platform").json()["ok"] is True
 
 
@@ -287,14 +290,14 @@ def test_design_only_flag_and_file_queue_atomic_write(client, tmp_path):
 
 
 def test_resume_is_offered_only_for_failed_runs_that_reached_implementation(client, schemas_dir):
-    """A demo run is never resumable; a failed live run that reached implementation is, and resuming it with an
+    """A run in progress is not resumable; a failed live run that reached implementation is, and resuming it with an
     unconfigured orchestrator is refused with the gaps (nothing is spawned)."""
     import json
     from factory.store import RunStore
 
-    demo_id = _seed(client)
-    assert client.get(f"/api/runs/{demo_id}").json()["resumable"] is False
-    assert client.post(f"/api/runs/{demo_id}/resume").status_code == 409
+    live_id = _seed(client)
+    assert client.get(f"/api/runs/{live_id}").json()["resumable"] is False
+    assert client.post(f"/api/runs/{live_id}/resume").status_code == 409
     assert client.post("/api/runs/run_nope/resume").status_code == 404
 
     runs_dir = client.cfg.runs_dir
@@ -391,7 +394,7 @@ def test_budget_pause_is_shown_decided_and_resumed_from_the_console(client, monk
                        agents={k: AgentRef("agent_" + k, 1) for k in ("codebase_researcher", "decomposer", "spec_writer", "spec_judge",
                                                                       "implementer", "reviewer", "merge_judge", "integrator")})
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    with TestClient(webapp.create_app(cfg2, demo_thread=False)) as c2:
+    with TestClient(webapp.create_app(cfg2)) as c2:
         out = c2.post(f"/api/runs/{rid}/resume", json={"budget_usd": 90}).json()
         assert out["mode"] == "resume" and out["pid"] == 777
         monkeypatch.setattr(webapp.Console, "resuming", lambda self, run_id: 777)
@@ -432,18 +435,18 @@ def test_console_shows_a_budget_gate(client):
 
 
 def test_watch_is_offered_for_live_runs_with_open_pull_requests(client, examples):
-    """Demo runs are never watched; a live run with a work item at cr_open is, and starting the watcher with an
-    unconfigured forge (or while one is already running) is refused with the reason (nothing is spawned)."""
+    """A run with nothing on the forge yet has nothing to watch; a run with a work item at cr_open has, and starting
+    the watcher with an unconfigured forge (or while one is already running) is refused with the reason (nothing is spawned)."""
     import json
     import os
 
     from factory.store import RunStore
     from factory.watcher import HEARTBEAT
 
-    demo_id = _seed(client)
-    d = client.get(f"/api/runs/{demo_id}").json()
+    early_id = _seed(client)
+    d = client.get(f"/api/runs/{early_id}").json()
     assert d["watch"]["watchable"] is False and d["watch"]["heartbeat"] is None
-    assert client.post(f"/api/runs/{demo_id}/watch").status_code == 409
+    assert client.post(f"/api/runs/{early_id}/watch").status_code == 409
     assert client.post("/api/runs/run_nope/watch").status_code == 404
 
     runs_dir = client.cfg.runs_dir
@@ -551,7 +554,7 @@ def test_crew_roster_board_and_settings_passthrough(client, monkeypatch):
                       agents={k: AgentRef("agent_" + k, 1) for k in ("codebase_researcher", "decomposer", "spec_writer", "spec_judge",
                                                                      "implementer", "reviewer", "merge_judge", "integrator")})
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    app2 = webapp.create_app(cfg, demo_thread=False)
+    app2 = webapp.create_app(cfg)
     calls = []
 
     class FakeProc:

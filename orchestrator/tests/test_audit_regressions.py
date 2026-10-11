@@ -200,7 +200,7 @@ def test_nested_evidence_downloads_and_cannot_escape_artifact_root(tmp_path, roo
     store = RunStore(cfg.runs_dir)
     store.put_artifact("run_test0001", "review", "probes/nested/output.txt", b"probe output")
     (cfg.runs_dir / "run_test0001" / "private.txt").write_text("private")
-    with TestClient(create_app(cfg, demo_thread=False)) as client:
+    with TestClient(create_app(cfg)) as client:
         response = client.get("/api/artifacts/run_test0001/review/probes/nested/output.txt")
         assert response.status_code == 200 and response.text == "probe output"
         assert client.get("/api/artifacts/run_test0001/review/%2E%2E/%2E%2E/private.txt").status_code == 404

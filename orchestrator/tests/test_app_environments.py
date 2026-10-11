@@ -200,7 +200,7 @@ def test_discovery_reuses_a_legacy_discovery_environment_and_marks_it(tmp_path):
 def test_api_lists_environments_and_guards_cleanup(tmp_path, root, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     cfg = make_config(root, tmp_path / "runs", gate_surface="web")
-    app = create_app(cfg, demo_thread=False)
+    app = create_app(cfg)
     with TestClient(app) as c:
         assert c.get("/api/apps/environments").json()["configured"] is False
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")

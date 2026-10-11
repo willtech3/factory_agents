@@ -51,6 +51,16 @@
     ["completed", "Done", "Every item has a pull request for human review."],
   ];
   const TERMINAL = { closed: "Closed", escalated: "Escalated", failed: "Failed", paused_budget: "Paused at budget" };
+  // run status (summary.py) -> tag colour: orange is a person's turn, clay is the crew, red is something to look into
+  const STATUS_TAG = { needs_you: "gate", running: "crew", stopped: "bad", paused: "warn", completed: "ok", closed: "", failed: "bad", escalated: "warn", unreadable: "bad" };
+  const RUN_FILTERS = [["all", "All"], ["needs_you", "Needs you"], ["active", "In progress"], ["done", "Done"], ["unfinished", "Did not finish"]];
+  const runMatches = (r, f) => f === "all" ? true
+    : f === "needs_you" ? (r.status === "needs_you" || r.status === "stopped" || (r.waiting && r.waiting.gates + r.waiting.questions > 0))
+    : f === "active" ? !r.terminal
+    : f === "done" ? r.status === "completed"
+    : ["failed", "closed", "escalated", "unreadable"].includes(r.status);
+  const statusTag = r => el("span", { class: `tag ${STATUS_TAG[r.status] || ""}` }, r.status_label || words(r.status || ""));
+  const modeTag = r => r.mode ? el("span", { class: "tag" }, r.mode === "design" ? "design only" : "live") : null;
   const ITEM_STAGE = {
     pending: "Waiting", spec_drafting: "Spec being written", spec_judging: "Spec being judged", spec_approved: "Spec approved",
     implementing: "Implementing", reviewing: "In review", responding: "Responding to review", merge_judging: "Merge judge",
@@ -352,33 +362,83 @@
     return el("div", { class: "k quiet" }, el("span", { class: "run" }, r.title), el("span", { class: "t" }, c.title));
   }
 
-  // ------------------------------------------------------------------ runs
+  // ------------------------------------------------------------------ runs: the history, and the home page
+  const runsKey = runs => JSON.stringify(runs.map(r => [r.run_id, r.status, r.stage, r.updated_at, r.waiting ? [r.waiting.gates, r.waiting.questions] : null]));
   async function viewRuns() {
     setNav("runs");
     const runs = (await api("/api/runs")).runs;
+    const filter = state.runsFilter || "all";
+    const shown = runs.filter(r => runMatches(r, filter));
+    const needs = runs.filter(r => runMatches(r, "needs_you")).length, active = runs.filter(r => !r.terminal).length;
     const frag = document.createDocumentFragment();
-    frag.append(pageHead("Runs", "One run per outcome. A run ends with pull requests for a person to review.",
-      [el("a", { class: "btn primary", href: "#/start" }, "Start a run")]));
+    frag.append(pageHead("Runs", "Every run of the factory, unfinished ones first: what it was for, where it stands, and what came out of it.",
+      [needs ? el("span", { class: "tag gate" }, `${plural(needs, "run")} waiting on you`) : active ? el("span", { class: "tag crew" }, `${plural(active, "run")} in progress`) : el("span", { class: "tag ok" }, "Nothing waiting on a person"),
+       el("a", { class: "btn primary", href: "#/start" }, "Start a run")]));
     if (!runs.length) {
       frag.append(card(null, el("div", { class: "empty" }, crewFigure("decomposer", "asleep", "l"), el("h3", null, "No runs yet"),
-        el("div", null, "Start a run from an outcome."),
+        el("div", null, "Start one from an outcome. Every run shows up here with its status and what came out of it, for as long as its event log is kept."),
         el("a", { class: "btn primary", href: "#/start" }, "Start a run"))));
     } else {
-      const tbl = el("table", null, el("tr", null, el("th", null, "Outcome"), el("th", null, "Where"), el("th", null, "Items"), el("th", null, "Spend"), el("th", null, "Last activity")));
-      for (const r of runs) {
-        const wi = r.work_items || { total: 0 };
+      const chips = el("div", { class: "chips", role: "group", "aria-label": "Show runs" }, RUN_FILTERS.map(([key, label]) =>
+        el("button", { class: "btn sm", type: "button", "aria-pressed": String(key === filter), onclick: () => { state.runsFilter = key; viewRuns(); } },
+          label, " ", el("span", { class: "n" }, String(runs.filter(r => runMatches(r, key)).length)))));
+      const tbl = el("table", { class: "runs" }, el("tr", null, el("th", null, "Outcome"), el("th", null, "Status"), el("th", null, "What came out"), el("th", null, "Spend"), el("th", null, "When")));
+      for (const r of shown) {
         const waiting = r.waiting ? r.waiting.gates + r.waiting.questions : 0;
+        const prs = r.pull_requests || [];
         tbl.append(el("tr", { class: "link", onclick: () => { location.hash = `#/runs/${r.run_id}`; } },
-          el("td", null, el("div", { class: "title" }, el("a", { href: `#/runs/${r.run_id}` }, r.title), r.demo ? el("span", { class: "tag demo" }, "demo") : el("span", { class: "tag live" }, r.design_only ? "design only" : "live")),
+          el("td", null, el("div", { class: "title" }, el("a", { href: `#/runs/${r.run_id}` }, r.title), modeTag(r)),
+            el("div", { class: "explain mono", style: "font-size:12px" }, r.run_id)),
+          el("td", null, statusTag(r), el("div", { style: "margin-top:6px" }, miniSteps(r.stage)),
             waiting ? el("div", { class: "explain", style: "color:var(--call-text);font-weight:700" }, `${plural(waiting, "decision")} waiting on you`) : null),
-          el("td", null, miniSteps(r.stage), " ", el("span", { class: "explain" }, TERMINAL[r.stage] || (STAGES.find(s => s[0] === r.stage) || [])[1] || r.stage)),
-          el("td", null, wi.total), el("td", null, money(r.cost), r.budget_usd != null ? el("span", { class: "explain" }, ` of ${money(r.budget_usd)}`) : null), el("td", { class: "explain" }, ago(r.updated_at))));
+          el("td", { class: "headline" }, r.headline || "",
+            prs.length ? el("div", { class: "prs" }, prs.map(p => p.url
+              ? el("a", { href: p.url, target: "_blank", rel: "noopener", title: `${p.title || p.work_item_id}: ${p.state}`, onclick: ev => ev.stopPropagation() }, `#${p.cr_id}`, el("span", { class: "explain" }, ` ${p.state}`))
+              : el("span", { class: "explain" }, `${p.work_item_id}: ${p.state}`))) : null),
+          el("td", null, money(r.cost_usd), r.budget_usd != null ? el("span", { class: "explain" }, ` of ${money(r.budget_usd)}`) : null),
+          el("td", { class: "explain" }, el("div", { title: r.started_at || "" }, `started ${ago(r.started_at)}`),
+            el("div", null, r.terminal ? `took ${dur(r.started_at, r.ended_at || r.updated_at)}` : `last activity ${ago(r.updated_at)}`))));
       }
-      frag.append(card("All runs", tbl, plural(runs.length, "run")));
+      if (!shown.length) tbl.append(el("tr", null, el("td", { colspan: "5", class: "explain" }, "No run matches this filter.")));
+      frag.append(card(null, el("div", null, chips, tbl)));
     }
     $main.replaceChildren(frag);
-    state.lastKey.runs = JSON.stringify(runs.map(r => [r.run_id, r.stage, r.updated_at]));
-    startPoll(refreshWhenChanged("runs", async () => JSON.stringify((await api("/api/runs")).runs.map(r => [r.run_id, r.stage, r.updated_at])), viewRuns), 5000);
+    state.lastKey.runs = runsKey(runs);
+    startPoll(refreshWhenChanged("runs", async () => runsKey((await api("/api/runs")).runs), viewRuns), 5000);
+  }
+
+  // what a finished (or stopped) run produced, read from its summary: the first card on its page
+  function resultCard(r) {
+    const s = r.summary;
+    const body = el("div", { class: "result" });
+    body.append(el("p", { class: "headline" }, s.headline));
+    const facts = el("dl", { class: "kv" });
+    const pair = (k, v) => { if (v != null && v !== "") facts.append(el("dt", null, k), el("dd", null, v)); };
+    pair("Mode", s.mode === "design" ? "Design only: real agents through Gate 2, nothing built" : `Live${s.forge ? `, pull requests on ${s.forge}` : ""}`);
+    pair("Spend", `${money(s.cost_usd)}${s.budget_usd != null ? ` of ${money(s.budget_usd)}` : ""} over ${plural(s.counts.sessions, "agent session")}`);
+    pair("Took", s.ended_at ? `${dur(s.started_at, s.ended_at)}, ended ${ago(s.ended_at)}` : `${dur(s.started_at, s.updated_at)} so far`);
+    if (s.failure) pair("Why it failed", s.failure);
+    if (s.escalations && s.escalations.length) pair("Why it escalated", el("ul", null, s.escalations.map(x => el("li", null, x))));
+    body.append(facts);
+    if (s.pull_requests.length) {
+      const t = el("table", null, el("tr", null, el("th", null, "Pull request"), el("th", null, "Work item"), el("th", null, "Where it got to")));
+      for (const p of s.pull_requests) t.append(el("tr", null,
+        el("td", null, p.url ? el("a", { href: p.url, target: "_blank", rel: "noopener" }, `#${p.cr_id}`) : (p.cr_id != null ? `#${p.cr_id}` : "not opened")),
+        el("td", null, p.title || p.work_item_id, el("div", { class: "explain mono" }, p.spec_id || p.work_item_id)),
+        el("td", null, el("span", { class: `tag ${p.stage === "deployed_dev" ? "ok" : p.stage === "closed" ? "bad" : ""}` }, p.state),
+          p.merge_sha ? el("span", { class: "explain mono" }, ` ${p.merge_sha.slice(0, 10)}`) : null,
+          p.dev_url ? [" ", el("a", { href: p.dev_url, target: "_blank", rel: "noopener" }, "open dev")] : null)));
+      body.append(el("h3", null, "Pull requests"), t);
+    } else if (s.design_only && s.specs_approved.length) {
+      body.append(el("h3", null, "Specs approved"), el("ul", null, s.specs_approved.map(x => el("li", { class: "mono" }, x))));
+    }
+    if (s.decisions.length) {
+      body.append(el("h3", null, "Your decisions"), el("ul", null, s.decisions.map(d => el("li", null,
+        el("b", null, `${d.label}: ${DECISION_LABEL[d.decision] || d.decision}`), ` by ${d.by || "console"} at ${clock(d.at)}`,
+        d.approved_subset.length ? ` (${d.approved_subset.join(", ")})` : "",
+        d.comments ? el("div", { class: "explain" }, `“${d.comments.slice(0, 300)}${d.comments.length > 300 ? "…" : ""}”`) : null))));
+    }
+    return card("What came out", body, s.status_label, s.status === "completed" ? "" : "soft");
   }
 
   function askBlock(q, onDone) {
@@ -410,13 +470,15 @@
     const stageName = TERMINAL[r.stage] || (STAGES.find(s => s[0] === r.stage) || [])[1] || r.stage;
     const b = r.budget || {};
     const started = r.created_at;
+    const s = r.summary || {};
     frag.append(pageHead(r.title, r.outcome ? r.outcome.statement.split(". ")[0] + "." : null,
-      [r.demo ? el("span", { class: "tag demo" }, "demo") : el("span", { class: "tag live" }, r.design_only ? "design only" : (TERMINAL[r.stage] || stageName)),
+      [statusTag(s), modeTag(s),
        el("span", { class: `tag ${b.paused ? "warn" : ""}` }, `${money(r.cost)}${b.budget_usd != null ? ` of ${money(b.budget_usd)}` : " spent"}`),
-       el("span", { class: "tag" }, dur(started, TERMINAL[r.stage] || r.stage === "completed" ? r.updated_at : null))],
+       el("span", { class: "tag" }, dur(started, s.ended_at || (TERMINAL[r.stage] || r.stage === "completed" ? r.updated_at : null)))],
       [el("a", { href: "#/runs" }, "Runs"), " / ", el("span", { class: "mono" }, r.run_id)]));
 
     frag.append(card(null, lineStrip(r), null, "soft"));
+    if (s.terminal || s.status === "stopped") frag.append(resultCard(r));
 
     for (const check of r.browser_checks_pending || []) frag.append(card("Browser check in progress",
       el("div", null, el("p", null, check.description), el("p", { class: "explain" }, `${check.persona} · ${check.environment.name} · waiting for browser observations and screenshots`))));
@@ -433,7 +495,7 @@
         el("div", { class: "txt" }, el("div", { class: "nm" }, el("span", null, CREW_NAME[m.role] || words(m.role)), el("span", null, costTxt)),
           el("span", { class: "st" }, st))));
     }
-    const consoleUrl = sid => state.config && state.config.console_session_url && !r.demo ? state.config.console_session_url.replace("SESSION_ID", sid) : null;
+    const consoleUrl = sid => state.config && state.config.console_session_url ? state.config.console_session_url.replace("SESSION_ID", sid) : null;
     const liveMember = (r.crew || []).find(m => m.state === "working" && m.session_id);
     const rosterCard = card("The crew", el("div", null, roster,
       el("p", { class: "explain", style: "margin-top:10px;font-size:12.5px" }, liveMember && consoleUrl(liveMember.session_id) ? [el("a", { href: consoleUrl(liveMember.session_id), target: "_blank", rel: "noopener" }, "Open the live session in the Anthropic Console.")] : null)));
@@ -461,8 +523,10 @@
         el("div", { class: "explain" }, (g.summary || "").slice(0, 220)),
         el("a", { class: "btn call", href: `#/gates/${g.gate_id}`, style: "margin-top:10px" }, "Review and decide")));
     } else {
-      turn.append(el("p", { style: "margin:0;font-size:15px" }, r.stage === "completed" ? "Nothing waiting on you here. The pull request is on the code host." : TERMINAL[r.stage] ? `${stageName}. Nothing more happens in this run.` : "Nothing waiting on you."));
+      turn.append(el("p", { style: "margin:0;font-size:15px" }, r.stage === "completed" ? "Nothing waiting on you here. The pull request is on the code host." : TERMINAL[r.stage] ? `${stageName}. ${s.headline || "Nothing more happens in this run."}` : "Nothing waiting on you."));
     }
+    if (s.status === "stopped") turn.append(el("div", { class: "notice bad", style: "margin:0" }, el("b", null, "The controller stopped without recording why. "),
+      "Nothing moves this run, and a decision on its open gate is not picked up, until a controller drives it again."));
     for (const g of recorded) turn.append(el("div", { class: "notice ok", style: "margin:0" }, el("b", null, `${DECISION_LABEL[g.recorded.decision] || g.recorded.decision} recorded on ${GATE_SHORT[g.kind]}. `), "The run picks it up within seconds. ", el("a", { href: `#/gates/${g.gate_id}` }, "View")));
     if (!TERMINAL[r.stage]) {
       const up = el("div", { class: "up" }, el("span", { class: "explain", style: "font-size:12.5px" }, "Coming up for humans"));
@@ -2132,13 +2196,13 @@
 
   // ------------------------------------------------------------------ router
   async function route() {
-    const hash = location.hash || "#/inbox";
+    const hash = location.hash || "#/runs";
     const [path, query] = hash.slice(1).split("?");
     const params = new URLSearchParams(query || "");
     loadChrome();
     try {
-      if (path === "/" || path === "" || path === "/inbox" || path === "/board") await viewInbox();
-      else if (path === "/runs") await viewRuns();
+      if (path === "/" || path === "" || path === "/runs") await viewRuns();
+      else if (path === "/inbox" || path === "/board") await viewInbox();
       else if (path.startsWith("/runs/")) await viewRun(path.slice(6).split("#")[0]);
       else if (path.startsWith("/gates/")) await viewGate(path.slice(7));
       else if (path === "/start") await viewStart(params);
@@ -2148,10 +2212,10 @@
       else if (path === "/apps/new") await viewAppNew();
       else if (path.startsWith("/apps/")) await viewApp(decodeURIComponent(path.slice(6)));
       else if (path === "/settings") await viewSettings();
-      else { $main.replaceChildren(card(null, el("div", { class: "empty" }, el("h3", null, "No such page"), el("a", { class: "btn", href: "#/inbox" }, "Back to the board")))); stopPoll(); }
+      else { $main.replaceChildren(card(null, el("div", { class: "empty" }, el("h3", null, "No such page"), el("a", { class: "btn", href: "#/runs" }, "Back to the runs")))); stopPoll(); }
     } catch (e) {
       stopPoll();
-      $main.replaceChildren(pageHead("Something did not load"), card(null, el("div", { class: "empty" }, el("div", null, e.message), el("a", { class: "btn", href: "#/inbox" }, "Back to the board"))));
+      $main.replaceChildren(pageHead("Something did not load"), card(null, el("div", { class: "empty" }, el("div", null, e.message), el("a", { class: "btn", href: "#/runs" }, "Back to the runs"))));
     }
     window.scrollTo(0, 0);
   }

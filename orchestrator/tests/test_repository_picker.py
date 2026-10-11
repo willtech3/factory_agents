@@ -28,7 +28,7 @@ def test_repository_pages_are_private_bounded_and_mark_unwritable(root, tmp_path
                 dict(full_name='team/read', html_url='https://github.com/team/read', permissions={'push':False})]
         return httpx.Response(200,json=rows,headers={'Link':'<https://api.github.com/user/repos?page=3>; rel="next"'})
     connect(monkeypatch, handler)
-    with TestClient(create_app(cfg,demo_thread=False)) as c:
+    with TestClient(create_app(cfg)) as c:
         response = c.get('/api/repositories?page=2')
         assert response.status_code == 200
         data=response.json()
@@ -43,20 +43,20 @@ def test_repository_pages_are_private_bounded_and_mark_unwritable(root, tmp_path
 @pytest.mark.parametrize('status,expected',[(401,401),(403,503),(429,503),(500,502)])
 def test_repository_errors_do_not_leak_provider_body(root,tmp_path,monkeypatch,status,expected):
     connect(monkeypatch,lambda req:httpx.Response(status,json={'message':'secret-provider-body'}))
-    with TestClient(create_app(make_config(root,tmp_path,forge_token='secret'),demo_thread=False)) as c:
+    with TestClient(create_app(make_config(root,tmp_path,forge_token='secret'))) as c:
         r=c.get('/api/repositories')
         assert r.status_code==expected and 'secret' not in r.text
 
 
 def test_repository_discovery_without_credentials(root,tmp_path):
-    with TestClient(create_app(make_config(root,tmp_path),demo_thread=False)) as c:
+    with TestClient(create_app(make_config(root,tmp_path))) as c:
         assert c.get('/api/repositories').status_code==409
 
 
 def test_live_start_binds_selected_repository_and_preserves_branch(root,tmp_path,monkeypatch):
     from factory.web import app as webapp
     cfg=make_config(root,tmp_path,forge_token='test',forge_repo='old/repo')
-    app=create_app(cfg,demo_thread=False)
+    app=create_app(cfg)
     monkeypatch.setattr(webapp.cfgmod,'missing',lambda *a,**kw: [])
     calls=[]
     class Proc: pid=12345

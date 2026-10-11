@@ -114,7 +114,7 @@ def test_nonbrowser_recipe_requires_real_functional_results(tmp_path,plan,root):
 
 def test_app_api_cross_origin_and_private_metadata(tmp_path,root):
     cfg=make_config(root,tmp_path/'runs',gate_surface='web')
-    app=create_app(cfg,demo_thread=False)
+    app=create_app(cfg)
     with TestClient(app) as c:
         body={'kind':'greenfield','name':'X','repository_url':'https://github.com/example/x','description':'demo','budget_usd':2}
         assert c.post('/api/apps',json=body,headers={'Origin':'https://evil.example'}).status_code==403

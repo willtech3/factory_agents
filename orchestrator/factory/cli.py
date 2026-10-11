@@ -10,7 +10,8 @@
     factory resume <run_id>             # continue a run that died during implementation or paused at its budget
     factory resume <run_id> --budget 80 # ... raising the run budget (or --outcome file.json to read it from there)
     factory watch <run_id> [--once]     # Gate 3 and Stage 5: follow the run's pull requests to the merge and the dev deploy
-    factory web [--port 8765] [--demo]  # the Factory Console: outcomes, runs board, inbox, gate review
+    factory runs [--active]             # the run history: every run, its status, and what came out of it
+    factory web [--port 8765]           # the Factory Console: the run history, the board, outcomes, gate review
     factory run outcome.json --preview managed --app-id app_x --test-profile-sha256 <sha> --test-vault vlt_a   # hosted verification
     factory browser list|claim|submit|block|doctor|smoke   # attach a Claude in Chrome session to browser checks
 
@@ -263,7 +264,7 @@ def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the f
         test_vault: list[str] = typer.Option([], "--test-vault", help="managed: an explicit test-only vault id (repeatable); never the forge's"),
         verify_budget: float | None = typer.Option(None, "--verify-budget", help="managed: USD cap per hosted verification session (default 4)")):
     """Start a run from an outcome.json. Blocks at human gates; decide from another terminal, the Console, or the tracker."""
-    from .runner import new_run_id, run as run_pipeline
+    from .runner import RunLocked, controller_lock, new_run_id, run as run_pipeline
 
     cfg = apply_preview_choice(cfgmod.load(), preview, app_id, test_profile_sha256, test_vault, verify_budget)
     gaps = cfgmod.missing(cfg, design_only=design_only)
@@ -272,10 +273,17 @@ def run(outcome_path: Path, forge: bool = typer.Option(True, help="Talk to the f
         raise typer.Exit(1)
     outcome = json.loads(outcome_path.read_text())
     run_id = new_run_id()
-    ctx = _context(cfg, outcome, run_id, forge=forge, design_only=design_only)
-    typer.echo(f"run {run_id} started (forge={cfg.forge if ctx.forge else 'none'}, gate surface={cfg.gate_surface}"
-               f"{', design only' if design_only else ''}, budget ${ctx.policy.run_budget_usd:.2f})")
-    final = _drive(ctx, lambda c: run_pipeline(c, outcome))
+    try:
+        # Held for the whole drive, like `resume`: the run history (`factory runs`, the Console) probes this lock to tell a
+        # controller that is still driving from one that died without recording why.
+        with controller_lock(cfg.runs_dir, run_id):
+            ctx = _context(cfg, outcome, run_id, forge=forge, design_only=design_only)
+            typer.echo(f"run {run_id} started (forge={cfg.forge if ctx.forge else 'none'}, gate surface={cfg.gate_surface}"
+                       f"{', design only' if design_only else ''}, budget ${ctx.policy.run_budget_usd:.2f})")
+            final = _drive(ctx, lambda c: run_pipeline(c, outcome))
+    except RunLocked as e:
+        typer.echo(str(e))
+        raise typer.Exit(1)
     _report_final(ctx, run_id, final)
 
 
@@ -479,6 +487,44 @@ def answer(question_id: str, text: str, by: str = "cli-user"):
 
 
 @app.command()
+def runs(active: bool = typer.Option(False, "--active", help="Only runs that are not finished (waiting on someone, running, paused, stopped)")):
+    """The run history: every run under the runs directory, its status, and what came out of it (the same record the
+    Console's Runs page shows)."""
+    from .summary import summarize_run
+
+    cfg = cfgmod.load()
+    for line in run_history_lines(RunStore(cfg.runs_dir), cfg.runs_dir, active=active, summarize=summarize_run):
+        typer.echo(line)
+
+
+def run_history_lines(store, runs_dir: Path, *, active: bool = False, summarize=None) -> list[str]:
+    """`factory runs` as lines: unfinished runs first, then by last activity; two lines per run (the facts, then the
+    headline). Kept apart from the command so it is testable without the environment's configuration."""
+    from .summary import summarize_run
+
+    summarize = summarize or summarize_run
+    rows = []
+    for run_id in store.list_runs():
+        try:
+            rows.append(summarize(store, runs_dir, run_id))
+        except Exception as e:  # noqa: BLE001  a corrupt log should not hide the other runs
+            rows.append({"run_id": run_id, "title": "", "status_label": "Unreadable", "terminal": True, "cost_usd": 0.0,
+                         "budget_usd": None, "updated_at": "", "headline": f"The event log could not be read: {type(e).__name__}: {e}"})
+    if active:
+        rows = [r for r in rows if not r["terminal"]]
+    rows.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
+    rows.sort(key=lambda r: bool(r["terminal"]))
+    if not rows:
+        return ["no runs" + (" in progress; `factory runs` lists finished ones too" if active else f" under {runs_dir}")]
+    out = [f"{'run':16s} {'status':16s} {'spend':18s} {'last activity':17s} outcome"]
+    for r in rows:
+        spend = f"${r['cost_usd']:.2f}" + (f" of ${r['budget_usd']:.2f}" if r.get("budget_usd") is not None else "")
+        out.append(f"{r['run_id']:16s} {r['status_label']:16s} {spend:18s} {(r.get('updated_at') or '')[:16]:17s} {r['title']}")
+        out.append(f"{'':16s} {r['headline']}")
+    return out
+
+
+@app.command()
 def status(run_id: str):
     cfg = cfgmod.load()
     store = RunStore(cfg.runs_dir)
@@ -499,9 +545,8 @@ def replay(run_id: str):
 
 
 @app.command()
-def web(host: str = "127.0.0.1", port: int = 8765,
-        demo: bool = typer.Option(False, help="Seed a simulated run from examples/ledgerline so the console can be tried without the platform")):
-    """Serve the Factory Console (needs `pip install -e '.[web]'`)."""
+def web(host: str = "127.0.0.1", port: int = 8765):
+    """Serve the Factory Console (needs `pip install -e '.[web]'`). It opens on the run history."""
     try:
         import uvicorn
     except ImportError:  # pragma: no cover
@@ -511,9 +556,6 @@ def web(host: str = "127.0.0.1", port: int = 8765,
 
     cfg = cfgmod.load()
     application = create_app(cfg)
-    if demo:
-        run_id = application.state.demo.seed_example()
-        typer.echo(f"demo run {run_id} seeded")
     typer.echo(f"Factory Console at http://{host}:{port}/  (runs under {cfg.runs_dir})")
     uvicorn.run(application, host=host, port=port, log_level="warning")
 

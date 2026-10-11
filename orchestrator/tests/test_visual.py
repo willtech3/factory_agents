@@ -5,10 +5,11 @@ import subprocess
 import pytest
 from fastapi.testclient import TestClient
 
-from conftest import make_config
+from conftest import EXAMPLES, make_config
 from factory import checks, visual
 from factory.stages.implement import LocalVerifier
 from factory.web.app import create_app
+from support.scripted_run import ScriptedRun
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/k9sAAAAASUVORK5CYII=')
 
@@ -97,7 +98,7 @@ def test_external_worker_timeout_is_not_passed(tmp_path):
 
 def test_binary_artifacts_support_range_and_block_symlinks(tmp_path, root):
     cfg = make_config(root, tmp_path / 'runs')
-    app = create_app(cfg, demo_thread=False)
+    app = create_app(cfg)
     client = TestClient(app)
     store = app.state.console.store
     media = b'\x00\x00\x00\x18ftypmp42' + b'0' * 50
@@ -112,8 +113,8 @@ def test_binary_artifacts_support_range_and_block_symlinks(tmp_path, root):
 
 def test_old_visual_evidence_becomes_stale_when_new_head_verification_starts(tmp_path, root):
     cfg = make_config(root, tmp_path / 'runs')
-    app = create_app(cfg, demo_thread=False)
-    run_id = app.state.demo.seed_example()
+    app = create_app(cfg)
+    run_id = ScriptedRun(cfg.runs_dir, cfg.schemas_dir, EXAMPLES).seed_example()
     store = app.state.console.store
     store.put_artifact(run_id, 'visual', 'evidence.json', json.dumps({'head_sha': 'old', 'status': 'passed', 'media': []}).encode())
     store.append(run_id, 'visual.verified', {'type': 'orchestrator'}, {'path': 'visual/evidence.json', 'head_sha': 'old'}, spec_id='spec_test')
