@@ -55,7 +55,8 @@ def committed(tmp_path, recipe=RECIPE):
 
 class Client:
     def __init__(self):
-        self.beta = SimpleNamespace(environments=SimpleNamespace(create=lambda **kw: SimpleNamespace(id="env_test")),
+        self.beta = SimpleNamespace(environments=SimpleNamespace(create=lambda **kw: SimpleNamespace(id="env_test"),
+                                                                 list=lambda **kw: SimpleNamespace(data=[], has_next_page=lambda: False)),
                                     sessions=SimpleNamespace(archive=lambda *a, **kw: None))
 
 

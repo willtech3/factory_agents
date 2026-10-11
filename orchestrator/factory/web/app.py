@@ -82,6 +82,10 @@ class AppCredentialBody(BaseModel):
     value: SecretStr
 
 
+class EnvironmentCleanupBody(BaseModel):
+    environment_ids: list[str] = Field(max_length=200)
+
+
 class DecisionBody(BaseModel):
     decision: str
     comments: str = ""
@@ -767,6 +771,9 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
     from ..onboarding import AppOnboarding
     onboarding = AppOnboarding(cfg)
     app.state.onboarding = onboarding
+    from ..app_environments import AppEnvironments
+    environments = AppEnvironments(cfg, onboarding)
+    app.state.environments = environments
 
     @app.get("/", include_in_schema=False)
     def index():
@@ -787,6 +794,19 @@ def create_app(cfg: Config | None = None, demo_thread: bool = True) -> FastAPI:
     @app.post("/api/apps")
     def api_create_app(body: AppBody):
         return onboarding.create(**body.model_dump())
+
+    # Declared before /api/apps/{app_id}: the apps' execution environments, read from the shared workspace.
+    @app.get("/api/apps/environments")
+    def api_app_environments(refresh: bool = False):
+        return environments.snapshot(refresh=refresh)
+
+    @app.post("/api/apps/environments/cleanup")
+    def api_app_environments_cleanup(body: EnvironmentCleanupBody):
+        return environments.cleanup(body.environment_ids)
+
+    @app.post("/api/apps/environments/{environment_id}/archive")
+    def api_app_environment_archive(environment_id: str):
+        return environments.archive(environment_id)
 
     @app.get("/api/apps/{app_id}")
     def api_app(app_id: str):
