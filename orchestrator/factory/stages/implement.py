@@ -1024,10 +1024,14 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 return tag_pass(reused_sec, "security")      # finished before the orchestrator died or paused
             pre = managed_prechecks(diff["added_lines"]) if managed else security.prechecks(repo, diff["changed"], diff["added_lines"])
             ctx.store.put_artifact(ctx.run_id, "review", security_prefix + "security_prechecks.json", json.dumps(pre, indent=2).encode())
+            security_skill = ctx.cfg.skills_dir / "security-review" / "SKILL.md"
+            if not security_skill.is_file():
+                raise RuntimeError("security reviewer requires skills/security-review/SKILL.md")
             r = run_session(
                 ctx, prefix=security_prefix, spec_id=sid,
                 agent_key="security_reviewer", title=f"{ctx.run_id} security-review {sid} r{round_no}", run_id=ctx.run_id,
-                stage="review", uploads={**rev_uploads, "security_prechecks.json": json.dumps(pre, indent=2).encode()}, work_item_id=wid,
+                stage="review", uploads={**rev_uploads, "security_prechecks.json": json.dumps(pre, indent=2).encode(),
+                         "skills/security-review/SKILL.md": security_skill.read_bytes()}, work_item_id=wid,
                 description=SECURITY_REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
                                                                git=git_ro, round=round_no, second_round=second, skill_clause=skill_clause,
                                                                preview_clause=rev_preview_clause),
@@ -1035,7 +1039,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 metadata={"pass": "security"}, repository=mount(branch),
             )
             f = require_json(r, "findings.json")
-            stamp_provenance(f, ctx, r, "Security reviewer", "claude-opus-5-5")
+            stamp_provenance(f, ctx, r, "Security reviewer", "claude-fable-5-1")
             r.outputs["findings.json"] = json.dumps(f, indent=2).encode()
             persist_outputs(ctx, "review", r, prefix=security_prefix, work_item_id=wid, spec_id=sid)
             return tag_pass(f, "security")
