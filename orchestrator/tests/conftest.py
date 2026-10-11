@@ -8,6 +8,16 @@ EXAMPLES = ROOT / "examples" / "ledgerline"
 SCHEMAS = ROOT / "schemas"
 
 
+@pytest.fixture(autouse=True)
+def _no_shell_shim_in_checkout():
+    """No test may leave the verifier's `shell-shim/` (an `sh` symlink to the host's bash) in the orchestrator
+    directory: it belongs under a verifier workdir, and a host-specific symlink in the checkout gets committed."""
+    shim = ROOT / "orchestrator" / "shell-shim"
+    before = shim.exists()
+    yield
+    assert before or not shim.exists(), f"this test created {shim}; give the verifier a tmp_path workdir"
+
+
 @pytest.fixture(scope="session")
 def root() -> Path:
     return ROOT

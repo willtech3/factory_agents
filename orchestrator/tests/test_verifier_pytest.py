@@ -35,9 +35,13 @@ def _repo(tmp_path: Path) -> Path:
 
 
 def _verifier(tmp_path: Path) -> LocalVerifier:
-    """A verifier whose per-run environment is the orchestrator's own venv (it has pytest; nothing is installed)."""
+    """A verifier whose per-run environment is the orchestrator's own venv (it has pytest; nothing is installed).
+
+    The venv is linked in at the production layout (workdir/venv), not used in place: the shell shim lands next to
+    the per-run environment, and pointing env_dir at the venv itself put it in the orchestrator checkout."""
     v = LocalVerifier("unused", tmp_path / "v")
-    v.env_dir = Path(sys.executable).parent.parent
+    v.env_dir.parent.mkdir(parents=True)
+    v.env_dir.symlink_to(Path(sys.executable).parent.parent, target_is_directory=True)
     v.setup = CheckResult(SETUP_CHECK, True, "the test's own interpreter stands in for the per-run environment")
     return v
 
