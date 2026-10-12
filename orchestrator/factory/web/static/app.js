@@ -93,7 +93,7 @@
   // the roles a budget pause names as the next step (budget.py STAGE_LABEL keys)
   const FORGE_NAME = { github: "GitHub", gitlab: "GitLab" };
   const NEXT_ROLE = { decompose: "decomposer", specify: "spec_writer", judge: "spec_judge", implement: "implementer", review: "reviewer", security_review: "security_reviewer", merge_judge: "merge_judge", integrate: "integrator" };
-  const gateLabel = kind => ({ gate_1_decomposition: "Gate 1", gate_2_spec_readiness: "Gate 2", escalation: "the escalation gate", budget: "the budget gate", deploy_failure: "the deploy-failure gate" })[kind] || words(kind || "a gate");
+  const gateLabel = kind => ({ gate_1_decomposition: "Gate 1", gate_2_spec_readiness: "Gate 2", escalation: "the escalation gate", build_recovery: "the build recovery decision", budget: "the budget gate", deploy_failure: "the deploy-failure gate" })[kind] || words(kind || "a gate");
   // The state of a run, written: a bold lead in the tone of the state, then the reason. One sentence on the Runs list, the
   // same sentence under the title on the run page. Inputs are the summary record (summary.py); nothing here is recorded.
   function statusSentence(r, long) {
@@ -124,7 +124,7 @@
       }
       case "stopped": return el("span", { class: "s" }, lead(`Stopped at ${STATIONS[stationOf(r)].label}.`, "bad"), "The controller exited without recording why; a decision here is not picked up until one drives the run again.");
       case "failed": return el("span", { class: "s" }, lead(`Failed ${({ implementing: "while building", decomposing: "while decomposing", specifying: "while specifying", intake: "while taking in the outcome", gate_1_decomposition: "at Gate 1", gate_2_spec_readiness: "at Gate 2" })[r.failed_in] || "while running"}.`, "bad"), r.failure || "", r.failure ? " " : "", long ? "" : "");
-      case "escalated": return el("span", { class: "s" }, lead(`Escalated from ${STATIONS[stationOf(r)].label}.`, "warn"), (r.escalations || []).join(" ") || r.headline);
+      case "escalated": return el("span", { class: "s" }, lead(`Escalated from ${STATIONS[stationOf(r)].label}.`, "warn"), "Review the blockers and choose how to continue.");
       case "closed": { const d = (r.decisions || []).slice(-1)[0] || {}; return el("span", { class: "s" }, lead(`Closed at ${gateLabel(d.kind)}${personName(d.by) ? ` by ${d.by}` : ""}.`, ""), d.comments ? `“${d.comments}”` : "Nothing more happens in this run."); }
       case "completed": return el("span", { class: "s" }, lead("Done.", "ok"), r.design_only ? `Design run: ${plural(c.specs_approved, "contract")} approved, nothing built.` : prsText());
       default: return el("span", { class: "s" }, r.headline || "");
@@ -146,8 +146,8 @@
     deployed_dev: "Verified in dev", closed: "Closed", escalated: "Escalated", blocked: "Blocked",
   };
   const GATE_NAME = { gate_1_decomposition: "Gate 1 · the plan", gate_2_spec_readiness: "Gate 2 · the contracts",
-    escalation: "Escalation · the judge could not pass the contracts", budget: "Budget · raise it or close the run", deploy_failure: "Deploy failure" };
-  const GATE_SHORT = { gate_1_decomposition: "Gate 1", gate_2_spec_readiness: "Gate 2", escalation: "Escalation", budget: "Budget", deploy_failure: "Deploy failure" };
+    escalation: "Escalation · the judge could not pass the contracts", build_recovery: "Build recovery", budget: "Budget · raise it or close the run", deploy_failure: "Deploy failure" };
+  const GATE_SHORT = { gate_1_decomposition: "Gate 1", gate_2_spec_readiness: "Gate 2", escalation: "Escalation", build_recovery: "Build recovery", budget: "Budget", deploy_failure: "Deploy failure" };
   const DECISION_LABEL = { approve: "Approve", approve_subset: "Approve selected", request_changes: "Request changes", reject: "Reject" };
   const ROLE_NAME = { po: "Product owner", eng: "Engineer", ops: "Ops", crew: "The crew" };
   const ROLE_DOES = { po: "decides what gets built", eng: "reviews and merges", ops: "watches it land", crew: "does the work between gates" };
@@ -555,9 +555,10 @@
     pair("Mode", s.mode === "design" ? "Design only: real agents through Gate 2, nothing built" : `Live${FORGE_NAME[s.forge] ? `, pull requests on ${FORGE_NAME[s.forge]}` : ""}`);
     pair("Spend", `${money(s.cost_usd)}${s.budget_usd != null ? ` of ${money(s.budget_usd)}` : ""} over ${plural(s.counts.sessions, "agent session")}`);
     pair("Took", s.ended_at ? `${dur(s.started_at, s.ended_at)}, ended ${ago(s.ended_at)}` : `${dur(s.started_at, s.updated_at)} so far`);
-    if (s.failure && !String(s.headline || "").includes(s.failure)) pair("Why it failed", s.failure);
-    if (s.escalations && s.escalations.length) pair("Why it escalated", el("ul", null, s.escalations.map(x => el("li", null, x))));
-    body.append(facts);
+    if (s.status === "failed" && s.failure && !String(s.headline || "").includes(s.failure)) pair("Why it failed", s.failure);
+    if (!r.recovery && s.escalations && s.escalations.length) pair("Why it escalated", el("ul", null, s.escalations.map(x => el("li", null, x))));
+    const runFacts = el("details", { class: "more" }, el("summary", null, "Run facts and decisions"), facts);
+    body.append(runFacts);
     if (s.pull_requests.length) {
       const t = el("table", null, el("tr", null, el("th", null, "Pull request"), el("th", null, "Work item"), el("th", null, "Where it got to")));
       for (const p of s.pull_requests) t.append(el("tr", null,
@@ -572,11 +573,12 @@
       body.append(el("h3", null, "Contracts approved"), el("ul", null, s.specs_approved.map(x => el("li", { class: "mono" }, x))));
     }
     if (s.decisions.length) {
-      body.append(el("h3", null, "Your decisions"), el("ul", null, s.decisions.map(d => el("li", null,
+      runFacts.append(el("h3", null, "Your decisions"), el("ul", null, s.decisions.map(d => el("li", null,
         el("b", null, `${d.label}: ${DECISION_LABEL[d.decision] || d.decision}`), personName(d.by) ? ` by ${d.by}, ` : ", ", timeEl(d.at),
         d.approved_subset.length ? ` (${d.approved_subset.join(", ")})` : "",
         d.comments ? el("div", { class: "explain" }, `“${firstSentences(d.comments, 300)}”`) : null))));
     }
+    if (!s.pull_requests.length && !s.design_only) body.prepend(el("p", { class: "m-0" }, "No pull request opened."));
     return card("What came out", body, s.status_label, s.status === "completed" ? "" : "soft");
   }
 
@@ -674,6 +676,9 @@
     frag.append(head);
 
     frag.append(el("section", { class: "card line-card" }, lineStrip(r, "full")));
+    const intervention = el("div", { class: "stack" });
+    frag.append(intervention);
+    if (r.recovery) frag.append(recoveryCard(r));
     if (s.terminal || s.status === "stopped") frag.append(resultCard(r));
     else if ((r.run_records || []).length) frag.append(card("What came out so far", el("div", { class: "result" }, r.run_records.map(rec => runRecordBlock(r, rec))), "pull requests opened while the run continues"));
 
@@ -723,7 +728,7 @@
 
     // your turn: what a person owes this run right now, then what comes next for people
     const onCard = g => g.kind === "budget" && b.paused && b.pause;
-    const gates = r.gates.filter(g => !g.recorded && !onCard(g)), recorded = r.gates.filter(g => g.recorded && !onCard(g));
+    const gates = r.gates.filter(g => !g.recorded && !onCard(g) && g.kind !== "build_recovery"), recorded = r.gates.filter(g => g.recorded && !onCard(g));
     const turn = el("div", { class: "turn" });
     const waiting = gates.length + r.questions.length + (b.paused ? 1 : 0);
     turn.append(el("h2", null, "Your turn"));
@@ -736,7 +741,7 @@
         el("div", { class: "t" }, GATE_NAME[g.kind] || g.kind),
         el("div", { class: "d" }, firstSentences(g.summary || "", 220)),
         el("div", { class: "d muted" }, "waiting on you ", timeEl(g.opened_at, dur(g.opened_at))),
-        el("a", { class: "btn call", href: `#/gates/${g.gate_id}` }, "Review and decide")));
+        el("a", { class: "btn call", href: g.kind === "build_recovery" ? `#/runs/${g.run_id || r.run_id}#recovery` : `#/gates/${g.gate_id}` }, "Review and decide")));
     } else if (s.status !== "stopped") {
       const openPrs = (r.work_items || []).filter(w => w.stage === "cr_open");
       const engineerLine = openPrs.length ? ` ${openPrs.map(w => w.cr_id ? `Pull request #${w.cr_id}` : w.title).join(", ")} ${openPrs.length === 1 ? "is" : "are"} waiting on an engineer.` : "";
@@ -744,7 +749,7 @@
         escalated: r.resumable ? "The build escalated. Review the reason, then resume to recheck the saved branch and obtain a fresh merge decision." : "The run is escalated. No gate is open and it cannot be resumed from here; the way forward is a new run from the outcome.", closed: "The run is closed. Nothing more happens in it." }[r.stage];
       turn.append(el("p", { class: "lead-line" }, r.stage === "completed" ? `Nothing needs you here.${r.design_only ? " Nothing was built; start a full run from the outcome to implement the approved contracts." : engineerLine || " Every pull request is merged or closed."}` : TERMINAL[r.stage] ? (parkedLine || `${stageName}.`) : `Nothing needs you right now.${engineerLine}`));
     }
-    for (const g of recorded) turn.append(el("div", { class: "notice ok" }, el("b", null, `${DECISION_LABEL[g.recorded.decision] || g.recorded.decision} recorded on ${GATE_SHORT[g.kind]}. `), s.status === "stopped" ? "It is applied once a controller drives the run again. " : "The run picks it up within seconds. ", el("a", { href: `#/gates/${g.gate_id}` }, "View")));
+    for (const g of recorded) turn.append(el("div", { class: "notice ok" }, el("b", null, `${DECISION_LABEL[g.recorded.decision] || g.recorded.decision} recorded on ${GATE_SHORT[g.kind]}. `), s.status === "stopped" ? "It is applied once a controller drives the run again. " : "The run picks it up within seconds. ", el("a", { href: g.kind === "build_recovery" ? `#/runs/${g.run_id || r.run_id}#recovery` : `#/gates/${g.gate_id}` }, "View")));
     if (!TERMINAL[r.stage]) {
       const next = [];
       if (r.stage === "decomposing" || r.stage === "intake") next.push("the product owner approves the plan at Gate 1, once the decomposer is done");
@@ -755,7 +760,7 @@
       if (next.length && !(r.stage === "completed" && !(r.work_items || []).some(w => w.stage === "cr_open"))) turn.append(el("p", { class: "next" }, `Next for a person: ${next.join("; ")}.`));
     }
     if (r.resumable && r.resuming) turn.append(el("div", { class: "notice info" }, el("b", null, "Resuming. "), "The controller is re-checking the branch; this page follows it."));
-    else if (r.resumable && !b.paused) turn.append(resumeBox(r, runId));
+    else if (r.resumable && !b.paused && !r.recovery) turn.append(resumeBox(r, runId));
     if (r.watch && (r.watch.pending.length || r.watch.heartbeat)) turn.append(watchBox(r, runId));
     const turnCard = card(null, turn, null, waiting ? "call" : "");
 
@@ -778,7 +783,12 @@
       el("details", { class: "more" }, el("summary", null, "All settings"), details));
     const tuneCard = card(null, tune);
 
-    frag.append(el("div", { class: "floor" }, rosterCard, storyCard, el("aside", { class: "stack" }, turnCard, tuneCard)));
+    if (!r.recovery) {
+      if (waiting || r.resumable || s.status === "stopped") intervention.append(turnCard);
+      else frag.append(turnCard);
+    }
+    frag.append(el("details", { class: "card run-disclosure" }, el("summary", null, "Activity and crew", el("span", { class: "explain" }, `${plural((r.events || []).length, "recorded event")}`)),
+      el("div", { class: "floor" }, rosterCard, storyCard, el("aside", { class: "stack" }, tuneCard))));
 
     // the details a reviewer or operator sometimes needs, folded away
     const items = el("table", null, el("tr", null, el("th", null, "Work item"), el("th", null, "Stage"), el("th", null, "Depends on"), el("th", null, "Pull request")));
@@ -800,9 +810,10 @@
     for (const a of r.artifacts) files.append(el("tr", null, el("td", { class: "explain" }, a.stage),
       el("td", null, el("a", { href: `/api/artifacts/${r.run_id}/${a.stage}/${a.name}`, target: "_blank", rel: "noopener" }, a.name)),
       el("td", { class: "explain mono" }, a.sha256 ? a.sha256.slice(0, 12) : "")));
-    const more = el("details", { class: "more mt-4" }, el("summary", { class: "explain" }, `Work items (${r.work_items.length}), every event (${r.events.length}) and every file (${r.artifacts.length})`),
-      el("div", { class: "stack mt-3" }, card("Work items", r.work_items.length ? items : el("p", { class: "explain" }, "Work items appear once the decomposition exists.")),
-        el("div", { class: "grid-2" }, card("Every event", tl, "newest first · your clock, date on hover"), card("Files produced", r.artifacts.length ? files : el("p", { class: "explain" }, "None yet.")))));
+    const more = el("div", { class: "stack mt-4" },
+      el("details", { class: "card run-disclosure" }, el("summary", null, `Work items (${r.work_items.length})`), el("div", { class: "table-scroll" }, items)),
+      el("details", { class: "card run-disclosure" }, el("summary", null, `Event log (${r.events.length})`), tl),
+      el("details", { class: "card run-disclosure" }, el("summary", null, `Files (${r.artifacts.length})`), el("div", { class: "table-scroll" }, files)));
     frag.append(more);
 
     if (!paint(frag, nav)) return;
@@ -811,44 +822,70 @@
     if (recordAt) { const rec = document.getElementById(`record-${decodeURIComponent(recordAt[1])}`); if (rec) { rec.open = true; setTimeout(() => rec.scrollIntoView(), 0); } }
     state.lastKey.run = runKey(r);
     // A parked run stops polling; one paused at its budget keeps polling so the page follows the resume it started.
-    if (!(TERMINAL[r.stage] || r.stage === "completed") || r.stage === "paused_budget") startPoll(refreshWhenChanged("run", async () => runKey(await api(`/api/runs/${runId}`)), () => viewRun(runId)), 4000);
+    if (!(TERMINAL[r.stage] || r.stage === "completed") || r.stage === "paused_budget" || r.resuming) startPoll(refreshWhenChanged("run", async () => runKey(await api(`/api/runs/${runId}`)), () => viewRun(runId)), 4000);
     else stopPoll();
   }
+  function recoveryCard(r) {
+    if (r.resuming) return card("Recovery started", el("p", { role: "status" }, "Your decision is recorded. The controller is starting; this page will follow its progress."));
+    const rec = r.recovery, failed = (rec.checks || []).filter(x => !x.passed);
+    const details = el("details", { class: "more" }, el("summary", null, "Full explanation and evidence"),
+      el("p", null, rec.summary), el("ul", null, (rec.risks || []).map(x => el("li", null, x))),
+      rec.artifact ? el("a", { href: `/api/artifacts/${r.run_id}/${rec.artifact}`, target: "_blank", rel: "noopener" }, "Open full report") : null);
+    const labels = { hosted_environment: "Environment baseline", test_plan_commands: "Build and code checks" };
+    const notes = el("textarea", { "aria-label": "Recovery instructions", placeholder: "What has been repaired, or what should the implementer change?" });
+    const status = el("p", { role: "status", class: "explain" });
+    const actions = el("div", { class: "actions" });
+    const choose = (decision, label, cls) => el("button", { type: "button", class: `btn ${cls || ""}`, onclick: async () => {
+      if (decision === "request_changes" && !notes.value.trim()) { status.textContent = "Add instructions for the correction first."; notes.focus(); return; }
+      actions.querySelectorAll("button").forEach(b => b.disabled = true);
+      status.textContent = decision === "reject" ? "Closing the run…" : "Recording your decision and starting recovery…";
+      try { await api(`/api/runs/${r.run_id}/recovery`, { body: { revision: rec.revision, decision, comments: notes.value.trim() } }); await viewRun(r.run_id); }
+      catch (e) { status.textContent = e.message; actions.querySelectorAll("button").forEach(b => b.disabled = false); }
+    } }, label);
+    actions.append(choose("approve", "Recheck saved work", "call"), choose("request_changes", "Request changes"), choose("reject", "Close run", "danger"));
+    const options = el("details", { class: "more recovery-options" }, el("summary", null, "Choose how to continue"),
+      el("p", { class: "explain" }, "Recheck after fixing the environment. Request changes sends your instructions through one more implementation and review cycle, within the approved contract. Closing ends this run. None of these actions bypasses a failing check."), notes, actions, status);
+    return card("Your turn", el("div", { class: "recovery", id: "recovery" },
+      el("p", { class: "lead-line" }, failed.length ? `${plural(failed.length, "required check")} still failing. The saved work needs a recovery decision.` : "The build needs your decision before it can continue."),
+      failed.length ? el("ul", { class: "recovery-blockers" }, failed.map(x => el("li", null, el("b", null, labels[x.check] || words(x.check)), el("span", { class: "explain" }, x.detail)))) : null,
+      el("p", { class: "explain" }, `${(rec.criteria || []).length ? `${rec.criteria.filter(c => c.status === "met").length} of ${rec.criteria.length} acceptance criteria met · ` : "Awaiting fresh verification · "}candidate ${(rec.head_sha || "").slice(0, 10)}`), details, options), "Build paused for a decision", "call");
+  }
   function visualEvidenceCard(r) {
-    const body = el("div", { class: "stack" });
+    const current = r.visual_evidence.filter(e => e.current), earlier = r.visual_evidence.filter(e => !e.current);
+    const body = el("div", { class: "evidence-list" });
     const url = artifact => `/api/artifacts/${encodeURIComponent(r.run_id)}/${artifact.split("/").map(encodeURIComponent).join("/")}`;
-    for (const evidence of r.visual_evidence) {
-      const box = el("section", { class: "visual-check" });
-      const passed = evidence.status === "passed";
-      box.append(el("div", { class: "visual-heading" }, el("h3", null, evidence.description || "Browser check"),
-        el("span", { class: `tag ${evidence.current && passed ? "live" : passed ? "warn" : "bad"}` }, `${words(evidence.status)}${evidence.current ? "" : " · earlier commit"}`)));
-      if (passed) box.append(el("p", null, evidence.summary));
-      else box.append(...observedFailure(evidence));
-      box.append(el("p", { class: "explain" }, `${evidence.persona || "Browser user"} · ${(evidence.head_sha || "").slice(0, 10)} · ${evidence.viewport ? `${evidence.viewport.width} × ${evidence.viewport.height}` : "viewport unavailable"}`));
-      const media = (evidence.media || []).filter(m => m.artifact);
-      const demo = media.find(m => m.role === "demo"), still = media.find(m => m.role === "screenshot");
-      if (demo && demo.mime_type.startsWith("video/")) {
-        box.append(el("p", { class: "visual-label" }, "Watch the enhancement"), el("video", {
-          controls: true, preload: "metadata", playsinline: true, class: "visual-demo", src: url(demo.artifact),
-          ...(still ? { poster: url(still.artifact) } : {}), "aria-label": `Demonstration: ${evidence.description || "enhancement"}`
-        }));
-      } else if (demo) {
-        // GIFs stay collapsed until requested; no autoplaying motion on the run page.
-        box.append(el("details", null, el("summary", null, "Watch the demonstration (GIF)"),
-          el("img", { class: "visual-demo", loading: "lazy", src: url(demo.artifact), alt: demo.caption || "Recorded browser demonstration" })));
-      } else if (still) {
-        box.append(el("img", { class: "visual-demo", loading: "lazy", src: url(still.artifact), alt: still.caption || evidence.description }),
-          el("p", { class: "explain" }, evidence.demo_note || "Recording unavailable; screenshot evidence is shown."));
+    const entry = evidence => {
+      const media = (evidence.media || []).filter(m => m.artifact), steps = evidence.steps_observed || [];
+      const name = (media.find(m => m.role === "demo") || {}).caption || evidence.persona || "Browser check";
+      const title = name.replace(/^model-picker-/, "").replace(/-/g, " ");
+      const box = el("details", { class: "visual-check", "data-evidence-id": evidence.id || evidence.head_sha + title },
+        el("summary", { class: "visual-heading" }, el("span", { class: "visual-title" }, title),
+          el("span", { class: `tag ${evidence.current && evidence.status === "passed" ? "ok" : "warn"}` }, words(evidence.status)),
+          el("span", { class: "explain" }, `${evidence.viewport ? `${evidence.viewport.width} × ${evidence.viewport.height}` : ""} · ${plural(steps.length, "step")}`)));
+      const content = el("div", { class: "visual-content" });
+      if (evidence.status !== "passed") content.append(...observedFailure(evidence));
+      const demo = media.find(m => m.role === "demo"), stills = media.filter(m => m.role === "screenshot");
+      if (demo) {
+        const playback = el("details", null, el("summary", null, "Watch demonstration"));
+        // Attach media only on first expansion. Hidden historical runs never load their recordings.
+        playback.addEventListener("toggle", () => { if (!playback.open || playback.dataset.loaded) return; playback.dataset.loaded = "true";
+          playback.append(demo.mime_type.startsWith("video/") ? el("video", { controls: true, preload: "metadata", playsinline: true, class: "visual-demo", src: url(demo.artifact) })
+            : el("img", { class: "visual-demo", src: url(demo.artifact), alt: demo.caption || "Browser demonstration" })); });
+        content.append(playback);
       }
-      const details = el("details", null, el("summary", null, "Coverage and test environment"));
-      if (evidence.environment) details.append(el("p", { class: "explain" }, `${evidence.environment.name} · ${words(evidence.environment.data)} · ${words(evidence.environment.authentication)}`));
-      const steps = el("ol");
-      for (const step of evidence.steps_observed || []) steps.append(el("li", null, `${words(step.status)}: ${step.step} — ${step.observation}`));
-      details.append(steps);
-      for (const m of media) details.append(el("p", null, el("a", { href: url(m.artifact), target: "_blank", rel: "noopener" }, m.caption || m.name)));
-      box.append(details); body.append(box);
-    }
-    return card("See the change", body, "Browser evidence is separate from code tests. Earlier recordings do not verify a new commit.", "visual-evidence-card");
+      const observed = el("details", null, el("summary", null, `Steps and screenshots (${steps.length})`));
+      observed.append(el("ol", { class: "evidence-steps" }, steps.map((step, i) => el("li", null,
+        el("details", null, el("summary", null, step.step.split(":")[0], " · ", words(step.status)), el("p", null, step.observation),
+          stills[i] ? el("a", { href: url(stills[i].artifact), target: "_blank", rel: "noopener" }, "Open screenshot") : null)))));
+      content.append(observed, el("details", null, el("summary", null, "Test contract and environment"), el("p", null, evidence.description || ""),
+        el("p", { class: "explain" }, `${evidence.persona || "Browser user"} · candidate ${(evidence.head_sha || "").slice(0, 10)}`),
+        evidence.environment ? el("p", { class: "explain" }, `${evidence.environment.name} · ${words(evidence.environment.data)} · ${words(evidence.environment.authentication)}`) : null));
+      box.append(content); return box;
+    };
+    current.forEach(e => body.append(entry(e)));
+    if (!current.length) body.append(el("p", { class: "explain" }, "No browser evidence for the current candidate yet."));
+    if (earlier.length) body.append(el("details", { class: "earlier-evidence" }, el("summary", null, `Earlier attempts (${earlier.length})`), el("p", { class: "explain" }, "These checks do not verify the current candidate."), earlier.map(entry)));
+    return card("Browser testing", body, `${current.filter(e => e.status === "passed").length} of ${current.length} latest checks passed`, "visual-evidence-card");
   }
   // A check that did not pass leads with what was observed, and says which part stopped it. The worker's summary is its
   // reading of those observations, so it follows them, labelled; the controller's own reason (a refused or missing report,
@@ -1350,6 +1387,7 @@
     const nav = state.nav;
     const g = await api(`/api/gates/${gateId}`);
     const rec = g.gate, rv = g.review;
+    if (rec.kind === "build_recovery") { location.hash = `#/runs/${g.run_id}#recovery`; return; }
     const notes = new Map();
     const picks = new Map();
     const frag = document.createDocumentFragment();
@@ -2755,8 +2793,8 @@
   // after the person moved on, never paints over the current page. Open folds survive a re-render of the same page.
   function paint(frag, nav) {
     if (nav && nav !== state.nav) return false;   // a stale render: the caller stops too, so it never touches the polls
-    const foldName = sm => sm.textContent.trim().replace(/\s*\([^)]*\)/g, "");   // 'Work items (4)…' keeps its state when the count moves
-    const open = new Set([...$main.querySelectorAll("details[open] > summary")].map(foldName));
+    const foldName = sm => { const owner = sm.closest("[data-evidence-id]"); return `${owner ? owner.dataset.evidenceId : ""}::${sm.textContent.trim().replace(/\s*\([^)]*\)/g, "")}`; };   // 'Work items (4)…' keeps its state when the count moves
+    const open = new Set(nav && nav.fresh ? [] : [...$main.querySelectorAll("details[open] > summary")].map(foldName));
     $main.replaceChildren(...(Array.isArray(frag) ? frag : [frag]));
     if (nav && nav.fresh) { nav.fresh = false; const h1 = $main.querySelector("h1"); if (h1) { h1.tabIndex = -1; h1.focus({ preventScroll: true }); } }   // a route change, not a poll: move the reader to the new title
     if (open.size) $main.querySelectorAll("details > summary").forEach(s => { if (open.has(foldName(s))) s.parentElement.open = true; });

@@ -251,7 +251,7 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
                 )
     elif k == "gate.opened":
         state.open_gates[p["gate_id"]] = p
-    elif k == "gate.decided":
+    elif k in ("gate.decided", "gate.superseded"):
         state.open_gates.pop(p["gate_id"], None)
     elif k == "question.asked":
         state.open_questions[p["question_id"]] = p

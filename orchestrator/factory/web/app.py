@@ -209,6 +209,12 @@ def crew_roster(events) -> list[dict[str, Any]]:
     return list(by_role.values())
 
 
+class RecoveryBody(BaseModel):
+    revision: str
+    decision: str
+    comments: str = Field(default="", max_length=12000)
+
+
 class ResumeBody(BaseModel):
     budget_usd: float | None = None     # a run paused at its budget: the new cap (records the gate decision too)
 
@@ -326,7 +332,9 @@ class Console:
                 for key in ("preview_mode", "app_id", "test_profile_sha256"):
                     if key in ev.payload:
                         policy[key] = ev.payload[key]
-        return {"run_id": run_id, "title": self._title(run_id, events), "outcome": outcome, "stage": st.stage.value,
+        from ..build_recovery import snapshot
+        recovery = snapshot(self.store, run_id)
+        return {"recovery": recovery, "run_id": run_id, "title": self._title(run_id, events), "outcome": outcome, "stage": st.stage.value,
                 "status": summary["status"], "summary": summary,
                 "cost": round(st.list_cost_usd, 2), "design_only": design_only, "work_items": items,
                 "resumable": resumable, "budget": budget, "resuming": self.resuming(run_id), "watch": watch, "crew": crew_roster(events), "policy": policy,
@@ -704,11 +712,60 @@ class Console:
                            FACTORY_TEST_VAULT_IDS="")
                 if record.get("vaults_attached"):
                     from ..onboarding import AppOnboarding
-                    binding = AppOnboarding(self.cfg).run_settings(record["app_id"], target)
+                    try:
+                        binding = AppOnboarding(self.cfg).run_settings(record["app_id"], target)
+                    except HTTPException as exc:
+                        if exc.status_code != 404:
+                            raise
+                        # The cloud session is authoritative for the references it actually used.
+                        # No credential values are fetched, and no new vault is attached.
+                        session = cfgmod.anthropic_client(self.cfg).beta.sessions.retrieve(session_id=record["session_id"], timeout=30)
+                        if session.environment_id != record["environment_id"] or len(session.vault_ids) != record["vaults_attached"]:
+                            raise HTTPException(409, "The recorded hosted credential binding could not be verified")
+                        binding = {"FACTORY_TEST_PROFILE_SHA256": record["approved_profile_sha256"],
+                                   "FACTORY_TEST_VAULT_IDS": ",".join(session.vault_ids)}
                     if binding["FACTORY_TEST_PROFILE_SHA256"] != env["FACTORY_TEST_PROFILE_SHA256"]:
                         raise HTTPException(409, "The app's verified recipe changed; recover with the originally approved setup")
                     env.update(binding)
+                approved_setup = next((e for e in reversed(events) if e.kind == "verification.setup_approved"), None)
+                if approved_setup:
+                    receipt = self.store.get_artifact(run_id, "recovery", approved_setup.payload["artifact"])
+                    import hashlib
+                    if hashlib.sha256(receipt).hexdigest() != approved_setup.payload["sha256"]:
+                        raise HTTPException(409, "The approved verification receipt changed")
+                    verified = json.loads(receipt)
+                    if verified.get("status") != "passed" or verified.get("profile_sha256") != approved_setup.payload["profile_sha256"]:
+                        raise HTTPException(409, "The approved recipe has no passing verification receipt")
+                    env["FACTORY_TEST_PROFILE_SHA256"] = approved_setup.payload["profile_sha256"]
         return env
+
+    def recover_run(self, run_id: str, body: RecoveryBody):
+        self.run_detail(run_id)  # validate the identifier and existence before creating a controller lock
+        from .. import build_recovery
+        from ..runner import controller_lock, RunLocked
+        try:
+            with controller_lock(self.cfg.runs_dir, run_id):
+                record = build_recovery.snapshot(self.store, run_id)
+                if not record or record["revision"] != body.revision:
+                    raise HTTPException(409, "The escalation changed. Refresh and review it again.")
+                if body.decision not in ("approve", "request_changes", "reject"):
+                    raise HTTPException(422, "Choose retry verification, request changes, or close.")
+                if body.decision == "request_changes" and not body.comments.strip():
+                    raise HTTPException(422, "Describe the correction you want the implementer to make.")
+                gate_id = build_recovery.open_gate(self.store, self.queue, run_id, record)
+                previous = self.queue.decision(gate_id)
+                if previous and (previous.decision.value != body.decision or previous.comments != body.comments):
+                    raise HTTPException(409, "A different decision is already recorded for this escalation.")
+                if not previous:
+                    self.queue.record_decision(gate_id, body.decision, "console", body.comments)
+                build_recovery.apply_decision(self.store, self.queue, run_id)
+        except RunLocked:
+            raise HTTPException(409, "A controller is already working on this run")
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+        if body.decision == "reject":
+            return {"ok": True, "mode": "closed", "run_id": run_id}
+        return self.resume_run(run_id)
 
     def resume_run(self, run_id: str, body: ResumeBody | None = None) -> dict[str, Any]:
         """Continue a run that failed during implementation or paused at its budget: spawns `factory resume <run_id>`
@@ -1060,6 +1117,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.post("/api/runs")
     def api_start_run(body: StartRunBody):
         return console.start_run(body)
+
+    @app.post("/api/runs/{run_id}/recovery")
+    def api_recover_run(run_id: str, body: RecoveryBody):
+        return console.recover_run(run_id, body)
 
     @app.post("/api/runs/{run_id}/resume")
     def api_resume_run(run_id: str, body: ResumeBody | None = None):

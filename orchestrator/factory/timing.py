@@ -73,10 +73,11 @@ def spans(events: list[Any], now: float | None = None) -> dict[str, list[Span]]:
                                                                   "stop_reason": p.get("stop_reason")}))
         elif k == "gate.opened" and p.get("gate_id"):
             waits[p["gate_id"]] = {"start": at, "kind": p.get("kind") or _get(ev, "stage") or "gate"}
-        elif k == "gate.decided" and p.get("gate_id") in waits:
+        elif k in ("gate.decided", "gate.superseded") and p.get("gate_id") in waits:
+            # A superseded gate (a newer one replaced it) stops waiting without a decision, as replay closes it.
             w = waits.pop(p["gate_id"])
-            out_waits.append(Span(w["start"], at, w["kind"], {"gate_id": p["gate_id"], "decision": p.get("decision"),
-                                                              "decided_by": p.get("decided_by")}))
+            out_waits.append(Span(w["start"], at, w["kind"], {"gate_id": p["gate_id"], "decided_by": p.get("decided_by"),
+                                                              "decision": p.get("decision") or ("superseded" if k == "gate.superseded" else None)}))
         elif k == "question.asked" and p.get("blocking") and p.get("question_id"):
             waits[p["question_id"]] = {"start": at, "kind": "question"}
         elif k == "question.answered" and p.get("question_id") in waits:

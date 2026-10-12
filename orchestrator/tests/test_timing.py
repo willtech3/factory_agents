@@ -57,10 +57,17 @@ def test_overlapping_sessions_share_their_slice_and_a_stop_is_not_agent_time():
 
 def test_verify_model_setting():
     from factory.config import DEFAULT_VERIFY_MODEL, parse_verify_model
-    assert parse_verify_model(None) == DEFAULT_VERIFY_MODEL == {"id": "claude-haiku-5-5", "effort": "low"}
+    assert parse_verify_model(None) == DEFAULT_VERIFY_MODEL == {"id": "claude-sonnet-5-5", "effort": "low"}
     assert parse_verify_model("agent") is None
     assert parse_verify_model("claude-sonnet-5-5:medium") == {"id": "claude-sonnet-5-5", "effort": "medium"}
     assert parse_verify_model(" claude-sonnet-5-5 ") == {"id": "claude-sonnet-5-5"}
+
+
+def test_a_superseded_gate_stops_waiting_where_replay_closes_it():
+    events = [_ev(0, 0, "run.created"), _ev(1, 0, "gate.opened", {"gate_id": "g1", "kind": "build_recovery"}),
+              _ev(2, 60, "gate.superseded", {"gate_id": "g1"}), _ev(3, 120, "run.completed")]
+    rep = timing.report(events)
+    assert rep["buckets"][timing.WAITING] == 60 and rep["waits"][0]["decision"] == "superseded"
 
 
 def test_open_gate_counts_to_now_and_empty_log_is_zero():

@@ -85,8 +85,10 @@ class Config:
     test_vault_ids: tuple[str, ...] = ()      # FACTORY_TEST_VAULT_IDS: explicit test-only vaults; never the forge's vault
     managed_verify_budget_usd: float = 4.0    # FACTORY_MANAGED_VERIFY_BUDGET_USD: cap per hosted verification session
     # FACTORY_VERIFY_MODEL ("id" or "id:effort"; "agent" keeps the implementer's own model): the model of the hosted
-    # verification session, whose only job is to run environment_runner.py once. It used to run on the implementer's
-    # Opus at xhigh effort, once per round, on the critical path.
+    # verification session, which runs environment_runner.py once and, when a check fails, writes a bounded diagnosis
+    # with no credential text. It used to run on the implementer's Opus at xhigh, once per round, on the critical path.
+    # Sonnet rather than Haiku because the diagnosis is a judgement and weaker models follow such rules less reliably
+    # (docs/audits/2026-10-12-speed-pass-against-the-research.md).
     verify_model: dict[str, str] | None = field(default_factory=lambda: dict(DEFAULT_VERIFY_MODEL))
     artifact_base_url: str = "http://127.0.0.1:8772"  # Factory Console, or an externally hosted artifact service
     pr_media: bool = True     # FACTORY_PR_MEDIA=off: no screenshots or demo in change request descriptions (pr_media.py)
@@ -100,7 +102,7 @@ class Config:
 
 
 PREVIEW_MODES = ("platform", "local", "managed")
-DEFAULT_VERIFY_MODEL = {"id": "claude-haiku-5-5", "effort": "low"}
+DEFAULT_VERIFY_MODEL = {"id": "claude-sonnet-5-5", "effort": "low"}
 
 
 def parse_verify_model(raw: str | None) -> dict[str, str] | None:
