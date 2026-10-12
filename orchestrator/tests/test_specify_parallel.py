@@ -73,6 +73,13 @@ def test_all_specs_are_written_at_once_by_default(tmp_path, root, examples):
     assert "specs/spec_smart-retries.json" in ctx.driver.judge_uploads and "specs/spec_smart-retries.md" in ctx.driver.judge_uploads
 
 
+def test_waves_policy_serialises_dependent_items(tmp_path, root, examples):
+    ctx = _ctx(tmp_path, root, examples, Policy(spec_waves=True))
+    ctx.driver.gate = threading.Barrier(1)                       # no overlap required
+    specs, _ = specify.run_specify(ctx, examples["outcome"], examples["decomposition"])
+    assert len(specs) == 4 and ctx.driver.peak < 4
+
+
 def test_gate_2_send_back_keeps_every_round_and_hands_each_consumer_this_rounds_markdown(tmp_path, root, examples):
     """Post-mortem issue 1: a Gate 2 request-changes re-enters run_specify with a round offset and the previous verdict.
     Round numbers keep counting (cycle B never overwrites cycle A's artefacts), the judge reads the spec.md the writer

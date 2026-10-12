@@ -3,6 +3,7 @@ orchestrator records it, opens a budget gate, and only re-runs (cap raised) or a
 
 import pytest
 from support.sessions import AutoQueue, SpecStageDriver, run_after_gate_1
+from support.sessions import run_after_gate_1 as _ctx, stage_result as _result  # noqa: F401  (old names other branches import)
 
 from factory.gates import Decision, GateKind, InMemoryQueue
 from factory.stages import specify

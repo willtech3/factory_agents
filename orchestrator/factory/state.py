@@ -118,7 +118,9 @@ class Policy:
         "decompose": 0.9, "specify": 0.7, "judge": 2.5,
         "implement": 3.3, "review": 2.6, "security_review": 2.6, "merge_judge": 0.9, "integrate": 0.3,
     })
+    parallel_implementations: int = 3    # independent work items implemented at once (separate branches)
     parallel_spec_writers: int = 8       # spec writer sessions at once; all items are written in one go by default
+    spec_waves: bool = False             # True: write specs in dependency-order waves instead of all at once
     reviewer_passes: int = 2             # independent reviewer copies per round, findings merged
     security_review: bool = True         # one security reviewer pass per round beside the general reviewers (needs the agent deployed)
     design_only: bool = False            # stop after Gate 2: real agents for decompose/specify/judge, no code stage, no forge needed

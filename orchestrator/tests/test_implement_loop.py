@@ -21,6 +21,7 @@ from factory.stages.implement import SETUP_CHECK, LocalVerifier, preview_info, r
 from factory.state import WORK_ITEM_TRANSITIONS, Policy, WorkItemStage
 from factory.store import RunStore
 from support.repos import git, seeded_remote  # noqa: F401
+from support.repos import seeded_remote as _remote  # noqa: F401  (the old name other branches use)
 
 HTTP_MANIFEST = {"service": "stdlib-http", "runtime": {"kind": "python", "entrypoint": "python -m http.server 8000 --bind 127.0.0.1", "port": 8000},
                  "health": {"path": "/"}, "env": []}
