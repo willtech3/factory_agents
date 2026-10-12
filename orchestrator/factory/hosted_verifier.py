@@ -47,7 +47,7 @@ def journey_name(command: str) -> str | None:
 DESCRIPTION = """Run `python3 -I /mnt/session/uploads/tools/environment_runner.py` once and report its exit status. It verifies
 candidate {head} of {spec_id} (round {round}) from the uploaded source archive and recipe. All application, database
 and browser execution stays inside this sandbox. Leave /mnt/session/outputs/ exactly as the harness writes it; do not
-re-run commands, edit files, or produce evidence yourself."""
+re-run commands, edit app or evidence files, or produce test evidence yourself. If checks failed, write only the bounded diagnosis.json requested by the system instructions."""
 
 
 @dataclass
@@ -182,8 +182,14 @@ class HostedVerifier:
                          **journey_uploads} if journey_uploads else {})},
             work_item_id=work_item_id, description=DESCRIPTION.format(head=head, spec_id=sid, round=round_no),
             rubric_md=None, max_iterations=1, budget_usd=cap, environment_id=environment_id,
-            vault_ids=list(self.cfg.test_vault_ids), system_override=te.SYSTEM,
+            vault_ids=list(self.cfg.test_vault_ids), system_override=te.SYSTEM + te.CHANGE_DIAGNOSIS_SYSTEM,
         )
+        try:
+            diagnosis = json.loads(res.outputs.get("diagnosis.json", b"{}"))
+        except ValueError:
+            diagnosis = {}
+        if isinstance(diagnosis, dict) and isinstance(diagnosis.get("summary"), str):
+            record["diagnosis"] = {"source": "sandbox-agent", "summary": diagnosis["summary"][:1500]}
         record.update(session_id=res.session_id, cost_usd=res.list_cost_usd, stop_reason=res.stop_reason)
         record.update(te.archive_session(client, res.session_id))
         report, bound = te.harness_report(res.outputs, descriptor, te.BINDING_KEYS + ("spec_sha256", "journeys"))
@@ -215,7 +221,8 @@ class HostedVerifier:
                 continue
             row = {"command": text, "exit_code": _exit_code(r), "status": r.get("status"), "seconds": r.get("seconds"),
                    "location": "hosted-sandbox", "stdout_tail": "",
-                   "stderr_tail": _summary(r) + " Raw output stays in the hosted sandbox."}
+                   "stderr_tail": _summary(r) + " Raw output stays in the hosted sandbox.",
+                   **({"diagnostic": r["diagnostic"]} if isinstance(r.get("diagnostic"), dict) else {})}
             evidence = _test_evidence(r.get("tests"))
             if evidence is not None:
                 row["tests"] = evidence
@@ -276,7 +283,7 @@ class HostedVerifier:
         env_ok = setup_ok and bool((results or {}).get("app_ready")) and baseline_ok and phases.get("stop") == "passed"
         env_detail = ("the app started, its services answered their health paths, and the recipe's baseline check passed; this shows "
                       "the app runs, not that any acceptance criterion is met" if env_ok else
-                      f"app not ready or baseline check not passed: {(baseline or {}).get('detail') or record.get('detail') or 'see the phases'}"
+                      f"app not ready or baseline check not passed: {((baseline or {}).get('diagnostic') or {}).get('summary') or (baseline or {}).get('detail') or record.get('detail') or 'see the phases'}"
                       + ("; environment teardown failed" if setup_ok and phases.get("stop") not in (None, "passed") else ""))
         record.update(status=("passed" if env_ok and all(c["exit_code"] == 0 for c in commands) and all(
                           r["exit_code"] == 0 and (not r.get("visual") or r["visual"]["status"] == "passed") for r in e2e)

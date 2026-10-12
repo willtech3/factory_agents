@@ -41,3 +41,9 @@ There is no simulated mode in the product. The Console's tests drive a scripted 
 - Gate 3 stays on the code host: the Console starts the watcher and shows what it recorded, it does not review or merge.
 - No authentication: it binds to localhost and records decisions as `console`. Put it behind something before sharing it.
 - The standalone page at `/gates/<id>/page` (the renderer in `surfaces/artifact_pages.py`) is the same content without the decision panel, for pasting into a tracker.
+
+### Build recovery and progressive disclosure
+
+A build escalation presents its failed checks and candidate first. The judge's full reasoning stays under **Full explanation and evidence**. **Choose how to continue** records a hash-bound recovery decision: **Recheck saved work** runs fresh verification and judgment, **Request changes** sends the owner's instructions through one additional implementation/review cycle within the approved contract, and **Close run** ends it. None overrides a deterministic failure. Older escalations acquire a recovery gate when explicitly decided; new runs open one when the build settles. A changed recipe still needs a recorded passing setup receipt and explicit approval before recovery uses its new fingerprint.
+
+Browser testing shows compact rows for the current candidate. Each row reveals playback, steps with screenshot links, and the test contract separately. Prior candidates live under **Earlier attempts**. Run facts, activity/crew, work items, events and files are separate folds. Polling preserves each journey's own expansion state without opening matching folds in other journeys. Failures from an earlier, subsequently resumed attempt remain in the event history rather than the current result.

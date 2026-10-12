@@ -54,6 +54,29 @@ def digest(value: dict) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+# Only controlled descriptions leave the sandbox. Raw log lines can contain credentials,
+# request bodies and generated test secrets, so substring redaction is not sufficient.
+FAILURE_SIGNATURES = (
+    ("No address provided to ConvexReactClient", "missing_convex_url", "The production build has no NEXT_PUBLIC_CONVEX_URL. Supply the approved test backend address to the build process."),
+    ("verify:auth reported a leak or inconclusive probe", "auth_probe_failed", "The baseline stopped at the Convex authorization probe, before its browser journey. Inspect the sandbox's convex-authz-probe.log."),
+    ("missing Factory-scoped OPENROUTER_API_KEY", "missing_test_credential", "The baseline did not receive its required test credential."),
+    ("Failed to fetch", "resource_fetch_failed", "A build resource could not be fetched. Inspect the sandbox log for the resource and network failure."),
+    ("TimeoutError", "browser_timeout", "A browser operation timed out. Inspect the baseline browser result for the failing step."),
+    ("AssertionError", "assertion_failed", "A test assertion failed. Inspect the sandbox log and browser result for its step."),
+    ("CERTIFICATE_VERIFY_FAILED", "tls_verification_failed", "A TLS certificate could not be verified using the sandbox's trust store."),
+)
+
+
+def failure_diagnostic(log: Path) -> dict:
+    with log.open('rb') as stream:
+        stream.seek(max(0, log.stat().st_size - 128 * 1024))
+        tail = stream.read().decode(errors='replace')
+    for signature, code, summary in FAILURE_SIGNATURES:
+        if signature in tail:
+            return {"code": code, "summary": summary, "log": log.name}
+    return {"code": "command_failed", "summary": "The command failed. Raw logs remain in the sandbox; request a bounded diagnosis before archiving it.", "log": log.name}
+
+
 def command(text: str, cwd: Path, env: dict, timeout: float, log: Path) -> dict:
     if timeout <= 0:
         log.write_text("")
@@ -65,7 +88,8 @@ def command(text: str, cwd: Path, env: dict, timeout: float, log: Path) -> dict:
         try:
             code = proc.wait(timeout=max(1, timeout))
             return {"status": "passed" if code == 0 else "failed", "exit_code": code,
-                    "seconds": round(time.monotonic() - started, 2)}
+                    "seconds": round(time.monotonic() - started, 2),
+                    **({"diagnostic": failure_diagnostic(log)} if code != 0 else {})}
         except subprocess.TimeoutExpired:
             os.killpg(proc.pid, signal.SIGKILL)
             proc.wait()
@@ -328,7 +352,7 @@ def sandbox_env(base: dict, profile: dict, request: dict, repo: Path, evidence: 
     """The environment every recipe phase and spec command runs with, and the non-secret runtime facts the report keeps:
     the app's canonical base URL, the readiness probe host, and the compatibility defaults applied."""
     app = next((s for s in profile["services"] if s["id"] == "app"), None)
-    env = dict(base)
+    env = {**base, **profile.get("command_environment", {})}
     env.update(BASE_URL=app_base_url(app), FACTORY_EVIDENCE_DIR=str(evidence),
                FACTORY_TEST_HEAD=request["head_sha"], FACTORY_TEST_PROFILE=str(repo / request["profile_path"]))
     compat = runtime_compat(repo, env)
@@ -391,7 +415,7 @@ def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: flo
         verified = command(profile["commands"]["verify"], repo, env, deadline - time.monotonic(), logs / "verify.log")
         phases.append({"phase": "verify", **verified})
         ok, detail = check_evidence(profile, evidence) if verified["status"] == "passed" else (False, "baseline verify command did not pass")
-        out["baseline"] = {"status": "passed" if ok else "failed", "detail": detail}
+        out["baseline"] = {"status": "passed" if ok else "failed", "detail": detail, **({"diagnostic": verified["diagnostic"]} if verified.get("diagnostic") else {})}
     else:
         out["baseline"] = {"status": "blocked", "detail": "the app did not start or its services did not become ready"}
     junit_dir = work / "junit"

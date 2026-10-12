@@ -266,6 +266,18 @@
           }
         }
       }
+    },
+    "command_environment": {
+      "type": "object",
+      "description": "Non-secret environment values supplied to spec commands as well as lifecycle phases. Part of the human-approved recipe; credentials belong in secrets.",
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Z0-9_]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 2048
+      },
+      "maxProperties": 40
     }
   },
   "$defs": {

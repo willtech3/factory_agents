@@ -103,3 +103,7 @@ Readiness means the declared baseline passed, with any limitations shown. It doe
 Deploy `agents/app_onboarding.md` and register its ID in `claude-lock.json`. When adding only this agent, use a separate lock file with `ant apply` and copy that one confirmed registration into the main lock; review the plan so unrelated agent definitions are not reconciled accidentally. Existing Factory/GitHub credentials remain required for Console source access and draft PR creation.
 
 `factory environment check` validates a committed recipe. `factory environment verify` runs a bounded hosted verification and writes evidence to a fresh output directory. It does not run app commands locally.
+
+Recipes may declare `command_environment`, a map of non-secret environment values shared by lifecycle phases and spec commands. This is part of the approved recipe fingerprint. Use it for public build settings such as a sandbox backend URL; keep credentials in the existing vault bindings. An export inside a lifecycle subprocess does not change the environment of later spec commands.
+
+Failed hosted commands export controlled diagnostic codes and descriptions, never arbitrary log lines. When a change check fails, the sandbox agent also writes one bounded diagnostic explanation before archival; that explanation is commentary, not passing test evidence.

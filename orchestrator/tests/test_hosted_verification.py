@@ -43,7 +43,7 @@ def test_managed_round_runs_everything_in_the_sandbox_and_passes_on_bound_eviden
     assert len(verify) == 1
     v = verify[0]
     assert v["environment_id"] == "env_hosted" and v["vault_ids"] == ["vlt_test"] and v.get("repository") is None
-    assert v["system_override"] == te.SYSTEM and v["budget_usd"] == 4.0
+    assert v["system_override"] == te.SYSTEM + te.CHANGE_DIAGNOSIS_SYSTEM and v["budget_usd"] == 4.0
     assert set(v["uploads"]) == {"test-source.tar", "environment-request.json", "tools/environment_runner.py"}
     assert driver.client.archived, "the hosted session is archived after use"
 
