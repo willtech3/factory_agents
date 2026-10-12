@@ -17,7 +17,8 @@ import support.hosted as hosted
 from factory import checks
 from factory.hosted_verifier import _test_evidence
 from factory.sandbox_tools import environment_runner as er
-from factory.stages.implement import LocalVerifier, managed_test_evidence, passed_test_ids, run_implement_one
+from factory.stages.implement import LocalVerifier, passed_test_ids, run_implement_one
+from factory.verification import evidence_from_reports
 from support.bun import FAILING_BUN, FILTERED, MODELS, PASSING_BUN, REPORT, BunDriver, bun_spec, env_of
 from support.bun import fake_bun  # noqa: F401  (fixture)
 
@@ -166,7 +167,7 @@ def test_exit_codes_and_unsupported_rows_are_never_test_evidence():
     rows = [{"command": "bun run test", "exit_code": 0, "tests": {"framework": "bun", "status": "unsupported", "reason": "script"}},
             {"command": "bun test", "exit_code": 0, "tests": {"framework": "bun", "status": "missing", "reason": "no report"}},
             {"command": "echo ok", "exit_code": 0}]
-    assert passed_test_ids(rows) is None and managed_test_evidence(rows, None) == (None, None)
+    assert passed_test_ids(rows) is None and evidence_from_reports(rows, None) == (None, None)
 
 
 def mapping(tests, passing, known, require=True):

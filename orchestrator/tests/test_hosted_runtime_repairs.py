@@ -18,7 +18,8 @@ import support.hosted as hosted
 from factory import checks
 from factory.hosted_verifier import _runtime, pytest_collection
 from factory.sandbox_tools import environment_runner as er
-from factory.stages.implement import LocalVerifier, _diff_lines, run_implement_one
+from factory.local_verifier import _diff_lines
+from factory.stages.implement import LocalVerifier, run_implement_one
 
 sandbox_double = hosted.sandbox_double
 no_host_execution = hosted.no_host_execution

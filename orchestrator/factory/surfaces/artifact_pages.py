@@ -17,6 +17,8 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from ..plans import plan_of
+
 if TYPE_CHECKING:  # pragma: no cover
     from ..config import Config
 
@@ -262,10 +264,10 @@ def render_gate2_page(run_id: str, outcome: dict[str, Any], specs: dict[str, dic
             f"<li><code>{_e(i.get('name'))}</code> <span class=\"pill\">{_e(i.get('kind'))} · {_e(i.get('change'))}</span>"
             f"<pre>{_e(i.get('definition'))}</pre></li>" for i in s.get("interfaces", []))
         paths = "".join(f"<li><code>{_e(p)}</code></li>" for p in s.get("allowed_paths", []))
-        tp = s.get("test_plan", {})
-        cmds = "".join(f"<li><code>{_e(c)}</code></li>" for c in tp.get("commands", []))
+        tp = plan_of(s)                  # structured entries as the controller runs them
+        cmds = "".join(f"<li><code>{_e(c)}</code></li>" for c in tp.commands)
         e2e = "".join(f"<li><code>{_e(e.get('command'))}</code> <span class=\"muted\">target {_e(e.get('target'))}, "
-                      f"covers {_e(', '.join(e.get('covers_ac', [])))}</span></li>" for e in tp.get("e2e", []))
+                      f"covers {_e(', '.join(e.get('covers_ac', [])))}</span></li>" for e in tp.e2e)
         ps = issues_by_spec.get(sid, {})
         issues = "".join(
             f"<li class=\"{'bad' if i.get('severity') == 'blocking' else 'warn' if i.get('severity') == 'major' else ''}\">"

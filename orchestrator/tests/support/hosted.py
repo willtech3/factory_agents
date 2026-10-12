@@ -12,11 +12,11 @@ import pytest
 from conftest import make_config
 from support.sessions import stage_result
 
-from factory import security
+from factory import security, verification
 from factory.gates import InMemoryQueue, LogNotifier
 from factory.hosted_verifier import HostedVerifier
 from factory.sandbox_tools import environment_runner as er
-from factory.stages import RunContext, implement
+from factory.stages import RunContext
 from factory.stages.implement import LocalVerifier
 from factory.state import Policy, WorkItemStage
 from factory.store import RunStore
@@ -90,9 +90,9 @@ def no_host_execution(monkeypatch):
     """Managed mode must never run the repository on the controller."""
     def refuse(*a, **k):
         raise AssertionError("controller-side execution in managed mode")
-    for name in ("prepare_environment", "run_commands", "run_e2e", "collect_test_ids", "_run_in_group"):
+    for name in ("prepare_environment", "run_commands", "run_e2e", "run_entries", "collect_test_ids", "_run_in_group"):
         monkeypatch.setattr(LocalVerifier, name, refuse)
-    monkeypatch.setattr(implement, "LocalPreview", refuse)
+    monkeypatch.setattr(verification, "LocalPreview", refuse)
     monkeypatch.setattr(security, "dependency_audit", refuse)
     monkeypatch.setattr(security, "sast", refuse)
 

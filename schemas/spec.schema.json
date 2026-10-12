@@ -81,16 +81,35 @@
       "type": "object",
       "required": ["commands", "new_tests", "e2e"],
       "properties": {
-        "commands": { "type": "array", "items": { "type": "string" }, "description": "Exact commands that must pass." },
+        "commands": {
+          "type": "array",
+          "description": "Exact commands that must pass. A test run is structured, {runner, select}: the controller renders it (`python3 -m pytest -q <select>`, `bun test <select>`) and attaches its own reporters, so its outcomes are test evidence on every verification host. A string is a shell command (a build, a linter); it yields only an exit code, except that a pytest run inside it is still reported (ADR-0014).",
+          "items": {
+            "oneOf": [
+              { "type": "string", "minLength": 1 },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["runner"],
+                "properties": {
+                  "runner": { "enum": ["pytest", "bun"] },
+                  "select": { "type": "array", "description": "Test files, directories or test ids to run, relative to the repository root; empty or absent runs the whole suite. Never flags.", "items": { "type": "string", "pattern": "^[^-\\s][^\\s]*$" } }
+                }
+              }
+            ]
+          }
+        },
         "e2e": {
           "type": "array",
           "description": "End-to-end checks run against a running deployment of the change, not against the code. The implementer and reviewer run them against the branch's preview environment; the orchestrator re-runs them against the preview URL in authoritative verification and again against dev after merge. May be empty only when no criterion is user_visible. Agents declare victory without end-to-end verification unless the harness demands it (practitioners.md §3, Anthropic effective harnesses).",
           "items": {
             "type": "object",
-            "required": ["covers_ac", "command", "target", "description"],
+            "required": ["covers_ac", "target", "description"],
+            "oneOf": [{ "required": ["command"] }, { "required": ["journey"] }],
             "properties": {
               "covers_ac": { "type": "array", "minItems": 1, "items": { "type": "string" } },
               "command": { "type": "string", "description": "Shell command that exits 0 on success. $BASE_URL is substituted with the environment URL at run time." },
+              "journey": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$", "description": "Instead of a command: the factory's own browser runner on the journey of this name, which the implementer writes as a run artifact (journeys/<name>.json) and never commits. Needs `visual`. Same as the command `factory:journey <name>`." },
               "target": { "type": "string", "enum": ["local", "preview"], "description": "local: against a process the command starts itself (docker compose, dev server). preview: against the per-branch preview environment the platform deploys." },
               "visual": {
                 "type": "object",

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://factory.example/schemas/test_environment.schema.json",
   "title": "Factory test environment",
-  "description": "Portable application test recipe for existing and greenfield repositories. Commands run only in a provisioned test sandbox. Credentials are references, never values.",
+  "description": "Portable application test recipe for existing and greenfield repositories. Commands run only in a provisioned test sandbox. Credentials are references, never values. The trusted part (network, secrets, data, command_environment) is approved by a person when the app is onboarded and a change may not alter it; the runtime part (everything else: lifecycle commands, services, browser and functional checks, timeouts) may change with the code, and the hosted verification of that change exercises it (ADR-0014).",
   "type": "object",
   "additionalProperties": false,
   "required": [

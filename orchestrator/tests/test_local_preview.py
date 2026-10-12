@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from factory.stages.implement import (SETUP_CHECK, LocalPreview, LocalVerifier, deterministic_findings, is_environmental,
-                                      orchestrator_bin, verification_env)
+from factory.local_verifier import SETUP_CHECK, LocalPreview, LocalVerifier, orchestrator_bin, verification_env
+from factory.stages.implement import deterministic_findings, is_environmental
 
 requires_curl = pytest.mark.skipif(not shutil.which("curl"), reason="the e2e entries use curl")
 
@@ -71,7 +71,7 @@ def test_verification_env_drops_the_orchestrators_venv_but_keeps_the_system_bin(
     assert orchestrator_bin() == orch / "bin"
     env = verification_env(run_env / "bin")
     # macOS may insert the documented modern-sh shim between the run venv and system tools.
-    from factory.stages.implement import verification_shell
+    from factory.local_verifier import verification_shell
     shim = verification_shell(run_env.parent)[1]
     expected = [str(run_env / "bin"), *([shim] if shim else []), str(base / "bin"), "/other/bin"]
     assert env["PATH"].split(os.pathsep) == expected
@@ -200,8 +200,8 @@ def test_verifier_runs_spec_commands_under_a_modern_shell(tmp_path):
     import re
 
     from factory.checks import CheckResult
-    from factory.stages import implement as impl
-    from factory.stages.implement import verification_shell
+    from factory import local_verifier as impl
+    from factory.local_verifier import verification_shell
     impl._SHELL.clear()
     work = tmp_path / "v"
     if verification_shell(work)[0] is None:

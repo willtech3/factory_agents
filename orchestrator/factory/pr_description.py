@@ -15,6 +15,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from .plans import plan_of
+
 MAX_LINES = 60
 MAX_SCREENSHOTS = 3
 MAX_DEMOS = 1
@@ -121,7 +123,7 @@ def facts(*, spec: dict[str, Any], verdict: dict[str, Any], test_results: dict[s
                   for r in (summary.get("read_first") or []) if isinstance(r, dict) and r.get("path")][:3]
     if not read_first and diff_stats:
         read_first = [{"path": f["path"], "why": f"+{f['added']} / −{f['removed']}"} for f in _largest_files(diff_stats)]
-    commands = [{"command": c} for c in spec.get("test_plan", {}).get("commands", [])[:MAX_COMMANDS]]
+    commands = [{"command": c} for c in plan_of(spec).commands[:MAX_COMMANDS]]
     return {
         "title": str(spec.get("title") or spec["spec_id"])[:120],
         "what_changed": what,

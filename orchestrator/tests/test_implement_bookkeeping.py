@@ -64,7 +64,7 @@ class Verifier:
     def collect_test_ids(self, repo, timeout=0):
         return self.collected
 
-    def run_e2e(self, preview_url, entries, repo=None, target="preview", timeout=0):
+    def run_entries(self, urls, entries, repo=None, timeout=0):
         return []
 
 
