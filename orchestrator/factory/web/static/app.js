@@ -855,7 +855,7 @@
     // only the latest result for each journey belongs in the glance, including a failed retry.
     const current = [], earlier = [], seen = new Set();
     for (const evidence of r.visual_evidence) {
-      const key = JSON.stringify([evidence.spec_id, evidence.description, evidence.persona, evidence.viewport]);
+      const key = JSON.stringify([evidence.spec_id, evidence.description, evidence.persona, evidence.viewport && evidence.viewport.width, evidence.viewport && evidence.viewport.height]);
       if (evidence.current && !seen.has(key)) { current.push(evidence); seen.add(key); }
       else earlier.push(evidence);
     }
