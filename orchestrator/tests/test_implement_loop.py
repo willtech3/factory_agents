@@ -141,14 +141,13 @@ def _titles(driver) -> list[str]:
 
 
 def _item_path(ctx) -> list[WorkItemStage]:
-    """The work item's stage transitions as the event log records them, each checked against the state machine.
-
-    Read from the events rather than `store.state()`: the parallel reviewer passes still collide on event seq
-    numbers (post-mortem 2026-10-10, issue 2, fixed in store.py by another change), which would fail the replay
-    for a reason unrelated to the loop under test."""
+    """The work item's stage transitions as the event log records them, each checked against the state machine, and the
+    whole log replayed: the parallel reviewer passes append from worker threads, so this also guards the contiguous
+    event seqs store.py assigns (post-mortem 2026-10-10, issue 2)."""
     stages = [WorkItemStage(e.payload["stage"]) for e in ctx.store.events(ctx.run_id) if e.kind == "work_item.stage"]
     for a, b in zip(stages, stages[1:]):
         assert b in WORK_ITEM_TRANSITIONS[a], f"illegal work item transition {a.value} -> {b.value}"
+    ctx.store.state(ctx.run_id)                     # replay refuses a log whose seqs collide or skip
     return stages
 
 

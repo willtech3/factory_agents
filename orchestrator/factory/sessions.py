@@ -6,9 +6,9 @@ calls (`evaluated_permission == "ask"`) by denying when unattended; break on idl
 when `stop_reason.type != "requires_action"`; fetch outputs from `/mnt/session/outputs/`
 via the Files API with `scope_id`.
 
-Status: written against the documented SDK surface (anthropic >= 1.0,
-`client.beta.{agents,sessions,files}`), not yet exercised against the live API. The
-first spike in docs/roadmap.md is to run `decompose` end to end with this driver.
+Uses `client.beta.{agents,sessions,files}` (anthropic >= 1.0). It has driven every stage of the
+live runs; the reconnect, pagination and acknowledgement handling below come from what those runs
+hit (docs/postmortems/, docs/audits/2026-10-10-factory-review.md).
 """
 from __future__ import annotations
 

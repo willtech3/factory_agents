@@ -34,7 +34,7 @@ def examples() -> dict:
 
 
 def make_config(root: Path, runs_dir: Path, **overrides):
-    """A Config for tests: GitHub forge, file gate surface, no secrets."""
+    """A Config for tests: GitHub forge, the web (file queue) gate surface, platform previews, no secrets."""
     from factory.config import Config
 
     base = dict(agents={}, environment_id="", vault_id=None, forge="github", forge_url="https://github.com",

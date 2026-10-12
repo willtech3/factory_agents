@@ -244,6 +244,29 @@ def node_id_of(file, classname: str, name: str) -> str:
     return "::".join([file, *chain, name])
 
 
+# A plugin prints each collected item's node id. `pytest --collect-only -q` alone is not enough: a repository whose addopts
+# holds `-v` (emoji-smith's pytest.ini) cancels the `-q`, and pytest then prints a tree with no node ids at all.
+NODE_ID_PLUGIN = "factory_node_ids"
+NODE_ID_PREFIX = "FACTORY_NODE_ID "
+
+
+def write_node_id_plugin(directory: Path) -> Path:
+    """Write the node-id plugin into `directory` (put it on PYTHONPATH and pass `-p NODE_ID_PLUGIN`); returns the directory."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{NODE_ID_PLUGIN}.py").write_text(
+        "def pytest_collection_finish(session):\n"
+        "    for item in session.items:\n"
+        f"        print({NODE_ID_PREFIX!r} + item.nodeid, flush=True)\n")
+    return directory
+
+
+def collected_node_ids(output: str) -> list[str]:
+    """The node ids a collection run printed: the plugin's lines, else (no plugin output) the `-q` listing's."""
+    lines = [ln.strip() for ln in output.splitlines()]
+    ids = [ln.removeprefix(NODE_ID_PREFIX) for ln in lines if ln.startswith(NODE_ID_PREFIX)] or lines
+    return [i for i in ids if NODE_ID_RE.match(i)]
+
+
 def copy_entry_evidence(index: int, directory: Path, outputs: Path, report: dict) -> list[str]:
     """A visual entry's result.json and media, as e2e-<index>-<name>; links, odd names and oversize files stay behind.
     Without a result.json nothing is copied: media no report accounts for (a runner that crashed or was killed) may
@@ -394,20 +417,11 @@ def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: flo
         out["commands"].append(row)
     if change.get("collect_tests"):
         log = logs / "collect.log"
-        # A plugin prints each collected item's node id. `-q` alone is not enough: a repository whose addopts holds `-v`
-        # (emoji-smith's pytest.ini) cancels it, and pytest then prints a tree with no node ids at all.
-        plugin_dir = work / "pytest_plugin"
-        plugin_dir.mkdir(exist_ok=True)
-        (plugin_dir / "factory_node_ids.py").write_text(
-            "def pytest_collection_finish(session):\n"
-            "    for item in session.items:\n"
-            "        print('FACTORY_NODE_ID ' + item.nodeid, flush=True)\n")
+        plugin_dir = write_node_id_plugin(work / "pytest_plugin")
         collect_env = {**spec_env, "PYTHONPATH": os.pathsep.join(p for p in (str(plugin_dir), spec_env.get("PYTHONPATH", "")) if p)}
-        result = command('PY="$(command -v python || command -v python3)"; "$PY" -m pytest --collect-only -q -p factory_node_ids',
+        result = command(f'PY="$(command -v python || command -v python3)"; "$PY" -m pytest --collect-only -q -p {NODE_ID_PLUGIN}',
                          repo, collect_env, min(per_command, deadline - time.monotonic()), log)
-        lines = [ln.strip() for ln in log.read_text(errors="replace").splitlines()]
-        ids = [ln.removeprefix("FACTORY_NODE_ID ") for ln in lines if ln.startswith("FACTORY_NODE_ID ")] or lines
-        ids = [i for i in ids if NODE_ID_RE.match(i)][:MAX_NODE_IDS]
+        ids = collected_node_ids(log.read_text(errors="replace"))[:MAX_NODE_IDS]
         out["collected_tests"] = {"exit_code": result.get("exit_code"), "status": result["status"], "node_ids": ids}
     elif change.get("collect_skip_reason"):
         out["collected_tests"] = {"status": "skipped", "reason": str(change["collect_skip_reason"])[:300]}

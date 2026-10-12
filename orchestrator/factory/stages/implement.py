@@ -43,7 +43,6 @@ import subprocess
 import sys
 import time
 import urllib.request
-import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -472,19 +471,22 @@ class LocalVerifier:
         return results
 
     def collect_test_ids(self, repo: Path, timeout: int = 300) -> list[str] | None:
-        """Every pytest node id the checkout collects (`pytest --collect-only -q` in the per-run environment), or
-        None when pytest cannot collect here (no environment, not a pytest repository, a collection error): the
-        mapping is then unverifiable, not verified."""
+        """Every pytest node id the checkout collects (`pytest --collect-only` in the per-run environment, ids printed by
+        the harness's own plugin so a repository's `addopts = -v` cannot hide them), or None when pytest cannot collect
+        here (no environment, not a pytest repository, a collection error): the mapping is then unverifiable, not verified."""
         if self.setup is not None and not self.setup.passed:
             return None
+        plugin_dir = write_node_id_plugin(self.workdir / "pytest_plugin")
+        env = verification_env(self.env_bin)
+        env["PYTHONPATH"] = str(plugin_dir)      # verification_env drops the orchestrator's PYTHONPATH; only the plugin is added
         try:
-            p = subprocess.run("python -m pytest --collect-only -q", shell=True, cwd=repo, env=verification_env(self.env_bin),
+            p = subprocess.run(f"python -m pytest --collect-only -q -p {NODE_ID_PLUGIN}", shell=True, cwd=repo, env=env,
                                capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return None
         if p.returncode not in (0, 5):          # 5: no tests collected, which is a (possibly empty) answer
             return None
-        return [ln.strip() for ln in p.stdout.splitlines() if NODE_ID_RE.match(ln.strip())]
+        return collected_node_ids(p.stdout)
 
     def run_e2e(self, preview_url: str | None, e2e_entries: list[dict[str, Any]], repo: Path | None = None,
                 target: str = "preview", timeout: int = 900) -> list[dict[str, Any]]:
@@ -639,45 +641,9 @@ def _install_plan(repo: Path, setup_cmd: str | None, python: Path, uv: str | Non
             "description": f"dependencies from pyproject ({', '.join(['project'] + extras)}): {' '.join(deps)}"}
 
 
-from ..sandbox_tools.environment_runner import NODE_ID_RE  # noqa: E402  one definition of a pytest node id
-
-
-def parse_junit(xml: bytes) -> dict[str, list[str]]:
-    """Node ids by outcome from a pytest junit report (junit_family=xunit1, which keeps the `file` attribute).
-
-    A node id is `file::Class::name`: `file` is relative to pytest's rootdir (the checkout), the class chain is what
-    `classname` adds after the module's dotted path, `name` keeps the parametrisation suffix."""
-    out: dict[str, list[str]] = {"passed": [], "failed": [], "skipped": []}
-    try:
-        root = ET.fromstring(xml)
-    except ET.ParseError:
-        return out
-    for tc in root.iter("testcase"):
-        node_id = _node_id(tc.get("file"), tc.get("classname", ""), tc.get("name", ""))
-        tags = {child.tag for child in tc}
-        if tags & {"failure", "error"}:
-            out["failed"].append(node_id)
-        elif "skipped" in tags:
-            out["skipped"].append(node_id)
-        else:
-            out["passed"].append(node_id)
-    return out
-
-
-def _node_id(file: str | None, classname: str, name: str) -> str:
-    if not file:
-        parts = [p for p in classname.split(".") if p]
-        return f"{'/'.join(parts)}.py::{name}" if parts else name
-    module = Path(file).with_suffix("").as_posix().replace("/", ".")
-    if classname == module or not classname:
-        chain: list[str] = []
-    elif classname.startswith(module + "."):
-        chain = classname[len(module) + 1:].split(".")
-    else:                                   # rootdir or package layout differs: everything after the module's last component
-        parts = classname.split(".")
-        stem = Path(file).stem
-        chain = parts[len(parts) - parts[::-1].index(stem):] if stem in parts else []
-    return "::".join([file, *chain, name])
+# One definition each, shared with the hosted harness that runs the same collection and reads the same JUnit reports.
+from ..sandbox_tools.environment_runner import (  # noqa: E402
+    NODE_ID_PLUGIN, NODE_ID_RE, collected_node_ids, parse_junit, write_node_id_plugin)
 
 
 def _reported(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -1286,7 +1252,7 @@ def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]]
             "category": "security" if name == "secret_scan" else ("test_quality" if name in ("ac_test_mapping", "test_plan_commands", "test_weakening", "protected_tests", "e2e_coverage", "e2e_preview", SETUP_CHECK, ENVIRONMENT_CHECK) else "spec_deviation"),
             "claim": f"Deterministic check `{name}` failed: {d.detail}",
             "evidence": {"locations": ["deterministic_checks.json:1"], **({"reproduction": repro} if repro else {}), "observed": d.detail},
-            "violates": f"orchestrator check {name} (cannot be overridden by any judge)",
+            "violates": [f"orchestrator check {name} (cannot be overridden by any judge)"],
             "refutation_condition": f"`{name}` passes on the orchestrator's next verification of the pushed head",
             "status": "open",
             "suggested_fix": fix,

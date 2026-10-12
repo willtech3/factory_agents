@@ -7,8 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 from conftest import make_config
+from support.events import assert_log_valid
 
-from factory import checks, runner
+from factory import runner
 from factory.budget import BudgetPaused, reserve_budget
 from factory.gates import Decision, GateDecision, GateKind, InMemoryQueue, LogNotifier, parse_budget
 from factory.stages import RunContext
@@ -76,11 +77,6 @@ def _kinds(ctx):
 
 def _payload(ctx, kind, n=-1):
     return [e.payload for e in ctx.store.events(ctx.run_id) if e.kind == kind][n]
-
-
-def _validate_log(ctx, schemas_dir):
-    for ev in ctx.store.events(ctx.run_id):
-        assert checks.schema_valid(ev.to_dict(), schemas_dir / "run_event.schema.json", schemas_dir).passed, ev.kind
 
 
 def test_parse_budget_reads_the_forms_a_human_writes():
@@ -220,7 +216,7 @@ def test_run_pauses_before_a_session_it_cannot_afford_and_resumes_when_the_budge
     st = ctx3.store.state(ctx3.run_id)
     assert st.stage == RunStage.COMPLETED and st.budget_usd == 100.0 and st.list_cost_usd == 11.0 and st.sessions_finished == 6
     assert not st.open_gates and all(wi.stage == WorkItemStage.SPEC_APPROVED for wi in st.work_items.values())
-    _validate_log(ctx3, schemas_dir)
+    assert_log_valid(ctx3.store, ctx3.run_id, schemas_dir)
 
 
 def test_rejecting_the_budget_gate_closes_the_run_on_resume(tmp_path, root, examples):
@@ -333,7 +329,8 @@ def test_implementation_pauses_before_the_implementer_and_resumes_from_its_artef
 
 def test_resumed_rounds_do_not_repeat_item_stage_events(tmp_path, root, examples):
     """`enter_item_stage` skips a stage the item is already in: a resumed loop re-walks steps whose outputs it
-    reuses, and REVIEWING -> REVIEWING would be an illegal transition on replay."""
+    reuses, and repeating their stage events would put phantom transitions on the run's timeline (replay itself
+    tolerates a same-stage move)."""
     ctx = _ctx(tmp_path, root, None, InMemoryQueue(), budget=100.0, run_id="run_budget00005")
     ctx.event("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     ctx.event("artifact.produced", {"artifact_type": "decomposition", "revision": 1, "work_items": examples["decomposition"]["work_items"]})

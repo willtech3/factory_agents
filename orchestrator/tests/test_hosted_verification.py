@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 from conftest import make_config
+from support.events import assert_log_valid
 
 from factory import cli, security
 from factory import test_environments as te
@@ -267,6 +268,7 @@ def test_managed_round_runs_everything_in_the_sandbox_and_passes_on_bound_eviden
 
     kinds = [e.kind for e in ctx.store.events(RUN_ID)]
     assert "verification.hosted" in kinds and "visual.verified" in kinds
+    assert_log_valid(ctx.store, RUN_ID, root / "schemas")
     hosted = next(e for e in ctx.store.events(RUN_ID) if e.kind == "verification.hosted").payload
     assert hosted["status"] == "passed" and hosted["profile_sha256"] == te.fingerprint(RECIPE)
 

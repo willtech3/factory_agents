@@ -145,7 +145,8 @@
       "properties": {
         "finding_id": {
           "type": "string",
-          "pattern": "^F-[0-9]{1,3}$"
+          "pattern": "^(F-[0-9]{1,3}|DET-[a-z0-9_]+)$",
+          "description": "F-n for a reviewer's finding. DET-<check> is written only by the orchestrator, for a deterministic check it ran and saw fail."
         },
         "severity": {
           "type": "string",

@@ -5,8 +5,8 @@ DEPLOY_FAILURE gate, with no manual event edits; and running the watcher again n
 import json
 
 from conftest import make_config
+from support.events import assert_log_valid
 
-from factory import checks
 from factory.gates import Decision, GateDecision, InMemoryQueue, LogNotifier
 from factory.stages import RunContext
 from factory.state import Policy, WorkItemStage
@@ -103,13 +103,6 @@ def _ok_e2e(url, entries):
     return [{"command": e["command"], "target": "preview", "exit_code": 0, "covers_ac": e.get("covers_ac", [])} for e in entries]
 
 
-def _assert_schema_valid(ctx, schemas_dir):
-    for ev in ctx.store.events(RUN):
-        d = ev.to_dict()
-        d["actor"] = {k: v for k, v in d["actor"].items() if k in ("type", "id")}
-        assert checks.schema_valid(d, schemas_dir / "run_event.schema.json", schemas_dir).passed, (ev.kind, d)
-
-
 # ---------------------------------------------------------------- the happy path
 
 def test_merged_pull_request_ends_at_deployed_dev(tmp_path, root, examples, schemas_dir):
@@ -140,7 +133,7 @@ def test_merged_pull_request_ends_at_deployed_dev(tmp_path, root, examples, sche
     passed = next(e for e in ctx.store.events(RUN) if e.kind == "e2e.dev_passed")
     assert len(passed.payload["results"]) == 3           # the spec's three preview entries; the local one is not run against dev
     assert forge.calls["change_request_state"] == 3 and forge.calls["approved"] == 1
-    _assert_schema_valid(ctx, schemas_dir)
+    assert_log_valid(ctx.store, RUN, schemas_dir)
 
     # idempotent: nothing left to watch, nothing appended, the forge is not asked again
     last = ctx.store.state(RUN).last_seq
@@ -195,7 +188,7 @@ def test_closed_pull_request_closes_the_item_once(tmp_path, root, examples, sche
     assert _kinds(ctx, before) == ["cr.closed", "work_item.stage"]
     assert ctx.store.state(RUN).work_items[WID].stage == WorkItemStage.CLOSED
     assert w.tick().events_appended == 0 and forge.calls["change_request_state"] == 1
-    _assert_schema_valid(ctx, schemas_dir)
+    assert_log_valid(ctx.store, RUN, schemas_dir)
 
 
 # ---------------------------------------------------------------- failures and the gate, across restarts
@@ -240,7 +233,7 @@ def test_pipeline_failure_opens_a_gate_that_survives_a_restart(tmp_path, root, e
     st = ctx2.store.state(RUN)
     assert st.work_items[WID].stage == WorkItemStage.CLOSED and not st.open_gates
     assert w2.tick().events_appended == 0
-    _assert_schema_valid(ctx2, schemas_dir)
+    assert_log_valid(ctx2.store, RUN, schemas_dir)
 
 
 def test_approve_reobserves_the_next_pipeline_then_escalates(tmp_path, root, examples):

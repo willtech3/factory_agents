@@ -2,7 +2,7 @@
 name = "factory-orchestrator"
 version = "0.1.0"
 description = "Deterministic outer loop for the factory: drives Managed Agents sessions stage by stage, holds human gates on a tracker or forge, computes deterministic checks, opens change requests (GitHub PRs or GitLab MRs)."
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
   "anthropic>=1.0",
   "pydantic>=2.7",

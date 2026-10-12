@@ -6,6 +6,8 @@ import subprocess
 import pytest
 from pathlib import Path
 
+from support.events import assert_log_valid
+
 
 RUN = "run_rec0000001"
 
@@ -81,6 +83,7 @@ def test_integration_keeps_artifacts_external_and_candidate_unchanged(tmp_path, 
     assert record['size']['measured']['hand_written'] == 1 and record['size']['flag'] is None
     opened = ctx.store.get_artifact(ctx.run_id, 'integrate', f"{spec['spec_id']}-pr_description.md").decode()
     assert '1 hand-written lines (app 1, tests 0); no generated files. Estimated 320 (M;' in opened and f"#record-{spec['spec_id']}" in opened
+    assert_log_valid(ctx.store, ctx.run_id, root / "schemas")                       # cr.opened included
 
 
 def test_moved_branch_must_be_reviewed_again(tmp_path, root, examples):

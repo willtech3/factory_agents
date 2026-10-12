@@ -91,22 +91,6 @@ def test_spec_requires_user_visible_and_e2e(schemas_dir, examples):
     assert not checks.schema_valid(spec, schemas_dir / "spec.schema.json", schemas_dir).passed
 
 
-def test_run_event_accepts_deploy_kinds(schemas_dir):
-    for kind in ("deploy.started", "deploy.succeeded", "deploy.failed", "e2e.dev_passed", "e2e.dev_failed"):
-        ev = {"event_id": "evt_1", "run_id": "run_abcdefgh", "seq": 0, "at": "2026-10-09T10:00:00Z", "kind": kind,
-              "actor": {"type": "platform"}, "payload": {}}
-        assert checks.schema_valid(ev, schemas_dir / "run_event.schema.json", schemas_dir).passed
-
-
-def test_run_event_uses_change_request_kinds(schemas_dir):
-    """Event kinds are forge-neutral: cr.* (a change request is a GitHub PR or a GitLab MR), never mr.*."""
-    for kind, ok in (("cr.opened", True), ("cr.merged", True), ("cr.closed", True),
-                     ("mr.opened", False), ("mr.merged", False), ("pr.opened", False)):
-        ev = {"event_id": "evt_1", "run_id": "run_abcdefgh", "seq": 0, "at": "2026-10-09T10:00:00Z", "kind": kind,
-              "actor": {"type": "platform"}, "payload": {}}
-        assert checks.schema_valid(ev, schemas_dir / "run_event.schema.json", schemas_dir).passed is ok, kind
-
-
 def test_outcome_repository_may_be_created(schemas_dir, examples):
     import copy
 
