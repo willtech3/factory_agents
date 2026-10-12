@@ -179,7 +179,8 @@ def _ended_at(events: list[RunEvent], state: RunState) -> str | None:
 
 def _live_sessions(events: list[RunEvent]) -> dict[str, tuple[str, str]]:
     """Sessions started and not yet finished: session id -> (role, started at), in the order they started. A resume
-    never reattaches to a session its dead predecessor left open (it starts new ones), so `run.resumed` clears them."""
+    follows the sessions its dead predecessor left working (`sessions_to_follow`, ADR-0013); any other session left
+    open (a log from before durable steps) was never followed again, so `run.resumed` clears it."""
     live: dict[str, tuple[str, str]] = {}
     for ev in events:
         p = ev.payload
@@ -191,7 +192,8 @@ def _live_sessions(events: list[RunEvent]) -> dict[str, tuple[str, str]]:
             for sid in p.get("interrupted_sessions") or []:
                 live.pop(sid, None)
         elif ev.kind == "run.resumed":
-            live.clear()
+            keep = set(p.get("sessions_to_follow") or [])
+            live = {sid: v for sid, v in live.items() if sid in keep}
     return live
 
 

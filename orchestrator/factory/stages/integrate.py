@@ -53,6 +53,11 @@ def make_open_change_request(ctx: RunContext, forge: Forge, spec_id: str, work_i
             return json.dumps({"error": f"source_branch must be {expected_branch}"})
         if tool_input["target_branch"] != expected_target:
             return json.dumps({"error": f"target_branch must be {expected_target}"})
+        opened = _opened(ctx, spec_id, expected_branch)
+        if opened is not None:
+            # Already open: a reattached controller replays a tool call its predecessor answered (ADR-0013), and the
+            # forge must not get a second change request for the same branch.
+            return json.dumps({"id": opened["id"], "url": opened["url"], "web_url": opened["url"], "iid": opened["id"]})
         evaluation = ctx.evaluation_target
         title = tool_input["title"]
         description = banner + tool_input["description_markdown"]

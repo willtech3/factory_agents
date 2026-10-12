@@ -85,7 +85,7 @@ Escalations open a gate with the reason and the relevant artifacts: a `blocked.m
 
 **Runs board**: columns = run stages; cards show outcome title, owner, days in stage, cost so far against budget (the outcome's `constraints.budget_usd`, enforced), and a red marker when a gate or question is waiting on a person. Sorted by waiting-on-human first.
 
-**Run detail**: left, the event timeline (derived from `events.jsonl`) with filters by stage and actor; right, the work-item DAG with state colours (merged items show a dev marker: deploying, verified in dev, or failed); top, cost per stage and the budget; every artifact and session is one click away, as are the preview and dev URLs. Once pull requests exist, a **Pull requests and the dev deploy** card lists what is still open, starts the watcher, and says when it last checked.
+**Run detail**: left, the event timeline (derived from the run's event log) with filters by stage and actor; right, the work-item DAG with state colours (merged items show a dev marker: deploying, verified in dev, or failed); top, cost per stage and the budget; every artifact and session is one click away, as are the preview and dev URLs. Once pull requests exist, a **Pull requests and the dev deploy** card lists what is still open, starts the watcher, and says when it last checked.
 
 **Approval inbox**: every open gate and blocking question across runs, oldest first, with the summary and the artifact links. Decisions require the artifact hashes shown, which the UI supplies from the gate record it read.
 

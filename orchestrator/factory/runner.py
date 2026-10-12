@@ -30,7 +30,7 @@ from .config import managed_gaps
 from .gates import Decision, Gate, GateDecision, GateKind, parse_budget
 from .stages import RunContext
 from .stages.decompose import gate_1, run_decompose
-from .stages.common import artifact_json_or_none, gate_decision, public
+from .stages.common import artifact_json_or_none, gate_decision, orphaned_sessions, public
 from .stages.implement import LocalVerifier, ResumePoint, run_implement_one
 from .stages.integrate import run_integrate
 from .stages.specify import gate_2, run_specify
@@ -620,7 +620,7 @@ def pending_gate2(ctx: RunContext, events: list[Any] | None = None) -> PendingGa
         raise RuntimeError(f"Gate 2 {gate_id} was opened outside the Gate 2 stage ({stage_before})")
     after = [ev for ev in events if ev.seq > gate_ev.seq]
     for ev in after:
-        if ev.kind == "run.failed" and not (ev.payload.get("interrupted_sessions") or []):
+        if ev.kind == "run.failed" and not (ev.payload.get("interrupted_sessions") or ev.payload.get("sessions_left_running") or []):
             continue
         if ev.kind == "run.resumed" and ev.payload.get("gate_id") == gate_id and ev.payload.get("stage") == RunStage.GATE_2_SPEC_READINESS.value:
             continue
@@ -821,7 +821,8 @@ def _resume_implementation(ctx: RunContext, outcome: dict[str, Any], events: lis
                 points[sid] = ResumePoint(round_no=n, findings=recovery.get("review_findings") or points[sid].findings)
             points[sid].review_through = n
     ctx.event("run.resumed", {"stage": RunStage.IMPLEMENTING.value, "from": from_stage.value,
-                              "points": {sid: {"round": pt.round_no, "implementer_done": pt.report is not None} for sid, pt in points.items()}},
+                              "points": {sid: {"round": pt.round_no, "implementer_done": pt.report is not None} for sid, pt in points.items()},
+                              "sessions_to_follow": orphaned_sessions(ctx)},
               stage="implement")
     return implement_and_integrate(ctx, outcome, specs, spec_md, spec_verdict, resume=points, guidance=guidance)
 
@@ -893,7 +894,8 @@ def _resume_after_budget_pause(ctx: RunContext, outcome: dict[str, Any], st: Any
     if paused_in == RunStage.DECOMPOSING:
         feedback, prior = _pending_gate1_feedback(ctx, events)
         ctx.event("run.resumed", {"stage": RunStage.DECOMPOSING.value, "from": RunStage.PAUSED_BUDGET.value,
-                                  "with_feedback": feedback is not None}, stage="decompose")
+                                  "with_feedback": feedback is not None, "sessions_to_follow": orphaned_sessions(ctx)},
+                  stage="decompose")
         return _from_decompose(ctx, outcome, feedback, prior)
     if paused_in == RunStage.SPECIFYING:
         revs = _rounds(ctx, "decompose", "r", "-decomposition.json")
@@ -903,7 +905,8 @@ def _resume_after_budget_pause(ctx: RunContext, outcome: dict[str, Any], st: Any
         human_comments, prior_specs = _pending_specify_inputs(ctx, events, decomposition)
         previous_verdict, round_offset = _persisted_specify_rounds(ctx, decomposition)
         ctx.event("run.resumed", {"stage": RunStage.SPECIFYING.value, "from": RunStage.PAUSED_BUDGET.value,
-                                  "with_feedback": prior_specs is not None}, stage="specify")
+                                  "with_feedback": prior_specs is not None, "sessions_to_follow": orphaned_sessions(ctx)},
+                  stage="specify")
         return _from_specify(ctx, outcome, decomposition, human_comments, prior_specs, previous_verdict, round_offset)
     raise RuntimeError(f"run {ctx.run_id} paused in {paused_in.value}, which has no resume path")
 

@@ -191,6 +191,7 @@ class RunState:
     open_questions: dict[str, dict[str, Any]] = field(default_factory=dict)
     list_cost_usd: float = 0.0           # sum of session.finished list_cost_usd: what the run has spent so far
     sessions_finished: int = 0
+    finished_sessions: dict[str, str | None] = field(default_factory=dict)   # session id -> stop_reason; spend counts once
     budget_usd: float | None = None      # the run's cap (run.created), raised by budget.raised; None until run.created
     last_seq: int = -1
 
@@ -258,8 +259,14 @@ def reduce(state: RunState, ev: RunEvent) -> RunState:
     elif k == "question.answered":
         state.open_questions.pop(p["question_id"], None)
     elif k == "session.finished":
-        state.list_cost_usd += float(p.get("list_cost_usd") or 0.0)
-        state.sessions_finished += 1
+        # A session finishes once. A controller that reattaches to a session its predecessor followed (ADR-0013) may
+        # report its end again; its spend is not counted twice.
+        sid = p.get("session_id")
+        if not (sid and sid in state.finished_sessions):
+            state.list_cost_usd += float(p.get("list_cost_usd") or 0.0)
+            state.sessions_finished += 1
+            if sid:
+                state.finished_sessions[sid] = p.get("stop_reason")
     elif k == "work_item.stage":
         _move_item(state, ev.work_item_id, WorkItemStage(p["stage"]))
         wi = state.work_items[ev.work_item_id]

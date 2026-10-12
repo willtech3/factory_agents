@@ -18,10 +18,10 @@ A run written by an older controller has `events.jsonl` and no database: the fir
 leaves the file renamed `events.imported.jsonl` beside the database. `factory export-events` writes the JSONL form back
 out (the eval reference runs keep that format).
 
-Steps (`steps` table) are the durable units of a run: today one per agent session (`stages/common.run_session`). A step
-records the session it started before waiting on it, so a controller that dies is not the end of the session: the next
-controller reattaches by id, and a session that finished with the same inputs is reused rather than paid for again.
-docs/adr/0013-durable-runs.md has the design and the phases that follow.
+Steps (`steps` table) are the durable units of a run: today one per agent session (`stages/common.session_step`). A
+step records the session it started before waiting on it, so a controller that dies is not the end of the session: the
+next controller reattaches by id when it asks for the same work again. A finished step keeps how its session ended and
+its outputs as blobs; it is not reused yet. docs/adr/0013-durable-runs.md has the design and the phases that follow.
 """
 from __future__ import annotations
 

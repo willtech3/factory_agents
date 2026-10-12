@@ -21,6 +21,8 @@
         "session.started",
         "session.finished",
         "session.truncated",
+        "session.reattached",
+        "session.superseded",
         "artifact.produced",
         "work_item.stage",
         "gate.opened",

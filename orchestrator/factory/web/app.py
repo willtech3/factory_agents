@@ -53,7 +53,7 @@ EXAMPLES = {p.parent.name: p for p in sorted((REPO_ROOT / "examples").glob("*/ou
 TIMELINE_KINDS = {"run.created", "repository.created", "stage.entered", "session.started", "gate.opened", "gate.decided", "question.asked", "question.answered",
                   "judge.verdict", "review.findings", "review.response", "merge.verdict", "cr.opened", "cr.merged", "cr.closed",
                   "deploy.started", "deploy.succeeded", "deploy.failed", "e2e.dev_passed", "e2e.dev_failed", "budget.reached",
-                  "budget.raised", "session.truncated", "run.escalated", "run.failed", "run.resumed", "run.completed", "session.finished",
+                  "budget.raised", "session.truncated", "session.reattached", "session.superseded", "run.escalated", "run.failed", "run.resumed", "run.completed", "session.finished",
                   "work_item.stage"}
 
 
@@ -185,13 +185,16 @@ def crew_roster(events) -> list[dict[str, Any]]:
             if cut and not row["live"]:
                 row["interrupted_by"] = "failure"
         elif ev.kind == "run.resumed":
-            # a resume starts new sessions; whatever its dead predecessor left open was cut short, not finished
+            # a resume follows the sessions its dead predecessor left working (ADR-0013); any other session it left open
+            # (a log from before durable steps) was cut short, not finished
+            keep = set(p.get("sessions_to_follow") or [])
             for row in by_role.values():
-                if row["live"]:
-                    row["live"].clear()
-                    row["finished_at"] = ev.at
-                    row["state"] = "interrupted"
-                    row["interrupted_by"] = "resume"
+                if any(sid not in keep for sid in row["live"]):
+                    row["live"] = [sid for sid in row["live"] if sid in keep]
+                    if not row["live"]:
+                        row["finished_at"] = ev.at
+                        row["state"] = "interrupted"
+                        row["interrupted_by"] = "resume"
         elif ev.kind == "run.failed":
             # sessions the orchestrator interrupted on its way out never get a session.finished of their own: they were
             # cut short, and the Console must not show them as done
