@@ -98,8 +98,9 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
                   response: dict[str, Any], test_results: Any, run_summary: dict[str, Any],
                   base_branch: str, *, verifier: Any | None = None, spec_md: str = "",
                   spec_verdict: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Write the spec's run record, render and lint the reviewer-first description, and have the integrator open the
-    change request at the exact head the merge judge approved."""
+    """Write the spec's run record, render and lint the reviewer-first description, and open the change request at the
+    exact head the merge judge approved: directly when the description passes its lint, through the integrator (which
+    rewords only what the lint names) when it does not."""
     assert ctx.forge is not None, "a forge is required to open change requests"
     sid, wid = spec["spec_id"], spec["work_item_id"]
     branch, judged_sha = verdict["_branch"], verdict["_head_sha"]
@@ -155,37 +156,54 @@ def run_integrate(ctx: RunContext, spec: dict[str, Any], verdict: dict[str, Any]
                 "labels": ["factory", f"spec:{sid}", f"run:{ctx.run_id}"], "reviewers": list(run_summary.get("reviewers") or []),
                 "run_record_url": record_url, "draft": bool(ctx.evaluation_target),
                 "evaluation_banner": banner or None, "max_lines": pr_description.MAX_LINES}
-    uploads = {
-        "spec.json": json.dumps(spec, indent=2).encode(),
-        "merge_readiness.json": json.dumps(verdict, indent=2).encode(),
-        "pr_description.md": draft.encode(),
-        "pr_lint.json": json.dumps({"problems": problems}, indent=2).encode(),
-        "pr_facts.json": json.dumps(pr_facts, indent=2).encode(),
-    }
-    reserve_budget(ctx, "integrate")
-    res = run_session(
-        ctx, prefix=f"{sid}-", spec_id=sid,
-        agent_key="integrator", title=f"{ctx.run_id} integrate {sid}", run_id=ctx.run_id, stage="integrate",
-        uploads=uploads, work_item_id=wid,
-        description=INTEGRATE_DESCRIPTION.format(spec_id=sid, branch=branch, head_sha=head_sha,
-                                                 git=ctx.forge.sandbox_git_instructions(ctx.cfg.repo_url, base_branch, branch, read_only=True)),
-        rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["integrate"],
-        custom_tools={"open_change_request": make_open_change_request(ctx, ctx.forge, sid, wid, branch, base_branch,
-                                                                      record_url=record_url, allowed_words=allowed_words,
-                                                                      banner=banner)},
-        repository=ctx.forge.session_repository_resource(ctx.cfg.repo_url, branch),
-    )
+    open_change_request = make_open_change_request(ctx, ctx.forge, sid, wid, branch, base_branch, record_url=record_url,
+                                                   allowed_words=allowed_words, banner=banner)
+    res = None
+    if not problems:
+        # The rendered description passes its lint: the controller opens the change request itself, through the same
+        # fenced tool the integrator would call. An agent session here only ever passed the draft through (live run 2:
+        # a Sonnet session, ~2 minutes, to send pr_description.md unchanged).
+        sctx = SessionContext(session_id="controller", run_id=ctx.run_id, stage="integrate", work_item_id=wid)
+        answer = json.loads(open_change_request({"source_branch": branch, "target_branch": base_branch, "title": facts["title"],
+                                                 "description_markdown": draft, "labels": pr_facts["labels"],
+                                                 "reviewers": pr_facts["reviewers"], "draft": pr_facts["draft"]}, sctx))
+        if "error" in answer:
+            problems = list(answer.get("problems") or [answer["error"]])
+    if _opened(ctx, sid, branch) is None:
+        # Only sentences the lint names need rewording, in the app's own terms: that is the integrator's whole job now.
+        uploads = {
+            "spec.json": json.dumps(spec, indent=2).encode(),
+            "merge_readiness.json": json.dumps(verdict, indent=2).encode(),
+            "pr_description.md": draft.encode(),
+            "pr_lint.json": json.dumps({"problems": problems}, indent=2).encode(),
+            "pr_facts.json": json.dumps(pr_facts, indent=2).encode(),
+        }
+        reserve_budget(ctx, "integrate")
+        res = run_session(
+            ctx, prefix=f"{sid}-", spec_id=sid,
+            agent_key="integrator", title=f"{ctx.run_id} integrate {sid}", run_id=ctx.run_id, stage="integrate",
+            uploads=uploads, work_item_id=wid,
+            description=INTEGRATE_DESCRIPTION.format(spec_id=sid, branch=branch, head_sha=head_sha,
+                                                     git=ctx.forge.sandbox_git_instructions(ctx.cfg.repo_url, base_branch, branch, read_only=True)),
+            rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["integrate"],
+            custom_tools={"open_change_request": open_change_request},
+            repository=ctx.forge.session_repository_resource(ctx.cfg.repo_url, branch),
+        )
     # The forge result, not an agent-authored cr.json, proves that a PR exists.
-    opened = next((ev.payload for ev in reversed(ctx.store.events(ctx.run_id))
-                   if ev.kind == "cr.opened" and ev.spec_id == sid and ev.payload.get("branch") == branch), None)
+    opened = _opened(ctx, sid, branch)
     if opened is None:
         persist_outputs(ctx, "integrate", res, prefix=f"{sid}-unconfirmed-{res.session_id}-", work_item_id=wid, spec_id=sid)
         raise RuntimeError(f"integrator session {res.session_id} did not open a change request for {sid}")
     cr = {"id": opened["id"], "url": opened["url"], "web_url": opened["url"], "iid": opened["id"]}
     record["pull_request"] = {"id": opened["id"], "url": opened["url"], "description": f"integrate/{sid}-pr_description.md"}
     run_record.store(ctx, record)
-    res.outputs["cr.json"] = json.dumps(cr, indent=2).encode()
-    persist_outputs(ctx, "integrate", res, prefix=f"{sid}-", work_item_id=wid, spec_id=sid)
+    if res is not None:
+        res.outputs["cr.json"] = json.dumps(cr, indent=2).encode()
+        persist_outputs(ctx, "integrate", res, prefix=f"{sid}-", work_item_id=wid, spec_id=sid)
+    else:
+        digest = ctx.store.put_artifact(ctx.run_id, "integrate", f"{sid}-cr.json", json.dumps(cr, indent=2).encode())
+        ctx.event("artifact.produced", {"artifact_type": "cr", "path": f"integrate/{sid}-cr.json", "sha256": digest,
+                                        "opened_by": "controller"}, stage="integrate", work_item_id=wid, spec_id=sid)
     ctx.event("work_item.stage", {"stage": WorkItemStage.CR_OPEN.value, "cr_id": cr.get("id", cr.get("iid"))},
               work_item_id=wid, spec_id=sid)
     return cr
@@ -210,6 +228,12 @@ def publish_media(ctx: RunContext, sid: str, head_sha: str, evidence: list[dict[
         return ""
     record["published_media"] = {"status": "published", "reason": why, "files": [{"name": i.name, "role": i.role} for i in items]}
     return markdown
+
+
+def _opened(ctx: RunContext, spec_id: str, branch: str) -> dict[str, Any] | None:
+    """The `cr.opened` this spec's branch got from the forge, if any."""
+    return next((ev.payload for ev in reversed(ctx.store.events(ctx.run_id))
+                 if ev.kind == "cr.opened" and ev.spec_id == spec_id and ev.payload.get("branch") == branch), None)
 
 
 def _normal_default_branch(ctx: RunContext, base_branch: str) -> str:

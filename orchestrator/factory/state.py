@@ -121,9 +121,20 @@ class Policy:
     parallel_implementations: int = 3    # independent work items implemented at once (separate branches)
     parallel_spec_writers: int = 8       # spec writer sessions at once; all items are written in one go by default
     spec_waves: bool = False             # True: write specs in dependency-order waves instead of all at once
-    reviewer_passes: int = 2             # independent reviewer copies per round, findings merged
+    reviewer_passes: int = 2             # independent reviewer copies in a first round over a change larger than review_single_pass_lines
+    # A first-round change of at most this many hand-written lines (size.py) gets one general pass: the second pass found
+    # complementary defects on a 500-line change, but on small diffs both passes re-prove the same thing (live run 2).
+    review_single_pass_lines: int = 150
+    # Later rounds: passes that adjudicate the previous findings and review only what changed since the head they saw.
+    # Two passes over the whole diff in round 2 of live run 2 re-proved the same four withdrawals (post-mortem issue 10).
+    reviewer_passes_followup: int = 1
     security_review: bool = True         # one security reviewer pass per round beside the general reviewers (needs the agent deployed)
     design_only: bool = False            # stop after Gate 2: real agents for decompose/specify/judge, no code stage, no forge needed
+    # Gates the owner pre-approves for this run ("gate_1", "gate_2"), FACTORY_AUTO_APPROVE. Off by default: a listed gate
+    # still opens (its page and hashes stay for audit) and is approved by "policy" only when nothing in it needs a person:
+    # Gate 1 with no blocking question, Gate 2 with a passing verdict, no blocking issue and no blocking question. Gate
+    # waits were a quarter of the first live runs' wall clock, for approvals of the defaults (post-mortem issue 20).
+    auto_approve: tuple[str, ...] = ()
     preview_wait_seconds: int = 1800     # how long verification waits for the platform to deploy head_sha to its preview
     dev_pipeline_timeout_seconds: int = 3600  # Stage 5: how long to watch the dev pipeline before a DEPLOY_FAILURE gate
     # Hand-written changed lines (tests included, generated files excluded) per size; FACTORY_SIZE_BUDGET tunes them.

@@ -58,6 +58,9 @@ def policy_snapshot(ctx: RunContext) -> dict[str, Any]:
     """What this run was tuned with, recorded on run.created so the Console can show it beside the run."""
     p = ctx.policy
     return {"run_budget_usd": p.run_budget_usd, "reviewer_passes": p.reviewer_passes, "review_max_rounds": p.review_max_rounds,
+            "auto_approve": list(getattr(p, "auto_approve", ()) or ()),
+            "review_single_pass_lines": getattr(p, "review_single_pass_lines", None),
+            "reviewer_passes_followup": getattr(p, "reviewer_passes_followup", None),
             "security_review": getattr(p, "security_review", True), "parallel_implementations": p.parallel_implementations,
             # the pass also needs its optional agent deployed; without one it is skipped whatever the policy says
             "security_review_available": "security_reviewer" in ctx.cfg.agents,

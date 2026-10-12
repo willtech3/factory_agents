@@ -114,10 +114,12 @@ class Driver:
         raise AssertionError(f"unexpected agent {key}")
 
 
-def _ctx(tmp_path, root, driver, **cfg):
+def _ctx(tmp_path, root, driver, policy: Policy | None = None, **cfg):
+    """`policy` defaults to two first-round passes whatever the diff size (these fixtures' diffs are a few lines, which
+    the default policy reviews with one pass; `test_review_is_sized_to_the_change` covers that)."""
     runs = tmp_path / "runs"
     ctx = RunContext(cfg=make_config(root, runs, **cfg), store=RunStore(runs), driver=driver, queue=InMemoryQueue(),
-                     notifier=LogNotifier(), forge=None, policy=Policy(), run_id="run_loop0000001")
+                     notifier=LogNotifier(), forge=None, policy=policy or Policy(review_single_pass_lines=0), run_id="run_loop0000001")
     ctx.event("run.created", {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "t"})
     ctx.event("artifact.produced", {"artifact_type": "decomposition", "revision": 1, "work_items": [{"work_item_id": "wi-det", "depends_on": []}]}, stage="decompose")
     for st in (WorkItemStage.SPEC_DRAFTING, WorkItemStage.SPEC_JUDGING, WorkItemStage.SPEC_APPROVED):
@@ -222,8 +224,9 @@ def test_a_standing_reviewer_finding_still_gets_a_fresh_review_round(tmp_path, r
     verifier = LocalVerifier(str(origin), tmp_path / "runs" / ctx.run_id / "verify")
     verdict = run_implement_one(ctx, _spec(False), str(origin), "main", verifier, {})
     assert verdict["result"] == "ready"
+    # round 2 is one pass over the delta, not two passes over the whole diff again
     assert _titles(driver) == ["implement spec_det r1", "review spec_det r1 p1", "review spec_det r1 p2", "implement spec_det r2",
-                               "review spec_det r2 p1", "review spec_det r2 p2", "merge-judge spec_det"]
+                               "review spec_det r2 p1", "merge-judge spec_det"]
     assert "DET-*" not in driver.calls[3]["description"]
     kinds = [(e.kind, e.payload) for e in ctx.store.events(ctx.run_id)]
     assert ("work_item.stage", {"stage": "responding", "deterministic_only": False}) in kinds
@@ -268,3 +271,66 @@ def test_resume_on_changed_head_rechecks_preserves_proof_and_does_not_reuse_old_
     old_review = "spec_det-r1-baseold-base-headold-candidate-p1-findings.json"
     assert ctx.store.get_json(ctx.run_id, "review", old_review)["diff_ref"]["head_sha"] == "old-candidate"
     assert ctx.store.get_json(ctx.run_id, "implement", "spec_det-r1-implementation_report.json") == old_report
+
+
+def test_review_is_sized_to_the_change(tmp_path, root):
+    """A first round over a small change is one general pass (the default policy); its plan is on the events."""
+    origin = _remote(tmp_path)
+    driver = Driver(origin, tmp_path, {})
+    ctx = _ctx(tmp_path, root, driver, policy=Policy())
+    verifier = LocalVerifier(str(origin), tmp_path / "runs" / ctx.run_id / "verify")
+    assert run_implement_one(ctx, _spec(False), str(origin), "main", verifier, {})["result"] == "ready"
+    assert _titles(driver) == ["implement spec_det r1", "review spec_det r1 p1", "implement spec_det r2", "merge-judge spec_det"]
+    review = next(e.payload for e in ctx.store.events(ctx.run_id) if e.kind == "review.findings" and e.payload["round"] == 1)
+    assert review["passes"] == 1 and review["scope"] == "full" and review["security_pass"] is False
+    plan = next(e.payload["review_plan"] for e in ctx.store.events(ctx.run_id)
+                if e.kind == "work_item.stage" and e.payload.get("stage") == "reviewing")
+    assert plan["hand_written_lines"] == 1 and plan["passes"] == 1
+
+
+def test_a_follow_up_round_reads_only_the_delta(tmp_path, root):
+    origin = _remote(tmp_path)
+    driver = Driver(origin, tmp_path, {1: [BLOCKING]})
+    ctx = _ctx(tmp_path, root, driver)
+    verifier = LocalVerifier(str(origin), tmp_path / "runs" / ctx.run_id / "verify")
+    assert run_implement_one(ctx, _spec(False), str(origin), "main", verifier, {})["result"] == "ready"
+    r1_head = json.loads(ctx.store.get_artifact(ctx.run_id, "review", "spec_det-r1-findings.merged.json"))["diff_ref"]["head_sha"]
+    r2 = next(c for c in driver.calls if c["title"].endswith("review spec_det r2 p1"))
+    delta = r2["uploads"]["delta.patch"].decode()
+    assert "service_manifest.json" in delta and "app/main.py" not in delta          # round 2 pushed only the manifest
+    assert "app/main.py" in r2["uploads"]["diff.patch"].decode()                     # the whole change stays as context
+    assert f"{r1_head}.." in r2["description"] and "previous_findings.json" in r2["description"]
+    review2 = next(e.payload for e in ctx.store.events(ctx.run_id) if e.kind == "review.findings" and e.payload["round"] == 2)
+    assert review2["scope"] == "delta" and review2["passes"] == 1
+
+
+def test_the_implementers_grader_gets_only_the_items_it_scores(tmp_path, root):
+    origin = _remote(tmp_path)
+    driver = Driver(origin, tmp_path, {})
+    ctx = _ctx(tmp_path, root, driver)
+    verifier = LocalVerifier(str(origin), tmp_path / "runs" / ctx.run_id / "verify")
+    run_implement_one(ctx, _spec(False), str(origin), "main", verifier, {})
+    rubric = next(c for c in driver.calls if c["agent_key"] == "implementer")["rubric_md"]
+    assert "## I1." in rubric and "## I7." in rubric
+    assert "## I2." not in rubric and "## I9." not in rubric and "grader copy ends here" not in rubric
+    assert ctx.grader_rubric("spec") == ctx.rubric("spec")              # no marker: the whole rubric
+
+
+def test_review_plan_brings_the_security_pass_back_only_when_it_has_work():
+    from factory.stages.implement import review_plan
+    policy = Policy()
+    previous = {"diff_ref": {"head_sha": "abc"}, "findings": [
+        {"finding_id": "F-1", "pass": "1", "status": "open"}, {"finding_id": "F-2", "pass": "security", "status": "withdrawn"}]}
+    response = {"responses": []}
+    quiet = review_plan(policy, None, previous, response, {"app/x.py": ["x = 1"]}, security_available=True)
+    assert quiet["scope"] == "delta" and quiet["passes"] == 1 and quiet["security"] is False
+    standing = {**previous, "findings": [*previous["findings"], {"finding_id": "F-3", "pass": "security", "status": "upheld"}]}
+    assert review_plan(policy, None, standing, response, {}, security_available=True)["security"] is True
+    leaked = review_plan(policy, None, previous, response, {"app/x.py": ['token = "ghp_' + "a" * 36 + '"']}, security_available=True)
+    assert leaked["security"] is True and "secret scan" in leaked["security_why"]
+    assert review_plan(policy, None, standing, response, {}, security_available=False)["security"] is False
+    # first rounds: one pass up to the threshold, the configured passes above it or when the size is unknown
+    assert review_plan(policy, {"hand_written": 150}, None, None, None, True)["passes"] == 1
+    assert review_plan(policy, {"hand_written": 151}, None, None, None, True)["passes"] == 2
+    assert review_plan(policy, None, None, None, None, True) == {
+        "scope": "full", "previous_head": None, "hand_written_lines": None, "passes": 2, "security": True, "security_why": "first round"}

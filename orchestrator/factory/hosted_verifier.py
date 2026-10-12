@@ -185,6 +185,8 @@ class HostedVerifier:
             work_item_id=work_item_id, description=DESCRIPTION.format(head=head, spec_id=sid, round=round_no),
             rubric_md=None, max_iterations=1, budget_usd=cap, environment_id=environment_id,
             vault_ids=list(self.cfg.test_vault_ids), system_override=te.SYSTEM,
+            # The session only runs the harness once: a small model at low effort, not the implementer's (Config.verify_model).
+            model_override=getattr(self.cfg, "verify_model", None),
         )
         record.update(session_id=res.session_id, cost_usd=res.list_cost_usd, stop_reason=res.stop_reason)
         try:

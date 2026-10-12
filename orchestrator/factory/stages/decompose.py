@@ -9,7 +9,7 @@ from ..budget import reserve_budget
 from ..gates import Decision, GateKind
 from ..state import RunStage
 from . import RunContext
-from .common import hosted_planning_clause, make_ask_human, size_clause, open_gate_and_wait, persist_outputs, platform_skill, require_json, rubric_text, run_session, stamp_provenance
+from .common import auto_approval, hosted_planning_clause, make_ask_human, size_clause, open_gate_and_wait, persist_outputs, platform_skill, require_json, rubric_text, run_session, stamp_provenance
 
 DESCRIPTION = """Produce a decomposition of the business outcome in /mnt/session/uploads/outcome.json.
 {repo_clause} {skill_clause}
@@ -109,4 +109,5 @@ def gate_1(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[str, An
     return open_gate_and_wait(
         ctx, GateKind.DECOMPOSITION_REVIEW, shas, summary, assignees=[outcome["owner"]["handle"]],
         options=(Decision.APPROVE, Decision.REQUEST_CHANGES, Decision.REJECT), urls=artifact_urls,
+        auto_approve=auto_approval(ctx, "gate_1", [q["question"] for q in open_q]),
     )

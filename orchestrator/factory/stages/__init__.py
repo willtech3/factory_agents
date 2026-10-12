@@ -43,3 +43,14 @@ class RunContext:
 
     def rubric(self, name: str) -> str:
         return (self.cfg.rubrics_dir / f"{name}.md").read_text()
+
+    def grader_rubric(self, name: str) -> str:
+        """The rubric as the in-session outcome grader gets it: everything above the grader marker, where a rubric has
+        one. The items below it are computed by the orchestrator after the session; a grader that sees them re-runs the
+        whole test plan to anticipate them (~3 minutes a grader pass on live run 2, post-mortem issue 11)."""
+        text = self.rubric(name)
+        cut = text.find(GRADER_MARKER)
+        return text if cut == -1 else text[:cut].rstrip() + "\n"
+
+
+GRADER_MARKER = "<!-- grader copy ends here"

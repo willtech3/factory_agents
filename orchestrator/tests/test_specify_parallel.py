@@ -163,3 +163,31 @@ def test_revise_round_gives_a_writer_its_related_siblings_and_its_own_prior_draf
     assert {k for k in root_up if k.startswith("sibling_specs/")} == {"sibling_specs/spec_dunning-emails.json", "sibling_specs/spec_at-risk-admin.json",
                                                                        "sibling_specs/spec_suspension-timing.json"}
     assert json.loads(root_up["prior/spec.json"])["work_item_id"] == "wi-smart-retries"
+
+
+def test_a_re_judgement_gets_what_changed_and_re_scores_only_that(tmp_path, root, examples):
+    """Post-mortem issue 9: round-2 judges re-judged every criterion from scratch and cost more than round 1."""
+    ctx = _ctx(tmp_path, root, examples, Policy())
+    ctx.driver.gate = threading.Barrier(1)
+    ctx.driver.revise_first = {"spec_dunning-emails"}
+    specify.run_specify(ctx, examples["outcome"], examples["decomposition"])
+    judges = [c for c in ctx.driver.calls if c["agent_key"] == "spec_judge"]
+    rewritten = {c["work_item_id"].removeprefix("wi-") for c in ctx.driver.calls
+                 if c["agent_key"] == "spec_writer" and c["title"].endswith(" r2")}
+    assert not any(k.startswith("changes/") for k in judges[0]["uploads"]) and "re-judgement" not in judges[0]["description"]
+    changes = {k for k in judges[1]["uploads"] if k.startswith("changes/")}
+    assert changes == {f"changes/spec_{w}.diff" for w in rewritten} and "changes/spec_dunning-emails.diff" in changes
+    assert "re-judgement" in judges[1]["description"] and "Re-score only" in judges[1]["description"]
+    untouched = sorted(f"spec_{w.removeprefix('wi-')}" for w in (i["work_item_id"] for i in examples["decomposition"]["work_items"])
+                       if w.removeprefix("wi-") not in rewritten)
+    assert f"unchanged: {', '.join(untouched)}" in judges[1]["description"]
+    diff = judges[1]["uploads"]["changes/spec_dunning-emails.diff"].decode()
+    assert diff.startswith("--- previous/spec_dunning-emails.json") and '"revision": 2' in diff
+
+
+def test_spec_changes_lists_changed_and_unchanged_specs_and_skips_new_ones():
+    previous = {"spec_a": {"spec_id": "spec_a", "goal": "x", "_markdown": "old"}, "spec_b": {"spec_id": "spec_b", "goal": "y"}}
+    current = {"spec_a": {"spec_id": "spec_a", "goal": "x", "_markdown": "new prose only"},
+               "spec_b": {"spec_id": "spec_b", "goal": "z"}, "spec_c": {"spec_id": "spec_c"}}
+    changed, unchanged = specify.spec_changes(previous, current)
+    assert unchanged == ["spec_a"] and set(changed) == {"spec_b"} and '+  "goal": "z"' in changed["spec_b"]

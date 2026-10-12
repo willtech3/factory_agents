@@ -335,15 +335,58 @@ def gate_decision(ctx: RunContext, gate_id: str, kind: GateKind, work_item_id: s
     if d is not None:
         ctx.event("gate.decided", {"gate_id": gate_id, "kind": kind.value, "decision": d.decision.value,
                                    "comments": d.comments, "approved_subset": list(d.approved_subset), "decided_by": d.decided_by,
-                                   "artifact_shas": list(d.artifact_shas)}, stage=kind.value, actor="human",
+                                   "artifact_shas": list(d.artifact_shas)}, stage=kind.value,
+                  actor="policy" if d.decided_by == "policy" else "human",
                   work_item_id=work_item_id)
     return d
 
 
+AUTO_GATES = ("gate_1", "gate_2")
+
+
+def parse_auto_approve(raw: str | None) -> tuple[str, ...]:
+    """FACTORY_AUTO_APPROVE: a comma list of AUTO_GATES, or "all"; empty means every gate waits for a person."""
+    names = [n.strip().lower() for n in (raw or "").split(",") if n.strip()]
+    if names == ["all"]:
+        return AUTO_GATES
+    unknown = [n for n in names if n not in AUTO_GATES]
+    if unknown:
+        raise ValueError(f"FACTORY_AUTO_APPROVE names {unknown}; only {', '.join(AUTO_GATES)} or all can be pre-approved")
+    return tuple(dict.fromkeys(names))
+
+
+def auto_approval(ctx: RunContext, gate: str, blockers: list[str]) -> str | None:
+    """The comment a policy approval of `gate` records, or None when the run did not pre-approve it or something in it
+    needs a person (`blockers`)."""
+    if gate not in (getattr(ctx.policy, "auto_approve", ()) or ()) or blockers:
+        return None
+    return (f"Approved by policy: the owner pre-approved {gate} for this run (FACTORY_AUTO_APPROVE) and nothing in it "
+            f"needs a person. Defaults apply to the non-blocking questions. The gate's page and hashes are kept for audit.")
+
+
+def _record_policy_decision(ctx: RunContext, gate: Gate, comments: str) -> None:
+    """Write a policy approval to the first surface that records decisions, so it takes the same validated path (and
+    shows decided in the Console) as a person's."""
+    shas = tuple(a.sha256 for a in gate.artifacts)
+    for q in getattr(ctx.queue, "queues", [ctx.queue]):
+        if hasattr(q, "record_decision"):
+            q.record_decision(gate.gate_id, Decision.APPROVE.value, by="policy", comments=comments)
+            return
+        if hasattr(q, "decide"):
+            q.decide(GateDecision(gate_id=gate.gate_id, decision=Decision.APPROVE, decided_by="policy", comments=comments,
+                                  artifact_shas=shas))
+            return
+    raise RuntimeError(f"no gate surface can record a policy decision for {gate.gate_id}")
+
+
 def open_gate_and_wait(ctx: RunContext, kind: GateKind, artifacts: dict[str, str], summary: str,
                        assignees: list[str], options: tuple[Decision, ...], poll_seconds: float = 10.0,
-                       urls: dict[str, str] | None = None, work_item_id: str | None = None) -> GateDecision:
+                       urls: dict[str, str] | None = None, work_item_id: str | None = None,
+                       auto_approve: str | None = None) -> GateDecision:
+    """Open the gate and wait for its decision. `auto_approve` (from `auto_approval`) approves it at once, as "policy"."""
     gate = open_gate(ctx, kind, artifacts, summary, assignees, options, urls, work_item_id)
+    if auto_approve and Decision.APPROVE in options:
+        _record_policy_decision(ctx, gate, auto_approve)
     while True:
         d = gate_decision(ctx, gate.gate_id, kind, work_item_id)
         if d is not None:

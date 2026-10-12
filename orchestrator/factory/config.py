@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -84,6 +84,10 @@ class Config:
     test_profile_sha256: str | None = None    # FACTORY_TEST_PROFILE_SHA256: the approved recipe; the candidate's must hash to it
     test_vault_ids: tuple[str, ...] = ()      # FACTORY_TEST_VAULT_IDS: explicit test-only vaults; never the forge's vault
     managed_verify_budget_usd: float = 4.0    # FACTORY_MANAGED_VERIFY_BUDGET_USD: cap per hosted verification session
+    # FACTORY_VERIFY_MODEL ("id" or "id:effort"; "agent" keeps the implementer's own model): the model of the hosted
+    # verification session, whose only job is to run environment_runner.py once. It used to run on the implementer's
+    # Opus at xhigh effort, once per round, on the critical path.
+    verify_model: dict[str, str] | None = field(default_factory=lambda: dict(DEFAULT_VERIFY_MODEL))
     artifact_base_url: str = "http://127.0.0.1:8772"  # Factory Console, or an externally hosted artifact service
     pr_media: bool = True     # FACTORY_PR_MEDIA=off: no screenshots or demo in change request descriptions (pr_media.py)
 
@@ -96,6 +100,19 @@ class Config:
 
 
 PREVIEW_MODES = ("platform", "local", "managed")
+DEFAULT_VERIFY_MODEL = {"id": "claude-haiku-5-5", "effort": "low"}
+
+
+def parse_verify_model(raw: str | None) -> dict[str, str] | None:
+    """FACTORY_VERIFY_MODEL as a session model override: unset -> the default small model, "agent" -> None (the
+    implementer's own model and effort), "id" or "id:effort" -> that model (without an effort, the model's default)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return dict(DEFAULT_VERIFY_MODEL)
+    if raw.lower() == "agent":
+        return None
+    model, _, effort = raw.partition(":")
+    return {"id": model.strip(), **({"effort": effort.strip()} if effort.strip() else {})}
 
 
 def _float_env(name: str, default: float) -> float:
@@ -202,6 +219,7 @@ def load(lock_path: Path | None = None, dotenv_path: Path | None = None) -> Conf
         test_profile_sha256=(os.environ.get("FACTORY_TEST_PROFILE_SHA256") or "").strip().lower() or None,
         test_vault_ids=tuple(v.strip() for v in os.environ.get("FACTORY_TEST_VAULT_IDS", "").split(",") if v.strip()),
         managed_verify_budget_usd=_float_env("FACTORY_MANAGED_VERIFY_BUDGET_USD", 4.0),
+        verify_model=parse_verify_model(os.environ.get("FACTORY_VERIFY_MODEL")),
         artifact_base_url=os.environ.get("FACTORY_ARTIFACT_BASE_URL", "http://127.0.0.1:8772").rstrip("/"),
         pr_media=os.environ.get("FACTORY_PR_MEDIA", "on").lower() not in ("0", "off", "false", "no"),
         smoke_commands=tuple(c for c in os.environ.get("FACTORY_SMOKE_COMMANDS", "").split(";") if c.strip()),

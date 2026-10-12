@@ -1275,9 +1275,13 @@
     const securityReady = cfg.security_review_available === true;
     const security = el("input", { type: "checkbox", checked: securityReady, disabled: !securityReady, "aria-describedby": securityReady ? null : "security-unavailable" });
     const iterations = el("input", { type: "number", min: "1", max: "6", value: 3 });
+    // Off by default: Gates 1 and 2 still open (pages and hashes kept), and approve themselves only when nothing in them needs you.
+    const autoApprove = el("input", { type: "checkbox", checked: false, "aria-describedby": "auto-approve-help" });
     const advanced = el("details", null, el("summary", null, "Review settings"), el("div", {class:"tier"},
-      el("label", null, "Reviewer passes", passes), el("label", null, "Maximum review rounds", rounds),
+      el("label", null, "Reviewer passes on a large change", passes), el("label", null, "Maximum review rounds", rounds),
       el("label", null, "Grader iterations", iterations),
+      el("div", null, el("label", {class:"check"}, autoApprove, "Pre-approve Gates 1 and 2"),
+        el("p", { class: "explain m-0 mt-1 fs-sm", id: "auto-approve-help" }, "A gate approves itself only when it has no blocking question and, at Gate 2, the judge passed every spec. Anything else still waits for you.")),
       el("div", null, el("label", {class:"check"}, security, "Security review"),
         securityReady ? null : el("p", { class: "explain m-0 mt-1 fs-sm", id: "security-unavailable" }, "Unavailable: no security reviewer agent is deployed in this workspace, so no security pass runs. The general reviewers still run."))));
     const guardsCard = card("3. Budget and review", el("div", {class:"stack"}, guards, advanced));
@@ -1295,7 +1299,8 @@
     };
     [budget, passes, security, repoUrl, newName].forEach(i => i.addEventListener("input", syncSummary));
     const settings = () => ({ budget_usd: Number(budget.value) || undefined, preview: preview.value, reviewer_passes: Number(passes.value) || undefined, review_rounds: Number(rounds.value) || undefined,
-      ...(securityReady ? { security_review: security.checked } : {}), grader_iterations: Number(iterations.value) || undefined });
+      ...(securityReady ? { security_review: security.checked } : {}), grader_iterations: Number(iterations.value) || undefined,
+      ...(autoApprove.checked ? { auto_approve: "gate_1,gate_2" } : {}) });
     async function saveRepo() {
       if (!outcome) return;
       const repo = (outcome.target_repositories || [{}])[0] || {};

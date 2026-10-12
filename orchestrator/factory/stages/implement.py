@@ -135,6 +135,16 @@ This is review round {round}.{second_round}
 {preview_clause}
 Write findings.json to /mnt/session/outputs/ and validate it. You never edit source files."""
 
+DELTA_REVIEW_CLAUSE = """ This is a follow-up round. First judge every finding in /mnt/session/uploads/previous_findings.json
+against its refutation condition using review_response.json, and record each as upheld or withdrawn under its unchanged id.
+Then review /mnt/session/uploads/delta.patch: the commits since the head the previous round reviewed ({previous_head}..{head_sha}).
+diff.patch is the whole change, for context only: raise a new finding only on lines the delta changes or on behaviour the delta
+breaks. Run the test plan once at this head; re-run a previous reproduction only to judge its own finding."""
+
+NO_NEW_COMMITS_CLAUSE = """ This is a follow-up round and the implementer pushed no new commits: every previous finding was
+answered in review_response.json without a code change. Judge each finding in /mnt/session/uploads/previous_findings.json against
+its refutation condition and record it upheld or withdrawn under its unchanged id; do not review the unchanged diff again."""
+
 PREVIEW_CLAUSE = """The platform has deployed this branch to a preview environment; its URL and pipeline are in
 /mnt/session/uploads/preview.json. Run every test_plan.e2e entry with target "preview" against that URL (export
 BASE_URL from preview.json) and record each command's exit code and output. The orchestrator re-runs them itself."""
@@ -880,7 +890,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                                                          spec_md_clause=" (spec.md is the readable form)" if spec_md else "",
                                                          response_clause=response_clause, preview_clause=preview_clause,
                                                          guidance_clause=GUIDANCE_CLAUSE if guidance else ""),
-                rubric_md=ctx.rubric("implementation"), max_iterations=ctx.policy.outcome_max_iterations,
+                rubric_md=ctx.grader_rubric("implementation"), max_iterations=ctx.policy.outcome_max_iterations,
                 budget_usd=ctx.policy.stage_budget_usd["implement"],
                 repository=mount(base_branch if round_no == 1 else branch),
             )
@@ -945,12 +955,13 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             pytest_runs = passed_test_ids(cmd_results)
             passing_tests = (pytest_runs[0] if pytest_runs else []) if collected is not None else None
             tests_known = collected
+        measured = measure_size(repo, base_sha, head_sha, spec)
         det = [setup] + extra_det + checks.run_all_for_merge(
             spec=spec, changed_files=diff["changed"], deleted_files=diff["deleted"], existing_test_files=diff["existing_tests"],
             added_lines_by_file=diff["added_lines"], implementation_report=report, passing_tests=passing_tests,
             tests_that_exist=tests_known, command_results=cmd_results, manifest_path=manifest_path,
             schema_dir=ctx.cfg.schemas_dir, e2e_results=e2e_results, require_test_evidence=managed,
-            size=measure_size(repo, base_sha, head_sha, spec), size_budget_lines=ctx.policy.size_budget_lines,
+            size=measured, size_budget_lines=ctx.policy.size_budget_lines,
             # only exact test paths in the approved spec may be updated; every other existing test stays protected
             named_test_files=checks.named_test_paths(spec["allowed_paths"]), removed_lines_by_file=diff.get("removed_lines"),
         )
@@ -978,9 +989,17 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             break
         det_only_response = False
 
-        # ---- fresh-context adversarial review (N independent passes plus one security pass, merged)
-        pass_ids = list(range(1, ctx.policy.reviewer_passes + 1))
-        with_security = bool(ctx.policy.security_review and "security_reviewer" in ctx.cfg.agents)
+        # ---- fresh-context adversarial review, shaped by the change (`review_plan`): general passes plus a security pass, merged
+        security_available = "security_reviewer" in ctx.cfg.agents
+        previous_head = ((findings or {}).get("diff_ref") or {}).get("head_sha") if findings and response else None
+        delta = delta_since(verifier, repo, previous_head, head_sha) if previous_head else None
+        plan = review_plan(ctx.policy, measured, findings, response, (delta or {}).get("added_lines"), security_available)
+        if plan["scope"] == "delta" and delta is None and previous_head != head_sha:
+            # The head the previous round reviewed is not in this branch's history: read the whole change again.
+            plan = {**plan, "scope": "full", "security": bool(ctx.policy.security_review and security_available),
+                    "security_why": "the previous head is gone; full review"}
+        pass_ids = list(range(1, plan["passes"] + 1))
+        with_security = plan["security"]
         # Passes persisted before the orchestrator died or paused are reused, not paid for again.
         review_bindings = {i: review_evidence_prefix(ctx, sid, round_no, f"p{i}", base_sha, head_sha) for i in pass_ids}
         security_prefix, saved_security = review_evidence_prefix(ctx, sid, round_no, "sec", base_sha, head_sha)
@@ -989,7 +1008,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         to_run = [i for i in pass_ids if reused.get(i) is None]
         run_sec = with_security and reused_sec is None
         if to_run or run_sec:
-            enter_item_stage(ctx, wid, sid, WorkItemStage.REVIEWING, review_round=round_no)
+            enter_item_stage(ctx, wid, sid, WorkItemStage.REVIEWING, review_round=round_no, review_plan=plan)
             # every session of the round, before the first one starts: the general passes and the security pass together
             if to_run:
                 reserve_budget(ctx, "review", len(to_run), extra={"security_review": 1} if run_sec else None)
@@ -1010,8 +1029,14 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         if findings and response:
             rev_uploads["previous_findings.json"] = json.dumps(findings, indent=2).encode()
             rev_uploads["review_response.json"] = json.dumps(response, indent=2).encode()
-            second = (" Judge each previous finding against your refutation condition using review_response.json "
-                      "(upheld/withdrawn), then review the new hunks.")
+            if plan["scope"] == "delta" and delta is not None and delta["patch"].strip():
+                rev_uploads["delta.patch"] = delta["patch"].encode()
+                second = DELTA_REVIEW_CLAUSE.format(previous_head=previous_head, head_sha=head_sha)
+            elif plan["scope"] == "delta":
+                second = NO_NEW_COMMITS_CLAUSE
+            else:
+                second = (" Judge each previous finding against your refutation condition using review_response.json "
+                          "(upheld/withdrawn), then review the new hunks.")
 
         def one_pass(i: int) -> dict[str, Any]:
             if reused.get(i) is not None:
@@ -1072,7 +1097,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                                json.dumps(findings, indent=2).encode())
         record_verification_findings(ctx, sid, round_no, findings["findings"])
         ctx.event("review.findings", {"round": round_no, "count": len(findings["findings"]),
-                                      "blocking": sum(f["severity"] == "blocking" for f in findings["findings"])},
+                                      "blocking": sum(f["severity"] == "blocking" for f in findings["findings"]),
+                                      "passes": len(pass_ids), "security_pass": with_security, "scope": plan["scope"]},
                   work_item_id=wid, spec_id=sid, actor="agent")
         standing = standing_findings(findings["findings"])
         if not standing and all(d.passed for d in det):
@@ -1417,6 +1443,46 @@ def standing_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if f["severity"] in ("blocking", "major") or (f["category"] in ("security", "concurrency", "data_integrity") and reproduced):
             out.append(f)
     return out
+
+
+def review_plan(policy: Any, size_measured: dict[str, Any] | None, previous: dict[str, Any] | None,
+                response: dict[str, Any] | None, delta_added_lines: dict[str, list[str]] | None,
+                security_available: bool) -> dict[str, Any]:
+    """The shape of one review round: how many general passes, whether the security pass runs, and what they read.
+
+    A first round reads the whole diff: one general pass when the change is at most `review_single_pass_lines`
+    hand-written lines, `reviewer_passes` above that. A later round (the implementer answered `previous`) reads the delta
+    since the head the previous round reviewed, with `reviewer_passes_followup` passes that also adjudicate every
+    previous finding; the security pass comes back only when one of its findings still stands or the delta's secret scan
+    flags a line. Unadjudicated findings keep the implementer's disposition (`merge_findings`)."""
+    security_on = bool(security_available and getattr(policy, "security_review", True))
+    previous_head = ((previous or {}).get("diff_ref") or {}).get("head_sha") if previous and response else None
+    if previous_head:
+        standing_security = [f["finding_id"] for f in previous.get("findings", [])
+                             if f.get("pass") == "security" and f.get("status") in ("open", "upheld")]
+        scan = security.secret_scan(delta_added_lines or {})
+        flagged = bool(scan["hits"] or scan["suspects"])
+        why = ("previous security findings stand: " + ", ".join(standing_security) if standing_security
+               else "the delta's secret scan flagged a line" if flagged else "no security finding stands and the delta is clean")
+        return {"scope": "delta", "previous_head": previous_head,
+                "passes": max(1, int(getattr(policy, "reviewer_passes_followup", 1))),
+                "security": security_on and bool(standing_security or flagged), "security_why": why}
+    hand = (size_measured or {}).get("hand_written")
+    small = hand is not None and hand <= int(getattr(policy, "review_single_pass_lines", 0) or 0)
+    return {"scope": "full", "previous_head": None, "hand_written_lines": hand,
+            "passes": 1 if small else max(1, int(policy.reviewer_passes)),
+            "security": security_on, "security_why": "first round" if security_on else "off or not deployed"}
+
+
+def delta_since(verifier: LocalVerifier, repo: Path, previous_head: str, head_sha: str) -> dict[str, Any] | None:
+    """What changed between the head the previous round reviewed and this one, or None when git cannot say (the previous
+    head is gone from the branch, which a review of the whole diff then covers)."""
+    if previous_head == head_sha:
+        return None
+    try:
+        return verifier.analyse(repo, previous_head, head_sha)
+    except subprocess.CalledProcessError:
+        return None
 
 
 def _sev(f: dict[str, Any]) -> int:

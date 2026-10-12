@@ -131,6 +131,7 @@ def _policy(outcome: dict, design_only: bool, budget_usd: float | None = None):
     hand-written line budget per size (`size.py`)."""
     import os
     from .size import parse_budget
+    from .stages.common import parse_auto_approve
     from .state import Policy
     scale = float(os.environ.get("FACTORY_BUDGET_SCALE", "1") or 1)
     base = Policy()
@@ -140,6 +141,9 @@ def _policy(outcome: dict, design_only: bool, budget_usd: float | None = None):
                   stage_budget_usd={k: max(round(v * scale, 2), base.stage_budget_floor_usd.get(k, 0.0))
                                     for k, v in base.stage_budget_usd.items()},
                   reviewer_passes=knob("FACTORY_REVIEWER_PASSES", base.reviewer_passes),
+                  auto_approve=parse_auto_approve(os.environ.get("FACTORY_AUTO_APPROVE")),
+                  review_single_pass_lines=knob("FACTORY_REVIEW_SINGLE_PASS_LINES", base.review_single_pass_lines),
+                  reviewer_passes_followup=knob("FACTORY_REVIEWER_PASSES_FOLLOWUP", base.reviewer_passes_followup),
                   security_review=os.environ.get("FACTORY_SECURITY_REVIEW", "1").lower() not in ("0", "false", "no", "off"),
                   review_max_rounds=knob("FACTORY_REVIEW_MAX_ROUNDS", base.review_max_rounds),
                   parallel_implementations=knob("FACTORY_PARALLEL_IMPLEMENTATIONS", base.parallel_implementations),
@@ -583,6 +587,20 @@ def replay(run_id: str):
     st = RunStore(cfg.runs_dir).state(run_id)
     typer.echo(json.dumps({"stage": st.stage.value, "work_items": {k: v.stage.value for k, v in st.work_items.items()},
                            "cost": st.list_cost_usd, "events": st.last_seq + 1}, indent=2))
+
+
+@app.command()
+def timing(run_id: str, as_json: bool = typer.Option(False, "--json", help="The full report as JSON")):
+    """Where the run's wall clock went: waiting on a person, agents (by stage), the controller, stopped."""
+    from . import timing as timing_mod
+
+    cfg = cfgmod.load()
+    rep = timing_mod.report(RunStore(cfg.runs_dir).events(run_id))
+    if as_json:
+        typer.echo(json.dumps(rep, indent=2))
+        return
+    for line in timing_mod.render(rep):
+        typer.echo(line)
 
 
 @app.command()
