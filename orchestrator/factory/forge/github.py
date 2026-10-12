@@ -6,9 +6,9 @@ multi-file commits use the Git Data API (blobs, trees, commits, refs) so one com
 file; pipelines are GitHub Actions workflow runs; preview and dev URLs come from the Deployments
 API (`environment_url` on the latest deployment status).
 
-Status: written against the documented REST API (2022-11-28), exercised only through a fake
-transport in tests. Everything under "pipelines and deployments" is UNVERIFIED live; field names
-are hypotheses until docs/07-personal-e2e-setup.md has been run once. Nothing here deploys.
+Status: written against the documented REST API (2022-11-28). Repositories, branches, commits and pull requests
+have run live (docs/postmortems/2026-10-10-first-live-runs.md); everything under "pipelines and deployments" is
+UNVERIFIED live, its field names hypotheses until the platform preview mode runs once. Nothing here deploys.
 """
 from __future__ import annotations
 
@@ -80,12 +80,46 @@ class GitHubForge:
                 "private": d.get("private", private), "id": d.get("id")}
 
     # ---- branches & commits (Git Data API)
-    def _ref_sha(self, ref: str) -> str:
+    def ref_sha(self, ref: str) -> str:
         return self._get(f"/git/ref/heads/{ref}")["object"]["sha"]
+
+    def create_branch(self, branch: str, sha: str) -> bool:
+        """Create `branch` at `sha`. False when it already exists (GitHub answers 422)."""
+        r = self.http.post(self._r("/git/refs"), json={"ref": "refs/heads/" + branch, "sha": sha})
+        if r.status_code == 422:
+            return False
+        r.raise_for_status()
+        return True
+
+    def repository_info(self) -> dict[str, Any]:
+        """The repository record: default_branch, archived, disabled and the rest of GET /repos/:owner/:repo."""
+        return self._get("")
+
+    def commit_sha(self, ref: str) -> str:
+        """The commit a branch, tag or sha names."""
+        return self._get("/commits/" + quote(ref, safe=""))["sha"]
+
+    def download_archive(self, commit: str, max_bytes: int) -> bytes:
+        """The tarball of `commit`, streamed and refused (ValueError) as soon as it passes `max_bytes`."""
+        data = bytearray()
+        with self.http.stream("GET", self._r("/tarball/" + commit)) as response:
+            response.raise_for_status()
+            for part in response.iter_bytes():
+                data.extend(part)
+                if len(data) > max_bytes:
+                    raise ValueError("Repository archive exceeds the onboarding size limit")
+        return bytes(data)
+
+    def read_file(self, path: str, ref: str, max_bytes: int) -> bytes:
+        """A file's bytes at `ref` (Contents API), refused (ValueError) when it is not base64 content within `max_bytes`."""
+        obj = self._get("/contents/" + quote(path, safe="/"), ref=ref)
+        if obj.get("encoding") != "base64" or obj.get("size", 0) > max_bytes:
+            raise ValueError("Unsupported setup file")
+        return base64.b64decode(obj["content"])
 
     def commit_files(self, branch: str, message: str, files: dict[str, bytes]) -> str:
         """One commit with every file (create or update) on top of the branch head. Returns the new sha."""
-        head = self._ref_sha(branch)
+        head = self.ref_sha(branch)
         base_tree = self._get(f"/git/commits/{head}")["tree"]["sha"]
         entries = []
         for path, content in files.items():

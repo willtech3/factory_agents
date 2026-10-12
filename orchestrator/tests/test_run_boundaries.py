@@ -8,11 +8,11 @@ import json
 import pytest
 import test_gate_recovery as tgr
 from conftest import make_config
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from factory import cli, runner
+from factory.errors import Refusal
 from factory.approvals import MAX_GUIDANCE_CHARS, approval_guidance, presented_specs, subset_problems
 from factory.gates import InMemoryQueue, LogNotifier
 from factory.onboarding import AppOnboarding
@@ -287,7 +287,7 @@ def test_the_cli_binds_the_same_way_and_refuses_an_explicit_local_preview(tmp_pa
     with pytest.raises(cli.typer.Exit):
         cli._bind_onboarded_app(cfg, outcome, explicit_preview="local")
     assert cli._bind_onboarded_app(cfg, {"target_repositories": [{"url": "https://github.com/x/y"}]}, None) is cfg
-    monkeypatch.setattr(AppOnboarding, "binding_for", lambda self, target, app_id=None: (_ for _ in ()).throw(HTTPException(409, "several apps")))
+    monkeypatch.setattr(AppOnboarding, "binding_for", lambda self, target, app_id=None: (_ for _ in ()).throw(Refusal(409, "several apps")))
     with pytest.raises(cli.typer.Exit):
         cli._bind_onboarded_app(cfg, outcome, explicit_preview=None)
 

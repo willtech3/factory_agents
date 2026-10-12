@@ -36,7 +36,7 @@ from ..forge import PIPELINE_TERMINAL
 from ..gates import Decision, Gate, GateKind
 from ..state import RunEvent, WorkItemStage
 from . import RunContext
-from .common import open_gate
+from .common import hosted_run, open_gate
 
 
 class PipelineSource(Protocol):
@@ -151,13 +151,9 @@ def apply_deploy_decision(ctx: RunContext, spec: dict[str, Any], obs: DeployObse
 
 
 def hosted_only(ctx: RunContext) -> bool:
-    # A run can switch to hosted verification during Gate 2 recovery. Watchers
-    # start separately and may use the machine's default preview mode, so retain
-    # that execution boundary from both creation and recovery events.
-    return ctx.cfg.preview_mode == "managed" or any(
-        (ev.kind == "run.created" and ev.payload.get("policy", {}).get("preview_mode") == "managed")
-        or (ev.kind == "run.resumed" and ev.payload.get("preview_mode") == "managed")
-        for ev in ctx.store.events(ctx.run_id))
+    """A run can switch to hosted verification during Gate 2 recovery, and a watcher starts separately with the machine's
+    default preview mode, so the boundary comes from the run's own events as well as this process's configuration."""
+    return ctx.cfg.preview_mode == "managed" or hosted_run(ctx.store.events(ctx.run_id))
 
 
 def managed_dev_blocked(entries):

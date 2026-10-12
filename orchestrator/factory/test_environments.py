@@ -311,6 +311,29 @@ def explain(report: dict, *, bound: bool, passed: bool, browser: bool, checks: l
     return text
 
 
+BINDING_KEYS = ("head_sha", "profile_sha256", "source_sha256")   # what a harness result must echo to count at all
+
+
+def harness_report(outputs: dict[str, bytes], descriptor: dict, keys: tuple[str, ...] = BINDING_KEYS) -> tuple[dict, bool]:
+    """The harness's environment-result.json from a session's outputs ({} when missing or not an object), and whether it
+    echoes `descriptor` on `keys`: an unbound result is evidence of nothing."""
+    try:
+        report = json.loads(outputs.get("environment-result.json", b"{}"))
+    except ValueError:
+        report = {}
+    report = report if isinstance(report, dict) else {}
+    return report, all(report.get(k) == descriptor[k] for k in keys)
+
+
+def archive_session(client, session_id: str) -> dict:
+    """Archive a finished hosted session. Returns the record fields saying whether it worked; cleanup is never fatal."""
+    try:
+        client.beta.sessions.archive(session_id, timeout=60)
+        return {"session_archived": True}
+    except Exception:  # noqa: BLE001
+        return {"session_archived": False, "cleanup_warning": "Session archival needs retry."}
+
+
 def run_hosted(cfg, repo: Path, output_dir: Path, *, profile_relative: str = PROFILE_PATH,
                revision: str = "HEAD", budget_usd: float, vault_ids: tuple[str, ...] = (), client=None, on_started=None, on_finished=None,
                app: dict | None = None) -> dict:
@@ -356,13 +379,7 @@ def run_hosted(cfg, repo: Path, output_dir: Path, *, profile_relative: str = PRO
                 continue
             (output_dir / name).write_bytes(content)
             saved.append(name)
-        try:
-            report = json.loads(result.outputs.get("environment-result.json", b"{}"))
-        except ValueError:
-            report = {}
-        if not isinstance(report, dict):
-            report = {}
-        bound = all(report.get(k) == descriptor[k] for k in ("head_sha", "profile_sha256", "source_sha256"))
+        report, bound = harness_report(result.outputs, descriptor)
         from .sandbox_tools.environment_runner import check_evidence
         media_ok, media_detail = check_evidence(profile, output_dir)
         phases = {p.get("phase"): p.get("status") for p in report.get("phases", []) if isinstance(p, dict)}
@@ -388,12 +405,7 @@ def run_hosted(cfg, repo: Path, output_dir: Path, *, profile_relative: str = PRO
             response["diagnosis"] = diagnosis
         if not passed and response["status"] == "passed":
             response["status"] = "blocked"
-        try:
-            client.beta.sessions.archive(result.session_id, timeout=60)
-            response["session_archived"] = True
-        except Exception:
-            response["session_archived"] = False
-            response["cleanup_warning"] = "Session archival needs retry."
+        response.update(archive_session(client, result.session_id))
         (output_dir / "controller-result.json").write_text(json.dumps(response, indent=2))
         return response
     finally:

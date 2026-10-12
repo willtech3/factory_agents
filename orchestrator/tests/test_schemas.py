@@ -141,3 +141,9 @@ def test_review_finding_may_carry_the_environmental_flag(schemas_dir, examples):
     assert checks.schema_valid(doc, schemas_dir / "review_findings.schema.json", schemas_dir).passed
     doc["findings"][0]["environmental"] = "yes"
     assert not checks.schema_valid(doc, schemas_dir / "review_findings.schema.json", schemas_dir).passed
+
+
+def test_every_agent_definition_names_the_model_its_provenance_records():
+    """Stages stamp provenance with the model read from agents/<key>.md; a definition it cannot read would fail mid-run."""
+    from factory.config import AGENT_FILES, agent_model
+    assert all(agent_model(key).startswith("claude-") for key in AGENT_FILES)

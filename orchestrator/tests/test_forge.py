@@ -267,6 +267,32 @@ def test_dotenv_loader_and_design_only_gaps(monkeypatch, tmp_path):
     assert pc["ok"] is False and "ANTHROPIC_API_KEY" in pc["error"]
 
 
+def test_github_reads_what_onboarding_needs_and_bounds_it():
+    """App onboarding fetches a pinned archive, reads setup files and opens its branch through these, never the client's
+    internals; each refuses what it cannot vouch for."""
+    import base64
+    routes = {
+        "GET /repos/will/ledgerline": {"default_branch": "main", "archived": False},
+        "GET /repos/will/ledgerline/commits/release/1.0": {"sha": "c" * 40},
+        "GET /repos/will/ledgerline/tarball/" + "c" * 40: "x" * 64,
+        "GET /repos/will/ledgerline/contents/ops/recipe.json": lambda b, params: (
+            {"encoding": "base64", "size": 2, "content": base64.b64encode(b"{}").decode()} if params == {"ref": "main"} else {}),
+        "GET /repos/will/ledgerline/contents/big.json": {"encoding": "base64", "size": 10**6, "content": ""},
+        "POST /repos/will/ledgerline/git/refs": Seq([(201, {"ref": "refs/heads/b"}), (422, {"message": "Reference already exists"})]),
+    }
+    f, rec = _forge(routes)
+    assert f.repository_info()["default_branch"] == "main"
+    assert f.commit_sha("release/1.0") == "c" * 40
+    assert "/repos/will/ledgerline/commits/release%2F1.0" in rec.raw_paths          # a ref is one path segment
+    assert f.download_archive("c" * 40, max_bytes=64) == b"x" * 64
+    with pytest.raises(ValueError, match="size limit"):
+        f.download_archive("c" * 40, max_bytes=63)
+    assert f.read_file("ops/recipe.json", "main", max_bytes=1024) == b"{}"
+    with pytest.raises(ValueError):
+        f.read_file("big.json", "main", max_bytes=1024)
+    assert f.create_branch("b", "c" * 40) is True and f.create_branch("b", "c" * 40) is False   # exists: reused
+
+
 def test_github_creates_missing_repository_and_seeds_workflow(root):
     from factory.forge import ensure_repository, repo_from_url
     assert repo_from_url("https://github.com/will/factory-sample-app.git") == "will/factory-sample-app"

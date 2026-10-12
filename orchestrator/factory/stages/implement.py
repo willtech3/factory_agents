@@ -226,8 +226,7 @@ from the recipe's commands; your sandbox may lack the recipe's network allowlist
 not exercise not_assessed with that reason, never met."""
 
 
-def _git(repo_dir: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=repo_dir, check=True, capture_output=True, text=True).stdout
+from .common import git as _git  # noqa: E402  one git helper for every stage
 
 
 def orchestrator_bin() -> Path | None:
@@ -328,7 +327,7 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-SETUP_CHECK = "verification_setup"
+SETUP_CHECK = checks.SETUP_CHECK
 SETUP_TIMEOUT = 900
 ENVIRONMENTAL_MARKERS = ("address already in use", "eaddrinuse")
 
@@ -641,6 +640,8 @@ def _install_plan(repo: Path, setup_cmd: str | None, python: Path, uv: str | Non
             "description": f"dependencies from pyproject ({', '.join(['project'] + extras)}): {' '.join(deps)}"}
 
 
+from ..config import agent_model  # noqa: E402
+
 # One definition each, shared with the hosted harness that runs the same collection and reads the same JUnit reports.
 from ..sandbox_tools.environment_runner import (  # noqa: E402
     NODE_ID_PLUGIN, collected_node_ids, parse_junit, write_node_id_plugin)
@@ -855,11 +856,11 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 ctx.event("work_item.stage", {"stage": WorkItemStage.BLOCKED.value}, work_item_id=wid, spec_id=sid)
                 return {"result": "escalate", "reason": res.outputs["blocked.md"].decode(errors="replace")}
             report = require_json(res, "implementation_report.json")
-            stamp_provenance(report, ctx, res, "Implementer", "claude-opus-5-5")
+            stamp_provenance(report, ctx, res, "Implementer", agent_model("implementer"))
             res.outputs["implementation_report.json"] = json.dumps(report, indent=2).encode()
             if findings:
                 response = require_json(res, "review_response.json")
-                stamp_provenance(response, ctx, res, "Implementer", "claude-opus-5-5")
+                stamp_provenance(response, ctx, res, "Implementer", agent_model("implementer"))
                 res.outputs["review_response.json"] = json.dumps(response, indent=2).encode()
             persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-", work_item_id=wid, spec_id=sid)
             journeys = latest_journeys(ctx, sid)
@@ -993,7 +994,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 metadata={"pass": str(i)}, repository=mount(branch),
             )
             f = require_json(r, "findings.json")
-            stamp_provenance(f, ctx, r, "Adversarial reviewer", "claude-opus-5-5")
+            stamp_provenance(f, ctx, r, "Adversarial reviewer", agent_model("reviewer"))
             r.outputs["findings.json"] = json.dumps(f, indent=2).encode()
             persist_outputs(ctx, "review", r, prefix=review_bindings[i][0], work_item_id=wid, spec_id=sid)
             return tag_pass(f, str(i))
@@ -1021,7 +1022,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 metadata={"pass": "security"}, repository=mount(branch),
             )
             f = require_json(r, "findings.json")
-            stamp_provenance(f, ctx, r, "Security reviewer", "claude-fable-5-1")
+            stamp_provenance(f, ctx, r, "Security reviewer", agent_model("security_reviewer"))
             r.outputs["findings.json"] = json.dumps(f, indent=2).encode()
             persist_outputs(ctx, "review", r, prefix=security_prefix, work_item_id=wid, spec_id=sid)
             return tag_pass(f, "security")
@@ -1094,7 +1095,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         verdict["result"] = "another_round"
         verdict["summary_for_human"] = "Overridden: deterministic checks failed. " + verdict["summary_for_human"]
     verdict["deterministic_checks"] = [d.to_dict() for d in det]
-    stamp_provenance(verdict, ctx, res, "Merge judge", "claude-opus-5-5")
+    stamp_provenance(verdict, ctx, res, "Merge judge", agent_model("merge_judge"))
     verdict["_input_hashes"] = input_hashes
     verdict["_head_sha"], verdict["_branch"], verdict["_base_sha"] = head_sha, branch, base_sha
     res.outputs["merge_readiness.json"] = json.dumps(verdict, indent=2).encode()
@@ -1134,13 +1135,8 @@ def record_verification_findings(ctx: RunContext, sid: str, round_no: int, findi
 def _require_recorded_preview_mode(ctx: RunContext) -> None:
     """A run started in managed mode never continues with controller-side execution: a resume without the managed
     configuration would otherwise build a local environment and run the repository on this host."""
-    recorded = None
-    for ev in ctx.store.events(ctx.run_id):
-        if ev.kind == "run.created":
-            recorded = (ev.payload.get("policy") or {}).get("preview_mode", recorded)
-        elif ev.kind == "run.resumed" and ev.payload.get("preview_mode"):
-            recorded = ev.payload["preview_mode"]
-    if recorded == "managed" and ctx.cfg.preview_mode != "managed":
+    from .common import hosted_run
+    if hosted_run(ctx.store.events(ctx.run_id)) and ctx.cfg.preview_mode != "managed":
         raise RuntimeError("this run verifies candidates in a hosted sandbox (preview mode managed); continue it with "
                            "FACTORY_PREVIEW=managed and the same app binding, never with local or platform execution")
 

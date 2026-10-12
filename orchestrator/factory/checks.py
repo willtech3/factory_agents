@@ -18,6 +18,9 @@ except ImportError:  # pragma: no cover
     jsonschema = None
 
 
+SETUP_CHECK = "verification_setup"        # the environment a candidate is verified in could (not) be built: local or hosted
+
+
 @dataclass
 class CheckResult:
     check: str

@@ -19,7 +19,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from fastapi import HTTPException
+from .errors import Refusal
 
 from .test_environments import app_labels, factory_environments, label_environment
 
@@ -149,7 +149,7 @@ class AppEnvironments:
     def _fresh(self) -> dict:
         current = self.snapshot(refresh=True)
         if current["error"]:
-            raise HTTPException(502 if current["configured"] else 409, current["error"])
+            raise Refusal(502 if current["configured"] else 409, current["error"])
         return current
 
     def cleanup(self, environment_ids: list[str]) -> dict:
@@ -157,7 +157,7 @@ class AppEnvironments:
         allowed = {e["id"] for e in self._fresh()["retire"]}
         wanted = [i for i in dict.fromkeys(environment_ids) if i in allowed]
         if not wanted:
-            raise HTTPException(409, "None of those environments is a leftover any more. The list has been refreshed.")
+            raise Refusal(409, "None of those environments is a leftover any more. The list has been refreshed.")
         archived, failed = self._archive(wanted)
         return {"archived": archived, "failed": failed, "skipped": [i for i in environment_ids if i not in wanted],
                 "environments": self.snapshot(refresh=True)}
@@ -167,14 +167,14 @@ class AppEnvironments:
         the next hosted session for it creates a fresh definition."""
         env = next((e for e in self._fresh()["environments"] if e["id"] == environment_id), None)
         if env is None or env["purpose"] != "test":
-            raise HTTPException(404, "Not a Factory app environment in this workspace")
+            raise Refusal(404, "Not a Factory app environment in this workspace")
         if env["in_use"]:
-            raise HTTPException(409, "A session is running in this environment. Archive it once that session ends.")
+            raise Refusal(409, "A session is running in this environment. Archive it once that session ends.")
         if env["current"]:
-            raise HTTPException(409, "An app on this Console is verified in this environment. It stays while that app uses it.")
+            raise Refusal(409, "An app on this Console is verified in this environment. It stays while that app uses it.")
         archived, failed = self._archive([environment_id])
         if failed:
-            raise HTTPException(502, f"The environment could not be archived ({failed[0]['error']}).")
+            raise Refusal(502, f"The environment could not be archived ({failed[0]['error']}).")
         return {"archived": archived, "environments": self.snapshot(refresh=True)}
 
     def settle(self, app: dict, environment_id: str) -> list[str]:

@@ -89,5 +89,5 @@ def test_existing_repository_binding_does_not_seed_default_branch(root,tmp_path,
 
 @pytest.mark.parametrize('url',['https://evil.test/team/repo','https://github.com/team/repo/pulls','https://user:secret@github.com/team/repo','https://github.com/../repo'])
 def test_repository_target_rejects_foreign_hosts_and_non_repository_urls(root,tmp_path,url):
-    from fastapi import HTTPException
-    with pytest.raises(HTTPException):repositories.repository_name(url,make_config(root,tmp_path))
+    from factory.errors import Refusal
+    with pytest.raises(Refusal):repositories.repository_name(url,make_config(root,tmp_path))
