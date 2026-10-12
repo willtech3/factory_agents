@@ -207,8 +207,8 @@ def test_verifier_runs_spec_commands_under_a_modern_shell(tmp_path):
     if verification_shell(work)[0] is None:
         pytest.skip("no bash 4+ on this host")
     v = LocalVerifier("unused", work)
-    v.env_dir.symlink_to(Path(sys.executable).parent.parent, target_is_directory=True)      # a prepared per-run environment
-    v.setup = CheckResult(SETUP_CHECK, True, "the test's own interpreter stands in for the per-run environment")
+    (v.env_dir / "bin").mkdir(parents=True)                                     # a prepared (empty) per-run environment
+    v.setup = CheckResult(SETUP_CHECK, True, "an empty per-run environment: the commands need only the shell")
     versions = """echo "outer=${BASH_VERSINFO:-0}"; sh -c 'echo "nested=${BASH_VERSINFO:-0}"'"""
     construct = """sh -c '
 set -eu
