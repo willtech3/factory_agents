@@ -21,7 +21,6 @@ from factory.stages.implement import SETUP_CHECK, LocalVerifier, preview_info, r
 from factory.state import WORK_ITEM_TRANSITIONS, Policy, WorkItemStage
 from factory.store import RunStore
 from support.repos import git, seeded_remote  # noqa: F401
-from support.repos import seeded_remote as _remote  # noqa: F401  (the old name other branches use)
 
 HTTP_MANIFEST = {"service": "stdlib-http", "runtime": {"kind": "python", "entrypoint": "python -m http.server 8000 --bind 127.0.0.1", "port": 8000},
                  "health": {"path": "/"}, "env": []}
@@ -253,7 +252,7 @@ def test_resume_on_changed_head_rechecks_preserves_proof_and_does_not_reuse_old_
 
 def test_review_is_sized_to_the_change(tmp_path, root):
     """A first round over a small change is one general pass (the default policy); its plan is on the events."""
-    origin = _remote(tmp_path)
+    origin = seeded_remote(tmp_path)
     driver = Driver(origin, tmp_path, {})
     ctx = _ctx(tmp_path, root, driver, policy=Policy())
     verifier = LocalVerifier(str(origin), tmp_path / "runs" / ctx.run_id / "verify")
@@ -267,7 +266,7 @@ def test_review_is_sized_to_the_change(tmp_path, root):
 
 
 def test_a_follow_up_round_reads_only_the_delta(tmp_path, root):
-    origin = _remote(tmp_path)
+    origin = seeded_remote(tmp_path)
     driver = Driver(origin, tmp_path, {1: [BLOCKING]})
     ctx = _ctx(tmp_path, root, driver)
     verifier = LocalVerifier(str(origin), tmp_path / "runs" / ctx.run_id / "verify")
@@ -283,7 +282,7 @@ def test_a_follow_up_round_reads_only_the_delta(tmp_path, root):
 
 
 def test_the_implementers_grader_gets_only_the_items_it_scores(tmp_path, root):
-    origin = _remote(tmp_path)
+    origin = seeded_remote(tmp_path)
     driver = Driver(origin, tmp_path, {})
     ctx = _ctx(tmp_path, root, driver)
     verifier = LocalVerifier(str(origin), tmp_path / "runs" / ctx.run_id / "verify")

@@ -17,8 +17,7 @@ Writers run all at once: each gets the decomposition (so it knows what its sibli
 rounds, the current specs of the items it depends on or that depend on it (`sibling_specs/`, never its own) plus
 its own previous draft (`prior/spec.json`) so a revision edits in place instead of rewriting with new names
 (post-mortem issue 15). Interface mismatches between siblings are the judge's job to catch and route back, which
-is cheaper than serialising the writers along the dependency chain. `Policy.spec_waves` restores dependency-order
-waves for repositories where that trade-off goes the other way.
+is cheaper than serialising the writers along the dependency chain.
 """
 from __future__ import annotations
 
@@ -195,12 +194,9 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
     first_round = round_offset + 1
 
     for round_no in range(first_round, first_round + ctx.policy.spec_judge_max_rounds):
-        # All writers at once (default), or dependency-order waves when the policy asks for them.
-        waves = _topological_waves(items) if ctx.policy.spec_waves else [list(items)]
-        for wave in waves:
-            batch = [w for w in wave if w in to_write]
-            if not batch:
-                continue
+        # Every writer of the round at once (none when the judge's issues name only specs outside the decomposition).
+        batch = [w for w in items if w in to_write]
+        if batch:
             reserve_budget(ctx, "specify", len(batch))      # the whole batch, before any writer starts
             with ThreadPoolExecutor(max_workers=min(ctx.policy.parallel_spec_writers, len(batch))) as pool:
                 futures = {pool.submit(_write_one, ctx, outcome, decomposition, items[w],
@@ -275,21 +271,6 @@ def _latest_spec_md(ctx: RunContext, work_item_id: str) -> str:
     cands = sorted((p for p in cands if p.name[len(prefix):-len("-spec.md")].isdigit()),
                    key=lambda p: int(p.name[len(prefix):-len("-spec.md")]))        # numeric: r10 after r9, not before r2
     return cands[-1].read_text(errors="replace") if cands else ""
-
-
-def _topological_waves(items: dict[str, dict]) -> list[list[str]]:
-    remaining = dict(items)
-    done: set[str] = set()
-    waves = []
-    while remaining:
-        wave = [w for w, it in remaining.items() if all(d in done or d not in items for d in it.get("depends_on", []))]
-        if not wave:  # cycle; dag_acyclic should have caught it, but never loop forever
-            wave = list(remaining)
-        waves.append(wave)
-        for w in wave:
-            done.add(w)
-            remaining.pop(w)
-    return waves
 
 
 def gate_2(ctx: RunContext, outcome, specs: dict[str, dict], verdict: dict[str, Any], shas: dict[str, str],

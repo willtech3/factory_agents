@@ -118,9 +118,7 @@ class Policy:
         "decompose": 0.9, "specify": 0.7, "judge": 2.5,
         "implement": 3.3, "review": 2.6, "security_review": 2.6, "merge_judge": 0.9, "integrate": 0.3,
     })
-    parallel_implementations: int = 3    # independent work items implemented at once (separate branches)
     parallel_spec_writers: int = 8       # spec writer sessions at once; all items are written in one go by default
-    spec_waves: bool = False             # True: write specs in dependency-order waves instead of all at once
     reviewer_passes: int = 2             # independent reviewer copies in a first round over a change larger than review_single_pass_lines
     # A first-round change of at most this many hand-written lines (size.py) gets one general pass: the second pass found
     # complementary defects on a 500-line change, but on small diffs both passes re-prove the same thing (live run 2).

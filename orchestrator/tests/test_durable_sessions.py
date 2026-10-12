@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from conftest import make_config
-from test_session_cutoff import AutoQueue, Driver, _ctx, _result
+from support.sessions import AutoQueue, SpecStageDriver, run_after_gate_1, stage_result
 
 from factory.gates import Decision
 from factory.sessions import SessionContext
@@ -31,14 +31,14 @@ class StepDriver:
     def run(self, **kw):
         self.calls.append(kw)
         if kw.get("attach_session_id"):
-            return _result({"decomposition.json": b"{}"}, sid=kw["attach_session_id"], cost=self.cost)
+            return stage_result({"decomposition.json": b"{}"}, sid=kw["attach_session_id"], cost=self.cost)
         self.made += 1
         sid = f"sesn_{self.made}"
         kw["on_created"](sid)
         if self.crash:
             self.crash = False
             raise Crash("controller died")
-        return _result({"decomposition.json": b"{}"}, sid=sid, cost=self.cost)
+        return stage_result({"decomposition.json": b"{}"}, sid=sid, cost=self.cost)
 
     def interrupt_session(self, session_id):
         self.interrupted.append(session_id)
@@ -49,7 +49,7 @@ class StepDriver:
 
 
 def _run(tmp_path, root, examples, driver):
-    return _ctx(tmp_path, root, examples, driver, AutoQueue(Decision.APPROVE))
+    return run_after_gate_1(tmp_path, root, examples, driver, AutoQueue(Decision.APPROVE))
 
 
 def _kinds(ctx, kind):
@@ -149,7 +149,7 @@ def test_a_session_reported_finished_twice_is_charged_once(tmp_path, root, examp
 
 def test_a_replayed_question_is_not_asked_again(tmp_path, root, examples):
     """A reattached controller replays the session's unanswered tool calls; an answered question returns its answer."""
-    ctx = _run(tmp_path, root, examples, Driver(examples))
+    ctx = _run(tmp_path, root, examples, SpecStageDriver(examples))
     handler = make_ask_human(ctx, "writer", poll_seconds=0, timeout_hours=0)
     sctx = SessionContext("sesn_1", ctx.run_id, "specify", "wi-test", custom_tool_use_id="sevt_q1")
     first = json.loads(handler({"question": "Which default?", "blocking": False, "default_if_unanswered": "A"}, sctx))
@@ -162,7 +162,7 @@ def test_a_replayed_question_is_not_asked_again(tmp_path, root, examples):
 def test_a_question_open_when_the_controller_died_is_waited_on_not_asked_again(tmp_path, root, examples, monkeypatch):
     from factory.gates import Answer
     from factory.stages import common
-    ctx = _run(tmp_path, root, examples, Driver(examples))
+    ctx = _run(tmp_path, root, examples, SpecStageDriver(examples))
     handler = make_ask_human(ctx, "writer", poll_seconds=1)
     sctx = SessionContext("sesn_1", ctx.run_id, "specify", "wi-test", custom_tool_use_id="sevt_q2")
     call = {"question": "Keep the old endpoint?", "blocking": True, "default_if_unanswered": "no"}
@@ -184,7 +184,7 @@ def test_a_question_open_when_the_controller_died_is_waited_on_not_asked_again(t
 def test_a_replayed_open_change_request_returns_the_first_one(tmp_path, root, examples):
     from factory.forge import ChangeRequest
     from factory.stages.integrate import make_open_change_request
-    ctx = _run(tmp_path, root, examples, Driver(examples))
+    ctx = _run(tmp_path, root, examples, SpecStageDriver(examples))
     calls = []
     forge = SimpleNamespace(kind="github", create_change_request=lambda **kw: calls.append(kw) or ChangeRequest(7, "https://example.test/pull/7", "b", "main"))
     handler = make_open_change_request(ctx, forge, "spec_test", "wi-test", "b", "main")
@@ -314,7 +314,7 @@ def test_the_console_keeps_a_followed_session_working_across_a_resume(tmp_path):
 
 
 def test_the_state_counts_a_sessions_spend_once_however_often_its_end_is_reported(tmp_path, root, examples):
-    ctx = _run(tmp_path, root, examples, Driver(examples))
+    ctx = _run(tmp_path, root, examples, SpecStageDriver(examples))
     for _ in range(2):
         ctx.event("session.finished", {"session_id": "sesn_7", "list_cost_usd": 1.25, "stop_reason": "end_turn"},
                   stage="decompose", actor="platform")
