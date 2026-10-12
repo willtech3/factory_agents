@@ -846,7 +846,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     for round_no in range(resume_from.round_no if resume_from else 1, max(review_through + 2, (resume_from.round_no + 1) if resume_from else 2)):
         resumed_round = resume_from is not None and round_no == resume_from.round_no
         # ---- implementer (round 1 implements; later rounds respond to findings)
-        uploads = {"spec.json": json.dumps(public(spec), indent=2).encode(), **skill_uploads}
+        uploads = {"spec.json": json.dumps(public(spec), indent=2).encode(), **skill_uploads,
+                   **{f"journeys/{name}.json": content for name, content in sorted(journeys.items())}}
         if spec_md:
             uploads["spec.md"] = spec_md.encode()
         if guidance:
@@ -858,6 +859,10 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         uploads["preview.json"] = json.dumps(preview, indent=2).encode()
         preview_clause = (MANAGED_PREVIEW_CLAUSE if preview.get("mode") == "managed" else PREVIEW_CLAUSE if preview["status"] == "ready"
                           else LOCAL_PREVIEW_CLAUSE if preview.get("mode") == "local" else NO_PREVIEW_CLAUSE)
+        if journeys:
+            preview_clause += (" Previously saved browser journeys are at /mnt/session/uploads/journeys/. "
+                               "Reuse these definitions; do not reconstruct them from the spec prose. Preserve existing assertions "
+                               "unless a review finding requires a targeted correction. The controller carries unchanged journeys forward.")
         if findings:
             uploads["findings.json"] = json.dumps(findings, indent=2).encode()
             review_clause = ("Reviewer findings are at /mnt/session/uploads/findings.json. Respond to every finding "
