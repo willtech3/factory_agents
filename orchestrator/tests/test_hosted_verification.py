@@ -25,7 +25,6 @@ from factory.stages import implement
 from factory.stages.implement import LocalVerifier, run_implement_one
 from support.hosted import (artifact, candidate, context, Driver, git, RECIPE, remote, RUN_ID, run_verifier, SEED, spec, VISUAL, write)
 from support.hosted import no_host_execution, sandbox_double  # noqa: F401  (fixtures; sandbox_double is autouse)
-from support.hosted import REPORT, push, result  # noqa: F401  (test_journeys imports these from this module)
 
 # Stands in for a browser command inside the sandbox: answers the controller's request with per-step screenshots.
 
