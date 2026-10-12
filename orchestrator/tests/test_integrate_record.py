@@ -129,7 +129,7 @@ def test_integrator_uses_forge_receipt_instead_of_agent_report(tmp_path, root, e
     from factory.stages.integrate import run_integrate
     from factory.state import WorkItemStage
     spec = examples['spec_smart_retries']
-    sid, wid = spec['spec_id'], spec['work_item_id']
+    wid = spec['work_item_id']
     def run(**kw):
         if opens_pr:
             _passthrough(kw)

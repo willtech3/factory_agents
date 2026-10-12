@@ -55,7 +55,7 @@ def test_budget_reached_pauses_the_run_and_the_owner_raises_the_cap(tmp_path, ro
     assert events[i].payload["session_id"] == "sesn_j_cut1" and events[i].payload["budget_usd"] == judges[0]["budget_usd"]
     gate = [e for e in events if e.kind == "gate.opened"][-1].payload
     assert gate["kind"] == GateKind.BUDGET.value and gate["assignees"] == [examples["outcome"]["owner"]["handle"]]
-    assert "raised to" in gate["summary"] and f"judge/r1-truncated1-" in gate["summary"]
+    assert "raised to" in gate["summary"] and "judge/r1-truncated1-" in gate["summary"]
     assert events[i + 3].payload["stage"] == RunStage.SPECIFYING.value
     st = ctx.store.state(ctx.run_id)
     assert st.stage == RunStage.SPECIFYING and st.list_cost_usd == pytest.approx(0.5 * 4 + judges[0]["budget_usd"] + 2.0)  # the cut-off session's spend counts

@@ -18,6 +18,16 @@ def _no_shell_shim_in_checkout():
     assert before or not shim.exists(), f"this test created {shim}; give the verifier a tmp_path workdir"
 
 
+@pytest.fixture(autouse=True)
+def _git_identity(monkeypatch):
+    """Commits the tests (and the code under test) make never depend on the developer's global git configuration: a
+    fixed identity, and no commit signing even where the global config asks for it."""
+    for key, value in {"GIT_AUTHOR_NAME": "factory-tests", "GIT_AUTHOR_EMAIL": "tests@example.invalid",
+                       "GIT_COMMITTER_NAME": "factory-tests", "GIT_COMMITTER_EMAIL": "tests@example.invalid",
+                       "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "commit.gpgsign", "GIT_CONFIG_VALUE_0": "false"}.items():
+        monkeypatch.setenv(key, value)
+
+
 @pytest.fixture(scope="session")
 def root() -> Path:
     return ROOT

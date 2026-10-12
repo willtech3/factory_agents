@@ -605,7 +605,8 @@ def test_crew_roster_board_and_settings_passthrough(client, monkeypatch):
 def test_resume_refuses_a_second_orchestrator_on_the_same_run(client):
     """The Console remembers the resume it spawned; while that process is alive a second Resume is a 409 and the run
     detail says it is resuming."""
-    import json, os
+    import os
+
     from factory.store import RunStore
     store = RunStore(client.cfg.runs_dir)
     rid = "run_resume0000ab"

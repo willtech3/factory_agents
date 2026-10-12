@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import anthropic
+import httpx
 
 from .config import Config
 
@@ -29,8 +30,6 @@ from .config import Config
 SHORT_CALL_TIMEOUT = 120.0
 
 # A dropped event stream is reopened, not fatal. These are the transport errors httpx and the SDK raise for it.
-import httpx
-
 STREAM_RETRYABLE: tuple[type[BaseException], ...] = (httpx.RemoteProtocolError, httpx.ReadError, httpx.ReadTimeout, httpx.ConnectError,
                                                     httpx.WriteError, anthropic.APIConnectionError, anthropic.APITimeoutError)
 STREAM_MAX_RECONNECTS = 40           # with the 2..30 s backoff: well over an hour of retrying before giving up

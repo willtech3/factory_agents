@@ -43,9 +43,10 @@ Each box is its own agent session. Every arrow passes a JSON artifact through th
 ## Quick start
 
 ```bash
-cd orchestrator
+cd orchestrator                          # Python 3.12 or newer
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest -q -m "not network"      # no API key needed; drop -m to include the one package-install test
+.venv/bin/ruff check factory tests        # the lint gate CI runs (.github/workflows/ci.yml)
 .venv/bin/factory web                     # Factory Console at http://127.0.0.1:8765/
 ```
 

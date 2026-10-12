@@ -17,6 +17,7 @@ Where things live, what runs, and what is reference material or not wired up. St
 | `examples/` | Outcomes and fixtures (see [Examples](#examples)) | Partly. Some are start points or test fixtures |
 | `evals/` | Evaluation plan, dataset specs, graders, and a reference run | Graders are tested. The runner's agent-driving step is a stub |
 | `docs/` | Design, setup guides, ADRs, research, and dated audits and post-mortems | No |
+| `.github/workflows/ci.yml` | Tests on Python 3.12 and 3.13, the ruff gate, and the browser runner against a real Chromium | On every pull request |
 | `.claude/launch.json` | Starts the Console as a Claude Code preview server | Dev convenience |
 
 Local-only files (git-ignored): `.env` (API key, workspace ID, forge token), `runs/` (every run's event log and artifacts), `orchestrator/.venv/`, `orchestrator/shell-shim/` (ignored as a safety net: the verifier's `sh` symlink belongs under each run's verify directory, and `tests/conftest.py` fails any test that leaves it here).
