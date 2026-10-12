@@ -1320,7 +1320,7 @@
     const security = el("input", { type: "checkbox", checked: securityReady, disabled: !securityReady, "aria-describedby": securityReady ? null : "security-unavailable" });
     const iterations = el("input", { type: "number", min: "1", max: "6", value: 3 });
     const advanced = el("details", null, el("summary", null, "Review settings"), el("div", {class:"tier"},
-      el("label", null, "Reviewer passes", passes), el("label", null, "Maximum review rounds", rounds),
+      el("label", null, "Reviewer passes on a large change", passes), el("label", null, "Maximum review rounds", rounds),
       el("label", null, "Grader iterations", iterations),
       el("div", null, el("label", {class:"check"}, security, "Security review"),
         securityReady ? null : el("p", { class: "explain m-0 mt-1 fs-sm", id: "security-unavailable" }, "Unavailable: no security reviewer agent is deployed in this workspace, so no security pass runs. The general reviewers still run."))));

@@ -9,7 +9,7 @@ flowchart TD
   g1 --> specify["Spec writers ⇄ spec judge"]
   specify --> g2{{"Gate 2<br/>owner approves the specs"}}
   g2 --> implement["Implementer ⇄ reviewers<br/>→ merge judge"]
-  implement --> integrate["Integrator opens the PR"]
+  implement --> integrate["Controller opens the PR"]
   integrate --> g3{{"Gate 3<br/>engineer reviews and merges"}}
   g3 --> deploy["Observed deploy to dev<br/>+ end-to-end checks"]
 ```

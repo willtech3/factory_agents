@@ -121,16 +121,25 @@ def test_change_request_target_is_controller_owned(tmp_path, root, examples):
 
 
 @pytest.mark.parametrize("opens_pr", [False, True])
-def test_integrator_uses_forge_receipt_instead_of_agent_report(tmp_path, root, examples, opens_pr):
+def test_integrator_uses_forge_receipt_instead_of_agent_report(tmp_path, root, examples, opens_pr, monkeypatch):
+    """When the draft needs rewording the integrator runs, and only the forge's receipt proves a PR exists."""
     import pytest
     from types import SimpleNamespace
     from support.sessions import AutoQueue, run_after_gate_1, stage_result
+    from factory import pr_description
     from factory.gates import Decision
     from factory.stages.integrate import run_integrate
     from factory.state import WorkItemStage
     spec = examples['spec_smart_retries']
     wid = spec['work_item_id']
+    lints = []
+    real_lint = pr_description.lint
+    def lint(*a, **kw):          # the rendered draft needs a rewording; what the integrator sends passes
+        lints.append(1)
+        return ["line 3 names a factory id"] if len(lints) == 1 else real_lint(*a, **kw)
+    monkeypatch.setattr(pr_description, "lint", lint)
     def run(**kw):
+        assert json.loads(kw['uploads']['pr_lint.json'])['problems'] == ["line 3 names a factory id"]
         if opens_pr:
             _passthrough(kw)
         return stage_result({'cr.json': b'{"id": 999, "url": "invented"}'})
@@ -152,6 +161,34 @@ def test_integrator_uses_forge_receipt_instead_of_agent_report(tmp_path, root, e
     state = ctx.store.state(ctx.run_id)
     assert state.work_items[wid].cr_id == (42 if opens_pr else None)
     assert state.list_cost_usd == .5
+
+
+def test_a_clean_description_opens_the_change_request_without_an_agent(tmp_path, root, examples):
+    from types import SimpleNamespace
+    from test_session_cutoff import _ctx, AutoQueue
+    from factory.forge import ChangeRequest
+    from factory.gates import Decision
+    from factory.stages.integrate import run_integrate
+    from factory.state import WorkItemStage
+    spec = examples['spec_smart_retries']
+    sid, wid = spec['spec_id'], spec['work_item_id']
+    def run(**kw):
+        raise AssertionError("no integrator session when the rendered description passes its lint")
+    ctx = _ctx(tmp_path, root, examples, SimpleNamespace(run=run), AutoQueue(Decision.APPROVE))
+    for stage in [WorkItemStage.SPEC_DRAFTING, WorkItemStage.SPEC_JUDGING, WorkItemStage.SPEC_APPROVED,
+                  WorkItemStage.IMPLEMENTING, WorkItemStage.REVIEWING, WorkItemStage.MERGE_JUDGING]:
+        ctx.event('work_item.stage', {'stage': stage.value}, work_item_id=wid)
+    opened = []
+    ctx.forge = SimpleNamespace(kind='github', create_change_request=lambda **kw: opened.append(kw) or
+                                ChangeRequest(42, 'https://example.test/pull/42', 'factory/branch', 'main'))
+    cr = run_integrate(ctx, spec, {'_branch': 'factory/branch', '_head_sha': 'a'*40}, {}, {}, {}, {"reviewers": ["dana"]}, 'main')
+    assert cr['id'] == 42 and len(opened) == 1
+    assert opened[0]['source_branch'] == 'factory/branch' and opened[0]['target_branch'] == 'main'
+    assert opened[0]['reviewers'] == ['dana'] and 'factory' in opened[0]['labels']
+    assert opened[0]['description'] == ctx.store.get_artifact(ctx.run_id, 'integrate', f'{sid}-pr_description.md').decode()
+    state = ctx.store.state(ctx.run_id)
+    assert state.work_items[wid].cr_id == 42 and state.list_cost_usd == 0 and state.sessions_finished == 0
+    assert json.loads(ctx.store.get_artifact(ctx.run_id, 'integrate', f'{sid}-cr.json'))['url'] == 'https://example.test/pull/42'
 
 
 def test_evaluation_pr_is_forced_to_draft_and_labeled(tmp_path, root, examples):

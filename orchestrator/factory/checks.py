@@ -467,8 +467,9 @@ def e2e_coverage(spec: dict[str, Any]) -> CheckResult:
     """
     entries = spec.get("test_plan", {}).get("e2e", [])
     covered = {ac for e in entries for ac in e.get("covers_ac", [])}
-    known = {ac["ac_id"] for ac in spec["acceptance_criteria"]}
-    missing = sorted(ac["ac_id"] for ac in spec["acceptance_criteria"] if ac.get("user_visible") and ac["ac_id"] not in covered)
+    criteria = spec.get("acceptance_criteria") or []          # a malformed draft is schema_valid's to report, not a crash
+    known = {ac.get("ac_id") for ac in criteria}
+    missing = sorted(ac.get("ac_id") for ac in criteria if ac.get("user_visible") and ac.get("ac_id") not in covered)
     dangling = sorted(covered - known)
     problems = []
     if missing:
@@ -477,9 +478,9 @@ def e2e_coverage(spec: dict[str, Any]) -> CheckResult:
         problems.append(f"e2e entries cover unknown criteria: {dangling}")
     visual_covered = {ac for e in entries if e.get("visual") and e.get("target") == "preview" for ac in e.get("covers_ac", [])}
     has_ui = any(i.get("kind") == "ui" for i in spec.get("interfaces", []))
-    missing_visual = sorted(ac["ac_id"] for ac in spec["acceptance_criteria"]
+    missing_visual = sorted(ac.get("ac_id") for ac in criteria
                             if (ac.get("surface") == "ui" or (has_ui and ac.get("user_visible") and not ac.get("surface")))
-                            and ac["ac_id"] not in visual_covered)
+                            and ac.get("ac_id") not in visual_covered)
     if missing_visual:
         problems.append(f"UI criteria without visual browser coverage: {missing_visual}")
     return CheckResult("e2e_coverage", not problems,

@@ -41,7 +41,11 @@ def test_stream_drop_is_reopened_and_events_are_not_handled_twice(tmp_path, root
     d = SessionDriver(cfg, client=Client())
     res = d.run(agent_key="implementer", title="t", run_id="run_x", stage="implement", uploads={}, description="d", rubric_md=None,
                 max_iterations=1, budget_usd=1.0, repository={"type": "github_repository", "url": "https://github.com/example/test"},
-                environment_id="env_test", vault_ids=["vault_test"], system_override="Run the immutable test harness")
+                environment_id="env_test", vault_ids=["vault_test"], system_override="Run the immutable test harness",
+                model_override={"id": "claude-haiku-5-5", "effort": "low"})
+    assert calls["create"]["agent"] == {"type": "agent_with_overrides", "id": "agent_i", "version": 1,
+                                        "model": {"id": "claude-haiku-5-5", "effort": "low"},
+                                        "system": "Run the immutable test harness"}
     assert res.stop_reason == "end_turn" and res.list_cost_usd == 1.23 and res.events_seen == 3
     assert res.last_message == "I stopped: a write was denied."
     assert calls["stream"] == 2 and calls["list"] == 2 and calls["custom"] == 0

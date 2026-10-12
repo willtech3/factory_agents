@@ -81,7 +81,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 
 | Module | Role |
 |---|---|
-| `cli.py` | The `factory` command: `doctor`, `run`, `gates`, `decide`, `answer`, `status`, `replay`, `resume`, `watch`, `runs`, `web`, plus the `environment` and `browser` sub-commands |
+| `cli.py` | The `factory` command: `doctor`, `run`, `gates`, `decide`, `answer`, `status`, `replay`, `timing`, `resume`, `watch`, `runs`, `web`, plus the `environment` and `browser` sub-commands |
 | `web/app.py` | The Factory Console: a FastAPI app with Runs, Board, Start a run, Outcomes, Apps and Settings, a JSON API, and gate review pages. It starts runs, resumes and watchers as background `factory` processes |
 | `web/static/` | The Console UI: one HTML page, vanilla JS and CSS, no build step |
 | `web/repositories.py` | Read-only GitHub repository search for the Console's repository picker |
@@ -101,6 +101,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 | `run_record.py` | Builds the per-spec run record (criteria, findings, checks, media, cost) that the PR links and the Console shows |
 | `size.py` | Counts a change's hand-written lines (tests included; linguist-generated files, lockfiles and spec-declared regenerated files excluded) against the size budget |
 | `summary.py` | Derives each run's status, headline and results for the run history (`factory runs`, the Console's Runs page) |
+| `timing.py` | `factory timing <run_id>`: where a run's wall clock went (waiting on a person, agents by stage, the controller, stopped), from its event log |
 | `config.py` | Reads agent IDs from `claude-lock.json` and everything else from the environment and `.env` |
 
 **Stages** (`stages/`)
@@ -110,7 +111,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 | `decompose.py` | 1. Outcome to work items, then Gate 1 |
 | `specify.py` | 2. Parallel spec writers, a judge loop, then Gate 2 |
 | `implement.py` | 3. Per spec: implementer, reviewer and security-reviewer passes, then the merge judge. Also holds `LocalVerifier`, `LocalPreview` and the findings merge |
-| `integrate.py` | 4. The integrator opens the PR at the exact head the merge judge approved, with the reviewer-first description the orchestrator rendered and linted. The approved spec, verdicts and the spec's run record stay in Factory's artifact store and are linked from the PR, not committed to the branch ([ADR-0010](adr/0010-external-integration-records.md)) |
+| `integrate.py` | 4. The orchestrator opens the PR at the exact head the merge judge approved, with the reviewer-first description it rendered and linted; an integrator session runs only to reword a draft the lint refuses. The approved spec, verdicts and the spec's run record stay in Factory's artifact store and are linked from the PR, not committed to the branch ([ADR-0010](adr/0010-external-integration-records.md)) |
 | `deploy_observe.py` | 5. Watches the platform deploy `main` to dev and runs e2e against it. Driven by `watcher.py` |
 | `common.py` | Shared helpers: run a session, persist outputs, provenance, open and wait on gates |
 | `watcher.py` (top level) | `factory watch`: follows open PRs to merge (Gate 3), then hands each one to Stage 5 |
