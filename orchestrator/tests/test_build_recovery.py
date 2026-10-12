@@ -10,6 +10,8 @@ from factory import runner
 from factory.state import RunStage
 from factory.web.app import create_app
 
+REAL_IMPLEMENT_AND_INTEGRATE = runner.implement_and_integrate      # `escalated` patches it to stage the escalation
+
 
 def escalated(tmp_path, root, monkeypatch):
     gate, _ = gate2.park(tmp_path, root, design_only=False)
@@ -30,6 +32,21 @@ def escalated(tmp_path, root, monkeypatch):
     return ctx
 
 
+def recovering(monkeypatch):
+    """Each spec's implementation step as the resumed run starts it: where it continues and the owner's notes it gets.
+    The build stops again, so the run escalates again."""
+    seen = {}
+
+    def implement(ctx, spec, repo_url, base_branch, verifier, deps, *, spec_md="", resume_from=None, guidance=""):
+        if not seen:                                    # the resume returned the run to implementation
+            assert ctx.store.state(gate2.RUN).stage == RunStage.IMPLEMENTING
+        seen[spec["spec_id"]] = (resume_from, guidance)
+        return {"result": "escalate", "reason": "stopped again in the test"}
+    monkeypatch.setattr(runner, "implement_and_integrate", REAL_IMPLEMENT_AND_INTEGRATE)
+    monkeypatch.setattr(runner, "run_implement_one", implement)
+    return seen
+
+
 def test_approved_build_escalation_is_recoverable_in_console_and_runner(tmp_path, root, monkeypatch):
     ctx = escalated(tmp_path, root, monkeypatch)
     client = TestClient(create_app(make_config(root, ctx.cfg.runs_dir)))
@@ -37,16 +54,9 @@ def test_approved_build_escalation_is_recoverable_in_console_and_runner(tmp_path
     assert detail["resumable"] and detail["status"] == "escalated"
     assert all(ev["kind"] != "run.completed" for ev in detail["events"])
     originals = {sid: ctx.store.get_artifact(gate2.RUN, "specify", f"final-{sid}.json") for sid in gate2.SPECS}
-    seen = {}
-
-    def recover(ctx, outcome, specs, spec_md, spec_verdict, resume=None, guidance=None):
-        seen.update(specs=specs, points=resume)
-        assert ctx.store.state(gate2.RUN).stage == RunStage.IMPLEMENTING
-        return RunStage.IMPLEMENTING
-
-    monkeypatch.setattr(runner, "implement_and_integrate", recover)
-    assert runner.resume(ctx) == RunStage.IMPLEMENTING
-    assert set(seen["specs"]) == set(gate2.SPECS) and all(pt.round_no == 1 for pt in seen["points"].values())
+    seen = recovering(monkeypatch)
+    assert runner.resume(ctx) == RunStage.ESCALATED
+    assert set(seen) == set(gate2.SPECS) and all(pt.round_no == 1 for pt, _ in seen.values())
     assert originals == {sid: ctx.store.get_artifact(gate2.RUN, "specify", f"final-{sid}.json") for sid in gate2.SPECS}
 
 
@@ -148,15 +158,12 @@ def test_request_changes_runs_a_fresh_bounded_cycle_with_owner_notes(tmp_path, r
     ctx=escalated(tmp_path,root,monkeypatch)
     rec=br.snapshot(ctx.store,gate2.RUN); gate=br.open_gate(ctx.store,ctx.queue,gate2.RUN,rec)
     ctx.queue.record_decision(gate,'request_changes','will','Fix the observed regression; keep the approved scope.')
-    seen={}
-    def recover(ctx,outcome,specs,spec_md,spec_verdict,resume=None,guidance=None):
-        seen.update(points=resume,guidance=guidance)
-        return RunStage.IMPLEMENTING
-    monkeypatch.setattr(runner,'implement_and_integrate',recover)
-    assert runner.resume(ctx) == RunStage.IMPLEMENTING
-    assert seen['points']['spec_a'].round_no == 2 and seen['points']['spec_a'].report is None
-    assert seen['points']['spec_a'].review_through == 2
-    assert 'Fix the observed regression' in seen['guidance']['spec_a']
+    seen=recovering(monkeypatch)
+    assert runner.resume(ctx) == RunStage.ESCALATED
+    point, notes = seen['spec_a']
+    assert point.round_no == 2 and point.report is None and point.review_through == 2
+    assert 'Fix the observed regression' in notes
+    assert seen['spec_b'][0].round_no == 1 and 'Fix the observed regression' not in seen['spec_b'][1]
 
 
 def test_recovery_refuses_tampered_gate_snapshot(tmp_path,root,monkeypatch):
@@ -214,13 +221,10 @@ def test_recheck_keeps_the_authorized_corrective_review_cycle(tmp_path,root,monk
     ctx.event('run.escalated',{'reason':'history conflict'},spec_id='spec_a')
     rec=br.snapshot(ctx.store,gate2.RUN);gate=br.open_gate(ctx.store,ctx.queue,gate2.RUN,rec)
     ctx.queue.record_decision(gate,'approve','will','Verify the compatible merge candidate')
-    seen={}
-    def recover(ctx,outcome,specs,spec_md,spec_verdict,resume=None,guidance=None):
-        seen.update(points=resume);return RunStage.IMPLEMENTING
-    monkeypatch.setattr(runner,'implement_and_integrate',recover)
-    assert runner.resume(ctx)==RunStage.IMPLEMENTING
-    assert seen['points']['spec_a'].review_through==2
-    assert seen['points']['spec_a'].report['head_sha']=='new'
+    seen=recovering(monkeypatch)
+    assert runner.resume(ctx)==RunStage.ESCALATED
+    assert seen['spec_a'][0].review_through==2
+    assert seen['spec_a'][0].report['head_sha']=='new'
 
 
 def test_changed_recovery_evidence_supersedes_the_old_gate(tmp_path,root,monkeypatch):

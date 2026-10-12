@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import visual
-from .. import checks, security, size
+from .. import checks, security, size, steps
 from ..hosted_verifier import ENVIRONMENT_CHECK, HostedVerifier, journey_name, preview_record
 from ..budget import reserve_budget
 from ..checks import CheckResult
@@ -1054,8 +1054,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             return tag_pass(f, "security")
 
         with ThreadPoolExecutor(max_workers=ctx.policy.reviewer_passes + 1) as pool:
-            sec_future = pool.submit(security_pass)
-            passes = list(pool.map(one_pass, pass_ids))
+            sec_future = pool.submit(steps.carry(security_pass))
+            passes = list(pool.map(steps.carry(one_pass), pass_ids))
             sec = sec_future.result()
         findings = merge_findings(passes + ([sec] if sec else []), sid, round_no, base_sha, head_sha, branch,
                                   previous=findings, response=response)

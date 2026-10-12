@@ -176,8 +176,8 @@ class HostedVerifier:
         record["environment_id"] = environment_id
         # late import: the stages package imports this module
         from .stages.common import run_session
-        res = run_session(
-            ctx, stage=VERIFY_STAGE, prefix=f"{sid}-r{round_no}-hosted-", spec_id=sid,
+        res = run_session(   # fresh: evidence is never replayed; a resume verifies the head again (#47)
+            ctx, stage=VERIFY_STAGE, prefix=f"{sid}-r{round_no}-hosted-", spec_id=sid, fresh=True,
             agent_key="implementer", title=f"{ctx.run_id} verify {sid} r{round_no} (hosted)", run_id=ctx.run_id,
             uploads={"test-source.tar": source, "environment-request.json": json.dumps(descriptor).encode(),
                      "tools/environment_runner.py": (Path(__file__).parent / "sandbox_tools/environment_runner.py").read_bytes(),

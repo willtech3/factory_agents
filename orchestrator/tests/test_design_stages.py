@@ -131,7 +131,8 @@ def test_design_sessions_get_the_platform_contract_skill_by_path(tmp_path, root,
     ctx.driver = Driver()
     dec.run_decompose(ctx, examples["outcome"])
     item = examples["decomposition"]["work_items"][0]
-    spc._write_one(ctx, examples["outcome"], examples["decomposition"], item, {}, None, None, 1)
+    spc._write_one(ctx, item["work_item_id"], 1,
+                   spc._writer_session(ctx, examples["outcome"], examples["decomposition"], item, {}, None, None, 1))
     spc._judge(ctx, examples["outcome"], examples["decomposition"], {"spec_x": examples["spec_smart_retries"]}, 1, None)
     assert [c["agent_key"] for c in calls] == ["decomposer", "spec_writer", "spec_judge"]
     expected = (root / "skills" / "platform-contract" / "SKILL.md").read_bytes()

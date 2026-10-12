@@ -61,6 +61,10 @@ class StageResult:
     custom_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     finish_recorded: bool = False
     last_message: str | None = None     # the agent's final chat text; explains a turn that ended without its output file
+    finished_at: str | None = None      # when the controller saw it end (ISO); recorded with its step, so provenance replays
+    # `stages/common.reject_output`: marks the session's step failed, so a replay starts a new session instead of reusing
+    # an output that was refused
+    on_reject: Callable[[str], None] | None = field(default=None, repr=False, compare=False)
 
 
 class SessionDriver:

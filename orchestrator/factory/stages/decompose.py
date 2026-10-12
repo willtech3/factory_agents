@@ -10,7 +10,7 @@ from ..config import agent_model
 from ..gates import Decision, GateKind
 from ..state import RunStage
 from . import RunContext
-from .common import auto_approval, hosted_planning_clause, make_ask_human, size_clause, open_gate_and_wait, persist_outputs, platform_skill, require_json, rubric_text, run_session, stamp_provenance
+from .common import auto_approval, hosted_planning_clause, make_ask_human, size_clause, open_gate_and_wait, persist_outputs, platform_skill, require_json, rubric_text, run_session, stamp_provenance, would_reuse
 
 DESCRIPTION = """Produce a decomposition of the business outcome in /mnt/session/uploads/outcome.json.
 {repo_clause} {skill_clause}
@@ -55,15 +55,18 @@ def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | N
 
     mount, repo_clause, repo_available = repository_access(ctx, outcome)
     skill_uploads, skill_clause = platform_skill(ctx)
-    reserve_budget(ctx, "decompose")
-    res = run_session(
-        ctx, agent_key="decomposer", title=f"{ctx.run_id} decompose", run_id=ctx.run_id, stage="decompose",
+    session = dict(
+        agent_key="decomposer", title=f"{ctx.run_id} decompose", run_id=ctx.run_id,
         uploads={**uploads, **skill_uploads},
         description=DESCRIPTION.format(feedback_clause=feedback_clause, repo_clause=repo_clause, skill_clause=skill_clause) + size_clause(ctx) + hosted_planning_clause(ctx),
         rubric_md=rubric_text(ctx, "decomposition", repo_available), max_iterations=ctx.policy.outcome_max_iterations,
         budget_usd=ctx.policy.stage_budget_usd["decompose"],
         custom_tools={"ask_human": make_ask_human(ctx, "decomposer")}, repository=mount,
     )
+    prefix = "retry-" if retried else ""          # the automatic retry is its own session within the same pass
+    if not would_reuse(ctx, stage="decompose", prefix=prefix, **session):
+        reserve_budget(ctx, "decompose")
+    res = run_session(ctx, stage="decompose", prefix=prefix, **session)
     decomposition = require_json(res, "decomposition.json")
     if prior_decomposition is not None and int(decomposition.get("revision") or 1) <= int(prior_decomposition.get("revision") or 0):
         # Artefacts are named by revision and the store refuses to overwrite one; the number is the orchestrator's.
@@ -98,7 +101,8 @@ def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | N
 
 def gate_1(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[str, Any], shas: dict[str, str],
            artifact_urls: dict[str, str] | None = None):
-    ctx.event("stage.entered", {"stage": RunStage.GATE_1_DECOMPOSITION.value}, stage="gate_1")
+    if ctx.store.state(ctx.run_id).stage != RunStage.GATE_1_DECOMPOSITION:     # a replay re-enters the gate it waits at
+        ctx.event("stage.entered", {"stage": RunStage.GATE_1_DECOMPOSITION.value}, stage="gate_1")
     summary = decomposition["summary"]
     open_q = [q for q in decomposition.get("open_questions", []) if q.get("blocking")]
     if open_q:
