@@ -32,8 +32,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
+from ..checks import row_passed
 from ..forge import PIPELINE_TERMINAL
 from ..gates import Decision, Gate, GateKind
+from ..plans import plan_of
 from ..state import RunEvent, WorkItemStage
 from . import RunContext
 from .common import hosted_run, open_gate
@@ -72,7 +74,7 @@ class DeployObservation:
 
     @property
     def passed(self) -> bool:
-        return self.status == "succeeded" and all(r.get("exit_code") == 0 for r in self.e2e_results)
+        return self.status == "succeeded" and all(map(row_passed, self.e2e_results))
 
 
 def wait_for_pipeline(source: PipelineSource, ref: str, sha: str, *, poll_seconds: float = 15.0,
@@ -186,10 +188,10 @@ def observe_once(ctx: RunContext, spec: dict[str, Any], merge_sha: str, default_
     ctx.event("deploy.succeeded", {"pipeline_id": pid, "pipeline_url": obs.pipeline.get("web_url"), "sha": merge_sha,
                                    "environment": dev, "environment_url": obs.environment_url},
               work_item_id=wid, spec_id=sid, stage="deploy", actor="platform")
-    entries = [e for e in spec.get("test_plan", {}).get("e2e", []) if e.get("target", "preview") == "preview"]
+    entries = [e for e in plan_of(spec).e2e if e.get("target", "preview") == "preview"]
     entries += [{"covers_ac": [], "command": c, "target": "preview", "description": "smoke suite"} for c in smoke_commands]
     obs.e2e_results = managed_dev_blocked(entries) if hosted_only(ctx) else (run_e2e(obs.environment_url, entries) if entries else [])
-    failed = [r for r in obs.e2e_results if r.get("exit_code") != 0]
+    failed = [r for r in obs.e2e_results if not row_passed(r)]          # the same definition as the merge checks
     kind = "e2e.dev_failed" if failed else "e2e.dev_passed"
     ctx.event(kind, {"environment_url": obs.environment_url, "sha": merge_sha,
                      "results": [{"command": r["command"], "exit_code": r.get("exit_code"), "covers_ac": r.get("covers_ac", [])}

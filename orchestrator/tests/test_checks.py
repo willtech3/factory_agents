@@ -105,11 +105,16 @@ def test_run_all_for_merge_includes_e2e_and_manifest(examples, root, schemas_dir
     names = {c.check: c for c in checks.run_all_for_merge(**common)}
     assert names["e2e_coverage"].passed and not names["e2e_preview"].passed and "manifest_valid" not in names
     # Results supplied and manifest present: everything green.
-    e2e = [{"command": e["command"], "target": "preview", "exit_code": 0} for e in spec["test_plan"]["e2e"] if e["target"] == "preview"]
+    e2e = [{"command": e["command"], "target": e["target"], "exit_code": 0} for e in spec["test_plan"]["e2e"]]
     names = {c.check: c for c in checks.run_all_for_merge(
         **common, e2e_results=e2e, manifest_path=root / "examples" / "ledgerline" / "service_manifest.json", schema_dir=schemas_dir)}
     assert all(c.passed for c in names.values()), [c.detail for c in names.values() if not c.passed]
-    assert "manifest_valid" in names and "e2e_preview" in names
+    assert "manifest_valid" in names and "e2e_preview" in names and "e2e_local" in names
+    # A local entry is judged like a preview one: failing, or not run at all, fails its target's check (ADR-0014).
+    local = next(e["command"] for e in spec["test_plan"]["e2e"] if e["target"] == "local")
+    for rows in ([dict(r, exit_code=1) if r["command"] == local else r for r in e2e], [r for r in e2e if r["command"] != local]):
+        names = {c.check: c for c in checks.run_all_for_merge(**common, e2e_results=rows)}
+        assert not names["e2e_local"].passed and names["e2e_preview"].passed and local in names["e2e_local"].detail
 
 
 def test_ac_test_mapping_says_when_the_report_is_not_in_the_schema_shape():

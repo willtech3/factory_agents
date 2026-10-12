@@ -96,7 +96,7 @@ Each phase deletes code that the previous one made redundant.
 
 1. **Database and session steps** (this ADR, built). Events in SQLite with write-time validation, durable session steps, reattach, supersede, idempotent tool handlers, crash leaves sessions working.
 2. **The pipeline as steps; resume is a replay** (built, decisions 10–15). Decompositions, gates, spec passes, approvals, implementations and integrations are steps with recorded results, and `factory resume` replays the pipeline. Its second part (built, decisions 16–19) makes each implement/review round and each merge judgement a step, which removed `resume_points`.
-3. **One verification pipeline.** `verify(target, plan) -> EvidenceBundle` and `judge(bundle, spec)`, with structured test plans and the recipe split into what is trusted and what is runtime.
+3. **One verification pipeline** (built, [ADR-0014](0014-one-verification-pipeline.md)). `verify(target, plan) -> EvidenceBundle` and `judge(bundle, spec)`, with structured test plans and the recipe split into what is trusted and what is runtime.
 4. **A rule registry.** The rules the prompts state, the checks enforce and the rubrics score come from one registry, so they can't drift apart. Prompts are generated from it, and outputs are schema-validated when submitted.
 5. **Evals from recordings.** The recorded steps of real runs (inputs by sha256, outputs as blobs) become the replay dataset. A prompt or rubric change is gated on it.
 6. **The Console as a projection.** It reads the step table as well as the events: live sessions, what a resume will follow, and the cost per step.
