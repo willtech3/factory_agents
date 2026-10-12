@@ -30,10 +30,11 @@ from .config import managed_gaps
 from .gates import Decision, Gate, GateDecision, GateKind, parse_budget
 from .stages import RunContext
 from .stages.decompose import gate_1, run_decompose
-from .stages.common import artifact_json_or_none, gate_decision, hosted_run, public, recorded_preview_mode  # noqa: F401
+from .stages.common import artifact_json_or_none, gate_decision, public
 from .stages.implement import LocalVerifier, ResumePoint, run_implement_one
 from .stages.integrate import run_integrate
 from .stages.specify import gate_2, run_specify
+from .stages.common import hosted_run, recorded_preview_mode  # noqa: F401  the Console imports recorded_preview_mode from here
 from .state import RunStage, WorkItemStage
 from .surfaces.artifact_pages import render_gate1_page, render_gate2_page
 
