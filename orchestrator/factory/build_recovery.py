@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 from .gates import ArtifactRef, Decision, Gate, GateKind
-from .state import RunStage
 
 
 def snapshot(store, run_id):

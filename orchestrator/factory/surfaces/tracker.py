@@ -17,7 +17,7 @@ the surface returns copies those hashes from the comment it reads back, so `vali
 exactly as it does for the CLI (ADR-0005): a decision on a superseded gate comment is stale.
 
 `Tracker` is the tracker-neutral protocol (`LinearTracker` implements it with Linear's GraphQL API
-through a thin client; `jira.py` is a stub with the same methods). `TrackerQueue` turns any `Tracker`
+through a thin client; ADR-0007 maps the same methods to Jira's REST API). `TrackerQueue` turns any `Tracker`
 into an `ApprovalQueue` + `Notifier`. Nothing here is verified against the live Linear API; the
 mapping is unit-tested with a fake client.
 """
@@ -26,7 +26,6 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -45,7 +44,6 @@ DECISION_LABELS = {
     "factory:reject": Decision.REJECT,
     "factory:approve-subset": Decision.APPROVE_SUBSET,
 }
-ALL_LABELS = (LABEL_GATE_OPEN, LABEL_QUESTION, LABEL_BLOCKED, *DECISION_LABELS)
 
 GATE_MARKER = "<!-- factory-gate gate_id={gate_id} kind={kind} shas={shas} -->"
 QUESTION_MARKER = "<!-- factory-question question_id={question_id} -->"
@@ -268,7 +266,7 @@ class TrackerQueue:
     from the issue so the next gate on the same issue starts clean.
     """
 
-    def __init__(self, tracker: Tracker, state_path: Path | None = None, page_urls: dict[str, str] | None = None):
+    def __init__(self, tracker: Tracker, state_path: Path | None = None):
         self.tracker = tracker
         self.state_path = state_path
         self.runs: dict[str, _RunRecord] = {}
@@ -479,7 +477,3 @@ def make_tracker_queue(cfg: "Config") -> TrackerQueue | None:
         raise ValueError("FACTORY_GATE_SURFACE=tracker needs LINEAR_API_KEY and LINEAR_TEAM_ID")
     tracker = LinearTracker(LinearClient(cfg.linear_api_key), cfg.linear_team_id, cfg.linear_project_id)
     return TrackerQueue(tracker, state_path=cfg.runs_dir / "_tracker.json")
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()

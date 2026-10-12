@@ -1,11 +1,10 @@
 import copy
 import json
-from pathlib import Path
 import subprocess
 
 import pytest
 
-from factory.test_environments import environment_config, fingerprint, read_snapshot_profile, snapshot, validate_profile
+from factory.test_environments import environment_config, read_snapshot_profile, snapshot, validate_profile
 from factory.sandbox_tools.environment_runner import check_browser
 
 
@@ -21,8 +20,8 @@ def test_existing_and_greenfield_share_contract(profile, schemas_dir):
     existing["secrets"] = [{"name": "PROVIDER_KEY", "required": True, "allowed_hosts": ["provider.example.com"], "injection": "header"}]
     existing["network"]["allowed_hosts"] = ["provider.example.com"]
     assert validate_profile(existing, schemas_dir) == []
-    assert environment_config(existing)["networking"]["type"] == "limited"
-    assert fingerprint(existing) != fingerprint(profile)
+    networking = environment_config(existing)["networking"]
+    assert networking["type"] == "limited" and "provider.example.com" in networking["allowed_hosts"]
 
 
 def test_invalid_profile_never_echoes_secret(profile, schemas_dir):
@@ -34,7 +33,8 @@ def test_invalid_profile_never_echoes_secret(profile, schemas_dir):
 def test_secret_scope_and_duplicate_services_rejected(profile, schemas_dir):
     profile["secrets"] = [{"name": "API_KEY", "required": True, "allowed_hosts": ["api.example.com"], "injection": "header"}]
     profile["services"].append(dict(profile["services"][0]))
-    assert len(validate_profile(profile, schemas_dir)) == 3
+    assert sorted(validate_profile(profile, schemas_dir)) == [
+        "duplicate service id", "duplicate service port", "secret API_KEY requires a host absent from the environment allowlist"]
 
 
 def git(repo, *args):

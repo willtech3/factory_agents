@@ -9,7 +9,7 @@ The existing protocols already allowed this: `ApprovalQueue` and `Notifier` in `
 
 ## Decision
 1. **Three gate surfaces behind the existing protocols**, selected with `FACTORY_GATE_SURFACE=forge|tracker|file` (default `tracker` when `LINEAR_API_KEY` is set, else `forge`):
-   - **tracker** (`surfaces/tracker.py`): a run is a tracker project plus a run issue; every work item is a child issue whose state mirrors `WorkItemStage`; a gate is a comment on the run issue (or the work item's issue for `DEPLOY_FAILURE`) carrying the summary, artifact links, and the artifact sha256 list, plus the label `factory:gate-open`; the decision is read from a `factory:approve|request-changes|reject|approve-subset` label and the newest human comment, with the hashes copied from the gate comment so [ADR-0005](0005-gates-bind-to-artifact-hashes.md) applies unchanged; blocking questions are `factory:question` comments answered in their thread; comments render to `feedback.md`. `LinearTracker` implements the tracker-neutral `Tracker` protocol over Linear's GraphQL API; `jira.py` is a stub with the same methods and a REST mapping in its docstring.
+   - **tracker** (`surfaces/tracker.py`): a run is a tracker project plus a run issue; every work item is a child issue whose state mirrors `WorkItemStage`; a gate is a comment on the run issue (or the work item's issue for `DEPLOY_FAILURE`) carrying the summary, artifact links, and the artifact sha256 list, plus the label `factory:gate-open`; the decision is read from a `factory:approve|request-changes|reject|approve-subset` label and the newest human comment, with the hashes copied from the gate comment so [ADR-0005](0005-gates-bind-to-artifact-hashes.md) applies unchanged; blocking questions are `factory:question` comments answered in their thread; comments render to `feedback.md`. `LinearTracker` implements the tracker-neutral `Tracker` protocol over Linear's GraphQL API; Jira is not implemented (its REST mapping is under Consequences).
    - **forge**: the design change request as before (now `runner._design_change_request`, forge-neutral through [ADR-0008](0008-pluggable-forge-github-default.md)). Kept for teams that want inline comments on the spec files.
    - **web** (first named `file`; the `file` name was removed on 2026-10-11): the CLI's file queue and local pages, plus the Factory Console (`factory web`, [08-factory-console.md](../08-factory-console.md)), which reads the same queue and writes decisions to it.
    The CLI's file queue is always composed in (`CompositeQueue`), so `factory decide` works whichever surface is configured; the first surface with a decision wins.
@@ -25,5 +25,19 @@ The existing protocols already allowed this: `ApprovalQueue` and `Notifier` in `
 ## Consequences
 - `RunContext` gains `tracker` and `pages`; `Gate` and `Question` gain `work_item_id`; `ctx.event` mirrors `work_item.stage` events onto the tracker. Nothing else in the stages changes.
 - A stale label (left from a previous gate on the same issue) is cleared when a new gate opens; a decision whose gate comment no longer matches the gate's hashes raises `StaleDecision` exactly like the CLI path.
-- Jira is a stub: filling it is a one-file job with the mapping in `jira.py`'s docstring; `TrackerQueue` needs nothing else.
+- Jira is not implemented. A `JiraTracker` is a one-file job against the `Tracker` protocol (keep the client as thin as `LinearClient`); `TrackerQueue` needs nothing else. The Jira Cloud REST v3 mapping, with `JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` (basic auth) and `JIRA_PROJECT_KEY`:
+
+  | Tracker method      | Jira                                                                                  |
+  |---------------------|---------------------------------------------------------------------------------------|
+  | ensure_project      | an Epic in the configured project (`POST /rest/api/3/issue`, issuetype Epic), or the  |
+  |                     | project key itself when `JIRA_PROJECT_KEY` pins one project per run                    |
+  | ensure_issue        | `POST /rest/api/3/issue` (issuetype Task/Story) with `parent` = the run's Epic         |
+  | issue_url           | `<JIRA_URL>/browse/<key>`                                                              |
+  | set_issue_stage     | `GET /rest/api/3/issue/{key}/transitions`, pick by name/category, then `POST` it      |
+  |                     | (Jira status categories: new, indeterminate, done mirror STAGE_TO_STATE's types)      |
+  | labels/add/remove   | the `labels` field via `PUT /rest/api/3/issue/{key}` (`update: {labels: [{add|remove}]}`) |
+  | post_comment        | `POST /rest/api/3/issue/{key}/comment` (body in ADF; wrap markdown in a codeBlock or    |
+  |                     | convert; the HTML marker must survive as text for `TrackerQueue` to find it)          |
+  | comments            | `GET /rest/api/3/issue/{key}/comment` -> {id, body (text), author.displayName,         |
+  |                     | created, parent: none (Jira has no threads; TrackerQueue falls back to "mentions id")} |
 - Nothing here is verified against the live Linear API; the mapping is unit-tested with a fake client. The first real run (docs/07) is the verification.

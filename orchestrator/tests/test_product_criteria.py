@@ -31,7 +31,7 @@ def test_specify_refuses_it_before_the_judge(tmp_path, root, examples):
     """The pre-check runs beside schema and traceability and lands in the verdict as a blocking issue."""
     import json
 
-    from test_session_cutoff import AutoQueue, _ctx, _result
+    from support.sessions import AutoQueue, run_after_gate_1, stage_result
 
     from factory.gates import Decision
     from factory.stages.specify import run_specify
@@ -43,13 +43,13 @@ def test_specify_refuses_it_before_the_judge(tmp_path, root, examples):
 
     def run(**kw):
         if kw["agent_key"] == "spec_writer":
-            return _result({"spec.json": json.dumps(spec).encode(), "spec.md": b"# spec"})
+            return stage_result({"spec.json": json.dumps(spec).encode(), "spec.md": b"# spec"})
         verdict = {"round": 1, "overall": {"result": "pass", "blocking_issue_count": 0, "summary_for_human": "ok"},
                    "per_spec": [{"spec_id": spec["spec_id"], "criteria": [], "issues": []}],
                    "coherence": {"interface_mismatches": [], "overlaps": [], "gaps": [], "ordering_problems": [], "contradictions": []},
                    "goal_coverage": []}
-        return _result({"verdict.json": json.dumps(verdict).encode()})
-    ctx = _ctx(tmp_path, root, examples, type("D", (), {"run": staticmethod(run)})(), AutoQueue(Decision.APPROVE))
+        return stage_result({"verdict.json": json.dumps(verdict).encode()})
+    ctx = run_after_gate_1(tmp_path, root, examples, type("D", (), {"run": staticmethod(run)})(), AutoQueue(Decision.APPROVE))
     _, verdict = run_specify(ctx, examples["outcome"], dict(decomposition, work_items=[decomposition["work_items"][0]]))
     assert verdict["overall"]["result"] == "revise"           # the judge passed it; the pre-check did not
     issues = [i for ps in verdict["per_spec"] for i in ps["issues"]]

@@ -28,6 +28,7 @@ from typing import Any
 
 from .. import checks
 from ..budget import reserve_budget
+from ..config import agent_model
 from ..gates import Decision, GateKind
 from ..state import RunStage, WorkItemStage
 from . import RunContext
@@ -85,7 +86,7 @@ def _write_one(ctx: RunContext, outcome, decomposition, work_item, sibling_specs
     )
     spec = require_json(res, "spec.json")
     spec["revision"] = round_no
-    stamp_provenance(spec, ctx, res, "Spec writer", "claude-sonnet-5-5")
+    stamp_provenance(spec, ctx, res, "Spec writer", agent_model("spec_writer"))
     # The writer's own spec.md travels with the spec object (private key, stripped from everything persisted or
     # uploaded as spec.json) so the judge, the implementer, the reviewers and the merge judge all read this round's
     # prose, never a lexicographic "latest" from the store that an earlier cycle can win.
@@ -130,7 +131,7 @@ def _judge(ctx: RunContext, outcome, decomposition, specs: dict[str, dict], roun
     )
     verdict = require_json(res, "verdict.json")
     verdict["round"] = round_no
-    stamp_provenance(verdict, ctx, res, "Spec judge", "claude-opus-5-5")
+    stamp_provenance(verdict, ctx, res, "Spec judge", agent_model("spec_judge"))
     res.outputs["verdict.json"] = json.dumps(verdict, indent=2).encode()
     persist_outputs(ctx, "judge", res, prefix=f"r{round_no}-")
     ctx.event("judge.verdict", {"round": round_no, "result": verdict["overall"]["result"],

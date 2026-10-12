@@ -179,7 +179,7 @@ def test_results(e2e_rows: list[dict[str, Any]], head: str) -> dict[str, Any]:
 
 def integrator(opened: list[str]):
     """An integrator session that sends the orchestrator's draft unchanged, as the prompt asks when the lint is clean."""
-    from test_session_cutoff import _result
+    from support.sessions import stage_result
 
     def run(**kw):
         facts = json.loads(kw["uploads"]["pr_facts.json"])
@@ -189,5 +189,5 @@ def integrator(opened: list[str]):
             "description_markdown": kw["uploads"]["pr_description.md"].decode(), "labels": facts["labels"],
             "reviewers": facts["reviewers"], "draft": facts["draft"]}, None)
         opened.append(answer)
-        return _result({"cr.json": answer.encode()})
+        return stage_result({"cr.json": answer.encode()})
     return SimpleNamespace(run=run)

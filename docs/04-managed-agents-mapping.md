@@ -46,7 +46,7 @@ Agent toolset at `auto` everywhere. The sandbox is disposable and holds no secre
 3. **Authoritative verification.** Running the spec's test commands in a clean checkout the agent did not touch, running `test_plan.e2e` against the preview URL read from the forge, and computing deterministic checks (including `manifest_valid`, `e2e_coverage`, `e2e_preview`). In production this is a CI job on the branch; locally it is `LocalVerifier`.
 4. **Merging independent reviewer passes.** Two sessions, one findings file.
 5. **Routing judge issues to the specs that own them**, so only failing specs are rewritten.
-6. **The forge and the gate surfaces.** Change requests, the external Factory run record, tracker issues and pages, comment harvesting into `feedback.md`, CR state webhooks.
+6. **The forge and the gate surfaces.** Change requests, the external Factory run record, tracker issues and pages, comment harvesting into `feedback.md`, CR state by polling (`watcher.py`).
 7. **Evals.** Pinning agent versions, replaying frozen inputs, grading.
 8. **Watching the platform's deploy.** Workflow-run and deployment reads on the forge (unverified shapes on both GitHub and GitLab), dev e2e runs, and the `DEPLOY_FAILURE` gate. The factory never deploys ([ADR-0006](adr/0006-observed-deployment-not-agent-driven.md)).
 

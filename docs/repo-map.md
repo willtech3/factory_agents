@@ -17,6 +17,7 @@ Where things live, what runs, and what is reference material or not wired up. St
 | `examples/` | Outcomes and fixtures (see [Examples](#examples)) | Partly. Some are start points or test fixtures |
 | `evals/` | Evaluation plan, dataset specs, graders, and a reference run | Graders are tested. The runner's agent-driving step is a stub |
 | `docs/` | Design, setup guides, ADRs, research, and dated audits and post-mortems | No |
+| `.github/workflows/ci.yml` | Tests on Python 3.12 and 3.13, the ruff gate, and the browser runner against a real Chromium | On every pull request |
 | `.claude/launch.json` | Starts the Console as a Claude Code preview server | Dev convenience |
 
 Local-only files (git-ignored): `.env` (API key, workspace ID, forge token), `runs/` (every run's event log and artifacts), `orchestrator/.venv/`, `orchestrator/shell-shim/` (ignored as a safety net: the verifier's `sh` symlink belongs under each run's verify directory, and `tests/conftest.py` fails any test that leaves it here).
@@ -141,12 +142,11 @@ A human decides a gate by writing to the file queue, either from the Console or 
 | Module | Role |
 |---|---|
 | `forge/__init__.py` | The `Forge` protocol, `make_forge`, and `ensure_repository` (creates and seeds a new repository) |
-| `forge/github.py` | GitHub REST: branches, multi-file commits, PRs, labels, comments, Actions runs, Deployments |
+| `forge/github.py` | GitHub REST: branches, multi-file commits, PRs, labels, Actions runs, Deployments |
 | `forge/gitlab.py` | GitLab REST, the second forge |
 | `surfaces/filequeue.py` | The `file`/`web` gate surface: JSON files under `runs/_queue/` shared by the run process, `factory decide` and the Console |
 | `surfaces/artifact_pages.py` | Renders one self-contained HTML page per gate for reading |
 | `surfaces/tracker.py` | Linear as a gate surface: issues mirror work items, labels and comments carry decisions |
-| `surfaces/jira.py` | Jira tracker stub |
 
 Tests live in `orchestrator/tests/`, one file per area. `tests/support/scripted_run.py` drives a full scripted run (Ledgerline data) through the real store, state machine, checks and file queue without agents.
 
@@ -156,7 +156,7 @@ Tests live in `orchestrator/tests/`, one file per area. `tests/support/scripted_
 |---|---|
 | **Run live** (first live runs on 2026-10-10, see the [post-mortem](postmortems/2026-10-10-first-live-runs.md)) | The session driver and stages 1–4 with the deployed agents. GitHub repository creation, branches, commits and PRs: [factory-sample-app#1](https://github.com/willtech3/factory-sample-app/pull/1) was merged, [factory-switchboard#2](https://github.com/willtech3/factory-switchboard/pull/2) is open. The Console and the file-queue gate surface. `local` and `managed` preview modes. `factory resume`. App onboarding (draft setup PR on `factory-onboarding-proof`) |
 | **Tested, not confirmed live** | `factory watch` and Stage 5 (the personal setup has no dev deploy, so nothing to observe yet). The `platform` preview mode and the GitHub Actions and Deployments reads it depends on. The Linear tracker surface. The Claude in Chrome browser worker (smoke-tested interactively, not unattended). The security reviewer pass (`agents/security_reviewer.md`, registered in `claude-lock.json`) |
-| **Stub** | `surfaces/jira.py` (every method raises `NotImplementedError`). `ClaudeArtifactPublisher` in `artifact_pages.py` (writes local files). `evals/run_eval.py::produce` (does not drive agents yet) |
+| **Stub** | `ClaudeArtifactPublisher` in `artifact_pages.py` (writes local files). `evals/run_eval.py::produce` (does not drive agents yet) |
 | **Written, never run** | `forge/gitlab.py` and the GitLab vault credential path (ADR-0003) |
 | **Not used by code** | `examples/ledgerline/` is test fixture data only. `examples/greenfield-browser/` is a recipe to try by hand with `factory environment verify` |
 

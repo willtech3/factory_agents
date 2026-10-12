@@ -2,6 +2,7 @@
 from types import SimpleNamespace
 
 from conftest import make_config
+from support.sessions import stage_result
 
 from factory.forge.github import GitHubForge
 from factory.forge.gitlab import GitLabForge
@@ -49,9 +50,7 @@ def test_decompose_retry_does_not_reenter_the_stage(tmp_path, root, examples):
         def run(self, **kw):
             d = next(produced)
             import json
-            return SimpleNamespace(session_id="s", agent_id="a", agent_version=1, outcome_result="satisfied", outcome_iterations=1,
-                                   list_cost_usd=1.0, stop_reason="end_turn", events_seen=1, custom_tool_calls=[],
-                                   outputs={"decomposition.json": json.dumps(d).encode(), "decomposition.md": b"# d"})
+            return stage_result({"decomposition.json": json.dumps(d).encode(), "decomposition.md": b"# d"}, cost=1.0)
 
     ctx.driver = Driver()
     decomposition, shas = dec.run_decompose(ctx, outcome)
@@ -73,9 +72,7 @@ def test_decompose_retries_once_after_owner_feedback(tmp_path, root, examples):
         def run(self, **kw):
             import json
             feedback.append(kw["uploads"].get("prior/feedback.md", b"").decode())
-            return SimpleNamespace(session_id="s", agent_id="a", agent_version=1, outcome_result="satisfied", outcome_iterations=1,
-                                   list_cost_usd=1.0, stop_reason="end_turn", events_seen=1, custom_tool_calls=[],
-                                   outputs={"decomposition.json": json.dumps(next(produced)).encode(), "decomposition.md": b"# d"})
+            return stage_result({"decomposition.json": json.dumps(next(produced)).encode(), "decomposition.md": b"# d"}, cost=1.0)
 
     ctx.driver = Driver()
     decomposition, _ = dec.run_decompose(ctx, examples["outcome"], "Split the importer.", examples["decomposition"])
@@ -129,9 +126,7 @@ def test_design_sessions_get_the_platform_contract_skill_by_path(tmp_path, root,
             d = examples["decomposition"] if kw["agent_key"] == "decomposer" else (
                 examples["spec_smart_retries"] if kw["agent_key"] == "spec_writer" else examples["verdict_round2"])
             name = {"decomposer": "decomposition.json", "spec_writer": "spec.json", "spec_judge": "verdict.json"}[kw["agent_key"]]
-            return SimpleNamespace(session_id="s", agent_id="a", agent_version=1, outcome_result="satisfied", outcome_iterations=1,
-                                   list_cost_usd=1.0, stop_reason="end_turn", events_seen=1, custom_tool_calls=[],
-                                   outputs={name: json.dumps(d).encode(), "decomposition.md": b"# d", "spec.md": b"# s"})
+            return stage_result({name: json.dumps(d).encode(), "decomposition.md": b"# d", "spec.md": b"# s"}, cost=1.0)
 
     ctx.driver = Driver()
     dec.run_decompose(ctx, examples["outcome"])

@@ -5,7 +5,6 @@ archive; proposed setup is reviewed by digest and only runs in a hosted sandbox.
 """
 from __future__ import annotations
 
-import base64
 import fcntl
 import io
 import json
@@ -23,9 +22,9 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
 import jsonschema
-from fastapi import HTTPException
 
 from .config import anthropic_client
+from .errors import Refusal
 from .forge.github import GitHubForge
 from .sessions import SessionDriver
 from .test_environments import fingerprint, snapshot, validate_profile, run_hosted, ensure_environment, recipe_relative, app_labels
@@ -215,10 +214,10 @@ class AppOnboarding:
 
     def folder(self, app_id):
         if not APP_ID.fullmatch(app_id):
-            raise HTTPException(404, "App not found")
+            raise Refusal(404, "App not found")
         p = self.root / app_id
         if not (p / "app.json").is_file():
-            raise HTTPException(404, "App not found")
+            raise Refusal(404, "App not found")
         return p
 
     @contextmanager
@@ -260,14 +259,14 @@ class AppOnboarding:
     def create(self, *, kind, name, repository_url, description, budget_usd, revision=""):
         from .web.repositories import repository_name
         if self.cfg.forge != "github":
-            raise HTTPException(409, "App onboarding currently supports GitHub repositories")
+            raise Refusal(409, "App onboarding currently supports GitHub repositories")
         repository_name(repository_url, self.cfg)
         if kind not in {"existing", "greenfield"} or not name.strip() or not description.strip():
-            raise HTTPException(400, "Choose an app type, a name, and a short description")
+            raise Refusal(400, "Choose an app type, a name, and a short description")
         if not math.isfinite(budget_usd) or not 0 < budget_usd <= 60:
-            raise HTTPException(400, "Set a total onboarding budget above zero and at most $60")
+            raise Refusal(400, "Set a total onboarding budget above zero and at most $60")
         if revision and (len(revision) > 180 or not re.fullmatch(r"[A-Za-z0-9_.\-/]+", revision)):
-            raise HTTPException(400, "Invalid source revision")
+            raise Refusal(400, "Invalid source revision")
         r = {"app_id": "app_" + uuid.uuid4().hex[:12], "name": name[:160], "kind": kind,
              "repository_url": repository_url.removesuffix(".git"), "description": description[:12000],
              "revision": revision, "status": "connected", "phase": "Ready to inspect the app",
@@ -290,19 +289,11 @@ class AppOnboarding:
         if r["kind"] == "existing":
             forge = self.forge(r)
             try:
-                meta = forge._get("")
+                meta = forge.repository_info()
                 if meta.get("archived") or meta.get("disabled"):
                     raise ValueError("This repository is archived or disabled")
-                ref = r["revision"] or meta["default_branch"]
-                commit = forge._get("/commits/" + quote(ref, safe=""))["sha"]
-                with forge.http.stream("GET", forge._r("/tarball/" + commit)) as response:
-                    response.raise_for_status()
-                    data = bytearray()
-                    for part in response.iter_bytes():
-                        data.extend(part)
-                        if len(data) > MAX_SOURCE:
-                            raise ValueError("Repository archive exceeds the onboarding size limit")
-                unpack_source(bytes(data), directory, strip_root=True)
+                commit = forge.commit_sha(r["revision"] or meta["default_branch"])
+                unpack_source(forge.download_archive(commit, MAX_SOURCE), directory, strip_root=True)
                 default_branch = meta["default_branch"]
             finally:
                 forge.http.close()
@@ -343,14 +334,14 @@ class AppOnboarding:
     def start(self, app_id, operation, plan_sha256=None):
         with self.locked(app_id) as r:
             if r["status"] in BUSY:
-                raise HTTPException(409, "This app already has an operation in progress")
+                raise Refusal(409, "This app already has an operation in progress")
             if operation not in {"discover", "verify", "publish"}:
-                raise HTTPException(400, "Unknown onboarding operation")
+                raise Refusal(400, "Unknown onboarding operation")
             if operation != "discover":
                 if not plan_sha256 or plan_sha256 != r.get("plan_sha256"):
-                    raise HTTPException(409, "The setup plan changed. Review the current plan before continuing.")
+                    raise Refusal(409, "The setup plan changed. Review the current plan before continuing.")
                 if operation == "verify" and (not r["plan"].get("profile") or any(q["required"] and not r["answers"].get(q["id"]) for q in r["plan"]["questions"])):
-                    raise HTTPException(409, "Resolve the required setup questions and inspect the revised plan first")
+                    raise Refusal(409, "Resolve the required setup questions and inspect the revised plan first")
             # A repeat click on the same plan returns its pull request. A plan verified after re-onboarding is new work:
             # live emoji-smith's fixed check could not be published while the record still named the merged setup PR.
             if operation == "publish" and r.get("pr_url") and (
@@ -359,7 +350,7 @@ class AppOnboarding:
             available = r["budget_usd"] - r["spent_usd"]
             cap = min(3.0 if operation == "discover" else 4.0, available)
             if operation != "publish" and cap < 0.10:
-                raise HTTPException(409, "The onboarding budget is exhausted; no new session was started")
+                raise Refusal(409, "The onboarding budget is exhausted; no new session was started")
             previous_attempt = {"plan": r.get("plan") or r.get("last_proposal"), "verification": r.get("verification"), "error": r.get("error")}
             r.update(status={"discover": "discovering", "verify": "verifying", "publish": "publishing"}[operation],
                      phase={"discover": "Inspecting source and preparing a setup proposal", "verify": "Provisioning a fresh hosted test environment", "publish": "Publishing the setup for review"}[operation],
@@ -376,13 +367,13 @@ class AppOnboarding:
     def recover(self, app_id):
         with self.locked(app_id) as r:
             if r["status"] not in BUSY or owner_alive(r):
-                raise HTTPException(409, "The current controller is still running; no recovery was attempted")
+                raise Refusal(409, "The current controller is still running; no recovery was attempted")
             for session in r["sessions"]:
                 if not session.get("accounted"):
                     try:
                         self.client.beta.sessions.events.send(session_id=session["session_id"], events=[{"type": "user.interrupt"}], timeout=30)
                     except Exception:
-                        raise HTTPException(502, "Could not stop the previous hosted session. Recovery is blocked to avoid duplicate work.") from None
+                        raise Refusal(502, "Could not stop the previous hosted session. Recovery is blocked to avoid duplicate work.") from None
             if any(not s.get("accounted") for s in r["sessions"]):
                 r["spent_usd"] += r.get("reserved_usd", 0)
                 r["cost_warning"] = "Interrupted controller: the reserved limit was charged because final usage is unavailable."
@@ -496,10 +487,10 @@ class AppOnboarding:
 
     def feedback(self, app_id, text):
         if not isinstance(text, str) or not text.strip() or len(text) > 6000:
-            raise HTTPException(400, "Describe the setup change in 1–6000 characters; do not include credentials")
+            raise Refusal(400, "Describe the setup change in 1–6000 characters; do not include credentials")
         with self.locked(app_id) as r:
             if r["status"] in BUSY:
-                raise HTTPException(409, "Wait for the current operation before changing its instructions")
+                raise Refusal(409, "Wait for the current operation before changing its instructions")
             r.update(feedback=text.strip(), status="needs_input", phase="Feedback saved; discover again to revise the setup", plan_sha256=None)
             self.write(r)
         return self.get(app_id)
@@ -507,10 +498,10 @@ class AppOnboarding:
     def answers(self, app_id, answers):
         with self.locked(app_id) as r:
             if r["status"] in BUSY:
-                raise HTTPException(409, "Wait for the current operation")
+                raise Refusal(409, "Wait for the current operation")
             allowed = {q["id"] for q in r.get("plan", {}).get("questions", [])}
             if not set(answers) <= allowed or any(not isinstance(v, str) or len(v) > 6000 for v in answers.values()):
-                raise HTTPException(400, "Answer only the current setup questions")
+                raise Refusal(400, "Answer only the current setup questions")
             r["answers"].update(answers)
             r.update(status="needs_input", phase="Inspect again to incorporate these answers", plan_sha256=None)
             self.write(r)
@@ -571,13 +562,13 @@ class AppOnboarding:
 
     def credential(self, app_id, name, value):
         if not value or len(value) > 32000 or any(c in value for c in "\r\n\0"):
-            raise HTTPException(400, "Enter a valid single-line test credential")
+            raise Refusal(400, "Enter a valid single-line test credential")
         with self.locked(app_id) as r:
             if r["status"] in BUSY:
-                raise HTTPException(409, "Wait for the current operation before changing a connection")
+                raise Refusal(409, "Wait for the current operation before changing a connection")
             secret = next((s for s in r.get("plan", {}).get("profile", {}).get("secrets", []) if s["name"] == name), None)
             if not secret:
-                raise HTTPException(400, "This credential is not declared by the reviewed test recipe")
+                raise Refusal(400, "This credential is not declared by the reviewed test recipe")
             try:
                 old = next((c for c in r["credentials"] if c["name"] == name), None)
                 scope = secret_scope(secret)
@@ -594,7 +585,7 @@ class AppOnboarding:
                     r["credentials"].append({"name": name, "id": created.id, "vault_id": vault, "scope_sha256": scope})
                 self.write(r)
             except Exception:
-                raise HTTPException(502, "The test credential could not be saved to the vault. Its value was not stored by Factory.") from None
+                raise Refusal(502, "The test credential could not be saved to the vault. Its value was not stored by Factory.") from None
         return self.get(app_id)
 
     def _publish(self, app_id, cap):
@@ -618,13 +609,11 @@ class AppOnboarding:
                     created = forge.create_repository(private=True, description=r["description"])
                     default = created["default_branch"]
                     self.update(app_id, repository_created=True, default_branch=default)
-                base = forge._ref_sha(default)
+                base = forge.ref_sha(default)
             else:
                 base = r["source_sha"]
             branch = "factory/onboarding-" + app_id.removeprefix("app_")
-            response = forge.http.post(forge._r("/git/refs"), json={"ref": "refs/heads/" + branch, "sha": base})
-            if response.status_code not in (201, 422):
-                response.raise_for_status()
+            forge.create_branch(branch, base)            # an existing branch (a retried publish) is reused
             forge.commit_files(branch, "feat: add Factory app onboarding and isolated verification", files)
             # Discovery prose predates execution and can still say "nothing was
             # verified". Describe the published result from controller evidence.
@@ -711,43 +700,40 @@ class AppOnboarding:
             return None
         if len(apps) > 1:
             names = ", ".join(f"{a.get('name') or a['app_id']} ({a['app_id']})" for a in apps)
-            raise HTTPException(409, f"This repository is onboarded as several apps ({names}); start the change from the app you mean")
+            raise Refusal(409, f"This repository is onboarded as several apps ({names}); start the change from the app you mean")
         return self.run_settings(apps[0]["app_id"], target)
 
     def run_settings(self, app_id, target):
         """Resolve trusted per-run bindings server-side; client never supplies vault IDs."""
         r = self.get(app_id)
         if r["status"] not in {"ready", "ready_limited"} or r.get("verification", {}).get("status") != "passed":
-            raise HTTPException(409, "Verify this app's current setup before starting a change run")
+            raise Refusal(409, "Verify this app's current setup before starting a change run")
         verified = r["verification"]
         if verified.get("plan_sha256") != r.get("plan_sha256") or verified.get("source_sha") != r.get("source_sha"):
-            raise HTTPException(409, "The onboarding evidence is stale; verify the current setup again")
+            raise Refusal(409, "The onboarding evidence is stale; verify the current setup again")
         if target.get("url", "").removesuffix(".git").rstrip("/").lower() != r["repository_url"].rstrip("/").lower() or target.get("create"):
-            raise HTTPException(409, "The selected repository differs from this onboarded app")
+            raise Refusal(409, "The selected repository differs from this onboarded app")
         profile = r["plan"]["profile"]
         configured = {c["name"] for c in r["credentials"] if c["status"] == "configured"}
         if {s["name"] for s in profile["secrets"] if s["required"]} - configured:
-            raise HTTPException(409, "Reconnect the required test credentials for the current recipe")
+            raise Refusal(409, "Reconnect the required test credentials for the current recipe")
         forge = self.forge(r)
         try:
             ref = target.get("default_branch") or r.get("default_branch", "main")
             def read_json(path):
-                obj = forge._get("/contents/" + quote(safe_path(path), safe="/") + "?ref=" + quote(ref, safe=""))
-                if obj.get("encoding") != "base64" or obj.get("size", 0) > 256 * 1024:
-                    raise ValueError("Unsupported setup file")
-                return json.loads(base64.b64decode(obj["content"]))
+                return json.loads(forge.read_file(safe_path(path), ref, 256 * 1024))
             if not forge.file_exists(ref, self.cfg.service_manifest_path):
                 # manifest_valid would fail the change after its implementation was paid for; say so before it starts.
-                raise HTTPException(409, f"The base branch has no {self.cfg.service_manifest_path}, which every change run "
+                raise Refusal(409, f"The base branch has no {self.cfg.service_manifest_path}, which every change run "
                                          "checks. Discover again so onboarding proposes one, then merge its setup PR.")
             manifest = read_json(self.cfg.service_manifest_path)
             path = manifest.get("test_environment", {}).get("profile", "test_environment.json")
             if path != r["plan"]["profile_path"] or fingerprint(read_json(path)) != verified["profile_sha256"]:
                 raise ValueError("Recipe is not the verified version")
-        except HTTPException:
+        except Refusal:
             raise
         except Exception:
-            raise HTTPException(409, "The selected base branch does not contain the verified setup. Merge its setup PR, or onboard and verify the current recipe before starting this run.") from None
+            raise Refusal(409, "The selected base branch does not contain the verified setup. Merge its setup PR, or onboard and verify the current recipe before starting this run.") from None
         finally:
             forge.http.close()
         with self.locked(app_id) as private:
@@ -759,8 +745,8 @@ class AppOnboarding:
     def evidence(self, app_id, name):
         r = self.get(app_id)
         if name not in {x["name"] for x in r["evidence"]} or Path(name).name != name:
-            raise HTTPException(404, "Evidence not found")
+            raise Refusal(404, "Evidence not found")
         p = self.folder(app_id) / r["evidence_dir"] / name
         if not p.is_file() or p.is_symlink():
-            raise HTTPException(404, "Evidence not found")
+            raise Refusal(404, "Evidence not found")
         return p

@@ -25,16 +25,14 @@ from typing import Any
 from . import test_environments as te
 from . import visual
 from .budget import reserve_budget
-from .checks import CheckResult
+from .checks import SETUP_CHECK, CheckResult
 from .sandbox_tools import browser_runner as br
 from .sandbox_tools import environment_runner as er
 
-SETUP_CHECK = "verification_setup"          # the same name LocalVerifier.prepare_environment reports
 ENVIRONMENT_CHECK = "hosted_environment"
 VERIFY_STAGE = "verify"
 NODE_ID_RE = er.NODE_ID_RE                 # one definition: the sandbox runner writes ids, this side checks them
-BUN_ID_RE = re.compile(r"^[^\n]+?\.[cm]?[jt]sx?::[^\n]+$")    # file::outer describe > inner describe > test name
-TEST_ID_RE = {"pytest": NODE_ID_RE, "bun": BUN_ID_RE}
+TEST_ID_RE = {"pytest": NODE_ID_RE, "bun": er.BUN_ID_RE}       # one definition each, shared with the sandbox runner
 UNSUPPORTED_COMMANDS = {"factory:browser": "the attached-browser worker (factory:browser) runs on a person's machine and cannot "
                                            "run in a hosted sandbox; use `factory:journey <name>` with a journey the implementer writes"}
 # `factory:journey <name>`: the factory's own browser runner on the change's journey, a run artifact the implementer wrote
@@ -193,17 +191,8 @@ class HostedVerifier:
         if isinstance(diagnosis, dict) and isinstance(diagnosis.get("summary"), str):
             record["diagnosis"] = {"source": "sandbox-agent", "summary": diagnosis["summary"][:1500]}
         record.update(session_id=res.session_id, cost_usd=res.list_cost_usd, stop_reason=res.stop_reason)
-        try:
-            client.beta.sessions.archive(res.session_id, timeout=60)
-            record["session_archived"] = True
-        except Exception:  # noqa: BLE001  (cleanup is reported, never fatal)
-            record.update(session_archived=False, cleanup_warning="Session archival needs retry.")
-        try:
-            report = json.loads(res.outputs.get("environment-result.json", b"{}"))
-        except ValueError:
-            report = {}
-        report = report if isinstance(report, dict) else {}
-        bound = all(report.get(k) == descriptor[k] for k in ("head_sha", "profile_sha256", "source_sha256", "spec_sha256", "journeys"))
+        record.update(te.archive_session(client, res.session_id))
+        report, bound = te.harness_report(res.outputs, descriptor, te.BINDING_KEYS + ("spec_sha256", "journeys"))
         results = ((report.get("change") or {}).get("results") or {}) if bound else {}
         if bound and report.get("missing_secrets"):
             record["missing_secrets"] = [str(x) for x in report["missing_secrets"]][:20]

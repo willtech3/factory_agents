@@ -1,5 +1,6 @@
-"""Gates 1 and 2 never reach the target repository (ADR-0011): no design branch, commit or change request, and no
-comments read back from one, even when a forge is bound."""
+"""ADR-0011: presenting a Gate 1 or Gate 2 decision touches no repository. These are guards on the two runner helpers a gate
+uses with a forge bound (`_present` publishes the reading page, `_feedback` builds the owner's feedback); a forge whose
+every attribute raises catches a reintroduced design branch, commit, change request or comment read-back."""
 from conftest import make_config
 
 from factory import runner

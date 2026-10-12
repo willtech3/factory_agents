@@ -2,9 +2,10 @@
 checks, and file queue, so the whole human loop (question, Gate 1, Gate 2, change requests) can be exercised and
 asserted on without the Managed Agents platform or a forge.
 
-Every event it appends is one the orchestrator would append, in the same order and shape, so the Console shows a
-scripted run exactly as it would show a real one. The difference is who produces the artifacts: here they are
-adapted from `examples/ledgerline/` instead of coming from agent sessions. A scripted run keeps its phase in
+It appends the events the orchestrator would append, in the same order and with the payload keys the runner writes
+for gates and decisions, so the Console shows a scripted run the way it shows a real one. It is still a hand-written
+copy of the runner's log, not the runner: a test that needs the real event shapes drives `factory.runner` instead.
+Its artifacts are adapted from `examples/ledgerline/` instead of coming from agent sessions. A scripted run keeps its phase in
 `runs/<run_id>/scripted.json`; `tick()` advances it when the human has answered or decided. This is test support
 only: nothing in the product refers to it.
 """
@@ -38,7 +39,7 @@ class ScriptedRun:
         self.examples_dir = examples_dir
         self.store = RunStore(runs_dir)
         self.queue = FileQueue(runs_dir / "_queue")
-        self._lock = threading.Lock()      # tick_all() and tick() must not advance a run at once
+        self._lock = threading.Lock()      # two ticks must not advance a run at once
 
     # ------------------------------------------------------------------ public
     def example_outcome(self) -> dict[str, Any]:
@@ -63,15 +64,6 @@ class ScriptedRun:
                     stage="decompose", actor="agent")
         self._save(run_id, {"phase": "awaiting_answer", "question_id": q.question_id, "revision": 0, "spec_revision": 0})
         return run_id
-
-    def runs(self) -> list[str]:
-        return sorted(p.parent.name for p in self.runs_dir.glob("run_*/scripted.json"))
-
-    def is_scripted(self, run_id: str) -> bool:
-        return (self.runs_dir / run_id / "scripted.json").exists()
-
-    def tick_all(self) -> list[tuple[str, str]]:
-        return [(r, self.tick(r)) for r in self.runs()]
 
     def tick(self, run_id: str) -> str:
         """Advance one phase if the human has done their part. Returns the phase after the tick."""
@@ -144,10 +136,7 @@ class ScriptedRun:
         outcome = self.store.get_json(run_id, "intake", "outcome.json")
         dec = self.store.get_json(run_id, "decompose", f"r{m['revision']}-decomposition.json")
         rev = int(m.get("spec_revision", 0)) + 1
-        if rev == 1:
-            self._event(run_id, "stage.entered", {"stage": RunStage.SPECIFYING.value}, stage="specify")
-        else:
-            self._event(run_id, "stage.entered", {"stage": RunStage.SPECIFYING.value}, stage="specify")
+        self._event(run_id, "stage.entered", {"stage": RunStage.SPECIFYING.value}, stage="specify")
         specs = self._adapted_specs(outcome, dec, rev, feedback)
         shas: dict[str, str] = {}
         for sid, spec in specs.items():
@@ -217,13 +206,15 @@ class ScriptedRun:
         gate = Gate(run_id=run_id, kind=kind, artifacts=refs, assignees=(outcome["owner"]["handle"],), summary=summary, options=options)
         self.queue.open(gate)
         self._event(run_id, "gate.opened", {"gate_id": gate.gate_id, "kind": kind.value, "artifacts": [r.__dict__ for r in refs],
-                                            "assignees": list(gate.assignees), "summary": summary}, stage=kind.value)
+                                            "assignees": list(gate.assignees), "summary": summary, "work_item_id": None},
+                    stage=kind.value)
         return gate
 
     def _decided(self, run_id: str, m: dict[str, Any], d: Any, kind: GateKind) -> None:
         self._event(run_id, "gate.decided", {"gate_id": d.gate_id, "kind": kind.value, "decision": d.decision.value,
                                              "comments": d.comments, "approved_subset": list(d.approved_subset),
-                                             "artifact_shas": list(d.artifact_shas)}, stage=kind.value, actor="human")
+                                             "decided_by": d.decided_by, "artifact_shas": list(d.artifact_shas)},
+                    stage=kind.value, actor="human")
 
     def _event(self, run_id: str, kind: str, payload: dict[str, Any], actor: str = "orchestrator", **extra: Any) -> None:
         self.store.append(run_id, kind, {"type": actor if actor in ("human", "agent", "platform") else "orchestrator", "id": actor},

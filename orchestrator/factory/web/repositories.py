@@ -5,9 +5,9 @@ import re
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import HTTPException
 
 from ..config import Config
+from ..errors import Refusal
 from ..forge.github import GitHubForge
 
 
@@ -17,15 +17,15 @@ def repository_name(url: str, cfg: Config) -> str:
     if (parsed.scheme != 'https' or parsed.netloc.lower() != host.netloc.lower()
             or parsed.query or parsed.fragment or len(parts) != 2
             or any(not re.fullmatch(r'[A-Za-z0-9_.-]+', part) or part in ('.', '..') for part in parts)):
-        raise HTTPException(400, 'Choose a repository on the configured GitHub host, using its HTTPS repository URL.')
+        raise Refusal(400, 'Choose a repository on the configured GitHub host, using its HTTPS repository URL.')
     return '/'.join(parts)
 
 
 def list_repositories(cfg: Config, page: int) -> dict:
     if cfg.forge != 'github':
-        raise HTTPException(409, 'Repository browsing is available for GitHub. Enter the repository URL for this code host.')
+        raise Refusal(409, 'Repository browsing is available for GitHub. Enter the repository URL for this code host.')
     if not cfg.forge_token:
-        raise HTTPException(409, 'Connect GitHub with FORGE_TOKEN in Settings to browse repositories.')
+        raise Refusal(409, 'Connect GitHub with FORGE_TOKEN in Settings to browse repositories.')
     forge = GitHubForge(cfg.forge_url, cfg.forge_token, '', timeout=15)
     try:
         response = forge.http.get(f'{forge.api}/user/repos', params={
@@ -33,9 +33,9 @@ def list_repositories(cfg: Config, page: int) -> dict:
             'direction': 'desc', 'per_page': 100, 'page': page,
         })
         if response.status_code == 401:
-            raise HTTPException(401, 'GitHub did not accept the configured token. Check the connection in Settings.')
+            raise Refusal(401, 'GitHub did not accept the configured token. Check the connection in Settings.')
         if response.status_code in (403, 429):
-            raise HTTPException(503, 'GitHub access is restricted or rate limited. Check repository access or try again later.')
+            raise Refusal(503, 'GitHub access is restricted or rate limited. Check repository access or try again later.')
         response.raise_for_status()
         repositories = []
         for item in response.json():
@@ -52,6 +52,6 @@ def list_repositories(cfg: Config, page: int) -> dict:
             })
         return {'repositories': repositories, 'next_page': page + 1 if 'next' in response.links else None}
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-        raise HTTPException(502, 'GitHub repositories could not be loaded. Try again.') from exc
+        raise Refusal(502, 'GitHub repositories could not be loaded. Try again.') from exc
     finally:
         forge.http.close()

@@ -24,12 +24,11 @@ Goal: one `decomposer` session end to end on the Ledgerline example outcome agai
 Goal: confirm `forge/github.py`'s read-only calls against the personal repository with `templates/github-actions-preview.yml` installed: workflow run by branch and head sha, run by id, failed job log, deployments by `ref` and by `environment` with `environment_url` on the latest status. Then replace the template's placeholder deploy step with something real (a Fly or Render app is enough) so `e2e_preview` can pass.
 
 ## Spike 2b: the self-hosted GitLab pipeline and environment API (1 day, work setup)
-Goal: confirm the read-only calls Stage 5 and the preview lookup depend on, against the real instance. `forge/gitlab.py`'s pipeline, job, environment, and deployment methods and `parse_pipeline_webhook` follow the GitLab REST docs and are marked unverified.
+Goal: confirm the read-only calls Stage 5 and the preview lookup depend on, against the real instance. `forge/gitlab.py`'s pipeline, job, environment, and deployment methods follow the GitLab REST docs and are marked unverified.
 - With `FORGE_URL` pointed at the self-hosted host: list pipelines by `ref` and `sha`; fetch a pipeline, its jobs, and a failed job's trace; list environments by `name` and `search` and confirm `external_url` is populated by the platform's deploy jobs (`environment:url` in the CI template); list deployments by environment.
 - Learn the preview environment naming convention and set `FACTORY_PREVIEW_ENVIRONMENT_PREFIX`; learn the fixed service-manifest path and set `FACTORY_SERVICE_MANIFEST_PATH`; confirm the dev environment name (`FACTORY_DEV_ENVIRONMENT`).
-- Register a Pipeline Hook pointing at a throwaway endpoint and compare the payload with what `parse_pipeline_webhook` expects.
 - Add the GitLab host plus the preview and dev domains to `environments/factory-cloud.yaml` `allowed_hosts` and confirm a sandbox can `curl` a preview URL.
-- Implement `surfaces/jira.py` from its docstring mapping and run one gate through Jira.
+- Implement a `JiraTracker` from the mapping in [ADR-0007](adr/0007-pluggable-gate-surfaces.md) and run one gate through Jira.
 - Replace `skills/platform-contract/SKILL.md` with the platform team's real skill and `schemas/service_manifest.schema.json` with their schema; re-run the tests.
 
 ## Spike 3: one implementation through review and change request (3 to 5 days)

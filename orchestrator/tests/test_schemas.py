@@ -91,13 +91,6 @@ def test_spec_requires_user_visible_and_e2e(schemas_dir, examples):
     assert not checks.schema_valid(spec, schemas_dir / "spec.schema.json", schemas_dir).passed
 
 
-def test_run_event_accepts_deploy_kinds(schemas_dir):
-    for kind in ("deploy.started", "deploy.succeeded", "deploy.failed", "e2e.dev_passed", "e2e.dev_failed"):
-        ev = {"event_id": "evt_1", "run_id": "run_abcdefgh", "seq": 0, "at": "2026-10-09T10:00:00Z", "kind": kind,
-              "actor": {"type": "platform"}, "payload": {}}
-        assert checks.schema_valid(ev, schemas_dir / "run_event.schema.json", schemas_dir).passed
-
-
 def test_run_event_uses_change_request_kinds(schemas_dir):
     """Event kinds are forge-neutral: cr.* (a change request is a GitHub PR or a GitLab MR), never mr.*."""
     for kind, ok in (("cr.opened", True), ("cr.merged", True), ("cr.closed", True),
@@ -157,3 +150,9 @@ def test_review_finding_may_carry_the_environmental_flag(schemas_dir, examples):
     assert checks.schema_valid(doc, schemas_dir / "review_findings.schema.json", schemas_dir).passed
     doc["findings"][0]["environmental"] = "yes"
     assert not checks.schema_valid(doc, schemas_dir / "review_findings.schema.json", schemas_dir).passed
+
+
+def test_every_agent_definition_names_the_model_its_provenance_records():
+    """Stages stamp provenance with the model read from agents/<key>.md; a definition it cannot read would fail mid-run."""
+    from factory.config import AGENT_FILES, agent_model
+    assert all(agent_model(key).startswith("claude-") for key in AGENT_FILES)

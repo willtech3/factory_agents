@@ -9,10 +9,10 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from conftest import make_config
+from support.sessions import stage_result
 
 from factory.gates import InMemoryQueue, LogNotifier
 from factory.stages import RunContext
@@ -20,6 +20,8 @@ from factory.stages.common import SKILL_UPLOAD_PATH
 from factory.stages.implement import SETUP_CHECK, LocalVerifier, preview_info, run_implement_one
 from factory.state import WORK_ITEM_TRANSITIONS, Policy, WorkItemStage
 from factory.store import RunStore
+from support.repos import git, seeded_remote  # noqa: F401
+from support.repos import seeded_remote as _remote  # noqa: F401  (the old name other branches use)
 
 HTTP_MANIFEST = {"service": "stdlib-http", "runtime": {"kind": "python", "entrypoint": "python -m http.server 8000 --bind 127.0.0.1", "port": 8000},
                  "health": {"path": "/"}, "env": []}
@@ -40,49 +42,26 @@ def _spec(local: bool) -> dict:
             "test_plan": {"commands": ["python -c \"import sys; assert sys.prefix != sys.base_prefix\""], "e2e": e2e}}
 
 
-def _git(cwd: Path, *args: str) -> str:
-    """git with a fixed identity and no commit signing, whatever the developer's global configuration says."""
-    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", *args],
-                          cwd=cwd, check=True, capture_output=True, text=True).stdout
-
-
-def _remote(tmp_path: Path) -> Path:
-    origin = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "--quiet", "--bare", "-b", "main", str(origin)], check=True)
-    seed = tmp_path / "seed"
-    seed.mkdir()
-    _git(seed, "init", "-q", "-b", "main")
-    (seed / "README.md").write_text("# app\n")
-    (seed / "tests").mkdir()
-    (seed / "tests" / "test_a.py").write_text("def test_a():\n    assert True\n")
-    _git(seed, "add", "-A")
-    _git(seed, "commit", "-q", "-m", "init")
-    _git(seed, "remote", "add", "origin", str(origin))
-    _git(seed, "push", "-q", "origin", "main")
-    return origin
-
-
 def _push(origin: Path, tmp: Path, branch: str, base: str, files: dict[str, str], n: int) -> None:
     """What a fake implementer session does: commit `files` on `branch` (cut from `base` the first time) and push."""
     w = tmp / f"work{n}"
     subprocess.run(["git", "clone", "-q", str(origin), str(w)], check=True)
     if subprocess.run(["git", "rev-parse", "-q", "--verify", f"origin/{branch}"], cwd=w, capture_output=True).returncode == 0:
-        _git(w, "checkout", "-q", "-b", branch, f"origin/{branch}")
+        git(w, "checkout", "-q", "-b", branch, f"origin/{branch}")
     else:
-        _git(w, "checkout", "-q", "-b", branch, f"origin/{base}")
+        git(w, "checkout", "-q", "-b", branch, f"origin/{base}")
     for rel, content in files.items():
         (w / rel).parent.mkdir(parents=True, exist_ok=True)
         (w / rel).write_text(content)
-    _git(w, "add", "-A")
+    git(w, "add", "-A")
     # --allow-empty: a round the loop should not have run (the same files again) must fail the test's assertions on
     # the session sequence, not crash git with "nothing to commit"
-    _git(w, "commit", "-q", "--allow-empty", "-m", f"round {n}")
-    _git(w, "push", "-q", "origin", branch)
+    git(w, "commit", "-q", "--allow-empty", "-m", f"round {n}")
+    git(w, "push", "-q", "origin", branch)
 
 
 def _result(outputs: dict[str, bytes]):
-    return SimpleNamespace(session_id="sesn_x", agent_id="agent_x", agent_version=1, outcome_result="satisfied", outcome_iterations=1,
-                           list_cost_usd=0.1, stop_reason="end_turn", events_seen=1, custom_tool_calls=[], outputs=outputs)
+    return stage_result(outputs, sid="sesn_x", agent_id="agent_x", cost=0.1)
 
 
 class Driver:
@@ -141,20 +120,19 @@ def _titles(driver) -> list[str]:
 
 
 def _item_path(ctx) -> list[WorkItemStage]:
-    """The work item's stage transitions as the event log records them, each checked against the state machine.
-
-    Read from the events rather than `store.state()`: the parallel reviewer passes still collide on event seq
-    numbers (post-mortem 2026-10-10, issue 2, fixed in store.py by another change), which would fail the replay
-    for a reason unrelated to the loop under test."""
+    """The work item's stage transitions as the event log records them, each checked against the state machine, and the
+    whole log replayed: the parallel reviewer passes append from worker threads, so this also guards the contiguous
+    event seqs store.py assigns (post-mortem 2026-10-10, issue 2)."""
     stages = [WorkItemStage(e.payload["stage"]) for e in ctx.store.events(ctx.run_id) if e.kind == "work_item.stage"]
     for a, b in zip(stages, stages[1:]):
         assert b in WORK_ITEM_TRANSITIONS[a], f"illegal work item transition {a.value} -> {b.value}"
+    ctx.store.state(ctx.run_id)                     # replay refuses a log whose seqs collide or skip
     return stages
 
 
 @pytest.mark.parametrize("preview_mode", ["platform", pytest.param("local", marks=pytest.mark.skipif(not shutil.which("curl"), reason="the spec's e2e entry uses curl"))])
 def test_deterministic_only_findings_get_a_response_round_and_a_recheck_not_a_review(tmp_path, root, preview_mode):
-    origin = _remote(tmp_path)
+    origin = seeded_remote(tmp_path)
     driver = Driver(origin, tmp_path, {})                      # reviewers find nothing; round 1 fails only manifest_valid (+ e2e_preview locally)
     ctx = _ctx(tmp_path, root, driver, preview_mode=preview_mode)
     verifier = LocalVerifier(str(origin), tmp_path / "runs" / ctx.run_id / "verify")
@@ -216,7 +194,7 @@ def test_deterministic_only_findings_get_a_response_round_and_a_recheck_not_a_re
 
 
 def test_a_standing_reviewer_finding_still_gets_a_fresh_review_round(tmp_path, root):
-    origin = _remote(tmp_path)
+    origin = seeded_remote(tmp_path)
     driver = Driver(origin, tmp_path, {1: [BLOCKING]})         # round 1: one blocking finding beside the DET entry; round 2: clean
     ctx = _ctx(tmp_path, root, driver)
     verifier = LocalVerifier(str(origin), tmp_path / "runs" / ctx.run_id / "verify")
@@ -244,7 +222,7 @@ def test_preview_info_in_local_mode_is_unreachable_with_no_url(tmp_path, root):
 
 def test_resume_on_changed_head_rechecks_preserves_proof_and_does_not_reuse_old_reviews(tmp_path, root):
     from factory.stages.implement import ResumePoint
-    origin = _remote(tmp_path)
+    origin = seeded_remote(tmp_path)
     branch = "factory/run_loop0000001/spec_det"
     _push(origin, tmp_path, branch, "main", {"app/main.py": "X = 2\n", "service_manifest.json": json.dumps(HTTP_MANIFEST)}, 0)
     driver = Driver(origin, tmp_path, {})

@@ -1,6 +1,6 @@
 """A UI change proved by the factory's own browser runner on a journey that is a run artifact (post-mortem 2026-10-11 §1).
 
-The whole managed loop with the test doubles of test_hosted_verification.py: the implementer writes
+The whole managed loop with the test doubles of tests/support/hosted.py: the implementer writes
 /mnt/session/outputs/journeys/greet.json beside its report, the controller validates it, uploads it with the runner and
 binds its sha256 into the verification record, and the real harness runs the runner on it (a scripted browser stands in
 for Chromium). The change's diff holds no browser-test file; code that answers the factory's evidence protocol is refused."""
@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from test_hosted_verification import (
+from support.hosted import (
     REPORT,
     RUN_ID,
     Driver,

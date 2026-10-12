@@ -5,58 +5,25 @@ here only as a test double of the hosted sandbox: `bun` on PATH is a fake proces
 path the harness asked for, so nothing but tiny scripts executes; the controller is the real code, under the guard that
 nothing of the repository runs on the orchestrator host. An optional test runs the real Bun on a tiny fixture when it
 is installed."""
-import json
 import os
 import shutil
-import stat
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 import pytest
-import test_hosted_verification as hv
+import support.hosted as hosted
 
 from factory import checks
 from factory.hosted_verifier import _test_evidence
 from factory.sandbox_tools import environment_runner as er
 from factory.stages.implement import LocalVerifier, managed_test_evidence, passed_test_ids, run_implement_one
-
-FIXTURES = Path(__file__).parent / "fixtures"
-REPORT = FIXTURES / "bun-1.3.14-junit.xml"
-FILTERED = FIXTURES / "bun-1.3.14-junit-filtered.xml"
-MODELS = "src/catalog/models.test.ts"
-PASSING_BUN = f"{MODELS}::model catalog > frontier entries > lists the new model with a display name"
-FAILING_BUN = f"{MODELS}::model catalog > frontier entries > fails on purpose"
-FAKE_BUN = """#!/usr/bin/env python3
-import os, shutil, sys
-out = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--reporter-outfile=")), None)
-with open(os.environ["FAKE_BUN_ARGV"], "a") as log:
-    log.write(" ".join(sys.argv[1:]) + "\\n")
-if out and os.environ.get("FAKE_BUN_REPORT"):
-    shutil.copyfile(os.environ["FAKE_BUN_REPORT"], out)
-sys.exit(int(os.environ.get("FAKE_BUN_EXIT", "0")))
-"""
-
-sandbox_double = hv.sandbox_double            # the hosted-sandbox stand-ins from the managed tests
-no_host_execution = hv.no_host_execution
+from support.bun import FAILING_BUN, FILTERED, MODELS, PASSING_BUN, REPORT, BunDriver, bun_spec, env_of
+from support.bun import fake_bun  # noqa: F401  (fixture)
 
 
-@pytest.fixture
-def fake_bun(tmp_path):
-    """A `bun` that records its argv and writes $FAKE_BUN_REPORT to --reporter-outfile; PATH for the harness env."""
-    bindir = tmp_path / "fakebin"
-    bindir.mkdir()
-    exe = bindir / "bun"
-    exe.write_text(FAKE_BUN)
-    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
-    argv = tmp_path / "bun-argv.log"
-    path = f"{bindir}{os.pathsep}{Path(sys.executable).parent}{os.pathsep}{os.environ['PATH']}"
-    return {"PATH": path, "FAKE_BUN_ARGV": str(argv), "FAKE_BUN_REPORT": str(REPORT), "argv": argv}
-
-
-def env_of(fake, **extra):
-    return {"PATH": fake["PATH"], "FAKE_BUN_ARGV": fake["FAKE_BUN_ARGV"], "FAKE_BUN_REPORT": fake["FAKE_BUN_REPORT"], **extra}
+sandbox_double = hosted.sandbox_double            # the hosted-sandbox stand-ins from the managed tests
+no_host_execution = hosted.no_host_execution
 
 
 # ---------------------------------------------------------------------------------------------- the report
@@ -135,9 +102,9 @@ def run_commands(tmp_path, commands, env):
     repo, logs, evidence, outputs = root / "repo", root / "logs", root / "evidence", root / "outputs"
     for d in (repo, logs, evidence, outputs):
         d.mkdir(parents=True)
-    hv.write(repo, hv.SEED)
+    hosted.write(repo, hosted.SEED)
     report = {"status": "blocked", "phases": [], "services": []}
-    er.run_change(hv.RECIPE, {"commands": commands, "e2e": [], "collect_tests": False}, repo, {**os.environ, **env},
+    er.run_change(hosted.RECIPE, {"commands": commands, "e2e": [], "collect_tests": False}, repo, {**os.environ, **env},
                   time.monotonic() + 120, logs, evidence, root, outputs, report)
     return report["change"]["results"]["commands"]
 
@@ -170,11 +137,11 @@ def test_the_real_bun_runtime_produces_what_the_parser_expects(tmp_path):
     repo, logs, evidence, outputs = root / "repo", root / "logs", root / "evidence", root / "outputs"
     for d in (repo, logs, evidence, outputs):
         d.mkdir(parents=True)
-    hv.write(repo, {"src/a.test.ts": 'import { describe, expect, test } from "bun:test";\n'
+    hosted.write(repo, {"src/a.test.ts": 'import { describe, expect, test } from "bun:test";\n'
                                      'describe("outer", () => { describe("inner", () => { test("adds up", () => expect(1 + 1).toBe(2)); '
                                      'test.todo("later"); }); });\ntest("fails", () => expect(1).toBe(2));\n'})
     report = {"status": "blocked", "phases": [], "services": []}
-    er.run_change(hv.RECIPE, {"commands": ["bun test src"], "e2e": [], "collect_tests": False}, repo, dict(os.environ),
+    er.run_change(hosted.RECIPE, {"commands": ["bun test src"], "e2e": [], "collect_tests": False}, repo, dict(os.environ),
                   time.monotonic() + 120, logs, evidence, root, outputs, report)
     row = report["change"]["results"]["commands"][0]
     assert row["tests"]["status"] == "reported", (version, row)
@@ -228,43 +195,14 @@ def test_bun_describe_and_file_ids_need_every_reported_test_under_them_to_pass()
 
 # ---------------------------------------------------------------------------------------------- a managed round, end to end
 
-BUN_SPEC_COMMANDS = ["python -m pytest -q tests/test_a.py", "bun test src/catalog"]
-
-
-def bun_spec(commands=None):
-    return {"spec_id": "spec_hosted", "work_item_id": "wi-hosted", "title": "catalog", "allowed_paths": ["app/**", "tests/**"],
-            "acceptance_criteria": [
-                {"ac_id": "AC-1", "user_visible": False, "verification": "automated_test", "given": "g", "when": "w", "then": "t"},
-                {"ac_id": "AC-3", "user_visible": False, "verification": "automated_test", "given": "g", "when": "w", "then": "t"}],
-            "_markdown": "# spec", "test_plan": {"commands": list(commands or BUN_SPEC_COMMANDS), "e2e": []}}
-
-
-class BunDriver(hv.Driver):
-    def __init__(self, *args, bun_tests, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.report = {"criteria": [{"ac_id": "AC-1", "tests": ["tests/test_a.py::test_a"]}, {"ac_id": "AC-3", "tests": bun_tests}],
-                       "head_commit": "x"}
-
-    def run(self, **kw):
-        if kw.get("stage") == "verify" or kw["agent_key"] != "implementer":
-            return super().run(**kw)
-        self.calls.append(kw)
-        hv.push(self.origin, self.scratch, f"factory/{hv.RUN_ID}/spec_hosted", self.change_files, len(self.calls))
-        outputs = {"implementation_report.json": json.dumps(self.report).encode()}
-        if "findings.json" in kw["uploads"]:
-            answered = json.loads(kw["uploads"]["findings.json"])["findings"]
-            outputs["review_response.json"] = json.dumps({"responses": [{"finding_id": f["finding_id"], "disposition": "fixed",
-                                                                        "explanation": "done"} for f in answered]}).encode()
-        return hv.result(outputs)
-
 
 def managed_round(tmp_path, root, fake, bun_tests, commands=None, **env):
-    origin = hv.remote(tmp_path)
+    origin = hosted.remote(tmp_path)
     driver = BunDriver(origin, tmp_path, bun_tests=bun_tests, extra_env=env_of(fake, **{"FAKE_BUN_EXIT": "1", **env}))
-    ctx = hv.context(tmp_path, root, driver)
-    verdict = run_implement_one(ctx, bun_spec(commands), str(origin), "main", LocalVerifier(str(origin), tmp_path / "runs" / hv.RUN_ID / "verify"), {})
-    det = {d["check"]: d for d in hv.artifact(ctx, "implement", "spec_hosted-r1-deterministic_checks.json")}
-    return verdict, det, hv.artifact(ctx, "implement", "spec_hosted-r1-test_results.json")
+    ctx = hosted.context(tmp_path, root, driver)
+    verdict = run_implement_one(ctx, bun_spec(commands), str(origin), "main", LocalVerifier(str(origin), tmp_path / "runs" / hosted.RUN_ID / "verify"), {})
+    det = {d["check"]: d for d in hosted.artifact(ctx, "implement", "spec_hosted-r1-deterministic_checks.json")}
+    return verdict, det, hosted.artifact(ctx, "implement", "spec_hosted-r1-test_results.json")
 
 
 def test_a_passing_bun_test_proves_its_criterion_in_a_managed_round(tmp_path, root, fake_bun, no_host_execution):

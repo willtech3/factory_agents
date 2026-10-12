@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 import time
 from datetime import UTC
 from pathlib import Path
 from typing import Any
 
-from ..budget import reserve_budget
+from ..budget import owner_handle, reserve_budget
 from ..gates import Answer, ArtifactRef, Decision, Gate, GateDecision, GateKind, Question
 from ..sessions import SessionContext, StageResult
 from ..state import RunStage, WorkItemStage
@@ -110,10 +111,40 @@ def run_session(ctx: RunContext, *, stage: str, prefix: str = "", spec_id: str |
 
 
 def _owner_handles(ctx: RunContext) -> list[str]:
-    try:
-        return [json.loads(ctx.store.get_artifact(ctx.run_id, "intake", "outcome.json"))["owner"]["handle"]]
-    except (FileNotFoundError, KeyError, TypeError, ValueError):
-        return []
+    handle = owner_handle(ctx)
+    return [handle] if handle else []
+
+
+def recorded_preview_modes(events: list[Any]) -> list[str]:
+    """Every preview mode the run was driven in, in order: run.created's policy, then each resume that recorded one."""
+    modes = []
+    for ev in events:
+        if ev.kind == "run.created":
+            mode = (ev.payload.get("policy") or {}).get("preview_mode")
+        elif ev.kind == "run.resumed":
+            mode = ev.payload.get("preview_mode")
+        else:
+            continue
+        if mode:
+            modes.append(mode)
+    return modes
+
+
+def recorded_preview_mode(events: list[Any]) -> str | None:
+    """The preview mode the run was last driven in, or None when none was recorded."""
+    modes = recorded_preview_modes(events)
+    return modes[-1] if modes else None
+
+
+def hosted_run(events: list[Any]) -> bool:
+    """The run has been verified in a hosted sandbox (preview mode managed) at some point, at creation or after a recovery.
+    Such a run never continues with execution on the controller's host, whatever this process is configured with."""
+    return "managed" in recorded_preview_modes(events)
+
+
+def git(repo: Path, *args: str) -> str:
+    """A git command in `repo` (the orchestrator's own checkout of the target repository); its stdout."""
+    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout
 
 
 def public(artifact: dict[str, Any]) -> dict[str, Any]:

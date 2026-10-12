@@ -11,10 +11,11 @@ Forge and gate-surface selection (ADR-0007, ADR-0008):
                                           web = decide in the Factory Console / CLI only.
                                           There is no forge surface: the factory opens no design PR (ADR-0011)
     FACTORY_PAGE_PUBLISHER=local|artifact default local
-    LINEAR_API_KEY / LINEAR_TEAM_ID       the tracker surface (Linear); JIRA_* is a stub
+    LINEAR_API_KEY / LINEAR_TEAM_ID       the tracker surface (Linear; Jira is not implemented, see ADR-0007)
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -38,6 +39,17 @@ AGENT_FILES = {
 ENVIRONMENT_FILE = "./environments/factory-cloud.yaml"
 # Agents a run can do without: when not applied, the orchestrator skips their pass and says so.
 OPTIONAL_AGENTS = {"security_reviewer", "app_onboarding"}
+
+@functools.cache
+def agent_model(key: str) -> str:
+    """The model an agent's definition names (`model: id:` in agents/<key>.md, what `ant apply` deploys), for the
+    provenance its artifacts carry. One place, so provenance cannot drift from the definition."""
+    text = (REPO_ROOT / AGENT_FILES[key]).read_text()
+    match = re.search(r"^model:\s*\n\s+id:\s*([\w.-]+)", text, re.M) or re.search(r"^model:\s*([\w.-]+)\s*$", text, re.M)
+    if match is None:
+        raise ValueError(f"{AGENT_FILES[key]} names no model")
+    return match.group(1)
+
 
 FORGES = ("github", "gitlab")
 GATE_SURFACES = ("tracker", "web")   # web = the Factory Console over the file queue

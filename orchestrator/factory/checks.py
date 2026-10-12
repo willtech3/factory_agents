@@ -18,6 +18,9 @@ except ImportError:  # pragma: no cover
     jsonschema = None
 
 
+SETUP_CHECK = "verification_setup"        # the environment a candidate is verified in could (not) be built: local or hosted
+
+
 @dataclass
 class CheckResult:
     check: str
@@ -94,7 +97,6 @@ def protected_tests(
     modified_files: Iterable[str],
     deleted_files: Iterable[str],
     existing_test_files: Iterable[str],
-    allowed_paths: Iterable[str],
     named_test_files: Iterable[str] = (),
     removed_lines_by_file: dict[str, list[str]] | None = None,
 ) -> CheckResult:
@@ -528,8 +530,7 @@ def run_all_for_merge(
     """
     out = [
         diff_scope(changed_files + deleted_files, spec["allowed_paths"]),
-        protected_tests(changed_files, deleted_files, existing_test_files, spec["allowed_paths"],
-                        named_test_files, removed_lines_by_file),
+        protected_tests(changed_files, deleted_files, existing_test_files, named_test_files, removed_lines_by_file),
         test_weakening(added_lines_by_file),
         ac_test_mapping(spec, implementation_report, passing_tests, tests_that_exist,
                         require_verified=require_test_evidence, e2e_results=e2e_results),

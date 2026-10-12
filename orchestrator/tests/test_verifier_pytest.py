@@ -79,6 +79,16 @@ def test_collect_test_ids_lists_what_pytest_knows_and_none_elsewhere(tmp_path):
     assert unprepared.collect_test_ids(repo) is None                        # no environment: nothing is verifiable
 
 
+def test_collect_test_ids_survives_a_verbose_addopts(tmp_path):
+    """`addopts = -v` cancels `--collect-only -q` and pytest prints a tree with no node ids; the ids still come back
+    (the hosted harness hit this on emoji-smith; the local verifier read an empty set as "every mapped test is missing")."""
+    repo = _repo(tmp_path)
+    (repo / "pyproject.toml").write_text('[tool.pytest.ini_options]\ntestpaths = ["tests"]\naddopts = "-v"\n')
+    assert _verifier(tmp_path).collect_test_ids(repo) == [
+        "tests/test_a.py::test_one", "tests/test_a.py::TestK::test_two",
+        "tests/test_a.py::test_p[1]", "tests/test_a.py::test_p[2]", "tests/test_a.py::test_three"]
+
+
 def test_parse_junit_rebuilds_node_ids_from_file_classname_and_name():
     xml = b'''<testsuites><testsuite><testcase classname="tests.test_a" name="test_one" file="tests/test_a.py"/>
     <testcase classname="tests.test_a.TestK" name="test_two" file="tests/test_a.py"/>

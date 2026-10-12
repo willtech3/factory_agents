@@ -5,8 +5,8 @@ DEPLOY_FAILURE gate, with no manual event edits; and running the watcher again n
 import json
 
 from conftest import make_config
+from support.events import assert_log_valid
 
-from factory import checks
 from factory.gates import Decision, GateDecision, InMemoryQueue, LogNotifier
 from factory.stages import RunContext
 from factory.state import Policy, WorkItemStage
@@ -68,8 +68,8 @@ class FakeForge:
         return repo_url
 
 
-def _ctx(tmp_path, root, forge, queue=None) -> RunContext:
-    return RunContext(cfg=make_config(root, tmp_path), store=RunStore(tmp_path), driver=None, queue=queue or InMemoryQueue(),
+def _ctx(tmp_path, root, forge, queue=None, **cfg) -> RunContext:
+    return RunContext(cfg=make_config(root, tmp_path, **cfg), store=RunStore(tmp_path), driver=None, queue=queue or InMemoryQueue(),
                       notifier=LogNotifier(), forge=forge, policy=Policy(dev_pipeline_timeout_seconds=600), run_id=RUN)
 
 
@@ -103,18 +103,11 @@ def _ok_e2e(url, entries):
     return [{"command": e["command"], "target": "preview", "exit_code": 0, "covers_ac": e.get("covers_ac", [])} for e in entries]
 
 
-def _assert_schema_valid(ctx, schemas_dir):
-    for ev in ctx.store.events(RUN):
-        d = ev.to_dict()
-        d["actor"] = {k: v for k, v in d["actor"].items() if k in ("type", "id")}
-        assert checks.schema_valid(d, schemas_dir / "run_event.schema.json", schemas_dir).passed, (ev.kind, d)
-
-
 # ---------------------------------------------------------------- the happy path
 
 def test_merged_pull_request_ends_at_deployed_dev(tmp_path, root, examples, schemas_dir):
     forge = FakeForge(cr_states=("opened", "opened", "merged"), pipeline=("running", "running", "success"))
-    ctx = _ctx(tmp_path, root, forge)
+    ctx = _ctx(tmp_path, root, forge, smoke_commands=("curl -fsS $BASE_URL/up",))
     outcome = _seed_cr_open(ctx, examples)
     assert [w.work_item_id for w in pending_work_items(ctx.store.state(RUN))] == [WID]
     w = Watcher(ctx, outcome, run_e2e=_ok_e2e, sleep=lambda s: None, heartbeat=False)
@@ -138,9 +131,10 @@ def test_merged_pull_request_ends_at_deployed_dev(tmp_path, root, examples, sche
     started = next(e for e in ctx.store.events(RUN) if e.kind == "deploy.started")
     assert started.payload["sha"] == MERGE and started.payload["attempt"] == 0
     passed = next(e for e in ctx.store.events(RUN) if e.kind == "e2e.dev_passed")
-    assert len(passed.payload["results"]) == 3           # the spec's three preview entries; the local one is not run against dev
+    # the spec's three preview entries plus the configured smoke command; the local entry is not run against dev
+    assert [r["command"] for r in passed.payload["results"]][3:] == ["curl -fsS $BASE_URL/up"] and len(passed.payload["results"]) == 4
     assert forge.calls["change_request_state"] == 3 and forge.calls["approved"] == 1
-    _assert_schema_valid(ctx, schemas_dir)
+    assert_log_valid(ctx.store, RUN, schemas_dir)
 
     # idempotent: nothing left to watch, nothing appended, the forge is not asked again
     last = ctx.store.state(RUN).last_seq
@@ -195,7 +189,7 @@ def test_closed_pull_request_closes_the_item_once(tmp_path, root, examples, sche
     assert _kinds(ctx, before) == ["cr.closed", "work_item.stage"]
     assert ctx.store.state(RUN).work_items[WID].stage == WorkItemStage.CLOSED
     assert w.tick().events_appended == 0 and forge.calls["change_request_state"] == 1
-    _assert_schema_valid(ctx, schemas_dir)
+    assert_log_valid(ctx.store, RUN, schemas_dir)
 
 
 # ---------------------------------------------------------------- failures and the gate, across restarts
@@ -240,7 +234,7 @@ def test_pipeline_failure_opens_a_gate_that_survives_a_restart(tmp_path, root, e
     st = ctx2.store.state(RUN)
     assert st.work_items[WID].stage == WorkItemStage.CLOSED and not st.open_gates
     assert w2.tick().events_appended == 0
-    _assert_schema_valid(ctx2, schemas_dir)
+    assert_log_valid(ctx2.store, RUN, schemas_dir)
 
 
 def test_approve_reobserves_the_next_pipeline_then_escalates(tmp_path, root, examples):
@@ -362,21 +356,6 @@ def test_watcher_without_a_forge_reports_the_gap(tmp_path, root, examples):
     outcome = _seed_cr_open(ctx, examples)
     r = Watcher(ctx, outcome, heartbeat=False).tick()
     assert r.errors and "FORGE_TOKEN" in r.errors[0]["error"] and r.pending == [WID]
-
-
-# ---------------------------------------------------------------- the blocking Stage 5 entry point still composes the same pieces
-
-def test_observe_deploy_blocking_path_matches_the_watcher(tmp_path, root, examples):
-    from factory.stages.deploy_observe import observe_deploy
-
-    forge = FakeForge(pipeline=("running", "success"))
-    ctx = _ctx(tmp_path, root, forge)
-    _seed_cr_open(ctx, examples)
-    ctx.event("cr.merged", {"id": CR, "merge_commit_sha": MERGE}, work_item_id=WID, spec_id=SID, actor="human")
-    ctx.event("work_item.stage", {"stage": "merged", "merge_sha": MERGE}, work_item_id=WID, spec_id=SID)
-    stage = observe_deploy(ctx, examples["spec_smart_retries"], MERGE, "main", forge, _ok_e2e, poll_seconds=0, sleep=lambda s: None)
-    assert stage == WorkItemStage.DEPLOYED_DEV
-    assert ctx.store.state(RUN).work_items[WID].stage == WorkItemStage.DEPLOYED_DEV
 
 
 # ---------------------------------------------------------------- the CLI
