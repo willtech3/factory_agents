@@ -483,8 +483,7 @@ def test_a_parametrize_id_with_spaces_is_a_valid_pytest_node_id():
     """Live emoji-smith: one `[`echo $GOOGLE_API_KEY`]` id made the controller discard a 369-test JUnit report."""
     good = "tests/security/test_v.py::TestV::test_injection[`echo $GOOGLE_API_KEY`]"
     import factory.hosted_verifier as hv
-    from factory.stages import implement
-    assert er.NODE_ID_RE.match(good) and hv.NODE_ID_RE is er.NODE_ID_RE and implement.NODE_ID_RE is er.NODE_ID_RE
+    assert er.NODE_ID_RE.match(good) and er.collected_node_ids(f"{er.NODE_ID_PREFIX}{good}\n") == [good]
     for bad in ("not an id", "tests/a.py::test a", "tests/a.py::test_a[x]\nevil", "tests/a.py::"):
         assert not er.NODE_ID_RE.match(bad)
     evidence = hv._test_evidence({"framework": "pytest", "status": "reported", "passed": [good, "tests/a.py::test_a"],

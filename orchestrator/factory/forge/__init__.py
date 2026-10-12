@@ -65,7 +65,6 @@ class Forge(Protocol):
     def change_request_state(self, cr_id: int) -> dict[str, Any]: ...
     def change_request_approved(self, cr_id: int) -> bool: ...
     def add_labels(self, cr_id: int, labels: list[str]) -> None: ...
-    def post_comment(self, cr_id: int, body: str) -> None: ...
 
     # ---- pipelines / workflows and deployments (read-only; Stage 3 preview, Stage 5 dev)
     def latest_pipeline(self, ref: str, sha: str | None = None) -> dict[str, Any] | None: ...
@@ -73,7 +72,6 @@ class Forge(Protocol):
     def failed_job_log_excerpt(self, pipeline_id: int, max_chars: int = 6000) -> str: ...
     def environment(self, name: str) -> dict[str, Any] | None: ...
     def environment_url_for_branch(self, branch: str, preview_prefix: str = "preview/") -> str | None: ...
-    def deployment_for_sha(self, environment_name: str, sha: str) -> dict[str, Any] | None: ...
 
     # ---- sessions: how a sandbox gets the repository
     def session_repository_resource(self, repo_url: str, branch: str) -> dict[str, Any] | None: ...
@@ -86,22 +84,6 @@ class Forge(Protocol):
     # Markdown that shows `items` in a description: inline images, and the demo inline where the forge plays it (GitLab
     # uploads) or as a link where it does not (a video on GitHub outside its own attachments). Nothing lands on the
     # change's branch or the default branch.
-
-
-def parse_pipeline_webhook(payload: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalise a forge CI webhook to the shape `Forge.pipeline()` returns, or None for other hooks.
-
-    GitLab Pipeline Hooks carry `object_kind: pipeline`; GitHub `workflow_run` events carry a
-    `workflow_run` object. Both are unverified against live payloads (see the roadmap spikes).
-    """
-    from .github import parse_workflow_run_webhook
-    from .gitlab import parse_pipeline_webhook as parse_gitlab
-
-    if payload.get("object_kind") == "pipeline":
-        return parse_gitlab(payload)
-    if "workflow_run" in payload:
-        return parse_workflow_run_webhook(payload)
-    return None
 
 
 def make_forge(cfg: "Config", timeout: float = 30.0) -> Forge | None:
@@ -136,39 +118,33 @@ SKILL_PATH = ".claude/skills/platform-contract/SKILL.md"
 
 def ensure_repository(forge: Forge, repo: dict[str, Any], workflow_template: Path | None = None, *,
                       skill_file: Path | None = None, sleep=None, attempts: int = 4, log=print) -> dict[str, Any] | None:
-    """Create the outcome's repository when it asks for one (`create: true`) and it does not exist yet, seed the
-    platform-contract skill into any repository that lacks it, and try to give a new repository the preview workflow.
+    """Create the outcome's repository when it asks for one (`create: true`) and it does not exist yet, and seed it
+    with the platform-contract skill (`skill_file`) and the preview workflow template.
 
-    A new repository is private unless the outcome says `visibility: public`, initialised so the default branch
-    exists, and seeded with the preview workflow template (the platform's job elsewhere; on a personal GitHub
-    the template is the platform). GitHub's git database can answer 404 to writes for a few seconds after a
-    repository is created, so the seed commit is retried with backoff. A repository that already exists is left
-    alone except for two files: the skill, whenever `skill_file` is given and the default branch lacks it (an
-    existing repository's sessions otherwise never see it; post-mortem 2026-10-10, issue 12), and, when `create:
-    true` and the workflow is missing (an earlier attempt died between creation and seeding), the workflow. A
-    seed the forge keeps refusing is a warning, not a failure: the usual cause is a token without GitHub's
-    `workflow` scope, and a run with local previews never needs the file. Returns what was created (with
-    `workflow_seeded`), or None when the repository already existed."""
+    Only a repository marked `create: true` is ever written to: an existing repository may require every change
+    through a pull request, and every session already receives the skill as an upload. A new repository is private
+    unless the outcome says `visibility: public`, initialised so the default branch exists, and seeded with the
+    preview workflow (the platform's job elsewhere; on a personal GitHub the template is the platform). GitHub can
+    answer 404 to writes for a few seconds after a repository is created, so each seed commit is retried with
+    backoff. When a `create: true` repository already exists (an earlier attempt died between creation and
+    seeding), whichever of the two files is missing is seeded. A seed the forge keeps refusing is a warning, not a
+    failure: the usual cause is a token without GitHub's `workflow` scope, and a run with local previews never needs
+    the file. Returns what was created (with `workflow_seeded`), or None when nothing was created."""
     import time
     sleep = sleep or time.sleep
-    seed_skill = bool(skill_file and skill_file.is_file() and forge.kind == "github")
-    if not repo.get("create") and not seed_skill:
+    if not repo.get("create"):
         return None
     created = None
     if not forge.repository_exists():
-        if not repo.get("create"):
-            return None                     # nothing to seed into a repository that does not exist
         created = forge.create_repository(private=repo.get("visibility", "private") != "public",
                                           description=repo.get("description", "Created by the software factory"))
     branch = (created or {}).get("default_branch") or repo.get("default_branch", "main")
-    # The platform-contract skill is seeded first and on its own, into new and existing repositories alike: the
-    # agents read it from the repository's .claude/skills/ and its path needs no special token scope. The
-    # workflow follows, for repositories the factory creates, with its own retries.
-    if seed_skill and (created is not None or not forge.file_exists(branch, SKILL_PATH)):
+    # The skill is seeded first and on its own: the agents read it from the repository's .claude/skills/ and its path
+    # needs no special token scope. The workflow follows with its own retries.
+    if (skill_file and skill_file.is_file() and forge.kind == "github"
+            and (created is not None or not forge.file_exists(branch, SKILL_PATH))):
         _seed(forge, branch, "factory: platform contract skill", {SKILL_PATH: skill_file.read_bytes()},
               sleep=sleep, attempts=attempts, log=log, hint="the forge refused to write {path}")
-    if not repo.get("create"):
-        return None
     path = ".github/workflows/preview.yml"
     if workflow_template and workflow_template.is_file() and forge.kind == "github":
         seeded = True if (created is None and forge.file_exists(branch, path)) else _seed(
@@ -208,5 +184,5 @@ def ref_slug(ref: str) -> str:
     return slug[:63].rstrip("-")
 
 
-__all__ = ["ChangeRequest", "Forge", "Media", "PIPELINE_TERMINAL", "ensure_repository", "make_forge", "parse_pipeline_webhook",
+__all__ = ["ChangeRequest", "Forge", "Media", "PIPELINE_TERMINAL", "ensure_repository", "make_forge",
            "ref_slug", "repo_from_url"]

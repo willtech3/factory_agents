@@ -68,8 +68,8 @@ class FakeForge:
         return repo_url
 
 
-def _ctx(tmp_path, root, forge, queue=None) -> RunContext:
-    return RunContext(cfg=make_config(root, tmp_path), store=RunStore(tmp_path), driver=None, queue=queue or InMemoryQueue(),
+def _ctx(tmp_path, root, forge, queue=None, **cfg) -> RunContext:
+    return RunContext(cfg=make_config(root, tmp_path, **cfg), store=RunStore(tmp_path), driver=None, queue=queue or InMemoryQueue(),
                       notifier=LogNotifier(), forge=forge, policy=Policy(dev_pipeline_timeout_seconds=600), run_id=RUN)
 
 
@@ -107,7 +107,7 @@ def _ok_e2e(url, entries):
 
 def test_merged_pull_request_ends_at_deployed_dev(tmp_path, root, examples, schemas_dir):
     forge = FakeForge(cr_states=("opened", "opened", "merged"), pipeline=("running", "running", "success"))
-    ctx = _ctx(tmp_path, root, forge)
+    ctx = _ctx(tmp_path, root, forge, smoke_commands=("curl -fsS $BASE_URL/up",))
     outcome = _seed_cr_open(ctx, examples)
     assert [w.work_item_id for w in pending_work_items(ctx.store.state(RUN))] == [WID]
     w = Watcher(ctx, outcome, run_e2e=_ok_e2e, sleep=lambda s: None, heartbeat=False)
@@ -131,7 +131,8 @@ def test_merged_pull_request_ends_at_deployed_dev(tmp_path, root, examples, sche
     started = next(e for e in ctx.store.events(RUN) if e.kind == "deploy.started")
     assert started.payload["sha"] == MERGE and started.payload["attempt"] == 0
     passed = next(e for e in ctx.store.events(RUN) if e.kind == "e2e.dev_passed")
-    assert len(passed.payload["results"]) == 3           # the spec's three preview entries; the local one is not run against dev
+    # the spec's three preview entries plus the configured smoke command; the local entry is not run against dev
+    assert [r["command"] for r in passed.payload["results"]][3:] == ["curl -fsS $BASE_URL/up"] and len(passed.payload["results"]) == 4
     assert forge.calls["change_request_state"] == 3 and forge.calls["approved"] == 1
     assert_log_valid(ctx.store, RUN, schemas_dir)
 
@@ -358,19 +359,6 @@ def test_watcher_without_a_forge_reports_the_gap(tmp_path, root, examples):
 
 
 # ---------------------------------------------------------------- the blocking Stage 5 entry point still composes the same pieces
-
-def test_observe_deploy_blocking_path_matches_the_watcher(tmp_path, root, examples):
-    from factory.stages.deploy_observe import observe_deploy
-
-    forge = FakeForge(pipeline=("running", "success"))
-    ctx = _ctx(tmp_path, root, forge)
-    _seed_cr_open(ctx, examples)
-    ctx.event("cr.merged", {"id": CR, "merge_commit_sha": MERGE}, work_item_id=WID, spec_id=SID, actor="human")
-    ctx.event("work_item.stage", {"stage": "merged", "merge_sha": MERGE}, work_item_id=WID, spec_id=SID)
-    stage = observe_deploy(ctx, examples["spec_smart_retries"], MERGE, "main", forge, _ok_e2e, poll_seconds=0, sleep=lambda s: None)
-    assert stage == WorkItemStage.DEPLOYED_DEV
-    assert ctx.store.state(RUN).work_items[WID].stage == WorkItemStage.DEPLOYED_DEV
-
 
 # ---------------------------------------------------------------- the CLI
 

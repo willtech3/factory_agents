@@ -643,7 +643,7 @@ def _install_plan(repo: Path, setup_cmd: str | None, python: Path, uv: str | Non
 
 # One definition each, shared with the hosted harness that runs the same collection and reads the same JUnit reports.
 from ..sandbox_tools.environment_runner import (  # noqa: E402
-    NODE_ID_PLUGIN, NODE_ID_RE, collected_node_ids, parse_junit, write_node_id_plugin)
+    NODE_ID_PLUGIN, collected_node_ids, parse_junit, write_node_id_plugin)
 
 
 def _reported(row: dict[str, Any]) -> dict[str, Any] | None:

@@ -22,7 +22,7 @@ The orchestrator was hard-wired to GitLab: a `GitLabClient`, `GITLAB_*` configur
 - `RunContext.gitlab` is `RunContext.forge`; `LocalVerifier` clones with `Forge.authenticated_url`.
 - `environments/factory-cloud.yaml` allows `github.com` and `api.github.com`; the GitLab host is a commented alternative.
 - Gate 3 on GitHub is a PR review: `change_request_approved` treats the latest non-comment review per user as that user's position. On a personal repository the owner cannot request a review from themselves (GitHub 422); the forge tolerates it.
-- `parse_pipeline_webhook` dispatches on payload shape (GitLab `object_kind: pipeline` vs GitHub `workflow_run`).
+- Pipelines are observed by polling the forge; the webhook parsers this ADR first described were never wired to an endpoint and were removed (2026-10-12).
 - Pre-ADR names (`GitLabClient`, `on_mr_merged`) were kept as aliases for one release and removed on 2026-10-11.
 - A repository can be created by the factory (`Forge.repository_exists` / `create_repository`, `ensure_repository`) when the outcome marks it `create: true`; the forge is then bound to the outcome's repository, and `FORGE_REPO` is derived from the outcome's URL when unset.
 - A work item that depends on another item of the same run is built on that item's branch while the dependency's change request is open but unmerged, and its change request targets that branch (a stacked change request; GitHub and GitLab retarget it to the default branch when the dependency merges). Once the dependency is merged the dependant branches from the default branch as before. A dependency closed without merging, or two unmerged dependencies, escalates the run (`runner.base_branch_for`).

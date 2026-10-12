@@ -38,10 +38,6 @@ def repository_access(ctx: RunContext, outcome: dict[str, Any], mounted: str = R
     return None, ctx.forge.sandbox_git_instructions(url, branch, branch) + " Read it; do not modify or push it.", True
 
 
-def repository_mount(ctx: RunContext, outcome: dict[str, Any]) -> dict[str, Any] | None:
-    return repository_access(ctx, outcome)[0]
-
-
 def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | None = None,
                   prior_decomposition: dict[str, Any] | None = None,
                   retried: bool = False) -> tuple[dict[str, Any], dict[str, str]]:

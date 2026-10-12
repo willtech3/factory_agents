@@ -13,7 +13,6 @@ import subprocess
 import tarfile
 import uuid
 from pathlib import Path, PurePosixPath
-from typing import Any
 
 import jsonschema
 
@@ -46,14 +45,6 @@ def validate_profile(profile: dict, schema_dir: Path) -> list[str]:
         if not set(secret["allowed_hosts"]) <= hosts:
             errors.append(f"secret {secret['name']} requires a host absent from the environment allowlist")
     return errors
-
-
-def profile_path(repo: Path, manifest: dict) -> Path:
-    rel = manifest.get("test_environment", {}).get("profile", PROFILE_PATH)
-    p = repo / rel
-    if p.is_symlink() or not p.resolve().is_relative_to(repo.resolve()):
-        raise ValueError("test environment profile must be inside the repository")
-    return p
 
 
 def snapshot(repo: Path, revision: str = "HEAD") -> tuple[str, bytes]:

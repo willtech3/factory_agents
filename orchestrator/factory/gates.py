@@ -11,7 +11,7 @@ Two kinds of human interaction:
    and returns the answer as a `user.custom_tool_result`.
 
 Surfaces implement `Notifier` and `ApprovalQueue`: the file queue behind the CLI, the tracker
-(`surfaces/tracker.py`: Linear today, Jira stub), the Factory Console over the file queue, and
+(`surfaces/tracker.py`: Linear today), the Factory Console over the file queue, and
 later Slack. `CompositeQueue` lets several surfaces answer the same gate, so a
 decision can come from the CLI or from Linear. The in-memory implementations here are for tests
 and local use. See docs/adr/0007-pluggable-gate-surfaces.md.

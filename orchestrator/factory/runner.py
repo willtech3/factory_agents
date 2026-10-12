@@ -58,7 +58,7 @@ def policy_snapshot(ctx: RunContext) -> dict[str, Any]:
     """What this run was tuned with, recorded on run.created so the Console can show it beside the run."""
     p = ctx.policy
     return {"run_budget_usd": p.run_budget_usd, "reviewer_passes": p.reviewer_passes, "review_max_rounds": p.review_max_rounds,
-            "security_review": getattr(p, "security_review", True), "parallel_implementations": p.parallel_implementations,
+            "security_review": getattr(p, "security_review", True),
             # the pass also needs its optional agent deployed; without one it is skipped whatever the policy says
             "security_review_available": "security_reviewer" in ctx.cfg.agents,
             "outcome_max_iterations": p.outcome_max_iterations, "stage_budget_usd": dict(p.stage_budget_usd),
@@ -396,7 +396,7 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
         if not ready:
             ctx.event("run.escalated", {"reason": f"unsatisfiable dependencies among {sorted(remaining)}"})
             return RunStage.ESCALATED
-        for spec in ready[: ctx.policy.parallel_implementations]:
+        for spec in ready:                                  # one after another, each on its own branch
             sid = spec["spec_id"]
             deps = {dsid: specs[dsid] for dsid in spec["dependencies"]["specs"] if dsid in specs}
             base_branch, blocker = base_branch_for(ctx, spec, cr_by_spec, default_branch)
@@ -438,10 +438,6 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
         return RunStage.ESCALATED          # a spec escalated: the run waits for a person, it has not completed
     ctx.event("run.completed", {"specs_with_change_requests": sorted(merged_or_open)})
     return RunStage.COMPLETED
-
-
-def _cr_already_open(ctx: RunContext, spec_id: str) -> bool:
-    return spec_id in _open_change_requests(ctx)
 
 
 def _open_change_requests(ctx: RunContext) -> dict[str, int]:

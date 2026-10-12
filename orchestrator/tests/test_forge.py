@@ -7,8 +7,8 @@ import pytest
 from conftest import make_config
 
 from factory import config as cfgmod
-from factory.forge import PIPELINE_TERMINAL, make_forge, parse_pipeline_webhook
-from factory.forge.github import BOT_MARKER, GitHubForge
+from factory.forge import PIPELINE_TERMINAL, make_forge
+from factory.forge.github import GitHubForge
 from factory.forge.gitlab import GitLabForge
 
 
@@ -142,8 +142,6 @@ def test_github_pull_request_flow():
     st = f.change_request_state(7)
     assert st["state"] == "merged" and st["sha"] == "h7" and st["labels"] == ["factory", "spec:spec_x"]
     assert f.change_request_approved(7) is True       # latest review by will is APPROVED
-    f.post_comment(7, "Gate opened")
-    assert rec.calls[-1][3]["body"].startswith(BOT_MARKER)
 
 
 def test_github_workflow_runs_and_deployments():
@@ -170,7 +168,6 @@ def test_github_workflow_runs_and_deployments():
     assert f.environment_url_for_branch("factory/run_1/spec_x") == "https://run-1-spec-x.preview.example.com"
     env = f.environment("dev")
     assert env["external_url"] == "https://run-1-spec-x.preview.example.com" and env["state"] == "success"
-    assert f.deployment_for_sha("dev", "h1")["status"] == "success"
     # a workflow-scoped forge looks under /actions/workflows/<file>/runs
     f2, rec2 = _forge({"GET /repos/will/ledgerline/actions/workflows/preview.yml/runs": {"workflow_runs": []}}, workflow="preview.yml")
     assert f2.latest_pipeline("main") is None and rec2.calls[0][1].endswith("/actions/workflows/preview.yml/runs")
@@ -194,16 +191,6 @@ def test_github_session_resource_and_git_instructions():
     assert gl.session_repository_resource("https://gitlab.example.internal/group/app", "b") is None
     assert "Authorization: Bearer $GITLAB_TOKEN" in gl.sandbox_git_instructions("https://gitlab.example.internal/group/app", "main", "b")
     assert gl.authenticated_url("https://gitlab.example.internal/group/app").startswith("https://oauth2:glpat@")
-
-
-def test_parse_pipeline_webhook_dispatches_on_shape():
-    gh = {"action": "completed", "workflow_run": {"id": 1, "status": "completed", "conclusion": "success", "head_branch": "main",
-                                                  "head_sha": "abc", "html_url": "u"}, "repository": {"full_name": "will/ledgerline"}}
-    out = parse_pipeline_webhook(gh)
-    assert out["status"] == "success" and out["sha"] == "abc" and out["project_path"] == "will/ledgerline"
-    gl = {"object_kind": "pipeline", "object_attributes": {"id": 2, "status": "running", "ref": "main", "sha": "def", "url": "u"}}
-    assert parse_pipeline_webhook(gl)["id"] == 2
-    assert parse_pipeline_webhook({"object_kind": "merge_request"}) is None
 
 
 def test_dotenv_loader_and_design_only_gaps(monkeypatch, tmp_path):
@@ -311,34 +298,13 @@ def test_github_seed_retries_while_the_new_repository_is_not_ready_and_reseeds_a
     assert not any(p.endswith("/git/trees") for _, p, _, _ in rec3.calls)
 
 
-def test_existing_repository_gets_the_platform_contract_skill(root):
-    """Issue 12 of the 2026-10-10 post-mortem: sessions on a repository the factory did not create never saw the
-    skill. The seed now runs for every repository whose default branch lacks it, created or not."""
+def test_a_repository_not_marked_create_is_never_touched(root):
+    """An existing repository may require every change through a pull request, so the factory never commits to one it
+    did not create; its sessions get the platform-contract skill as an upload instead (post-mortem 2026-10-10, issue 12)."""
     from factory.forge import ensure_repository
-    skill = root / "skills" / "platform-contract" / "SKILL.md"
-    routes = {
-        "GET /repos/will/app": {"id": 9, "default_branch": "main"},
-        "GET /repos/will/app/contents/.claude/skills/platform-contract/SKILL.md": (404, {"message": "Not Found"}),
-        "GET /repos/will/app/git/ref/heads/main": {"object": {"sha": "init"}},
-        "GET /repos/will/app/git/commits/init": {"tree": {"sha": "t0"}},
-        "POST /repos/will/app/git/blobs": (201, {"sha": "b1"}),
-        "POST /repos/will/app/git/trees": (201, {"sha": "t1"}),
-        "POST /repos/will/app/git/commits": (201, {"sha": "c1"}),
-        "PATCH /repos/will/app/git/refs/heads/main": {"object": {"sha": "c1"}},
-    }
-    rec = Recorder(routes)
+    rec = Recorder({})
     f = GitHubForge("https://github.com", "ghp_test", "will/app", transport=httpx.MockTransport(rec))
-    assert ensure_repository(f, {"url": "https://github.com/will/app", "default_branch": "main"}, skill_file=skill, sleep=lambda s: None) is None
-    trees = [b for m, p, _, b in rec.calls if p.endswith("/git/trees")]
-    assert len(trees) == 1 and trees[0]["tree"][0]["path"] == ".claude/skills/platform-contract/SKILL.md"
-    assert not any(p == "/user/repos" for _, p, _, _ in rec.calls) and not any("workflows" in p for _, p, _, _ in rec.calls)
-    # already there: untouched
-    rec2 = Recorder({**routes, "GET /repos/will/app/contents/.claude/skills/platform-contract/SKILL.md": {"sha": "x"}})
-    f2 = GitHubForge("https://github.com", "ghp_test", "will/app", transport=httpx.MockTransport(rec2))
-    assert ensure_repository(f2, {"url": "https://github.com/will/app"}, skill_file=skill, sleep=lambda s: None) is None
-    assert not any(p.endswith("/git/trees") for _, p, _, _ in rec2.calls)
-    # a repository that does not exist and is not to be created: nothing is seeded, nothing is created
-    rec3 = Recorder({"GET /repos/will/app": (404, {"message": "Not Found"})})
-    f3 = GitHubForge("https://github.com", "ghp_test", "will/app", transport=httpx.MockTransport(rec3))
-    assert ensure_repository(f3, {"url": "https://github.com/will/app"}, skill_file=skill, sleep=lambda s: None) is None
-    assert [p for _, p, _, _ in rec3.calls] == ["/repos/will/app"]
+    skill = root / "skills" / "platform-contract" / "SKILL.md"
+    assert ensure_repository(f, {"url": "https://github.com/will/app", "default_branch": "main"}, skill_file=skill,
+                             sleep=lambda s: None) is None
+    assert rec.calls == []

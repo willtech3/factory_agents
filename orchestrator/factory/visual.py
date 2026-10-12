@@ -8,13 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 MAX_FILE = 30 * 1024 * 1024
 REQUEST_TTL = 900          # seconds an open request stays listed for workers (the default e2e deadline)

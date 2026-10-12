@@ -21,7 +21,6 @@ import httpx
 from . import ChangeRequest, PIPELINE_TERMINAL, ref_slug
 
 EVIDENCE_BRANCH = "factory-evidence"     # orphan, never merged: screenshots and demos for change request descriptions
-BOT_MARKER = "<!-- factory:bot -->"   # prefixed to every comment the orchestrator posts, so it can skip its own
 
 GIT_SETUP = """Git access: the repository is mounted at /workspace/repo (branch {base_branch}) through the platform's
 github_repository resource; clone and push are authenticated by Anthropic's git proxy and no token is visible in the
@@ -171,9 +170,6 @@ class GitHubForge:
     def add_labels(self, cr_id: int, labels: list[str]) -> None:
         self._post(f"/issues/{cr_id}/labels", {"labels": labels})
 
-    def post_comment(self, cr_id: int, body: str) -> None:
-        self._post(f"/issues/{cr_id}/comments", {"body": f"{BOT_MARKER}\n{body}"})
-
     # ---- pipelines (GitHub Actions workflow runs) and deployments. Read-only. UNVERIFIED live.
 
     def latest_pipeline(self, ref: str, sha: str | None = None) -> dict[str, Any] | None:
@@ -237,12 +233,6 @@ class GitHubForge:
                 return env["external_url"]
         return None
 
-    def deployment_for_sha(self, environment_name: str, sha: str) -> dict[str, Any] | None:
-        deps = self._get("/deployments", environment=environment_name, sha=sha, per_page=1)
-        if not deps:
-            return None
-        return _deployment_summary(deps[0], self._latest_status(deps[0]["id"]) or {})
-
     # ---- sessions
     def session_repository_resource(self, repo_url: str, branch: str) -> dict[str, Any] | None:
         """The native `github_repository` resource: Anthropic's git proxy injects the token for clone and push."""
@@ -286,15 +276,4 @@ def _deployment_summary(d: dict[str, Any], st: dict[str, Any]) -> dict[str, Any]
             "environment_url": st.get("environment_url")}
 
 
-def parse_workflow_run_webhook(payload: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalise a GitHub `workflow_run` webhook to the shape `pipeline()` returns. UNVERIFIED live."""
-    run = payload.get("workflow_run")
-    if not run:
-        return None
-    out = _run_summary(run)
-    out["project_path"] = (payload.get("repository") or {}).get("full_name")
-    out["environments"] = []   # the Deployments API, not the webhook, says where a run deployed
-    return out
-
-
-__all__ = ["BOT_MARKER", "GIT_READ_ONLY", "GIT_SETUP", "GitHubForge", "PIPELINE_TERMINAL", "parse_workflow_run_webhook"]
+__all__ = ["GIT_READ_ONLY", "GIT_SETUP", "GitHubForge", "PIPELINE_TERMINAL"]

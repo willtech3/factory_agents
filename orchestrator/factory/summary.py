@@ -22,7 +22,6 @@ TERMINAL_STATUS = {RunStage.COMPLETED: "completed", RunStage.CLOSED: "closed", R
                    RunStage.ESCALATED: "escalated"}
 STATUS_LABEL = {"needs_you": "Needs you", "running": "Running", "stopped": "Stopped", "paused": "Paused at budget",
                 "completed": "Done", "closed": "Closed", "failed": "Failed", "escalated": "Escalated"}
-STATUS_ORDER = ["needs_you", "stopped", "paused", "running", "completed", "escalated", "failed", "closed"]
 STAGE_DOING = {"intake": "taking in the outcome", "decomposing": "decomposing the outcome", "gate_1_decomposition": "at Gate 1",
                "specifying": "writing and judging the contracts", "gate_2_spec_readiness": "at Gate 2", "implementing": "building"}
 GATE_LABEL = {"gate_1_decomposition": "Gate 1", "gate_2_spec_readiness": "Gate 2", "escalation": "the escalation gate",
@@ -273,4 +272,4 @@ def _cut(s: Any, n: int) -> str:
     return s if len(s) <= n else s[: n - 1].rstrip() + "…"
 
 
-__all__ = ["STATUS_LABEL", "STATUS_ORDER", "controller_running", "summarize", "summarize_run"]
+__all__ = ["STATUS_LABEL", "controller_running", "summarize", "summarize_run"]

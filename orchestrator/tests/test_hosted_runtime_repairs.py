@@ -111,11 +111,11 @@ def test_only_exact_test_paths_are_named():
 PROVEN = object()
 
 
-def protected(modified=(), deleted=(), named=(), removed=PROVEN, allowed=("tests/**",)):
+def protected(modified=(), deleted=(), named=(), removed=PROVEN):
     """protected_tests with, by default, removal evidence that proves nothing was removed from any modified file."""
     existing = ["tests/models.test.ts", "tests/other.test.ts"]
     removed = {f: [] for f in modified} if removed is PROVEN else removed
-    return checks.protected_tests(modified, deleted, existing, allowed, named, removed)
+    return checks.protected_tests(modified, deleted, existing, named, removed)
 
 
 def test_exactly_approved_test_updates_are_allowed_but_deletions_and_other_edits_are_not():
@@ -253,5 +253,5 @@ def test_the_run_cap_counts_verification_spend(tmp_path, root):
 
 def test_generator_of_deleted_tests_is_not_consumed_before_protection():
     result = checks.protected_tests([], iter(['tests/models.test.ts']), ['tests/models.test.ts'],
-                                    ['tests/models.test.ts'], ['tests/models.test.ts'], {})
+                                    ['tests/models.test.ts'], {})
     assert not result.passed and result.data['touched'] == ['tests/models.test.ts']

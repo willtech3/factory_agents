@@ -22,8 +22,6 @@ GUIDANCE_HEADER = ("# The owner's notes at Gate 2 approval\n"
                    "Guidance for building the approved spec. The spec stays authoritative: these notes never change its acceptance "
                    "criteria, allowed paths or test plan. Where a note conflicts with the spec, follow the spec and say so in "
                    "implementation_report.json notes.\n\n")
-SUBSET_COPY = ("Only the selected specs are implemented. The others are not built in this run and are not sent back to a "
-               "writer; use Request changes to have them revised.")
 
 
 def subset_problems(specs: dict[str, dict[str, Any]], approved: Iterable[str]) -> list[str]:

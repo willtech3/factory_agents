@@ -22,7 +22,6 @@ def test_protected_tests_blocks_existing_test_edits():
         modified_files=["spec/models/account_spec.rb", "app/models/account.rb"],
         deleted_files=[],
         existing_test_files=["spec/models/account_spec.rb"],
-        allowed_paths=["app/models/**", "spec/models/**"],
     )
     assert not r.passed and "account_spec" in r.detail
 

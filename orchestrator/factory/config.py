@@ -11,7 +11,7 @@ Forge and gate-surface selection (ADR-0007, ADR-0008):
                                           web = decide in the Factory Console / CLI only.
                                           There is no forge surface: the factory opens no design PR (ADR-0011)
     FACTORY_PAGE_PUBLISHER=local|artifact default local
-    LINEAR_API_KEY / LINEAR_TEAM_ID       the tracker surface (Linear); JIRA_* is a stub
+    LINEAR_API_KEY / LINEAR_TEAM_ID       the tracker surface (Linear; Jira is not implemented, see ADR-0007)
 """
 from __future__ import annotations
 

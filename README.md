@@ -19,7 +19,7 @@ Each box is its own agent session. Every arrow passes a JSON artifact through th
 ## Status (2026-10-10)
 
 - **It has run live.** Real runs went from an outcome to a pull request on personal GitHub repositories: [factory-sample-app#1](https://github.com/willtech3/factory-sample-app/pull/1) (merged) and [factory-switchboard#2](https://github.com/willtech3/factory-switchboard/pull/2). Hosted verification and app onboarding have also run against real apps. Findings from those runs are in the [post-mortem](docs/postmortems/2026-10-10-first-live-runs.md).
-- **Not yet proven live:** the dev-deploy stage (the personal setup has no dev environment), the Linear and GitLab integrations, and the security reviewer (its agent is registered in `claude-lock.json`, but no security pass has run live yet). Jira and eval-driving are stubs.
+- **Not yet proven live:** the dev-deploy stage (the personal setup has no dev environment), the Linear and GitLab integrations, and the security reviewer (its agent is registered in `claude-lock.json`, but no security pass has run live yet). Jira is not implemented and eval-driving is a stub.
 
 [docs/repo-map.md](docs/repo-map.md) has the full status table.
 

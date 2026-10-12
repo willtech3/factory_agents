@@ -49,10 +49,6 @@ class BudgetPaused(Exception):
                 f"Decide gate {self.gate_id} (approve with `budget_usd: N`, or reject), then `factory resume {self.run_id}`.")
 
 
-def spent_usd(ctx: RunContext) -> float:
-    return ctx.store.state(ctx.run_id).list_cost_usd
-
-
 def reserve_budget(ctx: RunContext, stage_key: str, sessions: int = 1, *, extra: dict[str, int] | None = None,
                    cap_usd: float | None = None) -> None:
     """Call right before starting `sessions` sessions of stage `stage_key` (before the batch when they run in

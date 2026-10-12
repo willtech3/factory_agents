@@ -3,7 +3,7 @@
 After Gate 3 (`cr.merged`), the platform's own CI (GitHub Actions by default; GitLab CI for the
 gitlab forge) deploys the default branch to `dev` through its existing templates. The orchestrator:
 
-1. finds the pipeline for the merge commit (webhook first, polling as the source of truth),
+1. finds the pipeline for the merge commit by polling the forge,
 2. records `deploy.started` / `deploy.succeeded` / `deploy.failed`,
 3. on success reads the dev URL from the forge's deployment record (GitHub Deployments API
    `environment_url`; GitLab environment `external_url`) and runs the spec's
@@ -15,8 +15,7 @@ gitlab forge) deploys the default branch to `dev` through its existing templates
 
 The stage is driven by the change-request watcher (`factory watch <run_id>`, `watcher.py`), which
 polls the forge for the merge and then calls the pieces below one tick at a time: `ensure_deploying`,
-`observe_once`, `open_deploy_failure_gate`, `apply_deploy_decision`. `observe_deploy` composes the
-same pieces into one blocking call for callers that can wait. Every piece is safe to call again
+`observe_once`, `open_deploy_failure_gate`, `apply_deploy_decision`. Every piece is safe to call again
 after a restart: it reads what the event log already holds before it appends.
 
 Why observe rather than drive: boundary-crossing actions belong to humans or to the platform's
@@ -33,11 +32,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
-from ..forge import PIPELINE_TERMINAL, parse_pipeline_webhook
+from ..forge import PIPELINE_TERMINAL
 from ..gates import Decision, Gate, GateKind
 from ..state import RunEvent, WorkItemStage
 from . import RunContext
-from .common import gate_decision, open_gate
+from .common import open_gate
 
 
 class PipelineSource(Protocol):
@@ -79,8 +78,7 @@ class DeployObservation:
 def wait_for_pipeline(source: PipelineSource, ref: str, sha: str, *, poll_seconds: float = 15.0,
                       timeout_seconds: float = 3600.0, sleep: Callable[[float], None] = time.sleep,
                       clock: Callable[[], float] = time.monotonic, dev_environment: str = "dev") -> DeployObservation:
-    """Poll until the pipeline for `sha` on `ref` reaches a terminal status. Webhooks may arrive earlier;
-    polling is the source of truth because webhooks are not a durable log."""
+    """Poll until the pipeline for `sha` on `ref` reaches a terminal status."""
     deadline = clock() + timeout_seconds
     pipe: dict[str, Any] | None = None
     while clock() < deadline:
@@ -99,26 +97,6 @@ def wait_for_pipeline(source: PipelineSource, ref: str, sha: str, *, poll_second
     if not url:
         return DeployObservation("failed", pipe, log_excerpt=f"pipeline succeeded but environment '{dev_environment}' has no external_url")
     return DeployObservation("succeeded", pipe, environment_url=url)
-
-
-def handle_pipeline_webhook(ctx: RunContext, payload: dict[str, Any], sha_to_item: dict[str, tuple[str, str]],
-                            default_branch: str) -> dict[str, Any] | None:
-    """Webhook handler stub. The Factory Console's HTTP endpoint calls this with the raw forge CI webhook body
-    (GitLab Pipeline Hook or GitHub `workflow_run` event). It records `deploy.started` the first time a non-terminal pipeline is seen for a merged work item's
-    sha; terminal outcomes are recorded by `observe_deploy`, which reconciles by polling. Returns the
-    normalised pipeline, or None when the payload is not a pipeline hook or not for a tracked sha."""
-    pipe = parse_pipeline_webhook(payload)
-    if pipe is None or pipe.get("ref") != default_branch or pipe.get("sha") not in sha_to_item:
-        return None
-    wid, sid = sha_to_item[pipe["sha"]]
-    if pipe["status"] not in PIPELINE_TERMINAL:
-        already = any(ev.kind == "deploy.started" and ev.payload.get("pipeline_id") == pipe["id"]
-                      for ev in ctx.store.events(ctx.run_id))
-        if not already:
-            ctx.event("deploy.started", {"pipeline_id": pipe["id"], "pipeline_url": pipe.get("web_url"), "sha": pipe["sha"],
-                                         "environment": ctx.cfg.dev_environment_name, "via": "webhook"},
-                      work_item_id=wid, spec_id=sid, stage="deploy", actor="platform")
-    return pipe
 
 
 def ensure_deploying(ctx: RunContext, spec: dict[str, Any]) -> None:
@@ -142,28 +120,6 @@ def deploy_attempts(events: list[RunEvent], work_item_id: str) -> int:
         elif ev.kind == "gate.opened" and ev.payload.get("kind") == GateKind.DEPLOY_FAILURE.value:
             n += 1
     return n
-
-
-def observe_deploy(ctx: RunContext, spec: dict[str, Any], merge_sha: str, default_branch: str,
-                   source: PipelineSource, run_e2e: E2ERunner, *, smoke_commands: tuple[str, ...] = (),
-                   assignees: list[str] | None = None, poll_seconds: float = 15.0, timeout_seconds: float = 3600.0,
-                   max_reobserve: int = 1, sleep: Callable[[float], None] = time.sleep,
-                   clock: Callable[[], float] = time.monotonic, gate_poll_seconds: float = 10.0) -> WorkItemStage:
-    """Drive one merged work item through Stage 5 in one blocking call. Returns the work item's resulting stage.
-    The watcher uses the same pieces without blocking on the gate (`watcher.Watcher`)."""
-    ensure_deploying(ctx, spec)
-    for attempt in range(max_reobserve + 1):
-        obs = observe_once(ctx, spec, merge_sha, default_branch, source, run_e2e, smoke_commands=smoke_commands,
-                           poll_seconds=poll_seconds, timeout_seconds=timeout_seconds, sleep=sleep, clock=clock, attempt=attempt)
-        if obs.passed:
-            return record_deployed(ctx, spec, obs)
-        gate = open_deploy_failure_gate(ctx, spec, obs, assignees or [])
-        while (d := gate_decision(ctx, gate.gate_id, GateKind.DEPLOY_FAILURE, spec["work_item_id"])) is None:
-            time.sleep(gate_poll_seconds)
-        result = apply_deploy_decision(ctx, spec, obs, d.decision, d.comments, reobserve_allowed=attempt < max_reobserve)
-        if result is not None:
-            return result
-    return WorkItemStage.ESCALATED  # pragma: no cover
 
 
 def record_deployed(ctx: RunContext, spec: dict[str, Any], obs: DeployObservation) -> WorkItemStage:
@@ -273,23 +229,3 @@ def _feedback_md(obs: DeployObservation, comments: str) -> str:
                       f"Environment URL: {obs.environment_url or 'n/a'}", "", "## Human comments", "", comments.strip(),
                       "", "## Pipeline / e2e log excerpt", "", "```", obs.log_excerpt[-4000:], "```", "",
                       "Fix on a new branch from the default branch; the orchestrator opens a follow-up change request."])
-
-
-def on_change_request_merged(ctx: RunContext, spec: dict[str, Any], merge_sha: str, default_branch: str,
-                             verifier: Any, assignees: list[str]) -> WorkItemStage:
-    """Entry point the change-request watcher calls when the forge reports `cr.merged` for a factory CR.
-
-    Binds the configured forge as the pipeline source and `LocalVerifier.run_e2e` (checked out at the
-    merge commit) as the e2e runner, then observes. Requires a forge; without one Stage 5 is skipped
-    and the item stays `MERGED`, which the Console shows as "not verified in dev".
-    """
-    if ctx.forge is None:
-        return WorkItemStage.MERGED
-    repo = verifier.checkout(default_branch)
-
-    def run_e2e(url: str, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return verifier.run_e2e(url, entries, repo=repo)
-
-    return observe_deploy(ctx, spec, merge_sha, default_branch, ctx.forge, run_e2e,
-                          smoke_commands=ctx.cfg.smoke_commands, assignees=assignees,
-                          timeout_seconds=ctx.policy.dev_pipeline_timeout_seconds)
