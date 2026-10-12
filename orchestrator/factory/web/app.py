@@ -115,7 +115,7 @@ class StartRunBody(BaseModel):
 SETTINGS_ENV = {
     "budget_usd": "FACTORY_RUN_BUDGET_USD", "preview": "FACTORY_PREVIEW", "reviewer_passes": "FACTORY_REVIEWER_PASSES",
     "review_rounds": "FACTORY_REVIEW_MAX_ROUNDS", "security_review": "FACTORY_SECURITY_REVIEW",
-    "parallel_items": "FACTORY_PARALLEL_IMPLEMENTATIONS", "grader_iterations": "FACTORY_OUTCOME_MAX_ITERATIONS",
+    "grader_iterations": "FACTORY_OUTCOME_MAX_ITERATIONS",
     "budget_scale": "FACTORY_BUDGET_SCALE", "size_budget": "FACTORY_SIZE_BUDGET",
 }
 CREW_ROLES = ["decomposer", "spec_writer", "spec_judge", "implementer", "reviewer", "security_reviewer", "merge_judge", "integrator"]

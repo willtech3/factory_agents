@@ -67,7 +67,7 @@ def policy_snapshot(ctx: RunContext) -> dict[str, Any]:
             "auto_approve": list(getattr(p, "auto_approve", ()) or ()),
             "review_single_pass_lines": getattr(p, "review_single_pass_lines", None),
             "reviewer_passes_followup": getattr(p, "reviewer_passes_followup", None),
-            "security_review": getattr(p, "security_review", True), "parallel_implementations": p.parallel_implementations,
+            "security_review": getattr(p, "security_review", True),
             # the pass also needs its optional agent deployed; without one it is skipped whatever the policy says
             "security_review_available": "security_reviewer" in ctx.cfg.agents,
             "outcome_max_iterations": p.outcome_max_iterations, "stage_budget_usd": dict(p.stage_budget_usd),
@@ -457,7 +457,7 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
         if not ready:
             ctx.event("run.escalated", {"reason": f"unsatisfiable dependencies among {sorted(remaining)}"})
             return RunStage.ESCALATED
-        for spec in ready[: ctx.policy.parallel_implementations]:
+        for spec in ready:                                  # one after another, each on its own branch
             sid = spec["spec_id"]
             deps = {dsid: specs[dsid] for dsid in spec["dependencies"]["specs"] if dsid in specs}
             verdict = _implement_step(ctx, spec, repo["url"], cr_by_spec, default_branch, verifier, deps,

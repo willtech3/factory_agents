@@ -165,7 +165,7 @@ def test_integrator_uses_forge_receipt_instead_of_agent_report(tmp_path, root, e
 
 def test_a_clean_description_opens_the_change_request_without_an_agent(tmp_path, root, examples):
     from types import SimpleNamespace
-    from test_session_cutoff import _ctx, AutoQueue
+    from support.sessions import AutoQueue, run_after_gate_1
     from factory.forge import ChangeRequest
     from factory.gates import Decision
     from factory.stages.integrate import run_integrate
@@ -174,7 +174,7 @@ def test_a_clean_description_opens_the_change_request_without_an_agent(tmp_path,
     sid, wid = spec['spec_id'], spec['work_item_id']
     def run(**kw):
         raise AssertionError("no integrator session when the rendered description passes its lint")
-    ctx = _ctx(tmp_path, root, examples, SimpleNamespace(run=run), AutoQueue(Decision.APPROVE))
+    ctx = run_after_gate_1(tmp_path, root, examples, SimpleNamespace(run=run), AutoQueue(Decision.APPROVE))
     for stage in [WorkItemStage.SPEC_DRAFTING, WorkItemStage.SPEC_JUDGING, WorkItemStage.SPEC_APPROVED,
                   WorkItemStage.IMPLEMENTING, WorkItemStage.REVIEWING, WorkItemStage.MERGE_JUDGING]:
         ctx.event('work_item.stage', {'stage': stage.value}, work_item_id=wid)
