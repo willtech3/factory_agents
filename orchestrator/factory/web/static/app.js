@@ -851,7 +851,14 @@
       el("p", { class: "explain" }, `${(rec.criteria || []).length ? `${rec.criteria.filter(c => c.status === "met").length} of ${rec.criteria.length} acceptance criteria met · ` : "Awaiting fresh verification · "}candidate ${(rec.head_sha || "").slice(0, 10)}`), details, options), "Build paused for a decision", "call");
   }
   function visualEvidenceCard(r) {
-    const current = r.visual_evidence.filter(e => e.current), earlier = r.visual_evidence.filter(e => !e.current);
+    // A recheck can produce several attempts for the same candidate. The API is newest-first:
+    // only the latest result for each journey belongs in the glance, including a failed retry.
+    const current = [], earlier = [], seen = new Set();
+    for (const evidence of r.visual_evidence) {
+      const key = JSON.stringify([evidence.spec_id, evidence.description, evidence.persona, evidence.viewport && evidence.viewport.width, evidence.viewport && evidence.viewport.height]);
+      if (evidence.current && !seen.has(key)) { current.push(evidence); seen.add(key); }
+      else earlier.push(evidence);
+    }
     const body = el("div", { class: "evidence-list" });
     const url = artifact => `/api/artifacts/${encodeURIComponent(r.run_id)}/${artifact.split("/").map(encodeURIComponent).join("/")}`;
     const entry = evidence => {
@@ -884,7 +891,7 @@
     };
     current.forEach(e => body.append(entry(e)));
     if (!current.length) body.append(el("p", { class: "explain" }, "No browser evidence for the current candidate yet."));
-    if (earlier.length) body.append(el("details", { class: "earlier-evidence" }, el("summary", null, `Earlier attempts (${earlier.length})`), el("p", { class: "explain" }, "These checks do not verify the current candidate."), earlier.map(entry)));
+    if (earlier.length) body.append(el("details", { class: "earlier-evidence" }, el("summary", null, `Earlier attempts (${earlier.length})`), el("p", { class: "explain" }, "Superseded attempts. Use the latest checks above for the current result."), earlier.map(entry)));
     return card("Browser testing", body, `${current.filter(e => e.status === "passed").length} of ${current.length} latest checks passed`, "visual-evidence-card");
   }
   // A check that did not pass leads with what was observed, and says which part stopped it. The worker's summary is its
