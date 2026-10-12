@@ -6,8 +6,9 @@ import pytest
 from conftest import make_config
 
 from factory.gates import InMemoryQueue, LogNotifier
-from factory.runner import resume_points
+from factory import steps
 from factory.stages import RunContext
+from factory.stages.implement import adopt_rounds
 from factory.state import IllegalTransition, Policy, RunStage, RunState, reduce
 from factory.state import RunEvent
 from factory.store import RunStore
@@ -22,34 +23,45 @@ def _put(ctx, stage, name, obj):
     ctx.store.put_artifact(ctx.run_id, stage, name, json.dumps(obj).encode())
 
 
-def test_resume_points_follow_the_persisted_rounds(tmp_path, root):
+def test_an_older_controllers_rounds_are_adopted_where_their_artefacts_stop(tmp_path, root):
+    """A run written before round steps existed: its persisted rounds become steps (ADR-0013), so the loop continues
+    where they stop instead of running the implementer again."""
     ctx = _ctx(tmp_path, root)
-    specs = {"spec_a": {}, "spec_b": {}, "spec_c": {}, "spec_d": {}}
-    # spec_a: nothing persisted -> round 1, implementer runs
-    # spec_b: round 1 report only -> round 1 with the report (verification, then review)
+
+    def spec(sid):
+        return {"spec_id": sid, "test_plan": {"commands": [], "e2e": []}}
+
+    def step(key):
+        return ctx.store.step(ctx.run_id, key)
+    # spec_a: nothing persisted -> nothing adopted, round 1 runs its implementer
+    # spec_b: round 1 report only -> that report is kept (verification and review run again)
     _put(ctx, "implement", "spec_b-r1-implementation_report.json", {"head_commit": "b1"})
-    # spec_c: round 2 report + response and round 1 findings -> round 2 with everything (live run 2's shape)
+    # spec_c: round 2 report + response and round 1 findings -> round 1 answered, round 2's report kept (live run 2's shape)
     _put(ctx, "implement", "spec_c-r1-implementation_report.json", {"head_commit": "c1"})
-    _put(ctx, "review", "spec_c-r1-findings.merged.json", {"findings": [{"finding_id": "F-1"}]})
+    _put(ctx, "review", "spec_c-r1-findings.merged.json", {"findings": [{"finding_id": "F-1", "severity": "blocking", "status": "open"}]})
     _put(ctx, "implement", "spec_c-r2-implementation_report.json", {"head_commit": "c2"})
     _put(ctx, "implement", "spec_c-r2-review_response.json", {"responses": [{"finding_id": "F-1", "disposition": "fixed"}]})
-    # spec_d: round 2 report but no response -> rerun round 2 against round 1's findings
+    # spec_d: round 2 report but no response -> round 2's implementer runs again against round 1's findings
     _put(ctx, "implement", "spec_d-r1-implementation_report.json", {"head_commit": "d1"})
     _put(ctx, "review", "spec_d-r1-findings.merged.json", {"findings": []})
     _put(ctx, "implement", "spec_d-r2-implementation_report.json", {"head_commit": "d2"})
+    for sid in ("spec_a", "spec_b", "spec_c", "spec_d"):
+        adopt_rounds(ctx, spec(sid))
 
-    pts = resume_points(ctx, specs)
-    assert pts["spec_a"].round_no == 1 and pts["spec_a"].report is None
-    assert pts["spec_b"].round_no == 1 and pts["spec_b"].report == {"head_commit": "b1"} and pts["spec_b"].findings is None
-    c = pts["spec_c"]
-    assert c.round_no == 2 and c.report == {"head_commit": "c2"} and c.response["responses"][0]["disposition"] == "fixed"
-    assert c.findings["findings"][0]["finding_id"] == "F-1"
-    d = pts["spec_d"]
-    assert d.round_no == 2 and d.report is None and d.findings == {"findings": []}
+    assert not [s for s in ctx.store.steps(ctx.run_id) if "/spec_a/" in s.key]
+    b = step("implement/spec_b/r1/author")
+    assert b.status == "done" and steps.get_json(ctx, b.result["report"]) == {"head_commit": "b1"} and step("implement/spec_b/r1") is None
+    c1, c2 = step("implement/spec_c/r1"), step("implement/spec_c/r2/author")
+    assert c1.result["next"] == "respond" and steps.get_json(ctx, c1.result["findings"])["findings"][0]["finding_id"] == "F-1"
+    assert steps.get_json(ctx, c2.result["report"]) == {"head_commit": "c2"}
+    assert steps.get_json(ctx, c2.result["response"])["responses"][0]["disposition"] == "fixed"
+    assert step("implement/spec_d/r1").result["next"] == "respond" and step("implement/spec_d/r2/author") is None
+    adopt_rounds(ctx, spec("spec_c"))                              # once: a run with round steps adopts nothing more
+    assert len([s for s in ctx.store.steps(ctx.run_id) if "/spec_c/" in s.key]) == 2
     # a round-2 report with no round-1 findings to have answered is a store the loop cannot continue from
     _put(ctx, "implement", "spec_e-r2-implementation_report.json", {"head_commit": "e2"})
     with pytest.raises(RuntimeError, match="round 1 has no merged findings"):
-        resume_points(ctx, {"spec_e": {}})
+        adopt_rounds(ctx, spec("spec_e"))
 
 
 def test_run_resumed_moves_a_failed_run_back_into_implementation():

@@ -37,7 +37,7 @@ from .stages import RunContext
 from .stages.common import artifact_json_or_none, decision_from_event, orphaned_sessions, public, queued_gate
 from .stages.common import hosted_run, recorded_preview_mode  # noqa: F401  the Console imports recorded_preview_mode from here
 from .stages.decompose import gate_1, run_decompose
-from .stages.implement import LocalVerifier, ResumePoint, run_implement_one
+from .stages.implement import LocalVerifier, run_implement_one
 from .stages.integrate import run_integrate
 from .stages.specify import gate_2, run_specify
 from .state import RunStage, RunState, WorkItemStage, reduce
@@ -435,13 +435,12 @@ def comparison_branch(ctx: RunContext, repo: dict[str, Any], verifier: LocalVeri
 
 
 def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dict[str, dict], spec_md: dict[str, str],
-                            spec_verdict: dict[str, Any] | None, resume: dict[str, ResumePoint] | None = None,
-                            guidance: dict[str, str] | None = None) -> RunStage:
+                            spec_verdict: dict[str, Any] | None, guidance: dict[str, str] | None = None) -> RunStage:
     """Stage 3 + 4 per approved spec, in dependency waves, each spec an implementation step and an integration step.
     A replay gets the specs that finished back from their steps; a spec whose implementation did not finish continues
-    where its artefacts stop (`resume_points`). Specs whose change request is already open are not touched again.
-    `guidance` is the owner's bounded Gate 2 approval notes per spec (`record_approval`), handed to that spec's
-    implementer. `resume` overrides the resume points (tests)."""
+    at its first unfinished round (`run_implement_one`). Specs whose change request is already open are not touched
+    again. `guidance` is the owner's bounded Gate 2 approval notes per spec (`record_approval`), handed to that spec's
+    implementer."""
     repo = outcome["target_repositories"][0]
     if ctx.store.state(ctx.run_id).stage != RunStage.IMPLEMENTING:
         ctx.event("stage.entered", {"stage": RunStage.IMPLEMENTING.value}, stage="implement")
@@ -462,7 +461,7 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
             sid = spec["spec_id"]
             deps = {dsid: specs[dsid] for dsid in spec["dependencies"]["specs"] if dsid in specs}
             verdict = _implement_step(ctx, spec, repo["url"], cr_by_spec, default_branch, verifier, deps,
-                                      spec_md.get(sid, ""), (guidance or {}).get(sid, ""), (resume or {}).get(sid))
+                                      spec_md.get(sid, ""), (guidance or {}).get(sid, ""))
             remaining.pop(sid)
             if verdict["result"] != "ready":
                 stopped[sid] = str(verdict.get("reason") or verdict["result"])
@@ -486,12 +485,11 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
 
 
 def _implement_step(ctx: RunContext, spec: dict[str, Any], repo_url: str, cr_by_spec: dict[str, int], default_branch: str,
-                    verifier: LocalVerifier, deps: dict[str, dict], spec_md: str, guidance: str,
-                    resume_from: ResumePoint | None) -> dict[str, Any]:
+                    verifier: LocalVerifier, deps: dict[str, dict], spec_md: str, guidance: str) -> dict[str, Any]:
     """One spec's implement/review/judge loop as a step; its result is the merge verdict, or why it stopped. The latest
-    build-recovery decision on the spec is one of its inputs, so the owner's recovery runs it again: a recheck verifies
-    the last head afresh and asks a new merge judge, a request for changes opens the next implementer round with the
-    owner's instructions."""
+    build-recovery decision on the spec is one of its inputs, so the owner's recovery runs it again: its finished rounds
+    come back from their own steps, a recheck verifies the last head afresh and asks a new merge judge, and a request
+    for changes opens the next implementer round with the owner's instructions (`run_implement_one`)."""
     sid, wid = spec["spec_id"], spec["work_item_id"]
     recovery = _latest_recovery(ctx, sid)
     corrective = _latest_recovery(ctx, sid, Decision.REQUEST_CHANGES.value)   # stays authorized through later rechecks
@@ -506,19 +504,8 @@ def _implement_step(ctx: RunContext, spec: dict[str, Any], repo_url: str, cr_by_
             ctx.event("artifact.produced", {"artifact_type": "stacked_base", "base_branch": base_branch,
                                             "note": "the dependency's change request is open but not merged; this item is built on its branch"},
                       work_item_id=wid, spec_id=sid, stage="implement")
-        point, notes = resume_from, guidance
-        item = ctx.store.state(ctx.run_id).work_items.get(wid)
-        if point is None and item is not None and item.stage != WorkItemStage.SPEC_APPROVED:
-            point = resume_points(ctx, {sid: spec})[sid]           # started before: continue where its artefacts stop
-        if corrective is not None:
-            n = int(corrective["round"]) + 1
-            notes = notes + "\n# Build recovery instructions from the owner\n" + corrective.get("comments", "")
-            point = point or ResumePoint()
-            if point.round_no < n:
-                point = ResumePoint(round_no=n, findings=corrective.get("review_findings") or point.findings)
-            point.review_through = n
-        verdict = run_implement_one(ctx, spec, repo_url, base_branch, verifier, deps, spec_md=spec_md, resume_from=point,
-                                    guidance=notes)
+        verdict = run_implement_one(ctx, spec, repo_url, base_branch, verifier, deps, spec_md=spec_md, guidance=guidance,
+                                    recovery=recovery, corrective=corrective)
         if verdict["result"] != "ready":
             ctx.event("run.escalated", {"reason": f"{sid}: merge judge said {verdict['result']}",
                                         "summary": verdict.get("summary_for_human", verdict.get("reason"))}, spec_id=sid)
@@ -592,39 +579,6 @@ def base_branch_for(ctx: RunContext, spec: dict[str, Any], cr_by_spec: dict[str,
     if len(unmerged) > 1:
         return default_branch, f"depends on {len(unmerged)} unmerged change requests ({', '.join(unmerged)}); merge them first and resume"
     return _branch_for(ctx.run_id, unmerged[0]), None
-
-
-def resume_points(ctx: RunContext, specs: dict[str, dict]) -> dict[str, ResumePoint]:
-    """Per spec, the implementer round to continue at, read from what the dead orchestrator persisted.
-
-    The latest persisted implementation_report (round n) means that round's session finished: continue at round n
-    with its report (and its review_response from round 2 on), answering round n-1's merged findings; the
-    orchestrator's own verification of that head is redone, and reviewer passes or a merge verdict already stored
-    for the round are reused. A round-n report without the response its findings required, or no report at all,
-    means that round's implementer runs (again)."""
-    out: dict[str, ResumePoint] = {}
-    for sid in specs:
-        rounds = _rounds(ctx, "implement", f"{sid}-r", "-implementation_report.json")
-        if not rounds:
-            out[sid] = ResumePoint(round_no=1)
-            continue
-        n = max(rounds)
-        findings = artifact_json_or_none(ctx, "review", f"{sid}-r{n - 1}-findings.merged.json") if n > 1 else None
-        if n > 1 and findings is None:
-            correction = next((e.payload for e in reversed(ctx.store.events(ctx.run_id))
-                               if e.kind == "build.recovery" and e.spec_id == sid
-                               and e.payload.get("decision") == "request_changes" and e.payload.get("round", 0) + 1 == n), None)
-            if correction:
-                findings = correction.get("review_findings") or {"findings": []}
-        if n > 1 and findings is None:
-            raise RuntimeError(f"cannot resume {sid}: round {n} report exists but round {n - 1} has no merged findings")
-        report = json.loads(ctx.store.get_artifact(ctx.run_id, "implement", f"{sid}-r{n}-implementation_report.json"))
-        response = artifact_json_or_none(ctx, "implement", f"{sid}-r{n}-review_response.json")
-        if n > 1 and response is None:
-            out[sid] = ResumePoint(round_no=n, findings=findings)            # rerun round n's implementer
-        else:
-            out[sid] = ResumePoint(round_no=n, findings=findings, report=report, response=response)
-    return out
 
 
 def _rounds(ctx: RunContext, stage: str, prefix: str, suffix: str) -> list[int]:

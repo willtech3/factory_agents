@@ -33,14 +33,14 @@ def escalated(tmp_path, root, monkeypatch):
 
 
 def recovering(monkeypatch):
-    """Each spec's implementation step as the resumed run starts it: where it continues and the owner's notes it gets.
-    The build stops again, so the run escalates again."""
+    """Each spec's implementation step as the resumed run starts it: the owner's latest recovery decision on the spec and
+    their latest request for changes (it stays authorized). The build stops again, so the run escalates again."""
     seen = {}
 
-    def implement(ctx, spec, repo_url, base_branch, verifier, deps, *, spec_md="", resume_from=None, guidance=""):
+    def implement(ctx, spec, repo_url, base_branch, verifier, deps, *, spec_md="", guidance="", recovery=None, corrective=None):
         if not seen:                                    # the resume returned the run to implementation
             assert ctx.store.state(gate2.RUN).stage == RunStage.IMPLEMENTING
-        seen[spec["spec_id"]] = (resume_from, guidance)
+        seen[spec["spec_id"]] = (recovery, corrective)
         return {"result": "escalate", "reason": "stopped again in the test"}
     monkeypatch.setattr(runner, "implement_and_integrate", REAL_IMPLEMENT_AND_INTEGRATE)
     monkeypatch.setattr(runner, "run_implement_one", implement)
@@ -56,7 +56,7 @@ def test_approved_build_escalation_is_recoverable_in_console_and_runner(tmp_path
     originals = {sid: ctx.store.get_artifact(gate2.RUN, "specify", f"final-{sid}.json") for sid in gate2.SPECS}
     seen = recovering(monkeypatch)
     assert runner.resume(ctx) == RunStage.ESCALATED
-    assert set(seen) == set(gate2.SPECS) and all(pt.round_no == 1 for pt, _ in seen.values())
+    assert set(seen) == set(gate2.SPECS) and all(decided == (None, None) for decided in seen.values())
     assert originals == {sid: ctx.store.get_artifact(gate2.RUN, "specify", f"final-{sid}.json") for sid in gate2.SPECS}
 
 
@@ -160,10 +160,10 @@ def test_request_changes_runs_a_fresh_bounded_cycle_with_owner_notes(tmp_path, r
     ctx.queue.record_decision(gate,'request_changes','will','Fix the observed regression; keep the approved scope.')
     seen=recovering(monkeypatch)
     assert runner.resume(ctx) == RunStage.ESCALATED
-    point, notes = seen['spec_a']
-    assert point.round_no == 2 and point.report is None and point.review_through == 2
-    assert 'Fix the observed regression' in notes
-    assert seen['spec_b'][0].round_no == 1 and 'Fix the observed regression' not in seen['spec_b'][1]
+    recovery, corrective = seen['spec_a']
+    assert recovery['decision'] == corrective['decision'] == 'request_changes' and corrective['round'] == 1
+    assert 'Fix the observed regression' in corrective['comments']
+    assert seen['spec_b'] == (None, None)
 
 
 def test_recovery_refuses_tampered_gate_snapshot(tmp_path,root,monkeypatch):
@@ -185,8 +185,13 @@ def test_corrective_round_can_restart_after_its_report_is_saved(tmp_path,root,mo
     br.apply_decision(ctx.store,ctx.queue,gate2.RUN)
     ctx.store.put_artifact(gate2.RUN,'implement','spec_a-r2-implementation_report.json',b'{"head_sha":"new"}')
     ctx.store.put_artifact(gate2.RUN,'implement','spec_a-r2-review_response.json',b'{"responses":[]}')
-    points=runner.resume_points(ctx,gate2.SPECS)
-    assert points['spec_a'].report['head_sha']=='new'
+    from factory import steps
+    from factory.stages.implement import adopt_rounds
+    corrective = next(e.payload for e in ctx.store.events(gate2.RUN) if e.kind == 'build.recovery')
+    ctx.store.put_artifact(gate2.RUN,'implement','spec_a-r1-implementation_report.json',b'{"head_sha":"old"}')
+    adopt_rounds(ctx, gate2.SPECS['spec_a'], corrective)
+    author = ctx.store.step(gate2.RUN, 'implement/spec_a/r2/author')
+    assert steps.get_json(ctx, author.result['report'])['head_sha']=='new'
 
 
 def test_recovery_rejects_unknown_run_before_creating_directories(tmp_path,root):
@@ -223,8 +228,8 @@ def test_recheck_keeps_the_authorized_corrective_review_cycle(tmp_path,root,monk
     ctx.queue.record_decision(gate,'approve','will','Verify the compatible merge candidate')
     seen=recovering(monkeypatch)
     assert runner.resume(ctx)==RunStage.ESCALATED
-    assert seen['spec_a'][0].review_through==2
-    assert seen['spec_a'][0].report['head_sha']=='new'
+    recovery, corrective = seen['spec_a']
+    assert recovery['decision']=='approve' and corrective['decision']=='request_changes' and corrective['comments']=='Fix it'
 
 
 def test_changed_recovery_evidence_supersedes_the_old_gate(tmp_path,root,monkeypatch):

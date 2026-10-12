@@ -32,6 +32,11 @@ class CheckResult:
     def to_dict(self) -> dict[str, Any]:
         return {"check": self.check, "passed": self.passed, "detail": self.detail, **({"flag": self.flag} if self.flag else {})}
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> CheckResult:
+        """A check as `to_dict` recorded it (a round step's result)."""
+        return cls(check=d["check"], passed=bool(d["passed"]), detail=d.get("detail", ""), flag=d.get("flag"))
+
 
 # ---------------------------------------------------------------- globs
 

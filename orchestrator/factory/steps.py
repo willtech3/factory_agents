@@ -69,6 +69,12 @@ def run_step(ctx: RunContext, key: str, inputs: Any, fn: Callable[[], T], *, kin
     return decode(result) if decode else result
 
 
+def recorded(ctx: RunContext, key: str, inputs: Any) -> bool:
+    """`run_step(ctx, key, inputs, ...)` would return a recorded result rather than run."""
+    prior = ctx.store.step(ctx.run_id, key)
+    return prior is not None and prior.status == "done" and prior.inputs_sha in (inputs_sha(inputs), ADOPTED)
+
+
 def record_step(ctx: RunContext, key: str, result: Any, *, kind: str = "task") -> None:
     """Record `key` as done with `result`, matching any inputs: how an older controller's log is adopted."""
     ctx.store.begin_step(ctx.run_id, key, kind, ADOPTED)
