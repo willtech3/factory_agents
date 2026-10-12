@@ -116,7 +116,12 @@ def test_presented_specs_are_read_back_by_the_hash_the_gate_showed(parked, tmp_p
     rec = FileQueue(tmp_path / "runs" / "_queue")._load("gates.json")[parked["gate"].gate_id]
     assert sorted(presented_specs(tmp_path / "runs", RUN, rec["artifacts"])) == ["spec_a", "spec_b", "spec_c"]
     final = tmp_path / "runs" / RUN / "artifacts" / "specify" / "final-spec_b.json"
-    final.write_text(final.read_text().replace('"spec_b"', '"spec_b" ', 1))
+    shown = final.read_text()
+    # final-* moved on to a later cycle, but the round the gate showed is still stored: it is found by its hash
+    (final.parent / "wi-b-r1-spec.json").write_text(shown)
+    final.write_text(shown.replace('"spec_b"', '"spec_b" ', 1))
+    assert presented_specs(tmp_path / "runs", RUN, rec["artifacts"])["spec_b"] == json.loads(shown)
+    (final.parent / "wi-b-r1-spec.json").unlink()
     with pytest.raises(ValueError, match="spec_b this gate presented"):
         presented_specs(tmp_path / "runs", RUN, rec["artifacts"])
 

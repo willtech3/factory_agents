@@ -85,13 +85,10 @@ def _run(tmp_path, base_url, viewport, journey=JOURNEY, secrets=None):
     path.write_text(json.dumps(journey))
     env = {"FACTORY_EVIDENCE_DIR": str(directory), "FACTORY_VISUAL_REQUEST": str(directory / "request.json"), "BASE_URL": base_url,
            **(secrets or {}), "FACTORY_SECRET_NAMES": ",".join(secrets or {})}
-    try:
-        code = br.main(["--journey", str(path)], env=env)
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"no runnable Chromium for Playwright here: {exc}")
+    code = br.main(["--journey", str(path)], env=env)       # any exception is a runner bug, not a missing browser
     report = json.loads((directory / "result.json").read_text())
     if report["status"] == "blocked" and "browser did not start" in report["summary"]:
-        pytest.skip(report["summary"])
+        pytest.skip(report["summary"])                          # the runner's own report when Chromium cannot launch
     return code, report, visual.collect(directory, request, code)
 
 

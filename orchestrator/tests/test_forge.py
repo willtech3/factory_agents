@@ -17,14 +17,16 @@ class Seq(list):
 
 
 class Recorder:
-    """Scripted GitHub API: records every request; answers from a route table (method path -> json/status)."""
+    """Scripted forge API: records every request; answers from a route table (method + decoded path -> json/status)."""
 
     def __init__(self, routes):
         self.routes = routes
         self.calls = []
+        self.raw_paths = []                              # as sent, so a missing percent-encoding shows
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content) if request.content else None
+        self.raw_paths.append(request.url.raw_path.decode().split("?")[0])
         self.calls.append((request.method, request.url.path, dict(request.url.params), body))
         key = f"{request.method} {request.url.path}"
         resp = self.routes.get(key)
@@ -171,6 +173,54 @@ def test_github_workflow_runs_and_deployments():
     # a workflow-scoped forge looks under /actions/workflows/<file>/runs
     f2, rec2 = _forge({"GET /repos/will/ledgerline/actions/workflows/preview.yml/runs": {"workflow_runs": []}}, workflow="preview.yml")
     assert f2.latest_pipeline("main") is None and rec2.calls[0][1].endswith("/actions/workflows/preview.yml/runs")
+
+
+def test_gitlab_merge_request_flow_and_pipeline_reads():
+    """GitLab is the second forge and has not run live; this pins its request shapes and how it normalises answers to the
+    shapes the watcher and Stage 5 read (the same ones GitHubForge returns)."""
+    p = "/api/v4/projects/group/app"
+    envs = {"preview/factory-run-1-spec-x": {"id": 3, "name": "preview/factory-run-1-spec-x", "state": "available",
+                                             "external_url": "https://run-1-spec-x.preview.example.internal"},
+            "dev": {"id": 1, "name": "dev", "state": "available", "external_url": "https://dev.example.internal",
+                    "last_deployment": {"id": 40, "status": "success", "sha": "m12", "ref": "main", "deployable": {"id": 9}}}}
+    routes = {
+        "GET /api/v4/users": lambda body, params: [{"id": 7, "username": "will"}] if params.get("username") == "will" else [],
+        f"POST {p}/merge_requests": (201, {"iid": 12, "web_url": "https://gitlab.example.internal/group/app/-/merge_requests/12"}),
+        f"GET {p}/merge_requests/12": {"state": "merged", "sha": "h12", "merge_commit_sha": "m12", "labels": ["factory"],
+                                       "merged_at": "t", "detailed_merge_status": "mergeable"},
+        f"GET {p}/merge_requests/12/approvals": {"approved": False, "approvals_left": 0, "approved_by": [{"user": {"username": "will"}}]},
+        f"GET {p}/pipelines": [{"id": 5, "status": "running", "ref": "main", "sha": "m12", "web_url": "p5"}],
+        f"GET {p}/pipelines/5": {"id": 5, "status": "failed", "ref": "main", "sha": "m12", "web_url": "p5"},
+        f"GET {p}/pipelines/5/jobs": [{"id": 8, "name": "test", "status": "success"},
+                                      {"id": 9, "name": "deploy-dev", "stage": "deploy", "status": "failed", "web_url": "j9",
+                                       "environment": {"name": "dev"}, "failure_reason": "script_failure"}],
+        f"GET {p}/jobs/9/trace": "line 1\nrails db:migrate failed\n",
+        f"GET {p}/environments": lambda body, params: [envs[params["name"]]] if params.get("name") in envs else [],
+    }
+    rec = Recorder(routes)
+    f = GitLabForge("https://gitlab.example.internal", "glpat", "group/app", transport=httpx.MockTransport(rec))
+
+    cr = f.create_change_request(source_branch="factory/run_1/spec_x", target_branch="main", title="spec_x: title",
+                                 description="body", labels=["factory", "spec:spec_x"], reviewers=["will", "nobody"], draft=True)
+    assert (cr.id, cr.url.endswith("/merge_requests/12")) == (12, True)
+    body = next(b for m, path, _, b in rec.calls if m == "POST")
+    assert body == {"source_branch": "factory/run_1/spec_x", "target_branch": "main", "title": "Draft: spec_x: title",
+                    "description": "body", "labels": "factory,spec:spec_x", "remove_source_branch": True, "reviewer_ids": [7]}
+    assert f"{p.replace('group/app', 'group%2Fapp')}/merge_requests" in rec.raw_paths     # the project path is one encoded segment
+    st = f.change_request_state(12)
+    assert st["state"] == "merged" and st["merge_commit_sha"] == "m12" and st["labels"] == ["factory"]
+    assert f.change_request_approved(12) is True                 # no approvals left and someone approved
+
+    pipe = f.latest_pipeline("main", "m12")
+    assert pipe["status"] == "running" and pipe["status"] not in PIPELINE_TERMINAL
+    assert rec.calls[-1][2] == {"ref": "main", "order_by": "id", "sort": "desc", "per_page": "1", "sha": "m12"}
+    assert f.pipeline(5)["status"] in PIPELINE_TERMINAL
+    excerpt = f.failed_job_log_excerpt(5)
+    assert excerpt.startswith("job deploy-dev (script_failure) j9") and "db:migrate failed" in excerpt
+    dev = f.environment("dev")
+    assert dev["external_url"] == "https://dev.example.internal" and dev["last_deployment"]["deployable_id"] == 9
+    assert f.environment("staging") is None
+    assert f.environment_url_for_branch("factory/run_1/spec_x") == "https://run-1-spec-x.preview.example.internal"
 
 
 def test_github_session_resource_and_git_instructions():

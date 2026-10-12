@@ -353,10 +353,19 @@ def test_the_attached_local_browser_worker_is_refused_in_the_sandbox(tmp_path, r
 
 
 def test_visual_requests_stay_invisible_to_local_workers(tmp_path, root):
+    """While the hosted round is in flight its browser requests exist and are open, but where no local worker polls."""
     from factory import visual
-    run, _, _ = run_verifier(tmp_path, root, {"app/main.py": "X = 1\n"})
+    seen = {}
+
+    class Watching(Driver):
+        def run(self, **kw):
+            if kw.get("stage") == "verify":
+                seen["open"] = [p for p in (tmp_path / "verify").rglob("request.json") if not (p.parent / "closed").exists()]
+                seen["pending"] = visual.pending(tmp_path)
+            return super().run(**kw)
+    run, _, _ = run_verifier(tmp_path, root, {"app/main.py": "X = 1\n"}, driver=Watching(tmp_path / "unused", tmp_path))
     assert run.e2e[0]["visual"]["status"] == "passed"
-    assert visual.pending(tmp_path) == [] and list((tmp_path / "verify" / "hosted" / "visual").glob("*/closed"))
+    assert seen["open"] and seen["pending"] == []
 
 
 @pytest.mark.parametrize("target", ["local", "preview"])
@@ -458,7 +467,8 @@ def test_a_managed_run_never_resumes_with_controller_execution(tmp_path, root, n
 
 
 def test_managed_prechecks_execute_nothing(monkeypatch):
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("subprocess on the controller")))
+    for name in ("run", "Popen", "check_output", "call"):
+        monkeypatch.setattr(subprocess, name, lambda *a, **k: (_ for _ in ()).throw(AssertionError("subprocess on the controller")))
     pre = implement.managed_prechecks({"app/x.py": ["token = 'ghp_" + "a" * 36 + "'"]})
     assert pre["secret_scan"]["hits"] and pre["dependency_audit"]["status"] == "skipped" and pre["sast"]["status"] == "skipped"
 

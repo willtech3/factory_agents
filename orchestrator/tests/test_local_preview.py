@@ -195,24 +195,30 @@ def test_e2e_commands_see_base_url_in_the_environment_including_the_guarded_form
 
 def test_verifier_runs_spec_commands_under_a_modern_shell(tmp_path):
     """The construct that failed on macOS /bin/sh (bash 3.2): escaped quotes inside "$( ... )" inside a nested sh -c,
-    which bash 3.2 brace-expands. With a bash 4+ on the host the verifier uses it, and as `sh` too."""
-    import pytest
+    which bash 3.2 brace-expands. With a bash 4+ on the host a spec command runs under it, and so does a nested `sh -c`
+    (the per-run environment puts an `sh` that is that bash first on PATH)."""
+    import re
+
+    from factory.checks import CheckResult
     from factory.stages import implement as impl
-    from factory.stages.implement import LocalVerifier, verification_shell
+    from factory.stages.implement import verification_shell
     impl._SHELL.clear()
-    exe, shim = verification_shell(tmp_path)
-    if exe is None:
+    work = tmp_path / "v"
+    if verification_shell(work)[0] is None:
         pytest.skip("no bash 4+ on this host")
-    assert (tmp_path / "shell-shim" / "sh").is_symlink()
-    v = LocalVerifier("unused", tmp_path)
-    cmd = """sh -c '
+    v = LocalVerifier("unused", work)
+    v.env_dir.symlink_to(Path(sys.executable).parent.parent, target_is_directory=True)      # a prepared per-run environment
+    v.setup = CheckResult(SETUP_CHECK, True, "the test's own interpreter stands in for the per-run environment")
+    versions = """echo "outer=${BASH_VERSINFO:-0}"; sh -c 'echo "nested=${BASH_VERSINFO:-0}"'"""
+    construct = """sh -c '
 set -eu
 K=abc
 f() { printf "%s|" "$@"; }
 out="$(f -d "{\\"key\\":\\"x$K\\",\\"r\\":1}")"
 test "$out" = "-d|{\\"key\\":\\"xabc\\",\\"r\\":1}|"
-echo "shell ok $(bash -c "echo ${BASH_VERSINFO[0]}")"
+echo construct ok
 '"""
-    res = v.run_commands(tmp_path, [cmd])
-    assert res[0]["exit_code"] == 0, res[0]
-    assert "shell ok" in res[0]["stdout_tail"]
+    res = v.run_commands(tmp_path, [versions, construct])
+    seen = dict(re.findall(r"(outer|nested)=(\d+)", res[0]["stdout_tail"]))
+    assert int(seen["outer"]) >= 4 and int(seen["nested"]) >= 4, res[0]
+    assert res[1]["exit_code"] == 0 and "construct ok" in res[1]["stdout_tail"], res[1]

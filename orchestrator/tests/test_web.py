@@ -153,7 +153,7 @@ def test_a_run_stopped_before_run_created_is_not_found_not_a_crash(client):
     assert r.status_code == 404 and "never started" in r.json()["detail"]
 
 
-def test_reject_closes_the_run(client):
+def test_a_reject_without_a_change_request_comment_is_accepted_and_reads_as_closed(client):
     run_id = _seed(client)
     qid = client.get("/api/inbox").json()["questions"][0]["question_id"]
     client.post(f"/api/questions/{qid}/answer", json={"answer": "Own schedule"})

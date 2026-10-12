@@ -32,13 +32,14 @@ everything you produce under /mnt/session/outputs/, not in the working tree."""
 class GitLabForge:
     kind = "gitlab"
 
-    def __init__(self, base_url: str, token: str, project: str, timeout: float = 30.0):
+    def __init__(self, base_url: str, token: str, project: str, timeout: float = 30.0,
+                 transport: httpx.BaseTransport | None = None):
         self.token = token
         self.url = base_url.rstrip("/")
         self.base = self.url + "/api/v4"
         self.repo = project
         self.project = quote(project, safe="")
-        self.http = httpx.Client(headers={"PRIVATE-TOKEN": token}, timeout=timeout)
+        self.http = httpx.Client(headers={"PRIVATE-TOKEN": token}, timeout=timeout, transport=transport)
 
     def _p(self, path: str) -> str:
         return f"{self.base}/projects/{self.project}{path}"

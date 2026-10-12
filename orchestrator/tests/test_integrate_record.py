@@ -171,9 +171,11 @@ def test_evaluation_pr_is_forced_to_draft_and_labeled(tmp_path, root, examples):
     handler = make_open_change_request(ctx, SimpleNamespace(kind='github', create_change_request=create),
                                       'spec_test', 'wi-test', 'factory/branch', 'evaluation', banner=banner)
     handler({'source_branch': 'factory/branch', 'target_branch': 'evaluation', 'title': 'Change',
-             'description_markdown': 'Evidence', 'draft': False}, None)
+             'description_markdown': 'Evidence', 'draft': False, 'labels': ['ui']}, None)
     assert calls[0]['draft'] is True
     assert calls[0]['title'].startswith('[Factory evaluation]')
+    # the controller's labels go on whatever the integrator asked for, so the watcher and people can find factory PRs
+    assert calls[0]['labels'] == sorted({'ui', 'factory', 'spec:spec_test', f'run:{ctx.run_id}'})
     first, second = calls[0]['description'].splitlines()[:2]
     assert 'do not merge' in first and 'a' * 10 in first and first.count('. ') == 0      # one sentence
     assert second == "> Beyond the current `main` it holds 1 file, +12 / −3: `verification/x.py` (+12 / −3)."

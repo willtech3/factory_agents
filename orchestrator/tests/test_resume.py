@@ -1,6 +1,8 @@
 """`factory resume`: a run that died during implementation continues from what the store holds. No network."""
 import json
 
+import pytest
+
 from conftest import make_config
 
 from factory.gates import InMemoryQueue, LogNotifier
@@ -44,6 +46,10 @@ def test_resume_points_follow_the_persisted_rounds(tmp_path, root):
     assert c.findings["findings"][0]["finding_id"] == "F-1"
     d = pts["spec_d"]
     assert d.round_no == 2 and d.report is None and d.findings == {"findings": []}
+    # a round-2 report with no round-1 findings to have answered is a store the loop cannot continue from
+    _put(ctx, "implement", "spec_e-r2-implementation_report.json", {"head_commit": "e2"})
+    with pytest.raises(RuntimeError, match="round 1 has no merged findings"):
+        resume_points(ctx, {"spec_e": {}})
 
 
 def test_run_resumed_moves_a_failed_run_back_into_implementation():
