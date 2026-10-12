@@ -673,6 +673,26 @@ def rules(check: bool = typer.Option(False, "--check", help="Exit 1 when a gener
 
 
 @app.command()
+def steps(run_id: str, as_json: bool = typer.Option(False, "--json", help="The projection as JSON")):
+    """The run as its steps table shows it (ADR-0017): pipeline steps with their sessions and cost, live sessions, and what
+    a resume would continue, follow, start again and reuse."""
+    from .projection import project, render
+    from .summary import controller_running
+
+    cfg = cfgmod.load()
+    store = RunStore(cfg.runs_dir)
+    if not store.exists(run_id):
+        raise typer.BadParameter(f"no run {run_id} under {cfg.runs_dir}")
+    view = project(store.steps(run_id), store.state(run_id).finished_sessions, store.events(run_id),
+                   controller_alive=bool(controller_running(cfg.runs_dir, run_id)))
+    if as_json:
+        typer.echo(json.dumps(view, indent=2))
+        return
+    for line in render(view):
+        typer.echo(line)
+
+
+@app.command()
 def timing(run_id: str, as_json: bool = typer.Option(False, "--json", help="The full report as JSON")):
     """Where the run's wall clock went: waiting on a person, agents (by stage), the controller, stopped."""
     from . import timing as timing_mod

@@ -810,7 +810,7 @@
     for (const a of r.artifacts) files.append(el("tr", null, el("td", { class: "explain" }, a.stage),
       el("td", null, el("a", { href: `/api/artifacts/${r.run_id}/${a.stage}/${a.name}`, target: "_blank", rel: "noopener" }, a.name)),
       el("td", { class: "explain mono" }, a.sha256 ? a.sha256.slice(0, 12) : "")));
-    const more = el("div", { class: "stack mt-4" },
+    const more = el("div", { class: "stack mt-4" }, stepsCard(r, consoleUrl),
       el("details", { class: "card run-disclosure" }, el("summary", null, `Work items (${r.work_items.length})`), el("div", { class: "table-scroll" }, items)),
       el("details", { class: "card run-disclosure" }, el("summary", null, `Event log (${r.events.length})`), tl),
       el("details", { class: "card run-disclosure" }, el("summary", null, `Files (${r.artifacts.length})`), el("div", { class: "table-scroll" }, files)));
@@ -824,6 +824,58 @@
     // A parked run stops polling; one paused at its budget keeps polling so the page follows the resume it started.
     if (!(TERMINAL[r.stage] || r.stage === "completed") || r.stage === "paused_budget" || r.resuming) startPoll(refreshWhenChanged("run", async () => runKey(await api(`/api/runs/${runId}`)), () => viewRun(runId)), 4000);
     else stopPoll();
+  }
+  // ------------------------------------------------------------------ the steps table (ADR-0017): the run as a resume sees it
+  const STEP_STATUS = { done: ["done", "ok"], running: ["running", "crew"], failed: ["failed", "bad"] };
+  function stepLabel(key) {
+    const m = key.match(/^(decompose|gate_1|specify|gate_2|approve)#(\d+)$/);
+    if (m) return `${{ decompose: "Decomposition", gate_1: "Gate 1", specify: "Spec pass", gate_2: "Gate 2", approve: "Approval" }[m[1]]} ${m[2]}`;
+    const tail = key.split("/").pop();
+    if (/^r\d+$/.test(tail)) return `Round ${tail.slice(1)}`;
+    if (tail === "author") return "Implementer";
+    if (/^judge#\d+$/.test(tail)) return `Merge judgement ${Number(tail.split("#")[1]) + 1}`;
+    const [kind, spec] = key.split("/");
+    return { implement: "Build", integrate: "Pull request" }[kind] ? `${{ implement: "Build", integrate: "Pull request" }[kind]} ${spec}` : key;
+  }
+  function resumeLine(v) {
+    if (!v || !v.recorded) return null;
+    const parts = [];
+    if (v.resume.continues_at.length) parts.push(`continues at ${v.resume.continues_at.map(stepLabel).join(", ")}`);
+    if (v.resume.follows.length) parts.push(`follows ${plural(v.resume.follows.length, "session")} left working`);
+    if (v.resume.restarts.length) parts.push(`starts ${plural(v.resume.restarts.length, "interrupted session")} again`);
+    if (v.resume.reuses) parts.push(`reuses ${plural(v.resume.reuses, "finished session")} without asking again`);
+    return parts.length ? `A resume ${parts.join(", ")}.` : null;
+  }
+  function stepsCard(r, consoleUrl) {
+    const v = r.steps;
+    if (!v || !v.recorded) return null;
+    const body = el("div", { class: "stack" });
+    if (v.live.length) {
+      const live = el("ul", { class: "plain" });
+      for (const s of v.live) live.append(el("li", null, el("span", { class: "tag crew" }, CREW_NAME[s.agent_key] || words(s.agent_key || "session")), " ",
+        prettyTitle((s.title || "").replace(`${r.run_id} `, "")) || s.title, " ", el("span", { class: "explain" }, "since ", timeEl(s.started_at)),
+        consoleUrl(s.session_id) ? [" · ", el("a", { href: consoleUrl(s.session_id), target: "_blank", rel: "noopener" }, "open in the Anthropic Console")] : null));
+      body.append(el("p", { class: "explain m-0" }, v.controller_alive ? "The controller is following these sessions:" :
+        "No controller is running. These sessions keep working under their own caps, and a resume follows them:"), live);
+    }
+    const line = resumeLine(v);
+    if (line && !(TERMINAL[r.stage] && !r.resumable) && r.stage !== "completed") body.append(el("p", { class: "explain m-0" }, line));
+    const t = el("table", null, el("tr", null, el("th", null, "Step"), el("th", null, "Status"), el("th", { class: "step-n" }, "Sessions"), el("th", null, "Cost")));
+    for (const s of v.pipeline) {
+      const [label, tone] = STEP_STATUS[s.status] || [s.status, ""];
+      t.append(el("tr", null,
+        el("td", { class: `step-d${Math.min(s.depth, 4)}`, title: s.key }, el("div", null, stepLabel(s.key)), el("div", { class: "explain mono step-key" }, s.key),
+          s.error && s.status !== "done" ? el("div", { class: "explain" }, firstSentences(s.error, 160)) : null),
+        el("td", null, el("span", { class: `tag ${tone}` }, label), s.attempt > 1 ? el("span", { class: "explain" }, ` · attempt ${s.attempt}`) : null),
+        el("td", { class: "explain step-n" }, s.sessions.length || ""),
+        el("td", { class: "explain step-cost" }, s.cost_usd ? money(s.cost_usd) : "")));
+    }
+    body.append(el("div", { class: "table-scroll" }, t),
+      el("p", { class: "explain m-0" }, `Sessions cost ${money(v.cost.total_usd)}: `,
+        Object.entries(v.cost.by_stage).filter(([, c]) => c > 0).sort().map(([k, c]) => `${words(k)} ${money(c)}`).join(", ") || "nothing yet", "."));
+    return el("details", { class: "card run-disclosure", open: v.live.length > 0 },
+      el("summary", null, `Steps (${v.pipeline.length})`, el("span", { class: "explain" }, ` ${money(v.cost.total_usd)}${v.live.length ? ` · ${plural(v.live.length, "live session")}` : ""}`)),
+      body);
   }
   function recoveryCard(r) {
     if (r.resuming) return card("Recovery started", el("p", { role: "status" }, "Your decision is recorded. The controller is starting; this page will follow its progress."));
@@ -942,6 +994,7 @@
     const hb = r.watch && r.watch.heartbeat;
     return JSON.stringify([r.updated_at, r.stage, r.status, r.gates.map(g => [g.gate_id, !!g.recorded]), r.questions.map(q => q.question_id),
       hb ? [hb.alive, hb.last_poll_at] : null, (r.browser_checks_pending || []).map(c => c.id), (r.crew || []).map(c => c.state), r.resuming || null,
+      r.steps ? [r.steps.pipeline.map(s => s.status), r.steps.live.length, r.steps.cost.total_usd] : null,
       (r.crew || []).some(c => c.state === "working") ? Math.floor(Date.now() / 30000) : 0]);   // elapsed figures move while a session is open
   }
   // The story: one entry per event a person would want to read, in plain words, each naming its cause or its effect.
@@ -1026,7 +1079,7 @@
 
   function resumeBox(r, runId) {
     const box = el("div", { class: "stack" },
-      el("p", { class: "explain m-0" }, "Resume rechecks the branch, runs fresh verification, and continues from saved work. A changed or escalated merge decision is judged again."),
+      el("p", { class: "explain m-0" }, resumeLine(r.steps) || "Resume rechecks the branch, runs fresh verification, and continues from saved work. A changed or escalated merge decision is judged again."),
       el("div", { class: "actions" }, el("button", { class: "btn primary", type: "button", onclick: async (ev) => {
         const b = ev.currentTarget; b.disabled = true; b.textContent = "Resuming…";
         try {

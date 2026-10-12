@@ -340,7 +340,9 @@ class Console:
                         policy[key] = ev.payload[key]
         from ..build_recovery import snapshot
         recovery = snapshot(self.store, run_id)
-        return {"recovery": recovery, "run_id": run_id, "title": self._title(run_id, events), "outcome": outcome, "stage": st.stage.value,
+        from ..projection import project
+        steps = project(self.store.steps(run_id), st.finished_sessions, events, controller_alive=bool(summary.get("controller_alive")))
+        return {"recovery": recovery, "run_id": run_id, "steps": steps, "title": self._title(run_id, events), "outcome": outcome, "stage": st.stage.value,
                 "status": summary["status"], "summary": summary,
                 "cost": round(st.list_cost_usd, 2), "design_only": design_only, "work_items": items,
                 "resumable": resumable, "budget": budget, "resuming": self.resuming(run_id), "watch": watch, "crew": crew_roster(events), "policy": policy,

@@ -1,6 +1,6 @@
 # ADR-0013: Durable runs: a database per run, and agent sessions as steps a new controller can follow
 
-**Status:** accepted (phases 1 and 2 built, including 2b) · **Date:** 2026-10-12 · Refines [ADR-0001](0001-orchestrator-driven-stage-sessions.md).
+**Status:** accepted (every phase built: 1, 2 and 2b here, 3 to 6 in ADR-0014 to ADR-0017) · **Date:** 2026-10-12 · Refines [ADR-0001](0001-orchestrator-driven-stage-sessions.md).
 
 ## Context
 A run is a Python call stack. The stages are nested function calls, and each one blocks on its agent sessions and gates. When the controller process dies, everything the stack knew is gone. The only record is the event log, and that log was written in a way that broke:
@@ -99,7 +99,7 @@ Each phase deletes code that the previous one made redundant.
 3. **One verification pipeline** (built, [ADR-0014](0014-one-verification-pipeline.md)). `verify(target, plan) -> EvidenceBundle` and `judge(bundle, spec)`, with structured test plans and the recipe split into what is trusted and what is runtime.
 4. **A rule registry** (built, [ADR-0015](0015-rule-registry.md)). The rules the prompts state, the checks enforce and the rubrics score come from one registry, so they can't drift apart. Prompts are generated from it, and outputs are schema-validated when the controller receives them.
 5. **Evals from recordings** (built, [ADR-0016](0016-evals-from-recordings.md)). The recorded steps of real runs (inputs by sha256, outputs as blobs) become the replay dataset. A prompt or rubric change is gated on it.
-6. **The Console as a projection.** It reads the step table as well as the events: live sessions, what a resume will follow, and the cost per step.
+6. **The Console as a projection** (built, [ADR-0017](0017-console-projects-the-steps-table.md)). It reads the step table as well as the events: live sessions, what a resume will follow, and the cost per step.
 
 ## Consequences
 - A controller crash costs the time to notice it and run `factory resume`, not the sessions in flight. A session left running is bounded by its own cap, as before.
