@@ -209,3 +209,18 @@ def test_changed_recovery_evidence_supersedes_the_old_gate(tmp_path,root,monkeyp
     assert old != new and set(ctx.store.state(tgr.RUN).open_gates)=={new}
     ctx.queue.record_decision(new,'approve','will');br.apply_decision(ctx.store,ctx.queue,tgr.RUN)
     assert not ctx.store.state(tgr.RUN).open_gates
+
+
+def test_undecided_build_gate_refuses_resume_without_writing_failure(tmp_path,root,monkeypatch):
+    from factory import build_recovery as br
+    ctx=escalated(tmp_path,root,monkeypatch);rec=br.snapshot(ctx.store,tgr.RUN)
+    gate=br.open_gate(ctx.store,ctx.queue,tgr.RUN,rec);before=ctx.store.events(tgr.RUN)
+    with pytest.raises(RuntimeError,match='Decide'):
+        runner.preflight(ctx)
+    with pytest.raises(RuntimeError,match='Decide'):
+        runner.resume(ctx)
+    assert ctx.store.events(tgr.RUN)==before
+    ctx.queue.record_decision(gate,'approve','will')
+    runner.preflight(ctx)
+    assert ctx.store.events(tgr.RUN)==before
+    assert gate in ctx.store.state(tgr.RUN).open_gates

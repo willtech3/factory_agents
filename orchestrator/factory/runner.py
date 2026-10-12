@@ -697,6 +697,15 @@ def preflight(ctx: RunContext, events: list[Any] | None = None, budget_usd: floa
         raise RuntimeError(f"run {ctx.run_id} verifies in a hosted sandbox (preview mode managed); resume it with the managed "
                            f"configuration, never with local or platform execution")
     st = ctx.store.state(ctx.run_id)
+    if any(g.get("kind") == "build_recovery" for g in st.open_gates.values()):
+        from . import build_recovery
+        try:
+            if not build_recovery.snapshot(ctx.store, ctx.run_id):
+                raise ValueError("The pending build recovery gate needs a human decision before resuming.")
+            build_recovery.apply_decision(ctx.store, ctx.queue, ctx.run_id, dry_run=True)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+
     if st.stage == RunStage.FAILED and stopped_at_gate2(events):
         if budget_usd is not None:
             raise RuntimeError("recovering a pending Gate 2 does not change the run budget; resume without --budget")
@@ -771,6 +780,7 @@ def resume(ctx: RunContext, budget_usd: float | None = None) -> RunStage:
     st = ctx.store.state(ctx.run_id)
     events = ctx.store.events(ctx.run_id)
     outcome = json.loads(ctx.store.get_artifact(ctx.run_id, "intake", "outcome.json"))
+    preflight(ctx, events, budget_usd)
     from . import build_recovery
     recovery = build_recovery.apply_decision(ctx.store, ctx.queue, ctx.run_id)
     if recovery and recovery["decision"] == "reject":

@@ -64,7 +64,7 @@ def open_gate(store, queue, run_id, record):
     return gate_id
 
 
-def apply_decision(store, queue, run_id):
+def apply_decision(store, queue, run_id, *, dry_run=False):
     record = snapshot(store,run_id)
     if not record:
         return None
@@ -89,6 +89,8 @@ def apply_decision(store, queue, run_id):
         raise ValueError('Decide the build recovery gate before resuming.')
     actor={'type':'human','id':decision.decided_by}
     payload={**record,'decision':decision.decision.value,'comments':decision.comments,'gate_id':gate_id}
+    if dry_run:
+        return payload
     store.append(run_id,'gate.decided',actor,{'gate_id':gate_id,'kind':GateKind.BUILD_RECOVERY.value,
                  'decision':decision.decision.value,'comments':decision.comments,'artifact_shas':list(decision.artifact_shas)})
     store.append(run_id,'build.recovery',actor,payload,spec_id=record['spec_id'])
