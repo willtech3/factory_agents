@@ -1,0 +1,71 @@
+{
+  "decomposer": {
+    "files": {
+      "agents/decomposer.md": "482d5598f9885d5111319cc7690ee46a021e18b3cd7a4720d94e475adc5686ae",
+      "rubrics/decomposition.md": "e088e7eb5c494793bf3e1617e964e0c0e83dfa42e7b80bb51cbb776c974a238c"
+    },
+    "decision": "waived",
+    "recorded_at": "2026-10-12T11:23:27+00:00",
+    "by": "baseline (ADR-0016 pull request)",
+    "reason": "Baseline when receipts were introduced (ADR-0016): no recorded dataset existed yet. These bytes carry the rule-registry blocks of ADR-0015 and the structured test plans of ADR-0014."
+  },
+  "implementer": {
+    "files": {
+      "agents/implementer.md": "12730698035d3a39dfad6789a0c08a68dbdd4a462098d528f8b8a9c9be69de43",
+      "rubrics/implementation.md": "ee62c6dcdd175269946b4ce87cc81830c49c2db8c00511f4ecf59da38b1b8db3"
+    },
+    "decision": "waived",
+    "recorded_at": "2026-10-12T11:23:27+00:00",
+    "by": "baseline (ADR-0016 pull request)",
+    "reason": "Baseline when receipts were introduced (ADR-0016): no recorded dataset existed yet. These bytes carry the rule-registry blocks of ADR-0015 and the structured test plans of ADR-0014."
+  },
+  "merge_judge": {
+    "files": {
+      "agents/merge_judge.md": "4c628fe81c80d6d79e3023c74e7673b1cfb3d6a92088c8f432d1e1d2be6158fd",
+      "rubrics/review_quality.md": "0deaea644d5c0b7c39935e5100ab65f6c64cd41fcb2e4b287b2e23e63f73e6a7"
+    },
+    "decision": "waived",
+    "recorded_at": "2026-10-12T11:23:27+00:00",
+    "by": "baseline (ADR-0016 pull request)",
+    "reason": "Baseline when receipts were introduced (ADR-0016): no recorded dataset existed yet. These bytes carry the rule-registry blocks of ADR-0015 and the structured test plans of ADR-0014."
+  },
+  "reviewer": {
+    "files": {
+      "agents/reviewer.md": "e9bac134ffba4e02e3eab8330f316ce4fe473e2920165a0fcef4b724b5a88551",
+      "rubrics/review_quality.md": "0deaea644d5c0b7c39935e5100ab65f6c64cd41fcb2e4b287b2e23e63f73e6a7"
+    },
+    "decision": "waived",
+    "recorded_at": "2026-10-12T11:23:27+00:00",
+    "by": "baseline (ADR-0016 pull request)",
+    "reason": "Baseline when receipts were introduced (ADR-0016): no recorded dataset existed yet. These bytes carry the rule-registry blocks of ADR-0015 and the structured test plans of ADR-0014."
+  },
+  "security_reviewer": {
+    "files": {
+      "agents/security_reviewer.md": "9ec2b0846c120a3a19e3f8bf3dec02e9ad6a7ba30ae2223a07e273bd8e99ce71"
+    },
+    "decision": "waived",
+    "recorded_at": "2026-10-12T11:23:27+00:00",
+    "by": "baseline (ADR-0016 pull request)",
+    "reason": "Baseline when receipts were introduced (ADR-0016): no recorded dataset existed yet. These bytes carry the rule-registry blocks of ADR-0015 and the structured test plans of ADR-0014."
+  },
+  "spec_judge": {
+    "files": {
+      "agents/spec_judge.md": "6385eefc4436e88808b4f5cc539695479109639912b243c7c5be3fbc1e792547",
+      "rubrics/spec.md": "41d0a0c249803ef40c42e490776fdf513a1eff2b72344259a85b07b06bf1fecc"
+    },
+    "decision": "waived",
+    "recorded_at": "2026-10-12T11:23:27+00:00",
+    "by": "baseline (ADR-0016 pull request)",
+    "reason": "Baseline when receipts were introduced (ADR-0016): no recorded dataset existed yet. These bytes carry the rule-registry blocks of ADR-0015 and the structured test plans of ADR-0014."
+  },
+  "spec_writer": {
+    "files": {
+      "agents/spec_writer.md": "10bd85c2a859a6487f386b89696db559cd5ab54f213cb420d243913fa92fada5",
+      "rubrics/spec.md": "41d0a0c249803ef40c42e490776fdf513a1eff2b72344259a85b07b06bf1fecc"
+    },
+    "decision": "waived",
+    "recorded_at": "2026-10-12T11:23:27+00:00",
+    "by": "baseline (ADR-0016 pull request)",
+    "reason": "Baseline when receipts were introduced (ADR-0016): no recorded dataset existed yet. These bytes carry the rule-registry blocks of ADR-0015 and the structured test plans of ADR-0014."
+  }
+}
