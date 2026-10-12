@@ -202,7 +202,10 @@ def test_changed_recovery_evidence_supersedes_the_old_gate(tmp_path,root,monkeyp
     ctx=escalated(tmp_path,root,monkeypatch);rec=br.snapshot(ctx.store,tgr.RUN)
     old=br.open_gate(ctx.store,ctx.queue,tgr.RUN,rec)
     ctx.store.put_artifact(tgr.RUN,'implement','spec_a-r2-implementation_report.json',b'{"head_commit":"new"}')
-    fresh=br.snapshot(ctx.store,tgr.RUN);new=br.open_gate(ctx.store,ctx.queue,tgr.RUN,fresh)
+    fresh=br.snapshot(ctx.store,tgr.RUN)
+    with pytest.raises(ValueError,match='evidence changed'):
+        br.apply_decision(ctx.store,ctx.queue,tgr.RUN)
+    new=br.open_gate(ctx.store,ctx.queue,tgr.RUN,fresh)
     assert old != new and set(ctx.store.state(tgr.RUN).open_gates)=={new}
     ctx.queue.record_decision(new,'approve','will');br.apply_decision(ctx.store,ctx.queue,tgr.RUN)
     assert not ctx.store.state(tgr.RUN).open_gates
