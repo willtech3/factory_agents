@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CI gate (ADR-0016): every agent prompt and rubric is covered by an eval receipt for its exact bytes.
+"""CI gate (ADR-0016): every graded role's prompt and rubrics are covered by an eval receipt for their exact bytes.
 
     python evals/gate.py
 
@@ -27,7 +27,7 @@ def main() -> int:
         print("Replay the recorded sessions (evals/run_eval.py --recorded ... --replay --receipt) or record a waiver "
               "(factory eval waive --agent <role> --reason ...).")
         return 1
-    print(f"every prompt and rubric has an eval receipt ({len(receipts.ROLE_FILES)} roles)")
+    print(f"every graded role's prompt and rubric has an eval receipt ({len(receipts.ROLE_FILES)} roles)")
     return 0
 
 

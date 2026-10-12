@@ -40,7 +40,7 @@ flowchart TD
     pub{"Verification still matches<br/>the current plan and source?"} --> files{"Plan proposes files?"}
     files -- "no: an existing recipe is reused" --> nopr(["ready; nothing to publish"])
     files -- "yes" --> branch["Existing app: branch factory/onboarding-&lt;id&gt; from the pinned commit.<br/>New app: create the private repository first, branch from its default branch"]
-    branch --> draft["Commit the files and open a draft setup PR<br/>(fingerprints, session, journeys, limitations)"]
+    branch --> draft["Commit the files and open a draft setup PR<br/>(fingerprints, session, journeys, unavailable capabilities)"]
   end
   draft --> poll["refresh_setup_pr re-reads the PR state<br/>every few minutes while it is open"]
   poll --> merged(["Owner merges the setup PR"])

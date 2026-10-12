@@ -19,10 +19,9 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
    cp -r examples/sample-app ~/factory-sample-app && cd ~/factory-sample-app
    git init -b main && git add -A && git commit -m "Sample todo service" && gh repo create factory-sample-app --private --source . --push
    ```
-2. In the Factory Console (`factory web`), open Outcomes and choose **Load the sample app outcome**: it fills
-   the form from this directory's `outcome.json`. Set the repository URL and the owner handle to yours and save.
-   From a terminal the equivalent is `factory run examples/sample-app/outcome.json --design-only` after editing
-   those two fields in the file.
+2. In this directory's `outcome.json`, set the repository URL and the owner handle to yours. Start it from a
+   terminal with `factory run examples/sample-app/outcome.json --design-only`. The Factory Console (`factory web`)
+   has no example loader; to start from it, enter the outcome under Outcomes → **New outcome** and save.
 3. Start a **design run** first (needs only `ANTHROPIC_API_KEY`): the decomposer, spec writers, and judge run
    as real sessions and you decide Gates 1 and 2. Then a **full run** with `FORGE_REPO` and `FORGE_TOKEN`:
    agents implement on branches, the preview workflow records a deployment, and pull requests open.

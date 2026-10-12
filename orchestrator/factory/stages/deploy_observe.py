@@ -10,8 +10,8 @@ gitlab forge) deploys the default branch to `dev` through its existing templates
    `test_plan.e2e` entries (target `preview`, which means "a deployed instance") plus an
    optional smoke suite against it, recording `e2e.dev_passed` / `e2e.dev_failed`,
 4. on any failure opens a `DEPLOY_FAILURE` gate carrying the pipeline log excerpt. The human
-   can send the work item back to `IMPLEMENTING` (a follow-up branch), re-observe (platform
-   flake), or close it.
+   can send the work item back to `IMPLEMENTING` with feedback for a follow-up (nothing starts that
+   follow-up yet), re-observe (platform flake), or close it.
 
 The stage is driven by the change-request watcher (`factory watch <run_id>`, `watcher.py`), which
 polls the forge for the merge and then calls the pieces below one tick at a time: `ensure_deploying`,

@@ -1,6 +1,6 @@
 # Repository map
 
-Where things live, what runs, and what is reference material or not wired up. Status is as of 2026-10-10. Update the [status table](#what-runs-and-what-does-not) when something moves between rows, and the module tables when a module is added, removed or renamed. Counts and line numbers are left out on purpose because they go stale.
+Where things live, what runs, and what is reference material or not wired up. Status is as of 2026-10-12. Update the [status table](#what-runs-and-what-does-not) when something moves between rows, and the module tables when a module is added, removed or renamed. Counts and line numbers are left out on purpose because they go stale.
 
 ## Top level
 
@@ -167,8 +167,8 @@ Tests live in `orchestrator/tests/`, one file per area. `tests/support/scripted_
 
 | Status | What |
 |---|---|
-| **Run live** (first live runs on 2026-10-10, see the [post-mortem](postmortems/2026-10-10-first-live-runs.md)) | The session driver and stages 1–4 with the deployed agents. GitHub repository creation, branches, commits and PRs: [factory-sample-app#1](https://github.com/willtech3/factory-sample-app/pull/1) was merged, [factory-switchboard#2](https://github.com/willtech3/factory-switchboard/pull/2) is open. The Console and the file-queue gate surface. `local` and `managed` preview modes. `factory resume`. App onboarding (draft setup PR on `factory-onboarding-proof`) |
-| **Tested, not confirmed live** | `factory watch` and Stage 5 (the personal setup has no dev deploy, so nothing to observe yet). The `platform` preview mode and the GitHub Actions and Deployments reads it depends on. The Linear tracker surface. The Claude in Chrome browser worker (smoke-tested interactively, not unattended). The security reviewer pass (`agents/security_reviewer.md`, registered in `claude-lock.json`). Evals from recordings: `factory eval export` and `evals/run_eval.py --recorded --replay` (every receipt in `evals/receipts.json` is still a waiver) |
+| **Run live** (first live runs on 2026-10-10, see the [post-mortem](postmortems/2026-10-10-first-live-runs.md)) | The session driver and stages 1–4 with the deployed agents. GitHub repository creation, branches, commits and PRs: [factory-sample-app#1](https://github.com/willtech3/factory-sample-app/pull/1) was merged, [factory-switchboard#2](https://github.com/willtech3/factory-switchboard/pull/2) is open. The Console and the file-queue gate surface. `local` and `managed` preview modes. `factory resume` as it was before #53. App onboarding (draft setup PR on `factory-onboarding-proof`) |
+| **Tested, not confirmed live** | `factory resume` as a replay of the run's durable steps (#53, [ADR-0013](adr/0013-durable-runs.md)), and the steps projection (`factory steps`, the Console's Steps card). `factory watch` and Stage 5 (the personal setup has no dev deploy, so nothing to observe yet). The `platform` preview mode and the GitHub Actions and Deployments reads it depends on. The Linear tracker surface. The Claude in Chrome browser worker (smoke-tested interactively, not unattended). The security reviewer pass (`agents/security_reviewer.md`, registered in `claude-lock.json`). Evals from recordings: `factory eval export` and `evals/run_eval.py --recorded --replay` (every receipt in `evals/receipts.json` is still a waiver) |
 | **Stub** | `ClaudeArtifactPublisher` in `artifact_pages.py` (writes local files). `evals/run_eval.py::produce` (does not drive agents yet) |
 | **Written, never run** | `forge/gitlab.py` and the GitLab vault credential path (ADR-0003) |
 | **Not used by code** | `examples/ledgerline/` is test fixture data only. `examples/greenfield-browser/` is a recipe to try by hand with `factory environment verify` |
@@ -179,8 +179,8 @@ Gaps that are not about code: the Console has no authentication (it binds to loc
 
 | Path | What | Used by |
 |---|---|---|
-| `examples/sample-app/` | A small FastAPI todo service with tests, a manifest and a preview workflow, plus an outcome for it. Push it to your own repository to use it as a target | Console start point. First live run |
-| `examples/switchboard/` | A greenfield outcome: the run creates the repository | Console start point. Second live run |
+| `examples/sample-app/` | A small FastAPI todo service with tests, a manifest and a preview workflow, plus an outcome for it. Push it to your own repository to use it as a target | Start point (`factory run`, or its outcome in the Console's form). First live run |
+| `examples/switchboard/` | A greenfield outcome: the run creates the repository | Start point. Second live run |
 | `examples/ledgerline/` | A complete fictional, schema-valid run (outcome to merge-readiness) | Test fixtures and the scripted run |
 | `examples/greenfield-browser/` | A minimal hosted-browser test recipe | Manual `factory environment verify` |
 | `evals/datasets/factory-bench/sample-app/reference-run/` | The first live run's artifacts and event log, kept as an eval reference | Evals |

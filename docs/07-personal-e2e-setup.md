@@ -2,25 +2,25 @@
 
 This is the first real run. It uses the defaults the orchestrator now has: GitHub as the forge ([ADR-0008](adr/0008-pluggable-forge-github-default.md)) and Linear as the gate surface ([ADR-0007](adr/0007-pluggable-gate-surfaces.md)). The platform and GitHub paths have run live (2026-10-10, see the [post-mortem](postmortems/2026-10-10-first-live-runs.md)); those runs decided gates in the Console (`FACTORY_GATE_SURFACE=web`), so the Linear surface has not been confirmed live. Expect field-name surprises in `surfaces/tracker.py` and fix them as you go.
 
-What you need: an Anthropic Console account with Managed Agents access, a personal GitHub account, a personal Linear workspace (free tier is fine), Python 3.12+, git, and the `ant` CLI (`brew install anthropics/tap/ant`; version 1.30 or later for `ant apply`).
+What you need: an Anthropic Console account with Managed Agents access, a personal GitHub account, a personal Linear workspace (free tier is fine), Python 3.12+, git, and the `ant` CLI (`brew install anthropics/tap/ant`; version 1.30 or later for `ant apply`). Install the orchestrator first: `cd orchestrator && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"` (the [README's quick start](../README.md#quick-start)).
 
 ## 0. The quickest real test: a design run
 
-Before the full setup, you can see real agents run with only the platform configured. Put `ANTHROPIC_API_KEY` (and `ANTHROPIC_WORKSPACE_ID` when the key is not scoped to a workspace; the Console's Settings page tells you) in `.env` at the repository root, start `factory web`, open Outcomes, choose **Load the sample app outcome** (it fills the form from `examples/sample-app/outcome.json`), save, and choose **Start design run**. The decomposer asks its question and opens Gate 1, the spec writers and the judge run, Gate 2 opens, and the run completes without touching any repository. Every session appears under Settings and in the Anthropic Console. The same thing from a terminal is `factory run examples/sample-app/outcome.json --design-only`.
+Before the full setup, you can see real agents run with only the platform configured. Put `ANTHROPIC_API_KEY` (and `ANTHROPIC_WORKSPACE_ID` when the key is not scoped to a workspace; the Console's Settings page tells you) in `.env` at the repository root, run `factory run examples/sample-app/outcome.json --design-only`, and decide the gates in `factory web`. The decomposer asks its question and opens Gate 1, the spec writers and the judge run, Gate 2 opens, and the run completes without touching any repository. Every session appears under Settings and in the Anthropic Console. The Console has no example loader: to start from it, enter the outcome under Outcomes → **New outcome**, save, choose **Start a run**, then **Design only: stop after Gate 2**.
 
 ## 1. Apply the agents and the environment
 
 ```bash
 ant auth login                                   # once per machine
-ant apply --dry-run -v agents environments       # review the plan: 8 agents, 1 environment
+ant apply --dry-run -v agents environments       # review the plan: 10 agents, 1 environment
 ant apply --yes agents environments              # writes claude-lock.json (already committed for this workspace)
 ```
 
-`claude-lock.json` is managed by `ant apply`: it records the organization, the workspace, and each agent's id and version, and `ant apply` refuses credentials for any other workspace. Editing a file under `agents/` or `environments/` and re-running `ant apply` creates a new version; `factory run` pins the version the lock file names. If you apply in a different workspace, commit the new lock file. `environments/factory-cloud.yaml` allows `github.com` and `api.github.com`; sessions can push through the git proxy and nothing else.
+`claude-lock.json` is managed by `ant apply`: it records the organization, the workspace, and each agent's id and version, and `ant apply` refuses credentials for any other workspace. Editing a file under `agents/` or `environments/` and re-running `ant apply` creates a new version; `factory run` pins the version the lock file names. If you apply in a different workspace, commit the new lock file. `environments/factory-cloud.yaml` allows the package managers, `github.com` and `api.github.com`, and nothing else; sessions push through the git proxy.
 
 ## 1b. Starting from an empty repository
 
-The outcome's repository does not have to exist. Mark it `"create": true` in the outcome (or tick "Create this repository if it does not exist" on the Console's outcome form) and name the URL you want, such as `https://github.com/<you>/new-service`. Before the run starts, the orchestrator creates it on the code host (private unless `visibility: public`, initialised with a README) and commits the preview workflow template, then records `repository.created` on the run. The token needs repository administration rights for that one call (fine-grained: Administration read/write; classic: `repo`). The decomposer is told the repository is empty and makes the first work item the project skeleton: build and test commands, the service manifest at the contract's path, the preview workflow; everything else depends on it. `FORGE_REPO` can be left unset: it is taken from the outcome's URL, and must match it when set.
+The outcome's repository does not have to exist. Mark it `"create": true` in the outcome (or tick "Create this repository if it does not exist" on the Console's outcome form) and name the URL you want, such as `https://github.com/<you>/new-service`. Before the run starts, the orchestrator creates it on the code host (private unless `visibility: public`, initialised with a README) and commits the preview workflow template, then records `repository.created` on the run. The token needs repository administration rights for that one call (fine-grained: Administration read/write; classic: `repo`). For a new repository the decomposer puts the project skeleton (build and test commands, the service manifest at the contract's path, the preview workflow) inside the first work item that lands, not in an item of its own; it splits the skeleton out only when several items must land separately, and then everything else depends on it. `FORGE_REPO` can be left unset: it is taken from the outcome's URL, and must match it when set.
 
 The factory seeds `.claude/skills/platform-contract/SKILL.md` (from `skills/platform-contract/`, so the agents know what this platform provides and requires) into a repository it creates, and uploads it into every session as `skills/platform-contract/SKILL.md`. A repository it creates also gets `.github/workflows/preview.yml`. The workflow needs a token with the `workflow` scope (`gh auth refresh -s workflow`); without it the run logs the refusal and continues, which is fine with `FACTORY_PREVIEW=local`.
 
@@ -39,10 +39,12 @@ Create a **fine-grained personal access token** (Settings → Developer settings
 
 | Permission | Access | Used for |
 |---|---|---|
-| Contents | Read and write | clone through the git proxy, implementation and optional design-branch commits |
-| Pull requests | Read and write | opening the change request, reading reviews and comments |
+| Contents | Read and write | clone through the git proxy, implementation pushes, the `factory-evidence` branch for pull request media |
+| Pull requests | Read and write | opening the change request with its labels and reviewers, reading its state and reviews |
 | Actions | Read | workflow run status for `preview.json` and Stage 5 |
 | Deployments | Read | `environment_url` for the preview and dev URLs |
+| Workflows | Read and write | only to seed `.github/workflows/preview.yml` into a repository the factory creates (1b) |
+| Administration | Read and write | only to create a repository marked `"create": true` (1b) |
 | Metadata | Read | implied |
 
 The same token is the `authorization_token` on the `github_repository` session resource (so the sandbox clones through Anthropic's proxy without seeing it) and the orchestrator's own token for the REST API. No vault is needed for the GitHub forge. If `gh` is logged in with the `repo` scope, `export FORGE_TOKEN=$(gh auth token)` works for a first run without creating a token by hand.
@@ -102,7 +104,7 @@ The run id is printed first. The process blocks at each gate; keep a second term
 4. **Gate 2.** `gate_2.html` with the judge summary, the goal-coverage matrix, and a section per spec. Same decision mechanics, plus `approve-subset`.
 5. **Implement, review, judge.** Issues move to In Progress. The implementer's session mounts your repository at `/workspace/repo` and pushes `factory/<run_id>/<spec_id>`; the preview workflow runs; the orchestrator clones the branch itself, runs the spec's test commands, waits for the preview deployment, runs the e2e entries, and runs the deterministic checks.
 6. **Integrate.** The orchestrator retains the specification and verdicts in Factory’s artifact store, then the orchestrator opens a pull request at the exact reviewed implementation head (an integrator session only rewords a description its lint refuses). The description links to the evidence; integration adds no bookkeeping files to the application branch. The issue moves to In Review with the PR link in a comment. Gate 3 is the pull request itself.
-7. **After you merge.** Run `factory watch <run_id>` (or click **Watch for merges** on the run page in the Console; it starts the same command and shows when it last checked). It polls the pull request every minute; when GitHub reports it merged, it records `cr.merged`, follows the `main` workflow run for the merge commit and the `dev` deployment, runs the spec's preview e2e entries against the dev URL from its own checkout, and ends the item at `deployed_dev` or opens a deploy-failure gate in the Inbox. Start it any time after the run, before or after you merge; it is safe to stop and restart and stops by itself when nothing is left to watch. With no `dev` deployment in the sample repository the gate is what you will see first: that is the honest result until the preview workflow's deploy step is real (spike 2a).
+7. **After you merge.** Run `factory watch <run_id>` (or click **Watch for merges** on the run page in the Console; it starts the same command and shows when it last checked). It polls the pull request every minute; when GitHub reports it merged, it records `cr.merged`, follows the `main` workflow run for the merge commit and the `dev` deployment, runs the spec's preview e2e entries against the dev URL from its own checkout, and ends the item at `deployed_dev` or opens a deploy-failure gate on the Board. Start it any time after the run, before or after you merge; it is safe to stop and restart and stops by itself when nothing is left to watch. The sample repository's workflow records only a placeholder `dev` deployment with a fake URL, so the gate is what you will see first: that is the honest result until the preview workflow's deploy step is real (spike 2a).
 
 ## 7. Deciding gates and answering questions
 
@@ -129,5 +131,5 @@ Both seams are protocols with one implementation each to add or finish:
 - `request_changes` on a deploy-failure gate moves the item back to `implementing` and writes `<spec_id>-deploy_feedback.md`, but nothing starts that follow-up implementer round yet (the run is already complete): start a new run with the feedback in the outcome for now.
 - The watcher polls; a forge webhook endpoint to shorten the minute between a merge and its detection is not in this repository.
 - `ClaudeArtifactPublisher` is a stub; pages are local files.
-- Human comments at Gate 2 are broadcast to every spec's writer; per-spec routing is a small follow-up.
+- Request changes at Gate 2 runs every spec's writer again, and routing its comments per item is partial: a `wi-x: ...` line goes to that item's writer and unaddressed lines go to every writer, but a comment made only of addressed lines reaches the writers it does not name whole, and a `spec_x: ...` line is dropped when the comment also has unaddressed lines.
 - Reviewer requests on a personal repository are ignored by GitHub (you cannot review your own PR); the forge tolerates the 422. Use a second account or a collaborator for a real Gate 3.

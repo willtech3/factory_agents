@@ -44,7 +44,7 @@ Goal: confirm the read-only calls Stage 5 and the preview lookup depend on, agai
 
 ## Milestone B: first production outcome (week 5 to 6)
 - A low-risk internal outcome, owner and engineer briefed, L3 telemetry on.
-- Factory Console v0 exists (`factory web`: outcomes, board, inbox, Gate 1 and 2 review; [08-factory-console.md](08-factory-console.md)). Add what a production run needs: authentication, Gate 3 and Stage 5 views, agent versions.
+- Factory Console v0 exists (`factory web`: run history, board, outcomes, apps, Gate 1 and 2 review; [08-factory-console.md](08-factory-console.md)). Add what a production run needs: authentication, Gate 3 and Stage 5 views, agent versions.
 - Slack notifications for gates and questions (deep links to the page and the tracker issue).
 - The change-request watcher exists as a polling process (`factory watch`, started from the Console too). Add a forge webhook endpoint to shorten the poll, and the follow-up implementer round that a deploy-failure `request_changes` asks for (today the item sits at `implementing` with its feedback file).
 - `ClaudeArtifactPublisher`: publish gate pages as claude.ai artifacts once there is a way to do it from the orchestrator.

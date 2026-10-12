@@ -6,7 +6,7 @@ matrix, per-spec sections with acceptance criteria, interfaces, allowed paths, t
 open questions). Every page lists the artifact names and sha256 values the gate binds to (ADR-0005), so
 what the human reads and what they approve are visibly the same thing.
 
-Pages are *reading* surfaces; the decision is recorded on the gate surface (tracker, forge, or CLI).
+Pages are *reading* surfaces; the decision is recorded on the gate surface (the Console, the tracker, or the CLI).
 `PagePublisher` decides where a page lives: `LocalHtmlPublisher` writes `runs/<run_id>/pages/<name>.html`;
 `ClaudeArtifactPublisher` is a documented stub (claude.ai artifacts have no public publish API today).
 """

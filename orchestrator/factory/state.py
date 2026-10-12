@@ -92,7 +92,8 @@ WORK_ITEM_TRANSITIONS: dict[WorkItemStage, set[WorkItemStage]] = {
     WorkItemStage.CLOSED: set(),
 }
 
-# Stages at which a work item's code is on the default branch, so dependants may start.
+# Stages at which a work item's code is on the default branch. Dependants do not wait for it: they start once their
+# dependency has a change request (`runner.base_branch_for`).
 MERGED_STAGES = {WorkItemStage.MERGED, WorkItemStage.DEPLOYING_DEV, WorkItemStage.DEPLOYED_DEV}
 
 

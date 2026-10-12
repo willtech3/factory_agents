@@ -16,7 +16,7 @@ flowchart TD
 
 Each agent works in its own session. Every arrow passes a JSON artifact through the controller, which validates it and runs deterministic checks before the next stage starts. Judges never share a session with the authors they grade. No agent deploys or touches infrastructure. [docs/00-overview.md](docs/00-overview.md) explains the reasoning.
 
-## Status (2026-10-10)
+## Status (2026-10-12)
 
 - **It has run live.** Real runs went from an outcome to a pull request on personal GitHub repositories: [factory-sample-app#1](https://github.com/willtech3/factory-sample-app/pull/1) (merged) and [factory-switchboard#2](https://github.com/willtech3/factory-switchboard/pull/2). Hosted verification and app onboarding have also run against real apps. Findings from those runs are in the [post-mortem](docs/postmortems/2026-10-10-first-live-runs.md).
 - **Not yet proven live:** the dev-deploy stage (the personal setup has no dev environment), the Linear and GitLab integrations, and the security reviewer (its agent is registered in `claude-lock.json`, but no security pass has run live yet). Jira is not implemented. Replaying recorded sessions as evals (`evals/run_eval.py --recorded --replay`) is tested but has not run live, and driving agents over the labelled eval datasets is a stub.

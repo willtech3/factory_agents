@@ -1,6 +1,6 @@
 ---
 name: platform-contract
-description: The contract between an application repository and the deployment platform. This version describes the personal-GitHub setup the factory runs against today (docs/07); a platform team replaces it with theirs. Loaded by the decomposer, spec writer, spec judge, implementer, and reviewer so that every work item is deployable through the existing platform without any agent authoring infrastructure.
+description: The contract between an application repository and the deployment platform. This version describes the personal-GitHub setup the factory runs against today (docs/07); a platform team replaces it with theirs. Loaded by the decomposer, spec writer, spec judge, implementer, reviewer, security reviewer, and merge judge so that every work item is deployable through the existing platform without any agent authoring infrastructure.
 ---
 
 # Platform contract (personal GitHub setup)
@@ -14,7 +14,7 @@ When the run explicitly selects managed verification, use the committed `test_en
 ## What the platform provides
 
 - **Source control**: GitHub, this repository. The factory works on branches named `factory/<run_id>/<spec_id>` cut from `main` (or from a dependency's branch when that dependency is still an open pull request) and opens one pull request per work item.
-- **Preview environment**: the orchestrator starts the service itself from `service_manifest.json` (`runtime.entrypoint`, with the manifest's `runtime.port` replaced by a free port that is also exported as `PORT`), waits up to 60 seconds for `health.path` to answer `health.expect_status` (default 200), and runs every `test_plan.e2e` entry whose target is `preview` with `$BASE_URL` set to that instance. No agent can reach that instance: `preview.json` says `unreachable_from_sandbox` with no URL, and the implementer and the reviewers start their own instance from the same entrypoint and run the `preview` and `local` entries against it. The orchestrator's run is the one that counts.
+- **Preview environment**: the orchestrator starts the service itself from `service_manifest.json` (`runtime.entrypoint`, with the manifest's `runtime.port` replaced by a free port that is also exported as `PORT`), waits up to 60 seconds for `health.path` to answer `health.expect_status` (default 200), and runs every `test_plan.e2e` entry, `preview` and `local` alike, with `$BASE_URL` set to that instance. No agent can reach that instance: `preview.json` says `unreachable_from_sandbox` with no URL, and the implementer and the reviewers start their own instance from the same entrypoint and run the `preview` and `local` entries against it. The orchestrator's run is the one that counts.
 - **CI**: `.github/workflows/preview.yml`, when present, runs on pushes to `factory/**` and `main` and records a placeholder deployment. The platform owns that file.
 - **Dev deployment**: none. Nothing happens after a pull request merges.
 - **Shell for verification**: spec commands and end-to-end entries run under the newest bash 4+ on the orchestrator host, also as `sh` for nested `sh -c` calls. macOS's own /bin/sh is bash 3.2, which mis-parses escaped quotes inside `"$( ... )"`; keep end-to-end checks in small Python scripts under tests/ rather than long inline shell with nested quoting.
