@@ -26,7 +26,7 @@ STATUS_ORDER = ["needs_you", "stopped", "paused", "running", "completed", "escal
 STAGE_DOING = {"intake": "taking in the outcome", "decomposing": "decomposing the outcome", "gate_1_decomposition": "at Gate 1",
                "specifying": "writing and judging the contracts", "gate_2_spec_readiness": "at Gate 2", "implementing": "building"}
 GATE_LABEL = {"gate_1_decomposition": "Gate 1", "gate_2_spec_readiness": "Gate 2", "escalation": "the escalation gate",
-              "budget": "the budget gate", "deploy_failure": "the deploy-failure gate"}
+              "build_recovery": "Build recovery", "budget": "the budget gate", "deploy_failure": "the deploy-failure gate"}
 PR_STATE = {WorkItemStage.CR_OPEN: "open", WorkItemStage.MERGED: "merged", WorkItemStage.DEPLOYING_DEV: "deploying to dev",
             WorkItemStage.DEPLOYED_DEV: "verified in dev", WorkItemStage.CLOSED: "closed without merging"}
 ROLE_NAME = {"decomposer": "decomposer", "spec_writer": "spec writer", "spec_judge": "spec judge", "implementer": "implementer",
@@ -55,7 +55,7 @@ def summarize(events: list[RunEvent], state: RunState, controller_alive: bool | 
                        if ev.kind == "work_item.stage" and ev.payload.get("stage") == WorkItemStage.SPEC_APPROVED.value} - {None})
     if not approved and completed:
         approved = sorted(completed.get("approved_specs") or completed.get("specs_with_change_requests") or [])
-    failure = next((ev.payload.get("reason") for ev in reversed(events) if ev.kind == "run.failed"), None)
+    failure = next((ev.payload.get("reason") for ev in reversed(events) if ev.kind == "run.failed"), None) if state.stage == RunStage.FAILED else None
     escalations = [ev.payload.get("reason") for ev in events if ev.kind == "run.escalated" and ev.payload.get("reason")]
     failed_in = _stage_before(events, "run.failed")
     pause = last_pause(events) if state.stage == RunStage.PAUSED_BUDGET else None

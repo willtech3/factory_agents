@@ -435,6 +435,10 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
             remaining.pop(sid)
 
     if ctx.store.state(ctx.run_id).stage == RunStage.ESCALATED:
+        from . import build_recovery
+        recovery = build_recovery.snapshot(ctx.store, ctx.run_id)
+        if recovery:
+            build_recovery.open_gate(ctx.store, ctx.queue, ctx.run_id, recovery)
         return RunStage.ESCALATED          # a spec escalated: the run waits for a person, it has not completed
     ctx.event("run.completed", {"specs_with_change_requests": sorted(merged_or_open)})
     return RunStage.COMPLETED
@@ -498,6 +502,12 @@ def resume_points(ctx: RunContext, specs: dict[str, dict]) -> dict[str, ResumePo
             continue
         n = max(rounds)
         findings = artifact_json_or_none(ctx, "review", f"{sid}-r{n - 1}-findings.merged.json") if n > 1 else None
+        if n > 1 and findings is None:
+            correction = next((e.payload for e in reversed(ctx.store.events(ctx.run_id))
+                               if e.kind == "build.recovery" and e.spec_id == sid
+                               and e.payload.get("decision") == "request_changes" and e.payload.get("round", 0) + 1 == n), None)
+            if correction:
+                findings = correction.get("review_findings") or {"findings": []}
         if n > 1 and findings is None:
             raise RuntimeError(f"cannot resume {sid}: round {n} report exists but round {n - 1} has no merged findings")
         report = json.loads(ctx.store.get_artifact(ctx.run_id, "implement", f"{sid}-r{n}-implementation_report.json"))
@@ -729,7 +739,7 @@ def resumable_build_escalation(st: Any, events: list[Any]) -> bool:
     approvals = [ev.payload for ev in events if ev.kind == "artifact.produced"
                  and ev.payload.get("artifact_type") == "gate2_approval"]
     approved = set(approvals[-1].get("approved", [])) if approvals else set()
-    return bool(st.stage == RunStage.ESCALATED and not st.open_gates and not st.open_questions
+    return bool(st.stage == RunStage.ESCALATED and not (set(st.open_gates) - {e.payload["gate_id"] for e in events if e.kind == "gate.opened" and e.payload.get("kind") == "build_recovery"}) and not st.open_questions
                 and last is not None and last.spec_id in approved
                 and any(ev.kind == "stage.entered" and ev.payload.get("stage") == "implementing" for ev in events)
                 and all(wi.cr_id is not None or wi.stage in (WorkItemStage.BLOCKED, WorkItemStage.MERGE_JUDGING,
@@ -761,6 +771,11 @@ def resume(ctx: RunContext, budget_usd: float | None = None) -> RunStage:
     st = ctx.store.state(ctx.run_id)
     events = ctx.store.events(ctx.run_id)
     outcome = json.loads(ctx.store.get_artifact(ctx.run_id, "intake", "outcome.json"))
+    from . import build_recovery
+    recovery = build_recovery.apply_decision(ctx.store, ctx.queue, ctx.run_id)
+    if recovery and recovery["decision"] == "reject":
+        return RunStage.CLOSED
+    st, events = ctx.store.state(ctx.run_id), ctx.store.events(ctx.run_id)
     preflight(ctx, events, budget_usd)
     if st.stage == RunStage.PAUSED_BUDGET:
         return until_budget_pause(lambda: _resume_after_budget_pause(ctx, outcome, st, events, budget_usd))
@@ -784,6 +799,14 @@ def _resume_implementation(ctx: RunContext, outcome: dict[str, Any], events: lis
     spec_md = {sid: _spec_markdown(ctx, s) for sid, s in specs.items()}
     guidance = approved_record(ctx, events, specs)
     points = resume_points(ctx, specs)
+    recovery = next((e.payload for e in reversed(events) if e.kind == "build.recovery"), None)
+    if recovery and recovery["decision"] == "request_changes":
+        sid, n = recovery["spec_id"], recovery["round"] + 1
+        if sid in points:
+            guidance[sid] = guidance.get(sid, "") + "\n# Build recovery instructions from the owner\n" + recovery["comments"]
+            if points[sid].round_no < n:
+                points[sid] = ResumePoint(round_no=n, findings=recovery.get("review_findings") or points[sid].findings)
+            points[sid].review_through = n
     ctx.event("run.resumed", {"stage": RunStage.IMPLEMENTING.value, "from": from_stage.value,
                               "points": {sid: {"round": pt.round_no, "implementer_done": pt.report is not None} for sid, pt in points.items()}},
               stage="implement")
