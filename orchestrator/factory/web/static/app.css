@@ -638,3 +638,32 @@ summary.explain { cursor: pointer; }
 .decide .recorded { animation: pop var(--t-base) ease-out; }
 html[data-motion="off"] .crew, html[data-motion="off"] .crew *, html[data-motion="off"] .human, html[data-motion="off"] .line .belt { animation: none !important; }
 @media (prefers-reduced-motion: reduce) { .crew, .crew *, .human, .line .belt, .decide .recorded { animation: none !important; } }
+
+/* Run detail: a glance, a decision, then evidence on demand. */
+.run-disclosure { padding: var(--sp-5); }
+.run-disclosure > summary { cursor: pointer; font-family: var(--display); font-size: var(--fs-lg); font-weight: 700; }
+.run-disclosure > summary .explain { float: right; font-family: var(--sans); font-weight: 400; }
+.run-disclosure[open] > summary { margin-bottom: var(--sp-5); }
+.table-scroll { max-width: 100%; overflow: auto; }
+.table-scroll td { overflow-wrap: anywhere; }
+.evidence-list { display: grid; gap: 0; }
+details.visual-check { border-top: 1px solid var(--hair); padding: var(--sp-4) 0; }
+details.visual-check:first-child { border-top: 0; }
+.visual-heading { cursor: pointer; display: list-item; }
+.visual-heading .visual-title { font-weight: 700; text-transform: capitalize; margin-right: var(--sp-4); }
+.visual-heading .tag { margin-right: var(--sp-4); }
+.visual-content { padding: var(--sp-4) var(--sp-3); display: grid; gap: var(--sp-4); }
+.evidence-steps > li { padding: var(--sp-2) 0; }
+.earlier-evidence { border-top: 1px solid var(--hair); padding-top: var(--sp-4); color: var(--text-3); }
+.recovery { display: grid; gap: var(--sp-3); }
+.recovery p { margin: 0; }
+.recovery-blockers { margin: 0; padding-left: var(--sp-5); }
+.recovery-blockers li { padding-bottom: var(--sp-2); }
+.recovery-blockers .explain { display: block; }
+.recovery-options textarea { display: block; width: 100%; min-height: 90px; margin: var(--sp-4) 0; }
+.recovery-options .explain { margin-top: var(--sp-3); }
+@media (max-width: 640px) {
+ .visual-heading .explain { display: block; margin-top: var(--sp-2); }
+ .run-disclosure > summary .explain { float: none; display: block; }
+ .recovery .actions { flex-wrap: wrap; }
+}

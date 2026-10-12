@@ -255,3 +255,21 @@ def test_generator_of_deleted_tests_is_not_consumed_before_protection():
     result = checks.protected_tests([], iter(['tests/models.test.ts']), ['tests/models.test.ts'],
                                     ['tests/models.test.ts'], ['tests/models.test.ts'], {})
     assert not result.passed and result.data['touched'] == ['tests/models.test.ts']
+
+
+def test_failed_command_exports_controlled_diagnostic_not_secret_log(tmp_path):
+    import sys
+    log=tmp_path/'build.log'
+    result=er.command(f"{sys.executable} -c \"print('No address provided to ConvexReactClient. secret=do-not-export'); exit(1)\"", tmp_path, {}, 10,log)
+    assert result['exit_code'] == 1
+    assert result['diagnostic']['code'] == 'missing_convex_url'
+    assert 'NEXT_PUBLIC_CONVEX_URL' in result['diagnostic']['summary']
+    assert 'do-not-export' not in json.dumps(result)
+
+
+def test_recipe_command_environment_is_shared_and_not_exported(tmp_path):
+    profile={**hv.RECIPE,'command_environment':{'NEXT_PUBLIC_CONVEX_URL':'http://127.0.0.1:3210'}}
+    env,runtime=er.sandbox_env({},profile,REQUEST,tmp_path,tmp_path/'evidence')
+    spec_env,_=er.command_env(tmp_path,env)
+    assert spec_env['NEXT_PUBLIC_CONVEX_URL'] == 'http://127.0.0.1:3210'
+    assert 'NEXT_PUBLIC_CONVEX_URL' not in json.dumps(runtime)

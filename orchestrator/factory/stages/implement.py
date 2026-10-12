@@ -737,6 +737,7 @@ class ResumePoint:
     findings: dict[str, Any] | None = None
     report: dict[str, Any] | None = None
     response: dict[str, Any] | None = None
+    review_through: int | None = None
 
 
 def wait_for_preview(ctx: RunContext, branch: str, head_sha: str, *, poll_seconds: float = 20.0,
@@ -826,7 +827,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     def mount(checkout: str) -> dict[str, Any] | None:
         return ctx.forge.session_repository_resource(repo_url, checkout) if ctx.forge is not None else None
     current = ctx.store.state(ctx.run_id).work_items.get(wid)
-    if resume_from is None or (current is not None and current.stage in (WorkItemStage.SPEC_APPROVED, WorkItemStage.BLOCKED, WorkItemStage.ESCALATED)):
+    if resume_from is None or (current is not None and (current.stage in (WorkItemStage.SPEC_APPROVED, WorkItemStage.BLOCKED, WorkItemStage.ESCALATED) or (current.stage == WorkItemStage.MERGE_JUDGING and resume_from.report is None))):
         # A resumed item that never started (the orchestrator died, or the budget paused the run, before its first
         # implementer) still has to leave SPEC_APPROVED; one that did start is already past it.
         ctx.event("work_item.stage", {"stage": WorkItemStage.IMPLEMENTING.value, "branch": branch}, work_item_id=wid, spec_id=sid)
@@ -841,7 +842,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     det_only_response = resume_from is not None and findings is not None and _deterministic_only(findings["findings"])
     journeys = latest_journeys(ctx, sid, spec)  # the change's journeys, run artifacts carried from round to round
 
-    for round_no in range(resume_from.round_no if resume_from else 1, ctx.policy.review_max_rounds + 2):
+    review_through = max(ctx.policy.review_max_rounds, (resume_from.review_through or 0) if resume_from else 0)
+    for round_no in range(resume_from.round_no if resume_from else 1, max(review_through + 2, (resume_from.round_no + 1) if resume_from else 2)):
         resumed_round = resume_from is not None and round_no == resume_from.round_no
         # ---- implementer (round 1 implements; later rounds respond to findings)
         uploads = {"spec.json": json.dumps(public(spec), indent=2).encode(), **skill_uploads}
@@ -966,7 +968,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         ctx.store.put_derived_artifact(ctx.run_id, "implement", f"{sid}-r{round_no}-test_results.json",
                                json.dumps(test_results, indent=2).encode())
 
-        if round_no > ctx.policy.review_max_rounds:
+        if round_no > review_through:
             break  # last implementer response done; go straight to the merge judge
         if det_only_response and all(d.passed for d in det):
             # The previous round's only standing findings were the orchestrator's own checks; they pass on the
@@ -1268,11 +1270,11 @@ def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]]
         repro, environmental = "", False
         if name == "test_plan_commands":
             rows = [r for r in (command_results or []) if r.get("exit_code", 1) != 0]
-            repro = "; ".join(f"{r['command']} -> exit {r.get('exit_code')}: {(r.get('stderr_tail') or r.get('stdout_tail') or '')[-300:]}" for r in rows)
+            repro = "; ".join(f"{r['command']} -> exit {r.get('exit_code')}: {((r.get('diagnostic') or {}).get('summary') or r.get('stderr_tail') or r.get('stdout_tail') or '')[-300:]}" for r in rows)
             environmental = is_environmental(rows)
         elif name == "e2e_preview":
             rows = [r for r in (e2e_results or []) if r.get("exit_code", 1) != 0]
-            repro = "; ".join(f"{r['command']} -> exit {r.get('exit_code')}: {(r.get('stderr_tail') or r.get('stdout_tail') or '')[-300:]}" for r in rows)
+            repro = "; ".join(f"{r['command']} -> exit {r.get('exit_code')}: {((r.get('diagnostic') or {}).get('summary') or r.get('stderr_tail') or r.get('stdout_tail') or '')[-300:]}" for r in rows)
             environmental = is_environmental(rows)
         fix = {"ac_test_mapping": "Map every automated acceptance criterion to a test in implementation_report.json `criteria` ([{ac_id, tests: [...]}]) using pytest node ids exactly as `pytest --collect-only -q` prints them, or Bun ids `path/x.test.ts::outer describe > test name`; the orchestrator only counts tests its own run of the test plan collected or reported and saw pass (Bun only from direct `bun test` commands).",
                "test_plan_commands": "Make every test_plan command exit 0 from a clean checkout; if a command depends on a port or host, make it robust or pick a free port.",

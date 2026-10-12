@@ -236,6 +236,7 @@ and the likely cause in the recipe or the app. Quote at most three short error l
 Never include environment values, tokens, keys or other credential-like text. Do not
 fix, retry or rerun anything.
 """
+CHANGE_DIAGNOSIS_SYSTEM = DIAGNOSIS_SYSTEM.replace("If the harness exits non-zero", "If any lifecycle phase, baseline or change command in environment-result.json failed (even when the harness itself exits zero)").replace("<prepare|start|services|seed|verify|stop>", "<prepare|start|services|seed|verify|stop|commands>")
 SYSTEM = SANDBOX_SYSTEM + BROWSER_SYSTEM      # change runs: their e2e entries may drive a browser
 CHECK_STATUSES = {"passed", "failed", "blocked", "skipped"}
 DIAGNOSIS_PHASES = {"prepare", "start", "services", "seed", "verify", "stop"}

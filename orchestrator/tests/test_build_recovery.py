@@ -84,3 +84,73 @@ def test_console_recovery_keeps_recorded_managed_recipe_and_target(tmp_path, roo
     assert env["FACTORY_PREVIEW"] == "managed"
     assert env["FACTORY_TEST_PROFILE_SHA256"] == "a" * 64 and env["FACTORY_APP_ID"] == "app_verified"
     assert env["FACTORY_TEST_VAULT_IDS"] == "" and env["FORGE_REPO"] == "x/evergreen"
+
+
+def test_recovery_gate_is_bound_and_retry_is_recorded_once(tmp_path, root, monkeypatch):
+    from factory import build_recovery as br
+    ctx = escalated(tmp_path, root, monkeypatch)
+    rec = br.snapshot(ctx.store, tgr.RUN)
+    gate = br.open_gate(ctx.store, ctx.queue, tgr.RUN, rec)
+    assert br.open_gate(ctx.store, ctx.queue, tgr.RUN, rec) == gate
+    with pytest.raises(ValueError, match='Decide'):
+        br.apply_decision(ctx.store, ctx.queue, tgr.RUN)
+    ctx.queue.record_decision(gate, 'approve', 'will', 'Environment repaired')
+    first = br.apply_decision(ctx.store, ctx.queue, tgr.RUN)
+    before = ctx.store.events(tgr.RUN)
+    assert br.apply_decision(ctx.store, ctx.queue, tgr.RUN) == first
+    assert ctx.store.events(tgr.RUN) == before and not ctx.store.state(tgr.RUN).open_gates
+
+
+def test_recovery_api_rejects_stale_and_empty_instructions_then_closes(tmp_path, root, monkeypatch):
+    ctx = escalated(tmp_path, root, monkeypatch)
+    app = create_app(make_config(root,ctx.cfg.runs_dir)); client=TestClient(app)
+    rec = client.get(f'/api/runs/{tgr.RUN}').json()['recovery']
+    before=ctx.store.events(tgr.RUN)
+    endpoint=f'/api/runs/{tgr.RUN}/recovery'
+    assert client.post(endpoint,json={'revision':'old','decision':'approve'}).status_code == 409
+    assert client.post(endpoint,json={'revision':rec['revision'],'decision':'request_changes'}).status_code == 422
+    assert ctx.store.events(tgr.RUN) == before
+    result=client.post(endpoint,json={'revision':rec['revision'],'decision':'reject'})
+    assert result.status_code == 200 and result.json()['mode'] == 'closed'
+    assert ctx.store.state(tgr.RUN).stage == RunStage.CLOSED
+    assert not ctx.store.state(tgr.RUN).open_gates
+    assert client.post(endpoint,json={'revision':rec['revision'],'decision':'approve'}).status_code == 409
+
+
+def test_request_changes_runs_a_fresh_bounded_cycle_with_owner_notes(tmp_path, root, monkeypatch):
+    from factory import build_recovery as br
+    ctx=escalated(tmp_path,root,monkeypatch)
+    rec=br.snapshot(ctx.store,tgr.RUN); gate=br.open_gate(ctx.store,ctx.queue,tgr.RUN,rec)
+    ctx.queue.record_decision(gate,'request_changes','will','Fix the observed regression; keep the approved scope.')
+    seen={}
+    def recover(ctx,outcome,specs,spec_md,spec_verdict,resume=None,guidance=None):
+        seen.update(points=resume,guidance=guidance)
+        return RunStage.IMPLEMENTING
+    monkeypatch.setattr(runner,'implement_and_integrate',recover)
+    assert runner.resume(ctx) == RunStage.IMPLEMENTING
+    assert seen['points']['spec_a'].round_no == 2 and seen['points']['spec_a'].report is None
+    assert seen['points']['spec_a'].review_through == 2
+    assert 'Fix the observed regression' in seen['guidance']['spec_a']
+
+
+def test_recovery_refuses_tampered_gate_snapshot(tmp_path,root,monkeypatch):
+    from factory import build_recovery as br
+    ctx=escalated(tmp_path,root,monkeypatch);rec=br.snapshot(ctx.store,tgr.RUN)
+    gate=br.open_gate(ctx.store,ctx.queue,tgr.RUN,rec)
+    ctx.queue.record_decision(gate,'approve','will')
+    path=ctx.store.artifact_path(tgr.RUN,'recovery',rec['event_id']+'.json')
+    path.write_text(path.read_text()+' ')
+    with pytest.raises(ValueError,match='no longer matches'):
+        br.apply_decision(ctx.store,ctx.queue,tgr.RUN)
+    assert gate in ctx.store.state(tgr.RUN).open_gates
+
+
+def test_corrective_round_can_restart_after_its_report_is_saved(tmp_path,root,monkeypatch):
+    from factory import build_recovery as br
+    ctx=escalated(tmp_path,root,monkeypatch);rec=br.snapshot(ctx.store,tgr.RUN)
+    gate=br.open_gate(ctx.store,ctx.queue,tgr.RUN,rec);ctx.queue.record_decision(gate,'request_changes','will','Correct the bug')
+    br.apply_decision(ctx.store,ctx.queue,tgr.RUN)
+    ctx.store.put_artifact(tgr.RUN,'implement','spec_a-r2-implementation_report.json',b'{"head_sha":"new"}')
+    ctx.store.put_artifact(tgr.RUN,'implement','spec_a-r2-review_response.json',b'{"responses":[]}')
+    points=runner.resume_points(ctx,tgr.SPECS)
+    assert points['spec_a'].report['head_sha']=='new'
