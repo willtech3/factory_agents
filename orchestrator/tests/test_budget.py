@@ -237,7 +237,7 @@ def test_rejecting_the_budget_gate_closes_the_run_on_resume(tmp_path, root, exam
     assert _payload(ctx2, "gate.decided")["decision"] == "reject" and ctx2.store.state(ctx2.run_id).stage == RunStage.CLOSED
     # a budget that is not above what was spent is refused, and so is a cap on a run that is not paused or failed
     ctx3 = _ctx(tmp_path, root, driver, queue, budget=5.0, run_id="run_budget00002")
-    with pytest.raises(RuntimeError, match="paused at its budget, can be resumed"):
+    with pytest.raises(RuntimeError, match="can be resumed"):
         runner.resume(ctx3, budget_usd=50.0)
 
 

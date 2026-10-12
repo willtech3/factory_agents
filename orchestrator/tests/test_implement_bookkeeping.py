@@ -187,3 +187,38 @@ def test_a_fabricated_mapping_costs_a_round_and_the_judge_sees_round_two(tmp_pat
     assert verdict["round"] == 2 and "round 2." in ctx.driver.calls[3]["description"]
     assert verdict["result"] == "another_round" and verdict["summary_for_human"].startswith("Overridden")   # the mapping is still fabricated
     assert (tmp_path / "runs" / RUN / "artifacts" / "merge_judge" / f"{SID}-r2-merge_readiness.json").is_file()
+
+
+def test_recovery_rejudges_same_head_after_failed_checks_change_and_preserves_old_verdict(tmp_path, root, examples):
+    from factory.stages.implement import ResumePoint
+    from factory.state import RunStage
+
+    ctx, verifier = _ctx(tmp_path, root, examples, mapping=[TEST_ID])
+    spec = _spec(examples)
+    # First judge sees an unmapped criterion and cannot approve the failing deterministic check.
+    ctx.driver.mapping = ["tests/test_missing.py::test_missing"]
+    first = run_implement_one(ctx, spec, "https://github.com/w/app", "main", verifier, {})
+    assert first["result"] != "ready"
+    old_path = ctx.store.artifact_path(RUN, "merge_judge", f"{SID}-r2-merge_readiness.json")
+    old_bytes = old_path.read_bytes()
+    report = ctx.store.get_json(RUN, "implement", f"{SID}-r2-implementation_report.json")
+    for row in report["criteria"]:
+        row["tests"] = [TEST_ID]
+    findings = ctx.store.get_json(RUN, "review", f"{SID}-r1-findings.merged.json")
+    response = ctx.store.get_json(RUN, "implement", f"{SID}-r2-review_response.json")
+    ctx.event("run.escalated", {"reason": "checks failed"}, spec_id=SID)
+    ctx.event("run.resumed", {"stage": RunStage.IMPLEMENTING.value, "from": "escalated"})
+    calls_before = len(ctx.driver.calls)
+    recovered = run_implement_one(ctx, spec, "https://github.com/w/app", "main", verifier, {},
+                                  resume_from=ResumePoint(round_no=2, report=report, response=response, findings=findings))
+    assert recovered["result"] == "ready"
+    assert [call["agent_key"] for call in ctx.driver.calls[calls_before:]] == ["merge_judge"]
+    assert old_path.read_bytes() == old_bytes
+    assert ctx.store.get_json(RUN, "merge_judge", f"{SID}-r2-recheck-0001-merge_readiness.json")["result"] == "ready"
+    # Fresh evidence with a new failure cannot reuse the previous ready verdict either.
+    verifier.passed = []
+    calls_before = len(ctx.driver.calls)
+    failed_again = run_implement_one(ctx, spec, "https://github.com/w/app", "main", verifier, {},
+                                     resume_from=ResumePoint(round_no=2, report=report, response=response, findings=findings))
+    assert failed_again["result"] != "ready"
+    assert [call["agent_key"] for call in ctx.driver.calls[calls_before:]] == ["merge_judge"]

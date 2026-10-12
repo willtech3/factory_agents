@@ -720,6 +720,23 @@ def _resume_pending_gate2(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
         return _from_specify(ctx, outcome, pending.decomposition, None, None, round_offset=round_offset, pending=pending)
 
 
+def resumable_build_escalation(st: Any, events: list[Any]) -> bool:
+    """Only a settled build escalation with recorded contract approval can be rechecked.
+
+    Specification and deployment escalations still require their own human gates.
+    """
+    last = next((ev for ev in reversed(events) if ev.kind == "run.escalated"), None)
+    approvals = [ev.payload for ev in events if ev.kind == "artifact.produced"
+                 and ev.payload.get("artifact_type") == "gate2_approval"]
+    approved = set(approvals[-1].get("approved", [])) if approvals else set()
+    return bool(st.stage == RunStage.ESCALATED and not st.open_gates and not st.open_questions
+                and last is not None and last.spec_id in approved
+                and any(ev.kind == "stage.entered" and ev.payload.get("stage") == "implementing" for ev in events)
+                and all(wi.cr_id is not None or wi.stage in (WorkItemStage.BLOCKED, WorkItemStage.MERGE_JUDGING,
+                                                            WorkItemStage.ESCALATED, WorkItemStage.SPEC_APPROVED)
+                        for wi in st.work_items.values()))
+
+
 def resume(ctx: RunContext, budget_usd: float | None = None) -> RunStage:
     """`factory resume <run_id>`: continue a run that stopped before reaching its pull requests.
 
@@ -732,6 +749,9 @@ def resume(ctx: RunContext, budget_usd: float | None = None) -> RunStage:
     continues from its artefacts as above; a pause in decomposition or specification re-runs that stage from its
     start with the owner's last gate feedback, because the design stages are cheap and keep no partial state.
     `budget_usd` given for a failed run just replaces the cap for the rest of it.
+
+    A settled build escalation may also be resumed after its recorded contract approval. Verification is rerun,
+    and an escalation verdict is never reused as the recovery decision.
 
     A third case: a run whose controller was **stopped while idle at Gate 2** (`run.failed` right after the gate opened,
     no session interrupted). The same run continues at that same gate (`pending_gate2` verifies it and every artefact
@@ -746,9 +766,9 @@ def resume(ctx: RunContext, budget_usd: float | None = None) -> RunStage:
         return until_budget_pause(lambda: _resume_after_budget_pause(ctx, outcome, st, events, budget_usd))
     if st.stage == RunStage.FAILED and stopped_at_gate2(events):
         return until_budget_pause(lambda: _resume_pending_gate2(ctx, outcome))
-    if st.stage not in (RunStage.FAILED, RunStage.IMPLEMENTING):
+    if st.stage not in (RunStage.FAILED, RunStage.IMPLEMENTING) and not resumable_build_escalation(st, events):
         raise RuntimeError(f"run {ctx.run_id} is {st.stage.value}; only a run that failed or stopped during implementation, "
-                           f"or paused at its budget, can be resumed")
+                           f"paused at its budget, or escalated after an approved build, can be resumed")
     if budget_usd is not None and budget_usd != st.budget_usd:
         _raise_budget(ctx, st, float(budget_usd), by="cli", gate_id=None)
     return until_budget_pause(lambda: _resume_implementation(ctx, outcome, events, st.stage))

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import hashlib
 import json
 import os
 import re
@@ -825,7 +826,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     def mount(checkout: str) -> dict[str, Any] | None:
         return ctx.forge.session_repository_resource(repo_url, checkout) if ctx.forge is not None else None
     current = ctx.store.state(ctx.run_id).work_items.get(wid)
-    if resume_from is None or (current is not None and current.stage == WorkItemStage.SPEC_APPROVED):
+    if resume_from is None or (current is not None and current.stage in (WorkItemStage.SPEC_APPROVED, WorkItemStage.BLOCKED, WorkItemStage.ESCALATED)):
         # A resumed item that never started (the orchestrator died, or the budget paused the run, before its first
         # implementer) still has to leave SPEC_APPROVED; one that did start is already past it.
         ctx.event("work_item.stage", {"stage": WorkItemStage.IMPLEMENTING.value, "branch": branch}, work_item_id=wid, spec_id=sid)
@@ -950,7 +951,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             tests_that_exist=tests_known, command_results=cmd_results, manifest_path=manifest_path,
             schema_dir=ctx.cfg.schemas_dir, e2e_results=e2e_results, require_test_evidence=managed,
             size=measure_size(repo, base_sha, head_sha, spec), size_budget_lines=ctx.policy.size_budget_lines,
-            # the approved spec's exact test paths may be extended (never reduced); every other existing test stays protected
+            # only exact test paths in the approved spec may be updated; every other existing test stays protected
             named_test_files=checks.named_test_paths(spec["allowed_paths"]), removed_lines_by_file=diff.get("removed_lines"),
         )
         test_results = {"commands": cmd_results, "e2e": e2e_results, "preview": preview, "environment": environment,
@@ -1084,12 +1085,6 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     # ---- merge judge (independent)
     # The judge sees the real round (the implementer round whose head it judges; the kickoff and merge_readiness.json
     # used to say "round 1" whatever happened), and its verdict is kept per round.
-    prior_verdict = artifact_json_or_none(ctx, "merge_judge", f"{sid}-r{round_no}-merge_readiness.json") if resume_from else None
-    if (prior_verdict is not None and prior_verdict.get("_head_sha") == head_sha
-            and prior_verdict.get("_base_sha") == base_sha):
-        ctx.event("merge.verdict", {"result": prior_verdict["result"], "round": round_no, "reused": True}, work_item_id=wid, spec_id=sid, actor="agent")
-        return prior_verdict      # judged this very head before the orchestrator died or paused
-    enter_item_stage(ctx, wid, sid, WorkItemStage.MERGE_JUDGING)
     mj_uploads = {
         "spec.json": json.dumps(public(spec), indent=2).encode(), "diff.patch": diff["patch"].encode(), **visual_uploads,
         **{f"journeys/{name}.json": content for name, content in sorted(journeys.items())},
@@ -1100,9 +1095,24 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         "deterministic_checks.json": json.dumps([d.to_dict() for d in det], indent=2).encode(),
         **skill_uploads,
     }
+    # Verification is fresh on resume. Reuse a ready verdict only when every uploaded input is unchanged.
+    input_hashes = {name: hashlib.sha256(content).hexdigest() for name, content in sorted(mj_uploads.items())}
+    folder = ctx.cfg.runs_dir / ctx.run_id / "artifacts" / "merge_judge"
+    original_prefix = f"{sid}-r{round_no}-"
+    attempts = sorted(folder.glob(original_prefix + "*merge_readiness.json"))
+    prior = json.loads(attempts[-1].read_text()) if resume_from and attempts else None
+    if (prior is not None and prior.get("result") == "ready" and prior.get("_head_sha") == head_sha
+            and prior.get("_base_sha") == base_sha and prior.get("_input_hashes") == input_hashes
+            and all(d.passed for d in det)):
+        ctx.event("merge.verdict", {"result": "ready", "round": round_no, "reused": True},
+                  work_item_id=wid, spec_id=sid, actor="agent")
+        return prior
+    # A new judge output is immutable, even when it revisits the same implementation round.
+    judge_prefix = original_prefix if not attempts else original_prefix + f"recheck-{len(attempts):04d}-"
+    enter_item_stage(ctx, wid, sid, WorkItemStage.MERGE_JUDGING)
     reserve_budget(ctx, "merge_judge")
     res = run_session(
-        ctx, prefix=f"{sid}-r{round_no}-", spec_id=sid,
+        ctx, prefix=judge_prefix, spec_id=sid,
         agent_key="merge_judge", title=f"{ctx.run_id} merge-judge {sid}", run_id=ctx.run_id, stage="merge_judge",
         uploads=mj_uploads, work_item_id=wid,
         description=MERGE_JUDGE_DESCRIPTION.format(spec_id=sid, round=round_no, git=git_ro, skill_clause=skill_clause,
@@ -1119,9 +1129,10 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         verdict["summary_for_human"] = "Overridden: deterministic checks failed. " + verdict["summary_for_human"]
     verdict["deterministic_checks"] = [d.to_dict() for d in det]
     stamp_provenance(verdict, ctx, res, "Merge judge", "claude-opus-5-5")
+    verdict["_input_hashes"] = input_hashes
     verdict["_head_sha"], verdict["_branch"], verdict["_base_sha"] = head_sha, branch, base_sha
     res.outputs["merge_readiness.json"] = json.dumps(verdict, indent=2).encode()
-    persist_outputs(ctx, "merge_judge", res, prefix=f"{sid}-r{round_no}-", work_item_id=wid, spec_id=sid)
+    persist_outputs(ctx, "merge_judge", res, prefix=judge_prefix, work_item_id=wid, spec_id=sid)
     ctx.event("merge.verdict", {"result": verdict["result"], "round": round_no}, work_item_id=wid, spec_id=sid, actor="agent")
     return verdict
 
@@ -1258,9 +1269,9 @@ def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]]
         fix = {"ac_test_mapping": "Map every automated acceptance criterion to a test in implementation_report.json `criteria` ([{ac_id, tests: [...]}]) using pytest node ids exactly as `pytest --collect-only -q` prints them, or Bun ids `path/x.test.ts::outer describe > test name`; the orchestrator only counts tests its own run of the test plan collected or reported and saw pass (Bun only from direct `bun test` commands).",
                "test_plan_commands": "Make every test_plan command exit 0 from a clean checkout; if a command depends on a port or host, make it robust or pick a free port.",
                "protected_tests": ("Existing tests are protected. An approved spec may name an existing test file by its exact path in "
-                                   "allowed_paths; that file may then be extended (lines added, none of its existing lines removed). "
-                                   "Any other change to an existing test needs a spec that is explicitly about it; never edit or delete "
-                                   "an existing test to make the change pass."),
+                                   "allowed_paths; that file may then be updated to test the specified behavior. "
+                                   "Globs do not authorize existing test edits. Never delete or rename an existing test file, "
+                                   "skip a test, or weaken assertions to make the change pass."),
                SETUP_CHECK: ("The hosted verification could not run on this head; the detail says why. A failed recipe prepare phase is "
                              "fixed in the change. A changed or missing recipe, or test credentials that are not attached, needs a person "
                              "to re-approve the app's recipe: do not edit the recipe to get past it.") if managed else

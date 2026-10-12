@@ -141,8 +141,15 @@ def test_escalated_and_paused_runs(store):
     store.append(rid, "stage.entered", ACTOR, {"stage": "decomposing"})
     store.append(rid, "run.escalated", ACTOR, {"reason": "spec_x: merge judge said escalate"}, stage="decompose")
     store.append(rid, "run.completed", ACTOR, {"specs_with_change_requests": []})
+    escalation = store.events(rid)[-2]
     s = summary_of(store, rid)
     assert s["status"] == "escalated" and s["terminal"] is True
+    assert s["ended_at"] == escalation.at
+    api = TestClient(create_app(make_config(EXAMPLES.parents[1], store.root)))
+    store.put_artifact(rid, "intake", "outcome.json", json.dumps({"title": "Upgrade models"}).encode())
+    detail = api.get(f"/api/runs/{rid}").json()
+    assert "run.completed" not in [event["kind"] for event in detail["events"]]
+    assert store.events(rid)[-1].kind == "run.completed", "raw evidence is retained"
 
     rid = "run_paused000001"
     _run(store, rid)

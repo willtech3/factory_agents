@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .budget import last_pause
-from .state import MERGED_STAGES, RunEvent, RunStage, RunState, WorkItemStage, replay
+from .state import MERGED_STAGES, RunEvent, RunStage, RunState, WorkItemStage, effective_run_events, replay
 
 TERMINAL_STATUS = {RunStage.COMPLETED: "completed", RunStage.CLOSED: "closed", RunStage.FAILED: "failed",
                    RunStage.ESCALATED: "escalated"}
@@ -37,6 +37,7 @@ def summarize(events: list[RunEvent], state: RunState, controller_alive: bool | 
     """One record per run for the history. `controller_alive` is what `controller_running` found for a run that is not
     finished (None when there is no lock file, as for a run driven in-process): False turns a run that looks
     in progress into `stopped`, because nothing will move it or pick up a decision on its open gate."""
+    events = effective_run_events(events)
     created = next((ev.payload for ev in events if ev.kind == "run.created"), {})
     completed = next((ev.payload for ev in events if ev.kind == "run.completed"), None)
     design_only = bool(created.get("design_only") or (completed or {}).get("design_only"))

@@ -118,22 +118,22 @@ def protected(modified=(), deleted=(), named=(), removed=PROVEN, allowed=("tests
     return checks.protected_tests(modified, deleted, existing, allowed, named, removed)
 
 
-def test_a_named_existing_test_may_be_extended_but_nothing_else():
+def test_exactly_approved_test_updates_are_allowed_but_deletions_and_other_edits_are_not():
     ok = protected(modified=["tests/models.test.ts"], named=["tests/models.test.ts"])
-    assert ok.passed and ok.data["extended_named"] == ["tests/models.test.ts"] and "extended" in ok.detail
+    assert ok.passed and ok.data["approved_updates"] == ["tests/models.test.ts"] and "updated" in ok.detail
     other = protected(modified=["tests/models.test.ts", "tests/other.test.ts"], named=["tests/models.test.ts"])
     assert not other.passed and other.data["touched"] == ["tests/other.test.ts"], "a glob never unlocks a test"
     shrunk = protected(modified=["tests/models.test.ts"], named=["tests/models.test.ts"], removed={"tests/models.test.ts": ["expect(x)"]})
-    assert not shrunk.passed and "removes 1 existing line" in shrunk.detail
+    assert shrunk.passed and shrunk.data["approved_updates"] == ["tests/models.test.ts"]
     gone = protected(deleted=["tests/models.test.ts"], named=["tests/models.test.ts"])
     assert not gone.passed and "deleted or renamed" in gone.detail
     assert not protected(modified=["tests/models.test.ts"]).passed, "no exact name, no change"
 
 
 @pytest.mark.parametrize("removed", [None, {}, {"tests/models.test.ts": None}])
-def test_a_named_test_stays_protected_when_the_diff_cannot_prove_nothing_was_removed(removed):
+def test_a_named_test_stays_protected_when_the_diff_cannot_be_read(removed):
     result = protected(modified=["tests/models.test.ts"], named=["tests/models.test.ts"], removed=removed)
-    assert not result.passed and "does not prove that none of its existing lines were removed" in result.detail
+    assert not result.passed and "does not provide readable test changes" in result.detail
 
 
 def test_a_binary_or_unparsed_diff_proves_nothing():
@@ -169,16 +169,17 @@ def test_analyse_reports_removed_lines_and_counts_a_rename_as_removing_the_old_p
 
 
 @pytest.mark.parametrize("allowed, passes", [(["app/**", "tests/test_a.py"], True), (["app/**", "tests/**"], False)])
-def test_a_managed_round_lets_only_an_exactly_named_test_file_grow(tmp_path, root, no_host_execution, allowed, passes):
+@pytest.mark.parametrize("test_body", ["def test_a():\n    assert 1 == 1\n", "import pytest\n@pytest.mark.skip(reason='skip')\ndef test_a():\n    assert True\n"])
+def test_a_managed_round_permits_approved_test_updates_but_still_detects_skips(tmp_path, root, no_host_execution, allowed, passes, test_body):
     origin = hv.remote(tmp_path)
-    grown = "def test_a():\n    assert True\n\n\ndef test_b():\n    assert True\n"
+    grown = test_body
     driver = hv.Driver(origin, tmp_path, change_files={"app/main.py": "X = 1\n", "tests/test_a.py": grown})
     ctx = hv.context(tmp_path, root, driver)
     spec = {**hv.spec(), "allowed_paths": allowed}
     run_implement_one(ctx, spec, str(origin), "main", LocalVerifier(str(origin), tmp_path / "runs" / hv.RUN_ID / "verify"), {})
     det = {d["check"]: d for d in hv.artifact(ctx, "implement", "spec_hosted-r1-deterministic_checks.json")}
     assert det["protected_tests"]["passed"] is passes, det["protected_tests"]["detail"]
-    assert det["test_weakening"]["passed"]
+    assert det["test_weakening"]["passed"] is ("pytest.mark.skip" not in test_body)
 
 
 # ---------------------------------------------------------------------------------------------- 4. Bun-only collection

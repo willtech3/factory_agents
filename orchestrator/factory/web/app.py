@@ -36,7 +36,7 @@ from .. import config as cfgmod
 from ..budget import last_pause
 from ..config import REPO_ROOT, Config
 from ..gates import Decision, GateKind, parse_budget
-from ..state import RunStage, replay
+from ..state import RunStage, effective_run_events, replay
 from ..store import RunStore
 from ..summary import _stage_before, controller_running, summarize
 from ..surfaces.artifact_pages import render_gate1_page, render_gate2_page
@@ -143,6 +143,9 @@ def local_activity_url(runs_dir: Path, activity_id: str | None) -> str | None:
 def _resumable_after_failure(st, events) -> bool:
     """`factory resume` continues a failed run from its artefacts when it reached the build, or when it died while idle at
     Gate 2 (runner.stopped_at_gate2): the sentence and the Resume button follow what resume accepts."""
+    from ..runner import resumable_build_escalation
+    if resumable_build_escalation(st, events):
+        return True
     if st.stage != RunStage.FAILED:
         return False
     last = next((ev.payload.get("stage") for ev in reversed(events) if ev.kind == "stage.entered"), None)
@@ -299,7 +302,7 @@ class Console:
         questions = [q for q in self.queue.open_questions().values() if q["run_id"] == run_id and q["question_id"] in st.open_questions]
         timeline = [{"seq": ev.seq, "at": ev.at, "kind": ev.kind, "actor": ev.actor.get("type"), "actor_id": ev.actor.get("id"), "stage": ev.stage,
                      "work_item_id": ev.work_item_id, "spec_id": ev.spec_id, "payload": _trim(ev.payload)}
-                    for ev in events if ev.kind in TIMELINE_KINDS]
+                    for ev in effective_run_events(events) if ev.kind in TIMELINE_KINDS]
         design_only = any(ev.kind == "run.completed" and ev.payload.get("design_only") for ev in events) or \
             any(ev.kind == "run.created" and ev.payload.get("design_only") for ev in events)
         # A run that died in the implementation stage, or paused at its run budget, continues from its artefacts
@@ -678,6 +681,35 @@ class Console:
         runs.sort(key=lambda r: r["updated_at"] or "", reverse=True)
         return {"columns": ["plan", "specify", "build", "review", "ship"], "rows": ["po", "eng", "ops", "crew"], "runs": runs}
 
+    def resume_environment(self, run_id: str, detail: dict[str, Any]) -> dict[str, str]:
+        """Keep recovery on its recorded verification host and repository, with the approved recipe."""
+        from ..runner import recorded_preview_mode
+        events = self.store.events(run_id)
+        env = {"FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}
+        if self.cfg.forge_token:
+            env["FORGE_TOKEN"] = self.cfg.forge_token
+        target = (detail.get("outcome", {}).get("target_repositories") or [{}])[0]
+        if target.get("url"):
+            env["FORGE_REPO"] = repository_name(target["url"], self.cfg)
+        mode = recorded_preview_mode(events)
+        if mode:
+            env["FACTORY_PREVIEW"] = mode
+        if mode == "managed":
+            hosted = next((ev for ev in reversed(events) if ev.kind == "verification.hosted"), None)
+            if hosted:
+                record = self.store.get_json(run_id, "implement",
+                                             f"{hosted.spec_id}-r{hosted.payload['round']}-hosted_verification.json")
+                env.update(FACTORY_APP_ID=record.get("app_id") or "",
+                           FACTORY_TEST_PROFILE_SHA256=record["approved_profile_sha256"],
+                           FACTORY_TEST_VAULT_IDS="")
+                if record.get("vaults_attached"):
+                    from ..onboarding import AppOnboarding
+                    binding = AppOnboarding(self.cfg).run_settings(record["app_id"], target)
+                    if binding["FACTORY_TEST_PROFILE_SHA256"] != env["FACTORY_TEST_PROFILE_SHA256"]:
+                        raise HTTPException(409, "The app's verified recipe changed; recover with the originally approved setup")
+                    env.update(binding)
+        return env
+
     def resume_run(self, run_id: str, body: ResumeBody | None = None) -> dict[str, Any]:
         """Continue a run that failed during implementation or paused at its budget: spawns `factory resume <run_id>`
         the way start_run spawns `factory run`, so the Console never holds the orchestrator's state itself. For a
@@ -686,7 +718,7 @@ class Console:
         detail = self.run_detail(run_id)
         if not detail["resumable"]:
             raise HTTPException(409, f"run {run_id} is {detail['stage']}; only a failed run that reached implementation, "
-                                     f"or a run paused at its budget, can be resumed")
+                                     f"a run paused at its budget, or an approved build escalation, can be resumed")
         live = self.resuming(run_id)
         if live:
             raise HTTPException(409, f"run {run_id} is already being resumed (pid {live})")
@@ -708,9 +740,10 @@ class Console:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         log = self.logs_dir / f"resume-{run_id}-{int(time.time())}.log"
         args = [sys.executable, "-u", "-m", "factory.cli", "resume", run_id] + ([f"--budget={new_budget:g}"] if new_budget is not None else [])
+        recovery_env = self.resume_environment(run_id, detail)
         with log.open("w") as fh:
             proc = subprocess.Popen(args, cwd=str(Path(__file__).resolve().parents[2]), stdout=fh, stderr=subprocess.STDOUT,
-                                    env={**os.environ, "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}, start_new_session=True)
+                                    env={**os.environ, **recovery_env}, start_new_session=True)
         (self.cfg.runs_dir / run_id / "resume.pid").write_text(str(proc.pid))
         return {"ok": True, "mode": "resume", "run_id": run_id, "pid": proc.pid, "log": log.name}
 
@@ -750,9 +783,10 @@ class Console:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         log = self.logs_dir / f"watch-{run_id}-{int(time.time())}.log"
         args = [sys.executable, "-u", "-m", "factory.cli", "watch", run_id]
+        recovery_env = self.resume_environment(run_id, detail)
         with log.open("w") as fh:
             proc = subprocess.Popen(args, cwd=str(Path(__file__).resolve().parents[2]), stdout=fh, stderr=subprocess.STDOUT,
-                                    env={**os.environ, "FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}, start_new_session=True)
+                                    env={**os.environ, **recovery_env}, start_new_session=True)
         return {"ok": True, "mode": "watch", "run_id": run_id, "pid": proc.pid, "log": log.name, "pending": watch["pending"]}
 
     def logs(self) -> list[dict[str, Any]]:
