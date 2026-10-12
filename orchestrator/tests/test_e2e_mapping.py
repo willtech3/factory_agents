@@ -4,6 +4,7 @@ from copy import deepcopy
 import pytest
 from factory import checks
 import support.hosted as hosted
+from support import artifacts
 from factory.stages.implement import LocalVerifier, run_implement_one
 
 
@@ -78,9 +79,9 @@ no_host_execution = hosted.no_host_execution
 def test_automated_ui_mapping_survives_the_full_hosted_controller_round(tmp_path, root, monkeypatch, no_host_execution):
     spec = hosted.spec()
     spec['acceptance_criteria'][1]['verification'] = 'automated_test'
-    monkeypatch.setattr(hosted, 'REPORT', {'criteria': [
+    monkeypatch.setattr(hosted, 'REPORT', artifacts.report('spec_hosted', [
         {'ac_id': 'AC-1', 'tests': ['tests/test_a.py::test_a']},
-        {'ac_id': 'AC-2', 'tests': ['e2e:0']}], 'head_commit': 'x'})
+        {'ac_id': 'AC-2', 'tests': ['e2e:0']}]))
     origin = hosted.remote(tmp_path)
     ctx = hosted.context(tmp_path, root, hosted.Driver(origin, tmp_path))
     verdict = run_implement_one(ctx, spec, str(origin), 'main', LocalVerifier(str(origin), tmp_path/'verify'), {})

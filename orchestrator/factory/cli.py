@@ -398,6 +398,7 @@ def resume(run_id: str, forge: bool = typer.Option(True, help="Talk to the forge
 
 def _resume_locked(ctx, run_id: str, st, events, current, new_budget) -> None:
     """`factory resume` once the run's controller lock is held: every refusal before the drive, so none writes run.failed."""
+    from .budget import last_pause
     from .runner import budget_decision, preflight, resume as resume_pipeline
     from .state import RunStage
 
@@ -407,7 +408,7 @@ def _resume_locked(ctx, run_id: str, st, events, current, new_budget) -> None:
     except RuntimeError as e:
         typer.echo(f"cannot resume run {run_id}: {e}")
         raise typer.Exit(1)
-    if st.stage == RunStage.PAUSED_BUDGET:
+    if st.stage == RunStage.PAUSED_BUDGET and last_pause(events) is not None:
         try:                      # refuse here, before any event is written, when nothing has decided the pause yet
             action, raised_to, _ = budget_decision(ctx, st, events, new_budget)
         except RuntimeError as e:
@@ -614,6 +615,20 @@ def export_events(run_id: str, out: Path = typer.Option(None, "--out", help="Wri
     else:
         out.write_text(text)
         typer.echo(f"{text.count(chr(10))} events written to {out}")
+
+
+@app.command()
+def rules(check: bool = typer.Option(False, "--check", help="Exit 1 when a generated block differs; write nothing")):
+    """Render the rule registry (factory/rules.py) into the agent prompts and the implementation rubric (ADR-0015)."""
+    from . import rules as rules_mod
+
+    if check:
+        stale = rules_mod.drift(cfgmod.REPO_ROOT)
+        for path in stale:
+            typer.echo(f"out of date: {path.relative_to(cfgmod.REPO_ROOT)} (run `factory rules`)")
+        raise typer.Exit(1 if stale else 0)
+    for path in rules_mod.write(cfgmod.REPO_ROOT):
+        typer.echo(f"rendered {path.relative_to(cfgmod.REPO_ROOT)}")
 
 
 @app.command()

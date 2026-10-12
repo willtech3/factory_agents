@@ -95,13 +95,33 @@ def test_wrong_viewport_blocks_the_ui_criterion_even_though_the_baseline_passed(
 # ---------------------------------------------------------------------------------------------- fail closed, before or after the session
 
 
-def test_a_change_to_the_recipe_blocks_verification_without_a_session(tmp_path, root):
+def test_a_change_to_the_recipes_trusted_part_blocks_verification_without_a_session(tmp_path, root):
     widened = {**RECIPE, "network": {"allowed_hosts": ["api.example.com"], "allow_package_managers": True}}
     run, driver, _ = run_verifier(tmp_path, root, {"ops/recipe.json": json.dumps(widened)})
     assert not driver.calls
-    assert not run.setup.passed and "differs from the approved recipe" in run.setup.detail
+    assert not run.setup.passed and "changes its trusted part (network)" in run.setup.detail
     assert all(c["exit_code"] is None for c in run.commands) and run.e2e[0]["exit_code"] is None
     assert run.e2e[0]["visual"]["status"] == "blocked" and run.collected is None
+    for key, value in (("secrets", [{"name": "K", "required": False, "allowed_hosts": ["api.example.com"], "injection": "header"}]),
+                       ("data", {"kind": "isolated-test", "authentication": "test-identity"}), ("command_environment", {"MODE": "x"})):
+        changed = {**RECIPE, key: value, "network": {"allowed_hosts": ["api.example.com"], "allow_package_managers": False}}
+        (tmp_path / key).mkdir()
+        run, driver, _ = run_verifier(tmp_path / key, root, {"ops/recipe.json": json.dumps(changed)})
+        assert not driver.calls and "trusted part" in run.setup.detail and key in run.setup.detail
+
+
+def test_a_change_to_the_recipes_runtime_part_is_verified_like_the_code(tmp_path, root):
+    """ADR-0014: the lifecycle commands, services and checks may change with the code. The hosted run exercises the
+    changed recipe and records that it did; the trusted part (network, secrets, data, command environment) is unchanged."""
+    runtime = {**RECIPE, "commands": {**RECIPE["commands"], "prepare": "true && true"}, "timeout_seconds": 400}
+    run, driver, _ = run_verifier(tmp_path, root, {"ops/recipe.json": json.dumps(runtime)})
+    assert len(driver.calls) == 1 and run.setup.passed, run.setup.detail
+    assert run.record["runtime_changed"] and run.record["profile_sha256"] == te.fingerprint(runtime)
+    assert run.record["approved_profile_sha256"] == te.fingerprint(RECIPE) and run.record["trust_sha256"] == te.trust_fingerprint(RECIPE)
+    # without the approved recipe at the base, there is nothing to compare the trusted part with
+    (tmp_path / "unknown").mkdir()
+    run, driver, _ = run_verifier(tmp_path / "unknown", root, {"ops/recipe.json": json.dumps(runtime)}, test_profile_sha256="0" * 64)
+    assert not driver.calls and "does not hold the approved recipe" in run.setup.detail
 
 
 def test_the_configured_approved_fingerprint_wins_over_the_base_recipe(tmp_path, root):

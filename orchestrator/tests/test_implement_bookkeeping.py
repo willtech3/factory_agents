@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from support import artifacts
 from conftest import make_config
 from support.sessions import stage_result
 from support.events import assert_log_valid
@@ -64,7 +65,7 @@ class Verifier:
     def collect_test_ids(self, repo, timeout=0):
         return self.collected
 
-    def run_e2e(self, preview_url, entries, repo=None, target="preview", timeout=0):
+    def run_entries(self, urls, entries, repo=None, timeout=0):
         return []
 
 
@@ -90,7 +91,7 @@ class Driver:
             out = {"implementation_report.json": json.dumps(report).encode()}
             if "findings.json" in kw["uploads"]:
                 ids = [f["finding_id"] for f in json.loads(kw["uploads"]["findings.json"])["findings"]]
-                out["review_response.json"] = json.dumps({"responses": [{"finding_id": i, "disposition": "fixed", "explanation": "mapped real tests"} for i in ids],
+                out["review_response.json"] = json.dumps({**artifacts.response(SID, [{"finding_id": i} for i in ids]),
                                                           "produced_by": dict(self.PLACEHOLDER)}).encode()
             return self._res(sid, f"agent_{key}", out, 3.3)
         if key == "reviewer":
@@ -191,36 +192,30 @@ def test_a_fabricated_mapping_costs_a_round_and_the_judge_sees_round_two(tmp_pat
     assert (tmp_path / "runs" / RUN / "artifacts" / "merge_judge" / f"{SID}-r2-merge_readiness.json").is_file()
 
 
-def test_recovery_rejudges_same_head_after_failed_checks_change_and_preserves_old_verdict(tmp_path, root, examples):
-    from factory.stages.implement import ResumePoint
-    from factory.state import RunStage
-
-    ctx, verifier = _ctx(tmp_path, root, examples, mapping=[TEST_ID])
+def test_a_recheck_verifies_the_same_head_again_and_asks_a_new_judge(tmp_path, root, examples):
+    """The checks failed because the verification host did not see the test pass (the environment, not the change). The
+    owner's recheck verifies the same head again and asks a new merge judge: the implementer and the reviewers are not
+    asked again (their rounds are steps), the earlier verdict is kept, and fresh evidence that fails again cannot reuse
+    a ready verdict."""
+    ctx, verifier = _ctx(tmp_path, root, examples, mapping=[TEST_ID], passed=())
     spec = _spec(examples)
-    # First judge sees an unmapped criterion and cannot approve the failing deterministic check.
-    ctx.driver.mapping = ["tests/test_missing.py::test_missing"]
     first = run_implement_one(ctx, spec, "https://github.com/w/app", "main", verifier, {})
     assert first["result"] != "ready"
     old_path = ctx.store.artifact_path(RUN, "merge_judge", f"{SID}-r2-merge_readiness.json")
     old_bytes = old_path.read_bytes()
-    report = ctx.store.get_json(RUN, "implement", f"{SID}-r2-implementation_report.json")
-    for row in report["criteria"]:
-        row["tests"] = [TEST_ID]
-    findings = ctx.store.get_json(RUN, "review", f"{SID}-r1-findings.merged.json")
-    response = ctx.store.get_json(RUN, "implement", f"{SID}-r2-review_response.json")
-    ctx.event("run.escalated", {"reason": "checks failed"}, spec_id=SID)
-    ctx.event("run.resumed", {"stage": RunStage.IMPLEMENTING.value, "from": "escalated"})
-    calls_before = len(ctx.driver.calls)
-    recovered = run_implement_one(ctx, spec, "https://github.com/w/app", "main", verifier, {},
-                                  resume_from=ResumePoint(round_no=2, report=report, response=response, findings=findings))
-    assert recovered["result"] == "ready"
-    assert [call["agent_key"] for call in ctx.driver.calls[calls_before:]] == ["merge_judge"]
+
+    def recheck():
+        ctx.event("build.recovery", {"decision": "approve", "round": 2}, spec_id=SID)
+        before = len(ctx.driver.calls)
+        verdict = run_implement_one(ctx, spec, "https://github.com/w/app", "main", verifier, {}, recovery={"decision": "approve"})
+        return verdict, [call["agent_key"] for call in ctx.driver.calls[before:]]
+    verifier.passed = [TEST_ID]
+    recovered, asked = recheck()
+    assert recovered["result"] == "ready" and asked == ["merge_judge"]
     assert old_path.read_bytes() == old_bytes
     assert ctx.store.get_json(RUN, "merge_judge", f"{SID}-r2-recheck-0001-merge_readiness.json")["result"] == "ready"
-    # Fresh evidence with a new failure cannot reuse the previous ready verdict either.
     verifier.passed = []
-    calls_before = len(ctx.driver.calls)
-    failed_again = run_implement_one(ctx, spec, "https://github.com/w/app", "main", verifier, {},
-                                     resume_from=ResumePoint(round_no=2, report=report, response=response, findings=findings))
-    assert failed_again["result"] != "ready"
-    assert [call["agent_key"] for call in ctx.driver.calls[calls_before:]] == ["merge_judge"]
+    failed_again, asked = recheck()
+    assert failed_again["result"] != "ready" and asked == ["merge_judge"]
+
+

@@ -24,6 +24,22 @@ def fingerprint(value: dict) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+# The recipe's trusted part (ADR-0014): what the sandbox may reach and which test credentials reach which hosts, the kind
+# of data and identity it runs with, and the non-secret values every command gets. A person approves it when the app is
+# onboarded and a change may not alter it. The rest is the runtime part (toolchain, lifecycle commands, services and
+# their health paths, browser and functional checks, timeouts): it may change in a diff, and the hosted verification of
+# that diff is what shows it works, exactly as for the code.
+TRUST_KEYS = ("network", "secrets", "data", "command_environment")
+
+
+def trust_of(profile: dict) -> dict:
+    return {k: profile.get(k) for k in TRUST_KEYS}
+
+
+def trust_fingerprint(profile: dict) -> str:
+    return fingerprint(trust_of(profile))
+
+
 def validate_profile(profile: dict, schema_dir: Path) -> list[str]:
     schema = json.loads((schema_dir / "test_environment.schema.json").read_text())
     # Do not echo invalid values: someone may accidentally put a credential here.

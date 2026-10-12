@@ -32,30 +32,21 @@ No behaviour changed, dependency added, configuration introduced, or abstraction
 
 <!-- grader copy ends here: the orchestrator sends nothing below this line to the in-session grader -->
 
-**Computed by the orchestrator.** Deterministic; handed to the merge judge with the results.
+<!-- rules:begin: generated from orchestrator/factory/rules.py by `factory rules`; edit the registry, not this block -->
+**Computed by the orchestrator.** Deterministic; handed to the merge judge with the results. Each item is 0 when its check failed and 2 when it passed; the judge cannot override a failure.
 
-## I2. Test plan commands pass **[deterministic]**
-Every command in `spec.test_plan.commands` exits 0 on `head_sha` in a clean sandbox run by the orchestrator, not by the implementer.
-- 0: any failure.
-- 2: all pass.
+## I2. test-plan-passes **[deterministic: `test_plan_commands`]**
+Every `test_plan.commands` entry (the tests, and the builds and linters the spec lists) exits 0 on the head the orchestrator verifies, from a clean checkout. A structured entry `{runner, select}` is run by the orchestrator with its own reporters.
 
-## I3. Diff stays inside allowed paths **[deterministic]**
-Every changed file matches a glob in `allowed_paths`.
-- 0: any file outside.
-- 2: all inside.
+## I3. allowed-paths **[deterministic: `diff_scope`]**
+Change only files that match the spec's `allowed_paths`; a file outside them fails the merge. If the change needs another path, the spec is wrong: stop and say so (`blocked.md`).
 
-## I4. Existing tests untouched **[deterministic]**
-No existing test file is modified or deleted unless its path is in `allowed_paths` and the spec says the item is about those tests. No test is skipped, marked expected-fail, or weakened.
-- 0: any violation.
-- 2: clean.
+## I4. protected-tests **[deterministic: `protected_tests`]**
+Existing tests are protected. Only an existing test file the approved spec names by its exact path in `allowed_paths` may be updated, to test the specified behaviour; globs do not authorize it. Never delete or rename an existing test file.
 
-## I8. Build and static checks **[deterministic]**
-The repository's build, type check, and lint (as configured in the repo) pass on `head_sha`.
-- 0: any failure that did not exist on `base_sha`.
-- 2: clean.
+## I4. no-test-weakening **[deterministic: `test_weakening`]**
+Never skip a test or weaken an assertion to make the change pass.
 
-## I9. End-to-end checks pass on the preview environment **[deterministic]**
-Every `spec.test_plan.e2e` entry with `target: preview` exits 0 when the orchestrator runs it against the branch's preview URL (read from the forge's deployment record for `head_sha`, never from the implementer's report), with `$BASE_URL` substituted. The implementer must also have run them itself and recorded the output in `implementation_report.json`; the orchestrator's run is the one that counts. Unit tests passing while the deployed change does not work is the failure this exists to catch (practitioners.md §3; academic-2026.md §5, SWE-Cycle).
-- 0: any entry fails, or the preview deploy for `head_sha` did not succeed.
-- 2: all pass on the preview URL.
-- 3: as 2, and the report shows the same entries failing on the base branch's preview (the behaviour is new, not pre-existing).
+## I9. e2e-passes **[deterministic: `e2e_local`, `e2e_preview`]**
+Every `test_plan.e2e` entry passes in the orchestrator's run of the head, `local` and `preview` entries alike: it ran, exited 0, and any browser evidence it owes passed. Not run is not passed.
+<!-- rules:end -->

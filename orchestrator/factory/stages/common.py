@@ -8,8 +8,10 @@ import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
+from .. import steps
 from ..budget import owner_handle, reserve_budget
 from ..gates import Answer, ArtifactRef, Decision, Gate, GateDecision, GateKind, Question
 from ..sessions import SessionContext, StageResult
@@ -112,8 +114,19 @@ def run_session(ctx: RunContext, *, stage: str, prefix: str = "", spec_id: str |
 
 def session_step_key(stage: str, prefix: str, title: str, attempt: int) -> str:
     """The step a session runs under. Titles name the run, the stage, the spec and the round; prefixes add what binds a
-    session to its inputs (a reviewer pass's base and head, a judge's recheck number); `attempt` is the budget re-run."""
-    return f"session/{stage}/{prefix}{title}#{attempt}"
+    session to its inputs (a reviewer pass's base and head, a judge's recheck number); `attempt` is the budget re-run.
+    The pipeline step it runs in (`steps.scope`) comes first: the second decomposition pass asks the same agent under
+    the same title, and is a different session."""
+    scope = steps.scope()
+    return f"session/{stage}/{scope + '/' if scope else ''}{prefix}{title}#{attempt}"
+
+
+def would_reuse(ctx: RunContext, *, stage: str, prefix: str = "", attempt: int = 1, **kw: Any) -> bool:
+    """`session_step` would answer this call from a session that already finished: nothing starts, so nothing needs
+    reserving against the run budget (a replayed step that paused at its budget must not pay for its sessions twice)."""
+    step = ctx.store.step(ctx.run_id, session_step_key(stage, prefix, str(kw.get("title", "")), attempt))
+    return (step is not None and step.status == "done" and step.inputs_sha == session_inputs_sha(stage, kw)
+            and _reused(ctx, step, str(kw.get("agent_key", ""))) is not None)
 
 
 def session_inputs_sha(stage: str, kw: dict[str, Any]) -> str:
@@ -124,8 +137,10 @@ def session_inputs_sha(stage: str, kw: dict[str, Any]) -> str:
     repository = kw.get("repository")
     if isinstance(repository, dict):
         repository = {k: v for k, v in repository.items() if k != "authorization_token"}
+    # The dollar cap is left out too: it bounds the work, it does not change it, and a controller with other caps
+    # must still follow (or reuse) the session it finds.
     doc = {"stage": stage, **{k: kw.get(k) for k in ("agent_key", "title", "description", "rubric_md", "max_iterations",
-                                                     "budget_usd", "model_override", "system_override", "environment_id",
+                                                     "model_override", "system_override", "environment_id",
                                                      "vault_ids", "metadata", "schema_names")},
            "repository": repository,
            "custom_tools": sorted(kw.get("custom_tools") or {}),
@@ -134,18 +149,21 @@ def session_inputs_sha(stage: str, kw: dict[str, Any]) -> str:
 
 
 STOPPED = {"interrupted", "unreachable"}   # how `_drive` ends the sessions in flight when someone stops the run
+UNFINISHED = {"terminated", "interrupted", "unreachable"}   # stop reasons `run_session` refuses as a result
 
 
 def session_step(ctx: RunContext, *, stage: str, prefix: str = "", spec_id: str | None = None, attempt: int = 1,
-                 **kw: Any) -> StageResult:
+                 fresh: bool = False, **kw: Any) -> StageResult:
     """`ctx.driver.run` as a durable step (ADR-0013). The step records the session's id as soon as it exists, so a
     controller that dies leaves a session its successor can follow: a call with the same step and the same inputs
     reattaches to a session still running under it instead of starting (and paying for) another. A running session
     whose inputs have since changed is interrupted and recorded as superseded, and one a stop interrupted is not
     followed; a new session starts in both cases.
 
-    A session that returned is not reused: whether a finished judgement or verification may stand is the caller's
-    decision (the merge judge reuses only a ready verdict on unchanged inputs; a build recovery wants fresh evidence).
+    A session that finished is reused when the same step asks for the same work again: its recorded outputs come back
+    without a session, which is how a replayed pipeline step that did not finish gets past the sessions that did. Not
+    reused: `fresh` callers (hosted verification: a resume always verifies again), a session that did not finish, and
+    one whose output the stage refused (`reject_output`: its step is failed, so the next call starts a new session).
     `session.finished` is recorded before the step closes, so the spend of a session that returned is counted once
     whichever side of that boundary a crash falls on."""
     store, run_id = ctx.store, ctx.run_id
@@ -153,6 +171,10 @@ def session_step(ctx: RunContext, *, stage: str, prefix: str = "", spec_id: str 
     key = session_step_key(stage, prefix, str(kw.get("title", "")), attempt)
     inputs = session_inputs_sha(stage, kw)
     step = store.step(run_id, key)
+    if step is not None and step.status == "done" and step.inputs_sha == inputs and not fresh:
+        reused = _reused(ctx, step, str(kw.get("agent_key", "")))
+        if reused is not None:
+            return _rejectable(ctx, key, reused)
     if step is not None and step.status == "running" and step.session_id:
         ended = store.state(run_id).finished_sessions.get(step.session_id)
         if ended in STOPPED:
@@ -161,7 +183,7 @@ def session_step(ctx: RunContext, *, stage: str, prefix: str = "", spec_id: str 
             ctx.event("session.reattached", {"session_id": step.session_id, "step": key, "attempt": step.attempt},
                       stage=stage, actor="platform", work_item_id=wid, spec_id=spec_id)
             res = ctx.driver.run(stage=stage, attach_session_id=step.session_id, **kw)
-            return _finish_step(ctx, stage, key, res, wid, spec_id)
+            return _rejectable(ctx, key, _finish_step(ctx, stage, key, res, wid, spec_id))
         else:
             _supersede(ctx, stage, key, step.session_id, wid, spec_id)
     store.begin_step(run_id, key, "session", inputs)
@@ -177,11 +199,29 @@ def session_step(ctx: RunContext, *, stage: str, prefix: str = "", spec_id: str 
         if not created:
             store.fail_step(run_id, key, f"{type(e).__name__}: {str(e)[:500]}")
         raise          # a session that exists stays `running` under its step, for the next controller to reattach to
-    return _finish_step(ctx, stage, key, res, wid, spec_id)
+    return _rejectable(ctx, key, _finish_step(ctx, stage, key, res, wid, spec_id))
+
+
+def _rejectable(ctx: RunContext, key: str, res: StageResult) -> StageResult:
+    try:
+        res.on_reject = lambda why: ctx.store.fail_step(ctx.run_id, key, f"output rejected: {why}")
+    except AttributeError:            # a test double that is not a StageResult
+        pass
+    return res
+
+
+def reject_output(res: StageResult, why: str) -> RuntimeError:
+    """Refuse a session's output: its step is failed, so a replay starts a new session for this work rather than
+    reusing what was refused. Returns the error for the caller to raise."""
+    reject = getattr(res, "on_reject", None)
+    if callable(reject):
+        reject(why)
+    return RuntimeError(why)
 
 
 def _finish_step(ctx: RunContext, stage: str, key: str, res: StageResult, work_item_id: str | None,
                  spec_id: str | None) -> StageResult:
+    res.finished_at = getattr(res, "finished_at", None) or datetime.now(UTC).isoformat()
     record_session_finished(ctx, stage, res, work_item_id=work_item_id, spec_id=spec_id)
     ctx.store.finish_step(ctx.run_id, key, _step_result(ctx, res))
     return res
@@ -190,9 +230,33 @@ def _finish_step(ctx: RunContext, stage: str, key: str, res: StageResult, work_i
 def _step_result(ctx: RunContext, res: StageResult) -> dict[str, Any]:
     """What a finished session step records: how the session ended and the files it returned, kept as blobs and named
     by sha256, so a step's result can be read back without the stage code that persisted it (replays, evals)."""
-    return {"session_id": res.session_id, "stop_reason": res.stop_reason, "outcome_result": res.outcome_result,
+    return {"session_id": res.session_id, "agent_id": res.agent_id, "agent_version": res.agent_version,
+            "stop_reason": res.stop_reason, "outcome_result": res.outcome_result,
             "outcome_iterations": res.outcome_iterations, "list_cost_usd": res.list_cost_usd,
+            "events_seen": getattr(res, "events_seen", 0), "custom_tool_calls": list(getattr(res, "custom_tool_calls", None) or []),
+            "last_message": getattr(res, "last_message", None), "finished_at": res.finished_at,
             "outputs": {name: ctx.store.put_blob(ctx.run_id, content) for name, content in sorted((res.outputs or {}).items())}}
+
+
+def _reused(ctx: RunContext, step: Any, agent_key: str) -> StageResult | None:
+    """The StageResult a finished session step recorded, or None when it must not stand in for a new session: it did
+    not finish, or its outputs are not kept (a step recorded before they were)."""
+    r = step.result or {}
+    if (r.get("stop_reason") in UNFINISHED or r.get("outcome_result") in {"interrupted", "failed"}
+            or not isinstance(r.get("outputs"), dict) or not r.get("session_id")):
+        return None
+    try:
+        outputs = {name: ctx.store.get_blob(ctx.run_id, sha) for name, sha in r["outputs"].items()}
+    except (FileNotFoundError, ValueError):
+        return None
+    agent = ctx.cfg.agents.get(agent_key) if agent_key else None
+    return StageResult(session_id=r["session_id"], agent_id=r.get("agent_id") or getattr(agent, "id", ""),
+                       agent_version=r.get("agent_version") or getattr(agent, "version", None), outputs=outputs,
+                       outcome_result=r.get("outcome_result"), outcome_iterations=int(r.get("outcome_iterations") or 0),
+                       list_cost_usd=r.get("list_cost_usd"), stop_reason=r.get("stop_reason"),
+                       events_seen=int(r.get("events_seen") or 0), custom_tool_calls=list(r.get("custom_tool_calls") or []),
+                       finish_recorded=True, last_message=r.get("last_message"),
+                       finished_at=r.get("finished_at") or step.updated_at)
 
 
 CHANGED_INPUTS = "its inputs changed before a controller followed it to the end"
@@ -296,7 +360,7 @@ def provenance(ctx: RunContext, res: StageResult, agent_name: str, model: str, i
         "agent_name": agent_name, "agent_id": res.agent_id, "agent_version": res.agent_version or 1,
         "session_id": res.session_id, "thread_id": None, "model": model, "effort": None,
         "outcome_iterations": res.outcome_iterations or None, "list_cost_usd": res.list_cost_usd,
-        "produced_at": datetime.now(UTC).isoformat(),
+        "produced_at": getattr(res, "finished_at", None) or datetime.now(UTC).isoformat(),
         "inputs": [{"artifact": k, "sha256": v} for k, v in inputs.items()],
     }
 
@@ -327,16 +391,17 @@ def hosted_planning_clause(ctx: RunContext) -> str:
             "fields; do not invent credential_ref or other fields. Never depend "
             "on a person's localhost, Claude in Chrome, factory:browser, or an externally reachable preview URL. "
             "The controller provides BASE_URL inside that sandbox. Both local and preview e2e targets execute there. "
-            "Give UI criteria a `factory:journey <name>` e2e entry with explicit steps and a viewport: the factory's own "
+            "Give UI criteria a journey e2e entry ({\"journey\": \"<name>\", ...}) with explicit steps and a viewport: the factory's own "
             "browser runner executes the journey the implementer writes as a run artifact, so no browser-test code is "
             "committed (platform-contract skill; post-mortem 2026-10-11 §1). The recipe's baseline is only a "
-            "readiness check; each changed behavior needs its own evidence. Recipe/network/credential-scope changes "
-            "require re-onboarding and must not be smuggled into the implementation. Production authentication, "
+            "readiness check; each changed behavior needs its own evidence. A change to the recipe's trusted part "
+            "(network, secrets, data, command_environment) requires re-onboarding and must not be smuggled into the "
+            "implementation; its commands, services and checks may change with the code and are verified like it. Production authentication, "
             "paid inference or unsupported external services must be described as coverage gaps. Post-merge live "
             "deployment checks require a separate hosted adapter and currently remain blocked in managed mode. "
-            "Automated criteria require machine-readable test evidence from pytest or a direct, literal `bun test ...` "
-            "test_plan.commands entry. For Bun, avoid package scripts, shell wrappers/operators, environment prefixes "
-            "and reporter flags: the controller adds its own JUnit reporter. Bun test IDs are "
+            "Automated criteria require machine-readable test evidence: write every test run as a structured "
+            "test_plan.commands entry, {\"runner\": \"pytest\" or \"bun\", \"select\": [test files or ids]}; the controller "
+            "renders the command and adds its own reporters. Bun test IDs are "
             "path/to/file.test.ts::outer describe > inner describe > test name. An exit code alone or an unsupported "
             "framework cannot verify an automated criterion; state that limitation instead of assuming support. "
             "An automated criterion proved by an e2e journey itself can map to e2e:<zero-based index> instead of a "
@@ -428,9 +493,32 @@ def artifact_json_or_none(ctx: RunContext, stage: str, name: str) -> Any:
 
 
 def require_json(res: StageResult, name: str) -> dict[str, Any]:
+    """The JSON output `name`. A session that did not write it, or wrote something that is not JSON, has its output
+    rejected (`reject_output`)."""
     if name not in res.outputs:
-        raise RuntimeError(f"session {res.session_id} did not produce {name}; outputs: {sorted(res.outputs)}")
-    return json.loads(res.outputs[name])
+        raise reject_output(res, f"session {res.session_id} did not produce {name}; outputs: {sorted(res.outputs)}")
+    try:
+        return json.loads(res.outputs[name])
+    except ValueError as e:
+        raise reject_output(res, f"session {res.session_id} wrote {name} that is not JSON: {e}") from e
+
+
+def schema_problems(ctx: RunContext, artifact: dict[str, Any], schema: str) -> list[str]:
+    """`artifact`'s schema errors, without the orchestrator's private keys, at most eight."""
+    from .. import checks
+    errors = checks.schema_errors(public(artifact), ctx.cfg.schemas_dir / schema, ctx.cfg.schemas_dir)
+    return [f"{'/'.join(str(x) for x in e.path) or '$'}: {e.message[:300]}" for e in errors[:8]]
+
+
+def require_valid(ctx: RunContext, res: StageResult, name: str, artifact: dict[str, Any], schema: str) -> dict[str, Any]:
+    """`artifact`, the session's `name` as the stage completed it, validated on receipt (rule `artifact-schema`). An
+    invalid verdict or set of findings is refused (`reject_output`): nothing the schema does not hold reaches a gate,
+    the merge judge or the change request."""
+    problems = schema_problems(ctx, artifact, schema)
+    if problems:
+        raise reject_output(res, f"session {res.session_id} wrote {name} that does not validate against {schema} "
+                                 f"(rule artifact-schema): {'; '.join(problems)}")
+    return artifact
 
 
 def make_ask_human(ctx: RunContext, role: str, poll_seconds: float = 5.0, timeout_hours: float = 48.0):
@@ -499,18 +587,101 @@ def _asked_before(ctx: RunContext, custom_tool_use_id: str | None) -> tuple[dict
 
 
 def open_gate(ctx: RunContext, kind: GateKind, artifacts: dict[str, str], summary: str, assignees: list[str],
-              options: tuple[Decision, ...], urls: dict[str, str] | None = None, work_item_id: str | None = None) -> Gate:
+              options: tuple[Decision, ...], urls: dict[str, str] | None = None, work_item_id: str | None = None,
+              identity: str | None = None) -> Gate:
     """Open a gate on every surface and record `gate.opened`. Does not wait: `gate_decision` polls for the answer, so a
-    process that must keep doing other work (the change-request watcher) can open a gate without blocking on it."""
+    process that must keep doing other work (the change-request watcher) can open a gate without blocking on it.
+    `identity` (`gate_identity`) is how a replayed pipeline finds this gate again instead of opening another."""
     refs = tuple(ArtifactRef(name=n, sha256=s, url=(urls or {}).get(n)) for n, s in sorted(artifacts.items()))
     gate = Gate(run_id=ctx.run_id, kind=kind, artifacts=refs, assignees=tuple(assignees), summary=summary, options=options,
                 work_item_id=work_item_id)
     ctx.queue.open(gate)
     ctx.notifier.gate_opened(gate)
     ctx.event("gate.opened", {"gate_id": gate.gate_id, "kind": kind.value, "artifacts": [r.__dict__ for r in refs],
-                              "assignees": assignees, "summary": summary, "work_item_id": work_item_id},
+                              "assignees": assignees, "summary": summary, "work_item_id": work_item_id,
+                              "options": [o.value for o in options],
+                              **({"identity": identity, "scope": steps.scope()} if identity else {})},
               stage=kind.value, work_item_id=work_item_id)
     return gate
+
+
+def gate_identity(kind: GateKind, artifacts: dict[str, str], work_item_id: str | None, summary: str) -> str:
+    """What makes two openings the same gate: the step that opens it (`steps.scope`), its kind, its work item and the
+    exact artefacts it presents (the summary when it presents none: a session's budget gate names the session). A
+    replayed step that reaches the same gate finds it; a loop's next iteration is another step, so another gate."""
+    doc = {"scope": steps.scope(), "kind": kind.value, "work_item_id": work_item_id, "artifacts": dict(sorted(artifacts.items())),
+           "summary": None if artifacts else summary}
+    return hashlib.sha256(json.dumps(doc, sort_keys=True).encode()).hexdigest()
+
+
+def find_gate(ctx: RunContext, identity: str, kind: GateKind, artifacts: dict[str, str],
+              work_item_id: str | None) -> tuple[dict[str, Any], dict[str, Any] | None] | None:
+    """The `gate.opened` payload of the gate with this identity and its `gate.decided` payload when it has one, or None.
+    A gate an older controller opened (no identity recorded) matches on kind, work item and artefacts, as long as it
+    presented any. A superseded gate is gone."""
+    events = ctx.store.events(ctx.run_id)
+    superseded = {ev.payload.get("gate_id") for ev in events if ev.kind == "gate.superseded"}
+
+    def same(p: dict[str, Any]) -> bool:
+        if p.get("identity") is not None:
+            return p["identity"] == identity
+        return (bool(artifacts) and p.get("kind") == kind.value and p.get("work_item_id") == work_item_id
+                and {a["name"]: a["sha256"] for a in p.get("artifacts", [])} == artifacts)
+    opened = next((ev.payload for ev in reversed(events) if ev.kind == "gate.opened" and same(ev.payload)
+                   and ev.payload.get("gate_id") not in superseded), None)
+    if opened is None:
+        return None
+    decided = next((ev.payload for ev in events if ev.kind == "gate.decided" and ev.payload.get("gate_id") == opened["gate_id"]), None)
+    return opened, decided
+
+
+def decision_from_event(p: dict[str, Any]) -> GateDecision:
+    """The GateDecision a `gate.decided` event recorded."""
+    return GateDecision(gate_id=p["gate_id"], decision=Decision(p["decision"]), decided_by=p.get("decided_by", "human"),
+                        comments=p.get("comments", ""), approved_subset=tuple(p.get("approved_subset", [])),
+                        artifact_shas=tuple(p.get("artifact_shas", [])))
+
+
+def queued_gate(queue: Any, gate_id: str) -> Gate | None:
+    """The gate as a decision surface holds it (the record decisions are validated against), from any composed queue."""
+    for q in getattr(queue, "queues", [queue]):
+        finder = getattr(q, "gate", None)
+        gate = finder(gate_id) if callable(finder) else getattr(q, "gates", {}).get(gate_id)
+        if isinstance(gate, Gate):
+            return gate
+    return None
+
+
+def _rejoin_gate(ctx: RunContext, opened: dict[str, Any], kind: GateKind, options: tuple[Decision, ...]) -> Gate:
+    """Wait again on a gate the log opened: the surface must hold the gate the log recorded (a decision is checked against
+    that record), or, when it holds none (a surface that keeps no records across processes), gets it back as recorded."""
+    refs = tuple(ArtifactRef(name=a["name"], sha256=a["sha256"], url=a.get("url")) for a in opened.get("artifacts", []))
+    held = queued_gate(ctx.queue, opened["gate_id"])
+    if held is not None:
+        if (held.kind != kind or {a.name: a.sha256 for a in held.artifacts} != {r.name: r.sha256 for r in refs}
+                or set(held.options) != set(options)):
+            raise RuntimeError(f"the gate surface's record of gate {opened['gate_id']} differs from the gate the run opened; "
+                               f"a decision could not be checked against what it presented")
+        return held
+    gate = Gate(run_id=ctx.run_id, kind=kind, artifacts=refs, assignees=tuple(opened.get("assignees") or ()),
+                summary=opened.get("summary", ""), options=options, gate_id=opened["gate_id"],
+                work_item_id=opened.get("work_item_id"))
+    ctx.queue.open(gate)
+    return gate
+
+
+def _supersede_stale_gates(ctx: RunContext, kind: GateKind, work_item_id: str | None) -> None:
+    """Gates of this kind and item that the current step opened before and that are still open present something else
+    now (the step ran again and produced different artefacts): nobody should decide on them any more."""
+    scope = steps.scope()
+    if scope is None:
+        return
+    st = ctx.store.state(ctx.run_id)
+    for gate_id, p in list(st.open_gates.items()):
+        if p.get("kind") == kind.value and p.get("work_item_id") == work_item_id and p.get("scope") == scope:
+            ctx.event("gate.superseded", {"gate_id": gate_id, "reason": "the step that opened it ran again and presents "
+                                                                         "different artefacts; decide on the new gate"},
+                      stage=kind.value, work_item_id=work_item_id)
 
 
 def gate_decision(ctx: RunContext, gate_id: str, kind: GateKind, work_item_id: str | None = None) -> GateDecision | None:
@@ -564,16 +735,32 @@ def _record_policy_decision(ctx: RunContext, gate: Gate, comments: str) -> None:
     raise RuntimeError(f"no gate surface can record a policy decision for {gate.gate_id}")
 
 
+GATE_POLL_SECONDS = 10.0
+
+
 def open_gate_and_wait(ctx: RunContext, kind: GateKind, artifacts: dict[str, str], summary: str,
-                       assignees: list[str], options: tuple[Decision, ...], poll_seconds: float = 10.0,
-                       urls: dict[str, str] | None = None, work_item_id: str | None = None,
+                       assignees: list[str], options: tuple[Decision, ...], poll_seconds: float | None = None,
+                       urls: dict[str, str] | Callable[[], dict[str, str]] | None = None, work_item_id: str | None = None,
                        auto_approve: str | None = None) -> GateDecision:
-    """Open the gate and wait for its decision. `auto_approve` (from `auto_approval`) approves it at once, as "policy"."""
-    gate = open_gate(ctx, kind, artifacts, summary, assignees, options, urls, work_item_id)
-    if auto_approve and Decision.APPROVE in options:
+    """Open the gate and wait for its decision. `auto_approve` (from `auto_approval`) approves it at once, as "policy".
+
+    A replayed step (ADR-0013) reaching a gate it already opened does not open another: a decided gate returns the
+    recorded decision, an undecided one is waited on again. `urls` may be a callable, so a gate that is found rather than
+    opened does not publish its page again."""
+    identity = gate_identity(kind, artifacts, work_item_id, summary)
+    found = find_gate(ctx, identity, kind, artifacts, work_item_id)
+    if found is not None and found[1] is not None:
+        return decision_from_event(found[1])
+    if found is not None:
+        gate = _rejoin_gate(ctx, found[0], kind, options)
+    else:
+        _supersede_stale_gates(ctx, kind, work_item_id)
+        gate = open_gate(ctx, kind, artifacts, summary, assignees, options, urls() if callable(urls) else urls, work_item_id,
+                         identity=identity)
+    if auto_approve and Decision.APPROVE in options and ctx.queue.decision(gate.gate_id) is None:
         _record_policy_decision(ctx, gate, auto_approve)
     while True:
         d = gate_decision(ctx, gate.gate_id, kind, work_item_id)
         if d is not None:
             return d
-        time.sleep(poll_seconds)
+        time.sleep(GATE_POLL_SECONDS if poll_seconds is None else poll_seconds)

@@ -9,9 +9,12 @@ answering a controller-issued browser request. Results come back bound to the he
 source archive fingerprint; anything missing, unbound or unsupported is recorded as not run, so the deterministic
 checks fail closed. The recipe's baseline check proves the app runs; it never stands in for a spec criterion.
 
-The recipe is a trust boundary (network allowlist, which test secrets reach which hosts), so a change may not alter
-it: the candidate's recipe must hash to the approved fingerprint (`FACTORY_TEST_PROFILE_SHA256`, else the recipe
-committed at the base). Only the explicit test vaults (`FACTORY_TEST_VAULT_IDS`) are attached; never the forge's.
+The recipe's trusted part is a trust boundary (network allowlist, which test secrets reach which hosts, the data and
+identity it runs with, the values every command gets: `test_environments.TRUST_KEYS`), so a change may not alter it.
+Either the candidate's recipe hashes to the approved fingerprint (`FACTORY_TEST_PROFILE_SHA256`, else the recipe
+committed at the base), or the base holds the approved recipe and the candidate changes only its runtime part
+(lifecycle commands, services, checks), which this verification then exercises like the rest of the change
+(ADR-0014). Only the explicit test vaults (`FACTORY_TEST_VAULT_IDS`) are attached; never the forge's.
 """
 from __future__ import annotations
 
@@ -25,7 +28,7 @@ from typing import Any
 from . import test_environments as te
 from . import visual
 from .budget import reserve_budget
-from .checks import SETUP_CHECK, CheckResult
+from .checks import SETUP_CHECK, CheckResult, row_passed
 from .sandbox_tools import browser_runner as br
 from .sandbox_tools import environment_runner as er
 
@@ -82,8 +85,9 @@ class HostedVerifier:
         self.workdir = workdir / "hosted"          # outside verify/visual: no local worker can see or claim these requests
 
     # ------------------------------------------------------------ recipe and request
-    def _recipe(self, repo: Path, base_sha: str, head_sha: str) -> tuple[str, bytes, str, dict, str]:
-        """(head, source archive, recipe path, recipe, approved fingerprint) or ValueError naming what is wrong."""
+    def _recipe(self, repo: Path, base_sha: str, head_sha: str) -> tuple[str, bytes, str, dict, str, bool]:
+        """(head, source archive, recipe path, recipe, approved fingerprint, whether the change altered the recipe's runtime
+        part) or ValueError naming what is wrong."""
         head, source = te.snapshot(repo, head_sha)
         if head != head_sha:
             raise ValueError(f"snapshot resolved to {head}, not the verified head {head_sha}")
@@ -91,20 +95,33 @@ class HostedVerifier:
         relative = te.recipe_relative(manifest)
         profile = te.read_snapshot_profile(source, relative, self.cfg.schemas_dir)
         approved = self.cfg.test_profile_sha256
-        if not approved:
+        base_profile, base_problem = None, None
+        if not approved or te.fingerprint(profile) != approved:
             _, base_source = te.snapshot(repo, base_sha)
-            base_relative = te.recipe_relative(te.read_snapshot_json(base_source, self.cfg.service_manifest_path))
             try:
-                approved = te.fingerprint(te.read_snapshot_profile(base_source, base_relative, self.cfg.schemas_dir))
+                base_relative = te.recipe_relative(te.read_snapshot_json(base_source, self.cfg.service_manifest_path))
+                base_profile = te.read_snapshot_profile(base_source, base_relative, self.cfg.schemas_dir)
             except ValueError as exc:
-                raise ValueError(f"no approved recipe: none is configured (FACTORY_TEST_PROFILE_SHA256) and the base commit has no valid one ({exc})") from None
-        if te.fingerprint(profile) != approved:
-            raise ValueError(f"the candidate's recipe {relative} (sha256 {te.fingerprint(profile)[:12]}) differs from the approved recipe "
-                             f"({approved[:12]}); a change may not alter the test recipe without a person re-approving it")
+                base_problem = str(exc)
+        if not approved:
+            if base_profile is None:
+                raise ValueError(f"no approved recipe: none is configured (FACTORY_TEST_PROFILE_SHA256) and the base commit has no valid one ({base_problem})")
+            approved = te.fingerprint(base_profile)
+        runtime_changed = te.fingerprint(profile) != approved
+        if runtime_changed:
+            if base_profile is None or te.fingerprint(base_profile) != approved:
+                raise ValueError(f"the candidate's recipe {relative} (sha256 {te.fingerprint(profile)[:12]}) differs from the approved recipe "
+                                 f"({approved[:12]}), and the base commit does not hold the approved recipe to compare its trusted part "
+                                 "with; a person must re-approve the recipe")
+            changed = [k for k in te.TRUST_KEYS if profile.get(k) != base_profile.get(k)]
+            if changed:
+                raise ValueError(f"the candidate's recipe {relative} changes its trusted part ({', '.join(changed)}); a change may "
+                                 "alter the recipe's commands, services and checks, but not what the sandbox may reach or which "
+                                 "credentials it gets, without a person re-approving it")
         missing = [s["name"] for s in profile["secrets"] if s["required"]]
         if missing and not self.cfg.test_vault_ids:
             raise ValueError(f"the recipe requires test credentials ({', '.join(missing)}) and no test vault is attached (FACTORY_TEST_VAULT_IDS)")
-        return head, source, relative, profile, approved
+        return head, source, relative, profile, approved, runtime_changed
 
     # ------------------------------------------------------------ the round
     def verify(self, repo: Path, base_sha: str, head_sha: str, spec: dict[str, Any], *, branch: str, round_no: int,
@@ -113,7 +130,7 @@ class HostedVerifier:
         record: dict[str, Any] = {"mode": "managed", "host": "anthropic-cloud", "app_id": self.cfg.app_id, "head_sha": head_sha,
                                   "spec_id": sid, "round": round_no, "status": "blocked", "phases": []}
         try:
-            head, source, relative, profile, approved = self._recipe(repo, base_sha, head_sha)
+            head, source, relative, profile, approved, runtime_changed = self._recipe(repo, base_sha, head_sha)
         except (ValueError, OSError) as exc:
             record["detail"] = f"hosted verification not started: {exc}"
             return self._finish(spec, branch, record, None, {}, {})
@@ -154,7 +171,8 @@ class HostedVerifier:
                                     **({"journey": journey_ref} if journey_ref else {})})
         cap = float(self.cfg.managed_verify_budget_usd)
         verify_model = getattr(self.cfg, "verify_model", None)
-        record.update(profile_path=relative, profile_sha256=digest, approved_profile_sha256=approved,
+        record.update(profile_path=relative, profile_sha256=digest, approved_profile_sha256=approved, runtime_changed=runtime_changed,
+                      trust_sha256=te.trust_fingerprint(profile),
                       source_sha256=hashlib.sha256(source).hexdigest(), vaults_attached=len(self.cfg.test_vault_ids), cap_usd=cap,
                       # which model drove the harness, so runs before and after a model change compare (design principle 20)
                       session_model=dict(verify_model) if verify_model else "implementer agent")
@@ -176,8 +194,8 @@ class HostedVerifier:
         record["environment_id"] = environment_id
         # late import: the stages package imports this module
         from .stages.common import run_session
-        res = run_session(
-            ctx, stage=VERIFY_STAGE, prefix=f"{sid}-r{round_no}-hosted-", spec_id=sid,
+        res = run_session(   # fresh: evidence is never replayed; a resume verifies the head again (#47)
+            ctx, stage=VERIFY_STAGE, prefix=f"{sid}-r{round_no}-hosted-", spec_id=sid, fresh=True,
             agent_key="implementer", title=f"{ctx.run_id} verify {sid} r{round_no} (hosted)", run_id=ctx.run_id,
             uploads={"test-source.tar": source, "environment-request.json": json.dumps(descriptor).encode(),
                      "tools/environment_runner.py": (Path(__file__).parent / "sandbox_tools/environment_runner.py").read_bytes(),
@@ -291,9 +309,8 @@ class HostedVerifier:
                       "the app runs, not that any acceptance criterion is met" if env_ok else
                       f"app not ready or baseline check not passed: {((baseline or {}).get('diagnostic') or {}).get('summary') or (baseline or {}).get('detail') or record.get('detail') or 'see the phases'}"
                       + ("; environment teardown failed" if setup_ok and phases.get("stop") not in (None, "passed") else ""))
-        record.update(status=("passed" if env_ok and all(c["exit_code"] == 0 for c in commands) and all(
-                          r["exit_code"] == 0 and (not r.get("visual") or r["visual"]["status"] == "passed") for r in e2e)
-                          else "blocked" if not setup_ok else "failed"),
+        record.update(status=("passed" if env_ok and all(map(row_passed, commands)) and all(map(row_passed, e2e))
+                              else "blocked" if not setup_ok else "failed"),
                       baseline=baseline, ready=setup_ok, detail=record.get("detail") or (setup_detail if setup_ok else None))
         setup = CheckResult(SETUP_CHECK, setup_ok, setup_detail, {k: record.get(k) for k in (
             "mode", "host", "app_id", "profile_path", "profile_sha256", "approved_profile_sha256", "session_id", "environment_id")})

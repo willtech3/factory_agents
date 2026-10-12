@@ -20,13 +20,13 @@ from factory.stages.common import SKILL_UPLOAD_PATH
 from factory.stages.implement import SETUP_CHECK, LocalVerifier, preview_info, run_implement_one
 from factory.state import WORK_ITEM_TRANSITIONS, Policy, WorkItemStage
 from factory.store import RunStore
+from support import artifacts
 from support.repos import git, seeded_remote  # noqa: F401
 
 HTTP_MANIFEST = {"service": "stdlib-http", "runtime": {"kind": "python", "entrypoint": "python -m http.server 8000 --bind 127.0.0.1", "port": 8000},
                  "health": {"path": "/"}, "env": []}
-REPORT = {"criteria": [{"ac_id": "AC-1", "tests": ["tests/test_a.py::test_a"]}], "head_commit": "x"}
-BLOCKING = {"finding_id": "F-1", "severity": "blocking", "category": "logic", "claim": "wrong", "status": "open",
-            "evidence": {"locations": ["app/main.py:1"]}, "violates": "AC-1", "refutation_condition": "show it right"}
+REPORT = artifacts.report("spec_det", [{"ac_id": "AC-1", "tests": ["tests/test_a.py::test_a"]}])
+BLOCKING = artifacts.finding(1, severity="blocking", claim="wrong")
 
 
 def _spec(local: bool) -> dict:
@@ -80,15 +80,13 @@ class Driver:
             outputs = {"implementation_report.json": json.dumps(REPORT).encode()}
             if "findings.json" in kw["uploads"]:
                 answered = json.loads(kw["uploads"]["findings.json"])["findings"]
-                outputs["review_response.json"] = json.dumps({"responses": [{"finding_id": f["finding_id"], "disposition": "fixed",
-                                                                            "explanation": "done"} for f in answered]}).encode()
+                outputs["review_response.json"] = json.dumps(artifacts.response("spec_det", answered)).encode()
             return _result(outputs)
         if key == "reviewer":
             fs = json.loads(json.dumps(self.findings_by_round.get(round_no, [])))
-            return _result({"findings.json": json.dumps({"findings": fs, "checks_performed": [], "spec_conformance": []}).encode()})
+            return _result({"findings.json": json.dumps(artifacts.findings("spec_det", fs)).encode()})
         if key == "merge_judge":
-            return _result({"merge_readiness.json": json.dumps({"result": "ready", "summary_for_human": "fine",
-                                                                 "criteria": [{"ac_id": "AC-1", "status": "met", "evidence": "tests/test_a.py::test_a"}]}).encode()})
+            return _result({"merge_readiness.json": json.dumps(artifacts.merge_readiness(json.loads(kw["uploads"]["spec.json"]))).encode()})
         raise AssertionError(f"unexpected agent {key}")
 
 
@@ -223,7 +221,8 @@ def test_preview_info_in_local_mode_is_unreachable_with_no_url(tmp_path, root):
 
 
 def test_resume_on_changed_head_rechecks_preserves_proof_and_does_not_reuse_old_reviews(tmp_path, root):
-    from factory.stages.implement import ResumePoint
+    """An older controller left round 1's report for a head the branch no longer has: the report is adopted
+    (`adopt_rounds`), its implementer is not asked again, and the head check fails on the new head."""
     origin = seeded_remote(tmp_path)
     branch = "factory/run_loop0000001/spec_det"
     _push(origin, tmp_path, branch, "main", {"app/main.py": "X = 2\n", "service_manifest.json": json.dumps(HTTP_MANIFEST)}, 0)
@@ -238,8 +237,7 @@ def test_resume_on_changed_head_rechecks_preserves_proof_and_does_not_reuse_old_
         ctx.store.put_artifact(ctx.run_id, "review", f"spec_det-r1-baseold-base-headold-candidate-p{i}-findings.json",
                                json.dumps({"diff_ref": {"base_sha": "old-base", "head_sha": "old-candidate"}, "findings": []}).encode())
     verifier = LocalVerifier(str(origin), tmp_path / "runs" / ctx.run_id / "verify")
-    verdict = run_implement_one(ctx, _spec(False), str(origin), "main", verifier, {},
-                                resume_from=ResumePoint(round_no=1, report=old_report))
+    verdict = run_implement_one(ctx, _spec(False), str(origin), "main", verifier, {})
     assert verdict["result"] == "ready"
     assert _titles(driver) == ["review spec_det r1 p1", "review spec_det r1 p2", "implement spec_det r2", "merge-judge spec_det"]
     failed = ctx.store.get_json(ctx.run_id, "implement", "spec_det-r1-deterministic_checks.json")

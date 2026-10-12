@@ -81,7 +81,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 
 | Module | Role |
 |---|---|
-| `cli.py` | The `factory` command: `doctor`, `run`, `gates`, `decide`, `answer`, `status`, `replay`, `timing`, `resume`, `watch`, `runs`, `web`, plus the `environment` and `browser` sub-commands |
+| `cli.py` | The `factory` command: `doctor`, `run`, `gates`, `decide`, `answer`, `status`, `replay`, `timing`, `resume`, `watch`, `runs`, `rules`, `web`, plus the `environment` and `browser` sub-commands |
 | `web/app.py` | The Factory Console: a FastAPI app with Runs, Board, Start a run, Outcomes, Apps and Settings, a JSON API, and gate review pages. It starts runs, resumes and watchers as background `factory` processes |
 | `web/static/` | The Console UI: one HTML page, vanilla JS and CSS, no build step |
 | `web/repositories.py` | Read-only GitHub repository search for the Console's repository picker |
@@ -90,9 +90,10 @@ A human decides a gate by writing to the file queue, either from the Console or 
 
 | Module | Role |
 |---|---|
-| `runner.py` | Wires the stages together, handles gate decisions, Gate 2 subsets, stacked dependants, resume, and the per-run controller lock |
+| `runner.py` | The pipeline as durable steps (decompose, Gate 1, specify, Gate 2, approval, implement and integrate per spec): gate decisions, Gate 2 subsets, stacked dependants, `resume` as a replay of the same pipeline, adoption of older runs, and the per-run controller lock |
+| `steps.py` | Durable steps (ADR-0013): `run_step` returns a finished step's recorded result instead of running it again, the current step's key for gates and sessions, blobs for large results |
 | `state.py` | Event types, the run and work-item state machine (`reduce`), and `Policy` (loop limits and per-stage budgets) |
-| `store.py` | One SQLite database per run (`run.db`): the event log, validated as each event is written, and the steps table (one durable step per agent session); the artifact files (each with its sha256) and content-addressed blobs under `runs/<run_id>/`. Imports an older run's `events.jsonl` on first open; `factory export-events` writes it back out |
+| `store.py` | One SQLite database per run (`run.db`): the event log, validated as each event is written, and the steps table (the pipeline's steps and one per agent session); the artifact files (each with its sha256) and content-addressed blobs under `runs/<run_id>/`. Imports an older run's `events.jsonl` on first open; `factory export-events` writes it back out |
 | `gates.py` | Gates and in-session questions: the protocols, hash binding, and the composite queue that lets several surfaces decide |
 | `approvals.py` | What a Gate 2 approval may select, and how the owner's notes are routed to each spec |
 | `budget.py` | Run budget enforcement. Pauses before the session that would exceed `constraints.budget_usd` |
@@ -110,7 +111,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 |---|---|
 | `decompose.py` | 1. Outcome to work items, then Gate 1 |
 | `specify.py` | 2. Parallel spec writers, a judge loop, then Gate 2 |
-| `implement.py` | 3. Per spec: implementer, reviewer and security-reviewer passes, then the merge judge. Also holds `LocalVerifier`, `LocalPreview` and the findings merge |
+| `implement.py` | 3. Per spec: implementer, reviewer and security-reviewer passes, then the merge judge, each round and each judgement a step (`implement/<spec>/r<n>`, `implement/<spec>/judge#<k>`; `adopt_rounds` for older runs). Each round verifies its head through `verification`. Also holds the findings merge |
 | `integrate.py` | 4. The orchestrator opens the PR at the exact head the merge judge approved, with the reviewer-first description it rendered and linted; an integrator session runs only to reword a draft the lint refuses. The approved spec, verdicts and the spec's run record stay in Factory's artifact store and are linked from the PR, not committed to the branch ([ADR-0010](adr/0010-external-integration-records.md)) |
 | `deploy_observe.py` | 5. Watches the platform deploy `main` to dev and runs e2e against it. Driven by `watcher.py` |
 | `common.py` | Shared helpers: run a session, persist outputs, provenance, open and wait on gates |
@@ -121,9 +122,13 @@ A human decides a gate by writing to the file queue, either from the Console or 
 | Module | Role |
 |---|---|
 | `sessions.py` | Drives one Managed Agents session: create, upload inputs, stream events, answer custom tool calls with the stage's handlers (`ask_human`, `open_change_request`), download outputs, record cost |
-| `checks.py` | Deterministic checks no agent can override: schema validity, DAG, metric coverage, diff scope, protected tests, test weakening, criterion-to-test mapping, command results, manifest, visual evidence |
+| `verification.py` | The one verification pipeline ([ADR-0014](adr/0014-one-verification-pipeline.md)): `verify(target, plan)` returns an `EvidenceBundle` on every target (hosted, local, platform) and `judge(bundle, spec)` returns the merge checks; also preview lookup and test evidence from reports |
+| `plans.py` | The spec's test plan as the controller runs it: structured `{runner, select}` commands and `journey` entries rendered to command text |
+| `local_verifier.py` | The controller's own verification host for the local and platform targets: a clean clone, a per-run virtualenv, each command in its own process group (`LocalVerifier`), and the service started from its manifest (`LocalPreview`) |
+| `rules.py` | The rule registry ([ADR-0015](adr/0015-rule-registry.md)): every rule's id, text, enforcement (check, judge, advice), roles, checks and fix. Renders the `## Rules` block of each agent prompt and the deterministic part of the implementation rubric (`factory rules`), and holds the judges' post-conditions |
+| `checks.py` | Deterministic checks no agent can override: schema validity, DAG, metric coverage, diff scope, protected tests, test weakening, criterion-to-test mapping, command results, manifest, visual evidence; `row_passed`, the one definition of a passing verification row |
 | `security.py` | Deterministic security pre-checks (secret scan, plus dependency audit and SAST when the tools exist) |
-| `hosted_verifier.py` | `managed` mode: verifies a candidate commit in a hosted sandbox and turns the results into check inputs |
+| `hosted_verifier.py` | The hosted target: verifies a candidate commit in a hosted sandbox built from the app's recipe (its trusted part pinned, its runtime part verified like code) and turns the results into bundle rows |
 | `test_environments.py` | Validates app recipes, provisions their hosted environments, and runs `factory environment verify` |
 | `visual.py` | The browser-evidence protocol for UI acceptance criteria (request, wait, collect screenshots) |
 | `browser_worker.py` | `factory browser ...`: lets an interactive Claude Code session with Claude in Chrome answer visual-check requests |

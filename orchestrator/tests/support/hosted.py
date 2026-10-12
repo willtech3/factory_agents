@@ -10,13 +10,14 @@ from types import SimpleNamespace
 
 import pytest
 from conftest import make_config
+from support import artifacts
 from support.sessions import stage_result
 
-from factory import security
+from factory import security, verification
 from factory.gates import InMemoryQueue, LogNotifier
 from factory.hosted_verifier import HostedVerifier
 from factory.sandbox_tools import environment_runner as er
-from factory.stages import RunContext, implement
+from factory.stages import RunContext
 from factory.stages.implement import LocalVerifier
 from factory.state import Policy, WorkItemStage
 from factory.store import RunStore
@@ -53,7 +54,7 @@ seen = json.loads(os.environ.get("SHOT_VIEWPORT") or "null") or req["viewport"]
 VISUAL = {"persona": "Visitor", "viewport": {"width": 1024, "height": 700}, "steps": ["Open the page", "Click Show greeting"],
           "environment": {"name": "Hosted recipe", "data": "synthetic", "authentication": "none-required"}}
 
-REPORT = {"criteria": [{"ac_id": "AC-1", "tests": ["tests/test_a.py::test_a"]}], "head_commit": "x"}
+REPORT = artifacts.report("spec_hosted", [{"ac_id": "AC-1", "tests": ["tests/test_a.py::test_a"]}])
 
 RUN_ID = "run_hosted00000001"
 
@@ -90,9 +91,9 @@ def no_host_execution(monkeypatch):
     """Managed mode must never run the repository on the controller."""
     def refuse(*a, **k):
         raise AssertionError("controller-side execution in managed mode")
-    for name in ("prepare_environment", "run_commands", "run_e2e", "collect_test_ids", "_run_in_group"):
+    for name in ("prepare_environment", "run_commands", "run_e2e", "run_entries", "collect_test_ids", "_run_in_group"):
         monkeypatch.setattr(LocalVerifier, name, refuse)
-    monkeypatch.setattr(implement, "LocalPreview", refuse)
+    monkeypatch.setattr(verification, "LocalPreview", refuse)
     monkeypatch.setattr(security, "dependency_audit", refuse)
     monkeypatch.setattr(security, "sast", refuse)
 
@@ -159,13 +160,12 @@ class Driver:
             outputs = {"implementation_report.json": json.dumps(REPORT).encode()}
             if "findings.json" in kw["uploads"]:
                 answered = json.loads(kw["uploads"]["findings.json"])["findings"]
-                outputs["review_response.json"] = json.dumps({"responses": [{"finding_id": f["finding_id"], "disposition": "fixed",
-                                                                            "explanation": "done"} for f in answered]}).encode()
+                outputs["review_response.json"] = json.dumps(artifacts.response("spec_hosted", answered)).encode()
             return result(outputs)
         if key in ("reviewer", "security_reviewer"):
-            return result({"findings.json": json.dumps({"findings": [], "checks_performed": [], "spec_conformance": []}).encode()})
+            return result({"findings.json": json.dumps(artifacts.findings("spec_hosted")).encode()})
         if key == "merge_judge":
-            return result({"merge_readiness.json": json.dumps({"result": "ready", "summary_for_human": "fine", "criteria": []}).encode()})
+            return result({"merge_readiness.json": json.dumps(artifacts.merge_readiness(json.loads(kw["uploads"]["spec.json"]))).encode()})
         raise AssertionError(f"unexpected agent {key}")
 
 def remote(tmp_path: Path) -> Path:

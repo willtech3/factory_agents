@@ -61,6 +61,10 @@ class StageResult:
     custom_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     finish_recorded: bool = False
     last_message: str | None = None     # the agent's final chat text; explains a turn that ended without its output file
+    finished_at: str | None = None      # when the controller saw it end (ISO); recorded with its step, so provenance replays
+    # `stages/common.reject_output`: marks the session's step failed, so a replay starts a new session instead of reusing
+    # an output that was refused
+    on_reject: Callable[[str], None] | None = field(default=None, repr=False, compare=False)
 
 
 class SessionDriver:
@@ -186,7 +190,11 @@ class SessionDriver:
                                   metadata=metadata, repository=repository, environment_id=environment_id, vault_ids=vault_ids,
                                   system_override=system_override, schema_names=schema_names)
         if on_created:
-            on_created(session_id)
+            on_created(session_id)         # the step holds the id before anything else is written (ADR-0013)
+        if self.on_session_started:
+            self.on_session_started({"session_id": session_id, "agent_id": agent_ref.id, "agent_version": agent_ref.version,
+                                     "agent_key": agent_key, "stage": stage, "run_id": run_id, "work_item_id": work_item_id,
+                                     "title": title, "console_url": self.cfg.console_session_url(session_id)})
         return self._follow(session_id, agent_ref, run_id, stage, work_item_id, custom_tools)
 
     def _create(self, *, agent_key: str, title: str, run_id: str, stage: str, uploads: dict[str, bytes], description: str,
@@ -194,7 +202,8 @@ class SessionDriver:
                 model_override: dict[str, Any] | None, metadata: dict[str, str] | None, repository: dict[str, Any] | None,
                 environment_id: str | None, vault_ids: list[str] | None, system_override: str | None,
                 schema_names: tuple[str, ...] | None) -> str:
-        """Upload the inputs, create the session with its kickoff, and record it as started. Returns its id."""
+        """Upload the inputs and create the session with its kickoff. Returns its id; `run` hands it to the step before
+        the `session.started` hook writes anything, so a controller that dies in between leaves a session its step names."""
         agent_ref = self.cfg.agents[agent_key]
         if model_override or system_override:
             agent: Any = {"type": "agent_with_overrides", "id": agent_ref.id}
@@ -241,10 +250,6 @@ class SessionDriver:
         print(f"[session] {stage} {title}: {self.cfg.console_session_url(session.id)}")
         self.active[session.id] = {"agent_id": agent_ref.id, "agent_version": agent_ref.version, "agent_key": agent_key,
                                    "stage": stage, "run_id": run_id, "work_item_id": work_item_id, "title": title}
-        if self.on_session_started:
-            self.on_session_started({"session_id": session.id, "agent_id": agent_ref.id, "agent_version": agent_ref.version,
-                                     "agent_key": agent_key, "stage": stage, "run_id": run_id, "work_item_id": work_item_id,
-                                     "title": title, "console_url": self.cfg.console_session_url(session.id)})
         return session.id
 
     def _follow(self, session_id: str, agent_ref: Any, run_id: str, stage: str, work_item_id: str | None,

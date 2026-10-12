@@ -45,3 +45,26 @@ Write for two readers (post-mortem 2026-10-11 §5):
 You never see the change request description; do not comment on it or ask for something to be put in it. A decision belongs in `decisions`.
 
 Output: `/mnt/session/outputs/merge_readiness.json` (schema `merge_readiness.schema.json`), validated with `validate.py`. You edit nothing in the repository.
+
+<!-- rules:begin: generated from orchestrator/factory/rules.py by `factory rules`; edit the registry, not this block -->
+## Rules
+
+The rules the factory holds this role to. A check, a finding or a verdict cites a rule by its id.
+
+- **`allowed-paths`** (checked by the orchestrator: `diff_scope`). Change only files that match the spec's `allowed_paths`; a file outside them fails the merge. If the change needs another path, the spec is wrong: stop and say so (`blocked.md`).
+- **`protected-tests`** (checked by the orchestrator: `protected_tests`). Existing tests are protected. Only an existing test file the approved spec names by its exact path in `allowed_paths` may be updated, to test the specified behaviour; globs do not authorize it. Never delete or rename an existing test file.
+- **`no-test-weakening`** (checked by the orchestrator: `test_weakening`). Never skip a test or weaken an assertion to make the change pass.
+- **`criteria-mapped-to-tests`** (checked by the orchestrator: `ac_test_mapping`). Every automated acceptance criterion maps, in implementation_report.json `criteria`, to the tests that prove it, by the ids the orchestrator's own run reports: pytest node ids, or Bun ids `path/x.test.ts::outer describe > test name`. Only a test the orchestrator saw pass counts; an `e2e:<index>` entry counts when that entry passed with its evidence.
+- **`test-plan-passes`** (checked by the orchestrator: `test_plan_commands`). Every `test_plan.commands` entry (the tests, and the builds and linters the spec lists) exits 0 on the head the orchestrator verifies, from a clean checkout. A structured entry `{runner, select}` is run by the orchestrator with its own reporters.
+- **`e2e-passes`** (checked by the orchestrator: `e2e_local`, `e2e_preview`). Every `test_plan.e2e` entry passes in the orchestrator's run of the head, `local` and `preview` entries alike: it ran, exited 0, and any browser evidence it owes passed. Not run is not passed.
+- **`visual-evidence`** (checked by the orchestrator: `visual_e2e`). A browser entry counts only with current screenshots at the requested viewport for every step of its visual contract, on the verified head.
+- **`no-secrets`** (checked by the orchestrator: `secret_scan`). No credential shapes in the added lines; credentials are references, never values.
+- **`no-factory-proof-code`** (checked by the orchestrator: `factory_proof_in_diff`). Never commit browser-test code for the factory or anything that reads FACTORY_VISUAL_REQUEST or FACTORY_EVIDENCE_DIR: journeys are run artifacts the orchestrator uploads and binds by hash.
+- **`manifest-valid`** (checked by the orchestrator: `manifest_valid`). The service manifest exists at the platform contract's path and validates.
+- **`size-budget`** (checked by the orchestrator: `size_budget`). Work stays within the run's size budget in hand-written changed lines: a work item or spec above M is split, and a change far above its approved estimate is flagged to the owner.
+- **`environment-builds`** (checked by the orchestrator: `verification_setup`). The head installs into a fresh environment the orchestrator builds (the manifest's `runtime.setup`, else the pyproject), or in hosted verification the app's recipe prepares it.
+- **`app-runs`** (checked by the orchestrator: `hosted_environment`). In hosted verification the app starts, its services answer their health paths and the recipe's baseline check passes. The baseline shows the app runs, never that a criterion is met.
+- **`report-names-head`** (checked by the orchestrator: `implementation_head`). The implementation report describes the head the orchestrator verified; a branch that moved since needs an updated report.
+- **`artifact-schema`** (checked by the orchestrator: `schema_valid`, `report_schema`). Every artifact validates against its schema in /mnt/session/uploads/schemas/ (check with `python -I /mnt/session/uploads/tools/validate.py <file>` before finishing). The orchestrator validates it again on receipt: an invalid report is a failed check, an invalid verdict or set of findings is refused.
+- **`merge-ready`** (the judge's decision rule, enforced in code). `ready` means every deterministic check passed, every acceptance criterion is `met` with located evidence, and no blocking or major finding stands after the judge's re-rating.
+<!-- rules:end -->

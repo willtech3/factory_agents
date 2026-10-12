@@ -188,8 +188,8 @@ def test_run_pauses_before_a_session_it_cannot_afford_and_resumes_when_the_budge
     assert decided[0]["gate_id"] == pause1["gate_id"]
     assert _payload(ctx2, "budget.raised") | {"gate_id": None} == {"budget_usd": 30.0, "previous_budget_usd": 10.0, "spent_usd": 0.0,
                                                                      "gate_id": None, "decided_by": "cli"}
-    assert _payload(ctx2, "run.resumed", 0) == {"stage": "decomposing", "from": "paused_budget", "with_feedback": False,
-                                                "sessions_to_follow": []}
+    assert {k: _payload(ctx2, "run.resumed", 0)[k] for k in ("stage", "from", "sessions_to_follow")} == \
+        {"stage": "decomposing", "from": "paused_budget", "sessions_to_follow": []}
     assert [e.payload["stage"] for e in ctx2.store.events(ctx2.run_id) if e.kind == "stage.entered"] == \
         ["decomposing", "gate_1_decomposition", "specifying"]      # decomposing is not re-entered on resume
     assert decided[1]["kind"] == "gate_1_decomposition" and decided[1]["decision"] == "approve"
@@ -210,8 +210,8 @@ def test_run_pauses_before_a_session_it_cannot_afford_and_resumes_when_the_budge
     assert driver.keys() == ["decomposer"] + ["spec_writer"] * 4 + ["spec_judge"]
     raised = [e.payload for e in ctx3.store.events(ctx3.run_id) if e.kind == "budget.raised"]
     assert raised[-1]["budget_usd"] == 100.0 and raised[-1]["previous_budget_usd"] == 30.0 and raised[-1]["decided_by"] == "priya"
-    assert _payload(ctx3, "run.resumed") == {"stage": "specifying", "from": "paused_budget", "with_feedback": False,
-                                             "sessions_to_follow": []}
+    assert {k: _payload(ctx3, "run.resumed")[k] for k in ("stage", "from", "sessions_to_follow")} == \
+        {"stage": "specifying", "from": "paused_budget", "sessions_to_follow": []}
     stages = [e.payload["stage"] for e in ctx3.store.events(ctx3.run_id) if e.kind == "stage.entered"]
     assert stages == ["decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness"]   # specifying not re-entered
     st = ctx3.store.state(ctx3.run_id)
@@ -262,7 +262,7 @@ def test_resume_after_a_pause_during_a_redecomposition_keeps_the_owners_feedback
     assert _payload(ctx, "budget.reached")["stage"] == "decomposing"
     ctx2 = _ctx(tmp_path, root, driver, queue, budget=20.0, run_id="run_budget00003")
     assert runner.resume(ctx2, budget_usd=200.0) == RunStage.COMPLETED
-    assert _payload(ctx2, "run.resumed", 0)["with_feedback"] is True
+    assert _payload(ctx2, "run.resumed", 0)["stage"] == "decomposing"
     second = driver.calls[1]
     assert second["agent_key"] == "decomposer" and "re-run after human review" in second["description"]
     assert b"split out the schema change" in second["uploads"]["prior/feedback.md"]
@@ -282,7 +282,8 @@ def _git_repo(path):
 
 def test_implementation_pauses_before_the_implementer_and_resumes_from_its_artefacts(tmp_path, root, examples, monkeypatch):
     """The budget check sits in the implement loop too. A run paused there resumes through the implementation path
-    (`resume_points`), not by re-running design stages; the work item that never started still leaves SPEC_APPROVED."""
+    (its round steps), not by re-running design stages (there is no driver to run them); an older controller's log is
+    adopted from its Gate 2 approval record."""
     from factory.stages.implement import run_implement_one
 
     run_id = "run_budget00004"
@@ -322,10 +323,9 @@ def test_implementation_pauses_before_the_implementer_and_resumes_from_its_artef
     monkeypatch.setattr(runner, "implement_and_integrate", fake_implement)
     ctx2 = _ctx(tmp_path, root, None, InMemoryQueue(), budget=30.0, run_id=run_id, design_only=False)
     assert runner.resume(ctx2, budget_usd=120.0) == RunStage.COMPLETED
-    assert seen["specs"] == [sid] and seen["budget"] == 120.0
-    assert seen["resume"][sid].round_no == 1 and seen["resume"][sid].report is None
-    assert _payload(ctx2, "run.resumed") == {"stage": "implementing", "from": "paused_budget", "points": {sid: {"round": 1, "implementer_done": False}},
-                                             "sessions_to_follow": []}
+    assert seen["specs"] == [sid] and seen["budget"] == 120.0 and seen["resume"] is None
+    assert {k: _payload(ctx2, "run.resumed")[k] for k in ("stage", "from", "sessions_to_follow")} == \
+        {"stage": "implementing", "from": "paused_budget", "sessions_to_follow": []}
     assert ctx2.store.state(run_id).budget_usd == 120.0
 
 

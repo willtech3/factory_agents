@@ -35,7 +35,7 @@ When the run explicitly selects managed verification, use the committed `test_en
 
 ## How the factory uses this skill
 
-The decomposer checks every work item is deployable through the above and turns platform work into open questions. The spec writer fills `test_plan.commands` and `test_plan.e2e` (targets `local` and `preview`) against this contract. The spec judge rejects specs that assume a platform feature this contract does not provide. The implementer writes the manifest and the health endpoint in the first item that lands in a new repository. The reviewer checks the branch starts from the manifest entrypoint and answers the health path.
+The decomposer checks every work item is deployable through the above and turns platform work into open questions. The spec writer fills `test_plan.commands` (test runs as structured `{runner, select}` entries the controller renders and reports on) and `test_plan.e2e` (targets `local` and `preview`, each judged) against this contract. The spec judge rejects specs that assume a platform feature this contract does not provide. The implementer writes the manifest and the health endpoint in the first item that lands in a new repository. The reviewer checks the branch starts from the manifest entrypoint and answers the health path.
 
 ### UI verification contract
 

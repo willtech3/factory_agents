@@ -208,6 +208,31 @@ def bun_command(text: str, report: Path) -> tuple[str | None, str | None]:
     return f"{text[:head.end()]} --reporter=junit --reporter-outfile={shlex.quote(str(report))}{text[head.end():]}", None
 
 
+def instrumented_command(text: str, junit: Path, bun_report: Path, env: dict) -> tuple[str, dict, bool, str | None]:
+    """How one test_plan command runs so that it yields test evidence: (command to execute, its environment, whether
+    Bun's JUnit reporter was attached, why a Bun command yields none). Every pytest run inside the command writes the
+    harness's JUnit report (through PYTEST_ADDOPTS) and a direct `bun test` gets the harness's own reporter. One
+    definition for the hosted sandbox and the controller's local runs, which read the same reports (`reported_outcomes`)."""
+    addopts = f"{env.get('PYTEST_ADDOPTS', '')} --junitxml={shlex.quote(str(junit))} -o junit_family=xunit1".strip()
+    executed, bun_reason = bun_command(text, bun_report)
+    return executed or text, {**env, "PYTEST_ADDOPTS": addopts}, executed is not None, bun_reason
+
+
+def reported_outcomes(junit: Path, bun_report: Path, bun: bool, bun_reason: str | None, root: str) -> dict | None:
+    """A command row's `tests` evidence from the reports `instrumented_command` asked for, or None when it ran no test framework
+    the harness reads."""
+    if bun:
+        outcomes = parse_bun_junit(bun_report.read_bytes(), root) if bun_report.is_file() else None
+        return ({"framework": "bun", "report": "junit", "status": "reported", **outcomes} if outcomes else
+                {"framework": "bun", "report": "junit", "status": "invalid" if bun_report.is_file() else "missing",
+                 "reason": "Bun's JUnit report is malformed or inconsistent" if bun_report.is_file() else "Bun wrote no JUnit report"})
+    if bun_reason:
+        return {"framework": "bun", "status": "unsupported", "reason": bun_reason}
+    if junit.is_file():
+        return {"framework": "pytest", "report": "junit", "status": "reported", **parse_junit(junit.read_bytes())}
+    return None
+
+
 def parse_bun_junit(xml: bytes, root_dir: str = "") -> dict | None:
     """Outcomes from Bun's JUnit report, as observed on Bun 1.3.14 (`bun test --reporter=junit --reporter-outfile`):
     <testsuites tests="N"> holds one <testsuite file="path"> per test file, describe blocks are nested
@@ -424,20 +449,14 @@ def run_change(profile: dict, change: dict, repo: Path, env: dict, deadline: flo
     out["command_environment"] = {"virtualenv": venv} if venv else {"virtualenv": None}
     for i, text in enumerate(commands):
         junit, bun_report = junit_dir / f"cmd-{i}.xml", junit_dir / f"cmd-{i}-bun.xml"
-        addopts = f"{env.get('PYTEST_ADDOPTS', '')} --junitxml={shlex.quote(str(junit))} -o junit_family=xunit1".strip()
-        executed, bun_reason = bun_command(text, bun_report)
-        result = command(executed or text, repo, {**spec_env, "PYTEST_ADDOPTS": addopts}, min(per_command, deadline - time.monotonic()), logs / f"change-cmd-{i}.log")
+        executed, command_env_, bun, bun_reason = instrumented_command(text, junit, bun_report, spec_env)
+        result = command(executed, repo, command_env_, min(per_command, deadline - time.monotonic()), logs / f"change-cmd-{i}.log")
         row = {"index": i, "command": text, **result}      # the spec's text; the reporter flags are the harness's own
-        if executed:
+        if bun:
             row["instrumented"] = "bun-junit"
-            outcomes = parse_bun_junit(bun_report.read_bytes(), str(repo)) if bun_report.is_file() else None
-            row["tests"] = ({"framework": "bun", "report": "junit", "status": "reported", **outcomes} if outcomes else
-                            {"framework": "bun", "report": "junit", "status": "invalid" if bun_report.is_file() else "missing",
-                             "reason": "Bun's JUnit report is malformed or inconsistent" if bun_report.is_file() else "Bun wrote no JUnit report"})
-        elif bun_reason:
-            row["tests"] = {"framework": "bun", "status": "unsupported", "reason": bun_reason}
-        if junit.is_file():
-            row.setdefault("tests", {"framework": "pytest", "report": "junit", "status": "reported", **parse_junit(junit.read_bytes())})
+        tests = reported_outcomes(junit, bun_report, bun, bun_reason, str(repo))
+        if tests is not None:
+            row["tests"] = tests
         out["commands"].append(row)
     if change.get("collect_tests"):
         log = logs / "collect.log"

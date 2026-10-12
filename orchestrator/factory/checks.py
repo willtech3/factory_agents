@@ -32,6 +32,11 @@ class CheckResult:
     def to_dict(self) -> dict[str, Any]:
         return {"check": self.check, "passed": self.passed, "detail": self.detail, **({"flag": self.flag} if self.flag else {})}
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> CheckResult:
+        """A check as `to_dict` recorded it (a round step's result)."""
+        return cls(check=d["check"], passed=bool(d["passed"]), detail=d.get("detail", ""), flag=d.get("flag"))
+
 
 # ---------------------------------------------------------------- globs
 
@@ -384,7 +389,7 @@ def _mapped_e2e_error(test_id: str, ac_id: str, spec: dict[str, Any], results: l
         return "the specification does not assign this e2e entry to this criterion"
     matching = [r for r in results if r.get("command") == entry["command"] and r.get("target") == entry["target"]
                 and set(r.get("covers_ac", [])) == set(entry.get("covers_ac", []))]
-    if not matching or any(r.get("exit_code") != 0 for r in matching):
+    if not matching or not all(map(row_passed, matching)):
         return "no matching passing result from the orchestrator's e2e run"
     if entry.get("visual") and not visual_passed({"test_plan": {"e2e": [entry]}}, matching).passed:
         return "the browser entry lacks its matching current visual evidence"
@@ -436,8 +441,15 @@ def secret_scan(added_lines_by_file: dict[str, list[str]]) -> CheckResult:
     return CheckResult("secret_scan", not hits, detail, {"hits": hits})
 
 
+def row_passed(row: dict[str, Any]) -> bool:
+    """The one definition of a passing verification row, for commands and e2e entries on every target, Stage 5's rows
+    against dev included: it ran, it exited 0, and any browser evidence it owes passed. A row that was not run (exit
+    code None) did not pass."""
+    return row.get("exit_code") == 0 and (not row.get("visual") or row["visual"].get("status") == "passed")
+
+
 def commands_passed(results: list[dict[str, Any]]) -> CheckResult:
-    failed = [r["command"] for r in results if r.get("exit_code", 1) != 0]
+    failed = [r["command"] for r in results if not row_passed(r)]
     return CheckResult("test_plan_commands", not failed,
                        "all test plan commands exit 0" if not failed else f"failed: {failed}", {"failed": failed})
 
@@ -488,10 +500,15 @@ def e2e_coverage(spec: dict[str, Any]) -> CheckResult:
                        {"missing": missing, "dangling": dangling})
 
 
-def e2e_passed(results: list[dict[str, Any]], target: str = "preview") -> CheckResult:
-    """Every e2e entry for `target` exited 0 when the orchestrator ran it against the environment URL."""
+def e2e_passed(results: list[dict[str, Any]], target: str = "preview", entries: list[dict[str, Any]] | None = None) -> CheckResult:
+    """Every e2e entry for `target` passed (`row_passed`) when the orchestrator ran it. With the spec's `entries`, an
+    entry the results hold no row for counts as not run: not run is not passed."""
     relevant = [r for r in results if r.get("target", target) == target]
-    failed = [r["command"] for r in relevant if r.get("exit_code", 1) != 0 or (r.get("visual") and r["visual"].get("status") != "passed")]
+    if entries is not None:
+        ran = {r.get("command") for r in relevant}
+        relevant += [{"command": e["command"], "target": target, "exit_code": None}
+                     for e in entries if e.get("target", "preview") == target and e["command"] not in ran]
+    failed = [r["command"] for r in relevant if not row_passed(r)]
     skipped = [r["command"] for r in relevant if r.get("exit_code") is None]
     detail = (f"all {len(relevant)} e2e entries exit 0 on {target}" if not failed and not skipped
               else f"failed on {target}: {failed}" + (f"; not run: {skipped}" if skipped else ""))
@@ -507,7 +524,7 @@ def visual_passed(spec: dict[str, Any], results: list[dict[str, Any]]) -> CheckR
                     and set(r.get("covers_ac", [])) == set(entry.get("covers_ac", []))
                     and all(r.get("visual", {}).get(k) == entry["visual"].get(k)
                             for k in ("persona", "viewport", "steps", "environment"))]
-        if not matching or not all(r.get("exit_code") == 0 and r.get("visual", {}).get("status") == "passed" for r in matching):
+        if not matching or not all(row_passed(r) and r.get("visual") for r in matching):
             missing.append(entry.get("description") or entry["command"])
     return CheckResult("visual_e2e", not missing, "All required browser checks have current visual evidence" if not missing
                        else "Browser verification missing or blocked: " + "; ".join(missing))
@@ -525,9 +542,9 @@ def run_all_for_merge(
     """The merge judge receives this list verbatim and may not override a failure.
 
     `passing_tests` and `tests_that_exist` come from the orchestrator's own pytest run and collection (see
-    `ac_test_mapping`). `manifest_path`/`schema_dir` enable `manifest_valid`; `e2e_results` (from
-    `LocalVerifier.run_e2e` against the preview URL) enables `e2e_preview`. When the spec has preview e2e entries
-    and no results were supplied, `e2e_preview` fails: not running them is not the same as passing them.
+    `ac_test_mapping`). `manifest_path`/`schema_dir` enable `manifest_valid`; `e2e_results` (the rows of
+    `verification.verify`) are judged per target: `e2e_local` and `e2e_preview` each fail when an entry of theirs did
+    not pass or has no row. Not running an entry is not the same as passing it.
     """
     out = [
         diff_scope(changed_files + deleted_files, spec["allowed_paths"]),
@@ -546,9 +563,8 @@ def run_all_for_merge(
     if size_budget_lines is not None:
         from .size import estimate_of
         out.append(size_budget(size, estimate_of(spec), size_budget_lines))
-    preview_entries = [e for e in spec.get("test_plan", {}).get("e2e", []) if e.get("target") == "preview"]
-    if preview_entries:
-        if e2e_results is None:
-            e2e_results = [{"command": e["command"], "target": "preview", "exit_code": None} for e in preview_entries]
-        out.append(e2e_passed(e2e_results, "preview"))
+    entries = spec.get("test_plan", {}).get("e2e", [])
+    for target in ("local", "preview"):
+        if any(e.get("target", "preview") == target for e in entries):
+            out.append(e2e_passed(e2e_results or [], target, entries))
     return out

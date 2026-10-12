@@ -25,13 +25,13 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from .. import checks
+from .. import checks, rules, steps
 from ..budget import reserve_budget
 from ..config import agent_model
 from ..gates import Decision, GateKind
 from ..state import RunStage, WorkItemStage
 from . import RunContext
-from .common import auto_approval, hosted_planning_clause, make_ask_human, size_clause, open_gate_and_wait, persist_outputs, platform_skill, public, require_json, rubric_text, run_session, stamp_provenance
+from .common import auto_approval, hosted_planning_clause, make_ask_human, size_clause, open_gate_and_wait, persist_outputs, platform_skill, public, reject_output, require_json, require_valid, rubric_text, run_session, stamp_provenance, would_reuse
 
 WRITER_DESCRIPTION = """Write the specification for work item {work_item_id} ({title}).
 Inputs are under /mnt/session/uploads/ (outcome.json, decomposition.json, work_item.json, sibling_specs/,
@@ -57,12 +57,11 @@ JUDGE_REPO_ABSENT = ("The repository is NOT available in this session: rubric.md
                      "need it. Do not fail a spec for a path or command you cannot check; note it as unverified.")
 
 
-def _write_one(ctx: RunContext, outcome, decomposition, work_item, sibling_specs: dict[str, dict],
-               judge_issues: list[dict] | None, human_comments: str | None, round_no: int,
-               prior_spec: dict[str, Any] | None = None) -> dict[str, Any]:
+def _writer_session(ctx: RunContext, outcome, decomposition, work_item, sibling_specs: dict[str, dict],
+                    judge_issues: list[dict] | None, human_comments: str | None, round_no: int,
+                    prior_spec: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The spec writer's session for `work_item` in round `round_no`, as `run_session` takes it."""
     wid = work_item["work_item_id"]
-    ctx.event("work_item.stage", {"stage": WorkItemStage.SPEC_DRAFTING.value, "spec_round": round_no},
-              work_item_id=wid, stage="specify")
     uploads = {
         "outcome.json": json.dumps(outcome, indent=2).encode(),
         "decomposition.json": json.dumps(decomposition, indent=2).encode(),
@@ -79,15 +78,21 @@ def _write_one(ctx: RunContext, outcome, decomposition, work_item, sibling_specs
     from .decompose import repository_access
     mount, repo_clause, repo_available = repository_access(ctx, outcome, REPO_MOUNTED, REPO_ABSENT)
     skill_uploads, skill_clause = platform_skill(ctx)
-    res = run_session(
-        ctx, prefix=f"{wid}-r{round_no}-",
-        agent_key="spec_writer", title=f"{ctx.run_id} spec {wid} r{round_no}", run_id=ctx.run_id, stage="specify",
+    return dict(
+        prefix=f"{wid}-r{round_no}-",
+        agent_key="spec_writer", title=f"{ctx.run_id} spec {wid} r{round_no}", run_id=ctx.run_id,
         uploads={**uploads, **skill_uploads},
         description=WRITER_DESCRIPTION.format(work_item_id=wid, title=work_item["title"], repo_clause=repo_clause, skill_clause=skill_clause) + size_clause(ctx) + hosted_planning_clause(ctx),
         rubric_md=rubric_text(ctx, "spec", repo_available), max_iterations=ctx.policy.outcome_max_iterations,
         budget_usd=ctx.policy.stage_budget_usd["specify"], work_item_id=wid,
         custom_tools={"ask_human": make_ask_human(ctx, "spec_writer")}, repository=mount,
     )
+
+
+def _write_one(ctx: RunContext, wid: str, round_no: int, session: dict[str, Any]) -> dict[str, Any]:
+    ctx.event("work_item.stage", {"stage": WorkItemStage.SPEC_DRAFTING.value, "spec_round": round_no},
+              work_item_id=wid, stage="specify")
+    res = run_session(ctx, stage="specify", **session)
     spec = require_json(res, "spec.json")
     spec["revision"] = round_no
     stamp_provenance(spec, ctx, res, "Spec writer", agent_model("spec_writer"))
@@ -96,7 +101,7 @@ def _write_one(ctx: RunContext, outcome, decomposition, work_item, sibling_specs
     # prose, never a lexicographic "latest" from the store that an earlier cycle can win.
     markdown = res.outputs.get("spec.md", b"").decode(errors="replace").strip()
     if not markdown:
-        raise RuntimeError(f"session {res.session_id} wrote spec.json for {wid} but no spec.md; outputs: {sorted(res.outputs)}")
+        raise reject_output(res, f"session {res.session_id} wrote spec.json for {wid} but no spec.md; outputs: {sorted(res.outputs)}")
     spec["_markdown"] = markdown
     res.outputs["spec.json"] = json.dumps(public(spec), indent=2).encode()
     persist_outputs(ctx, "specify", res, prefix=f"{wid}-r{round_no}-", work_item_id=wid)
@@ -154,18 +159,28 @@ def _judge(ctx: RunContext, outcome, decomposition, specs: dict[str, dict], roun
     if owner_comments:
         uploads["human_comments.md"] = owner_comments.encode()
     skill_uploads, skill_clause = platform_skill(ctx)
-    reserve_budget(ctx, "judge")
-    res = run_session(
-        ctx, prefix=f"r{round_no}-",
-        agent_key="spec_judge", title=f"{ctx.run_id} spec-judge r{round_no}", run_id=ctx.run_id, stage="judge",
+    session = dict(
+        prefix=f"r{round_no}-",
+        agent_key="spec_judge", title=f"{ctx.run_id} spec-judge r{round_no}", run_id=ctx.run_id,
         uploads={**uploads, **skill_uploads},
         description=JUDGE_DESCRIPTION.format(round=round_no, repo_clause=JUDGE_REPO_MOUNTED if repo_available else JUDGE_REPO_ABSENT,
                                              owner_clause=OWNER_CLAUSE if owner_comments else "", skill_clause=skill_clause) + rescore + size_clause(ctx) + hosted_planning_clause(ctx),
         rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["judge"], repository=mount,
     )
+    if not would_reuse(ctx, stage="judge", **session):
+        reserve_budget(ctx, "judge")
+    res = run_session(ctx, stage="judge", **session)
     verdict = require_json(res, "verdict.json")
     verdict["round"] = round_no
     stamp_provenance(verdict, ctx, res, "Spec judge", agent_model("spec_judge"))
+    require_valid(ctx, res, "verdict.json", verdict, "judge_verdict.schema.json")
+    broken = rules.spec_pass_violations(verdict)
+    if broken:
+        # rule spec-pass: a pass with a blocking issue or a criterion at 0 is not a pass, whatever the judge wrote
+        verdict["overall"]["result"] = "revise"
+        verdict["overall"]["blocking_issue_count"] = max(verdict["overall"]["blocking_issue_count"], 1)
+        verdict["overall"]["summary_for_human"] = (f"Overridden (rule spec-pass): {'; '.join(broken)}. "
+                                                   + verdict["overall"]["summary_for_human"])[:2000]
     res.outputs["verdict.json"] = json.dumps(verdict, indent=2).encode()
     persist_outputs(ctx, "judge", res, prefix=f"r{round_no}-")
     ctx.event("judge.verdict", {"round": round_no, "result": verdict["overall"]["result"],
@@ -197,13 +212,14 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
         # Every writer of the round at once (none when the judge's issues name only specs outside the decomposition).
         batch = [w for w in items if w in to_write]
         if batch:
-            reserve_budget(ctx, "specify", len(batch))      # the whole batch, before any writer starts
+            sessions = {w: _writer_session(ctx, outcome, decomposition, items[w], sibling_specs(items, w, specs),
+                                           issues_by_item.get(w), (human_comments_by_item or {}).get(w), round_no,
+                                           by_item.get(w) or ((prior_specs or {}).get(w) if round_no == first_round else None))
+                        for w in batch}
+            # the whole batch, before any writer starts; a writer that already finished (a replay) costs nothing
+            reserve_budget(ctx, "specify", sum(not would_reuse(ctx, stage="specify", **s) for s in sessions.values()))
             with ThreadPoolExecutor(max_workers=min(ctx.policy.parallel_spec_writers, len(batch))) as pool:
-                futures = {pool.submit(_write_one, ctx, outcome, decomposition, items[w],
-                                       sibling_specs(items, w, specs),
-                                       issues_by_item.get(w), (human_comments_by_item or {}).get(w), round_no,
-                                       by_item.get(w) or ((prior_specs or {}).get(w) if round_no == first_round else None)): w
-                           for w in batch}
+                futures = {pool.submit(steps.carry(_write_one), ctx, w, round_no, sessions[w]): w for w in batch}
                 for fut, w in futures.items():
                     spec = fut.result()
                     specs[spec["spec_id"]] = spec
@@ -275,7 +291,8 @@ def _latest_spec_md(ctx: RunContext, work_item_id: str) -> str:
 
 def gate_2(ctx: RunContext, outcome, specs: dict[str, dict], verdict: dict[str, Any], shas: dict[str, str],
            artifact_urls: dict[str, str] | None = None):
-    ctx.event("stage.entered", {"stage": RunStage.GATE_2_SPEC_READINESS.value}, stage="gate_2")
+    if ctx.store.state(ctx.run_id).stage != RunStage.GATE_2_SPEC_READINESS:   # a replay re-enters the gate it waits at
+        ctx.event("stage.entered", {"stage": RunStage.GATE_2_SPEC_READINESS.value}, stage="gate_2")
     kind = GateKind.SPEC_READINESS if verdict["overall"]["result"] == "pass" else GateKind.ESCALATION
     summary = verdict["overall"]["summary_for_human"]
     if kind == GateKind.ESCALATION:
