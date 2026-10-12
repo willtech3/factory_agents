@@ -52,9 +52,13 @@ from .. import checks, security, size
 from ..hosted_verifier import ENVIRONMENT_CHECK, HostedVerifier, journey_name, preview_record
 from ..budget import reserve_budget
 from ..checks import CheckResult
+from ..config import agent_model
+# One definition each, shared with the hosted harness that runs the same collection and reads the same JUnit reports.
+from ..sandbox_tools.environment_runner import NODE_ID_PLUGIN, collected_node_ids, parse_junit, write_node_id_plugin
 from ..state import WorkItemStage
 from . import RunContext
 from .common import enter_item_stage, persist_outputs, platform_skill, public, require_json, run_session, stamp_provenance, artifact_json_or_none
+from .common import git as _git                # one git helper for every stage
 
 _SHELL: dict[str, tuple[str | None, str | None]] = {}        # per verifier workdir: (bash executable, shim dir)
 
@@ -224,9 +228,6 @@ approved test recipe; deterministic_checks.json carries those results, and visua
 the browser evidence. Never claim to have exercised a deployed preview. To probe behaviour, start the app in your own sandbox
 from the recipe's commands; your sandbox may lack the recipe's network allowlist and test credentials, so mark what you could
 not exercise not_assessed with that reason, never met."""
-
-
-from .common import git as _git  # noqa: E402  one git helper for every stage
 
 
 def orchestrator_bin() -> Path | None:
@@ -638,13 +639,6 @@ def _install_plan(repo: Path, setup_cmd: str | None, python: Path, uv: str | Non
         return {"command": None, "shell": False, "description": "pyproject declares no dependencies: nothing installed"}
     return {"command": installer + deps, "shell": False,
             "description": f"dependencies from pyproject ({', '.join(['project'] + extras)}): {' '.join(deps)}"}
-
-
-from ..config import agent_model  # noqa: E402
-
-# One definition each, shared with the hosted harness that runs the same collection and reads the same JUnit reports.
-from ..sandbox_tools.environment_runner import (  # noqa: E402
-    NODE_ID_PLUGIN, collected_node_ids, parse_junit, write_node_id_plugin)
 
 
 def _reported(row: dict[str, Any]) -> dict[str, Any] | None:

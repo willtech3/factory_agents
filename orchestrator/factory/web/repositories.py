@@ -5,9 +5,9 @@ import re
 from urllib.parse import urlparse
 
 import httpx
-from ..errors import Refusal
 
 from ..config import Config
+from ..errors import Refusal
 from ..forge.github import GitHubForge
 
 

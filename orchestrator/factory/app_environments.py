@@ -20,7 +20,6 @@ from collections import defaultdict
 from datetime import datetime, timezone
 
 from .errors import Refusal
-
 from .test_environments import app_labels, factory_environments, label_environment
 
 # The shared, network-less environment discovery sessions read source in. One per workspace, not one per app.
