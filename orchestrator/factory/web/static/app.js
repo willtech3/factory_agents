@@ -676,6 +676,8 @@
     frag.append(head);
 
     frag.append(el("section", { class: "card line-card" }, lineStrip(r, "full")));
+    const intervention = el("div", { class: "stack" });
+    frag.append(intervention);
     if (r.recovery) frag.append(recoveryCard(r));
     if (s.terminal || s.status === "stopped") frag.append(resultCard(r));
     else if ((r.run_records || []).length) frag.append(card("What came out so far", el("div", { class: "result" }, r.run_records.map(rec => runRecordBlock(r, rec))), "pull requests opened while the run continues"));
@@ -781,7 +783,10 @@
       el("details", { class: "more" }, el("summary", null, "All settings"), details));
     const tuneCard = card(null, tune);
 
-    if (!r.recovery) frag.append(turnCard);
+    if (!r.recovery) {
+      if (waiting || r.resumable || s.status === "stopped") intervention.append(turnCard);
+      else frag.append(turnCard);
+    }
     frag.append(el("details", { class: "card run-disclosure" }, el("summary", null, "Activity and crew", el("span", { class: "explain" }, `${plural((r.events || []).length, "recorded event")}`)),
       el("div", { class: "floor" }, rosterCard, storyCard, el("aside", { class: "stack" }, tuneCard))));
 
