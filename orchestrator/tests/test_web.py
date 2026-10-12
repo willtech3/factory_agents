@@ -159,7 +159,7 @@ def test_a_reject_without_a_change_request_comment_is_accepted_and_reads_as_clos
     client.post(f"/api/questions/{qid}/answer", json={"answer": "Own schedule"})
     client.scripted.tick(run_id)
     gid = client.get(f"/api/runs/{run_id}").json()["gates"][0]["gate_id"]
-    client.post(f"/api/gates/{gid}/decision", json={"decision": "reject", "comments": "not now"})
+    assert client.post(f"/api/gates/{gid}/decision", json={"decision": "reject"}).status_code == 200
     assert client.scripted.tick(run_id) == "closed"
     assert client.get(f"/api/runs/{run_id}").json()["stage"] == "closed"
 
@@ -302,7 +302,10 @@ def test_file_queue_writes_atomically_and_leaves_no_temp_files(tmp_path):
     from factory.surfaces.filequeue import FileQueue
     q = FileQueue(tmp_path / "q")
     q._save("gates.json", {"a": 1})
-    assert json.loads((tmp_path / "q" / "gates.json").read_text()) == {"a": 1}
+    first = (tmp_path / "q" / "gates.json").stat().st_ino
+    q._save("gates.json", {"a": 2})
+    assert json.loads((tmp_path / "q" / "gates.json").read_text()) == {"a": 2}
+    assert (tmp_path / "q" / "gates.json").stat().st_ino != first                  # replaced by a rename, not rewritten
     assert not [p for p in (tmp_path / "q").iterdir() if p.name.startswith(".gates")]   # no temp files left behind
 
 
