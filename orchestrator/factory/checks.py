@@ -98,14 +98,11 @@ def protected_tests(
     named_test_files: Iterable[str] = (),
     removed_lines_by_file: dict[str, list[str]] | None = None,
 ) -> CheckResult:
-    """Existing tests may only change if the spec is explicitly about them.
+    """An approved spec may update existing tests it names by exact path.
 
-    `named_test_files` are the existing tests the approved spec names by exact path (`named_test_paths`). Such a file may
-    be extended, never reduced: lines added, none of its existing lines removed, and the file not deleted or renamed;
-    `test_weakening` still reads every added line. "None removed" must be proven: `removed_lines_by_file` has to hold an
-    entry for the file (the diff parser records one, possibly empty, for every file whose header it read), so missing
-    metadata, a binary or unparsed diff, or a quoted path the parser skipped all keep the file protected. Every other
-    existing test stays protected, including any a glob in allowed_paths would cover."""
+    Globs never unlock existing tests. Deleted or renamed files and unreadable diffs remain protected.
+    The separate test_weakening check and independent review still enforce assertion strength.
+    """
     existing = set(existing_test_files)
     deleted = set(deleted_files)
     named = set(named_test_files)
@@ -113,24 +110,24 @@ def protected_tests(
     touched = [f for f in list(modified_files) + list(deleted) if f in existing and is_test_file(f)]
 
     def why_not(f: str) -> str | None:
-        """Why a named test file is not merely extended, or None when the diff proves it is."""
+        """Why a named test update cannot be reviewed safely."""
         if f in deleted:
             return "deleted or renamed"
         if removed is None or not isinstance(removed.get(f), list):
-            return "the diff does not prove that none of its existing lines were removed"
-        return f"removes {len(removed[f])} existing line(s)" if removed[f] else None
+            return "the diff does not provide readable test changes"
+        return None
     reasons = {f: why_not(f) for f in touched if f in named}
-    extended = sorted(f for f, r in reasons.items() if r is None)
-    blocked = sorted(set(touched) - set(extended))
+    approved = sorted(f for f, r in reasons.items() if r is None)
+    blocked = sorted(set(touched) - set(approved))
     reasons = {f: r for f, r in reasons.items() if r is not None}
     if blocked:
         detail = "existing tests modified/deleted: " + str(blocked) + (
-            "; named by the spec but not only extended: " + "; ".join(f"{f} ({r})" for f, r in sorted(reasons.items())) if reasons else "")
+            "; named by the spec but not permitted: " + "; ".join(f"{f} ({r})" for f, r in sorted(reasons.items())) if reasons else "")
     else:
         detail = "no existing tests modified" + (
-            f"; extended (lines added, none removed) the existing tests the approved spec names exactly: {extended}" if extended else "")
+            f"; updated existing tests the approved spec names exactly: {approved}" if approved else "")
     return CheckResult(check="protected_tests", passed=not blocked, detail=detail,
-                       data={"touched": blocked, "extended_named": extended})
+                       data={"touched": blocked, "approved_updates": approved})
 
 
 WEAKENING_PATTERNS = [

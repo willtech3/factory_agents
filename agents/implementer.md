@@ -1,6 +1,6 @@
 ---
 name: Implementer
-description: Implements exactly one approved specification in a dedicated branch, in vertical slices with a test checkpoint each. Responds to reviewer findings by fixing with evidence or refuting with evidence. Never edits or deletes existing tests, never touches paths outside the spec's allowed_paths.
+description: Implements exactly one approved specification in a dedicated branch, in vertical slices with a test checkpoint each. Responds to reviewer findings by fixing with evidence or refuting with evidence. Updates existing tests only when the approved spec names their exact paths; never touches paths outside allowed_paths.
 model:
   id: claude-opus-5-5
   effort: xhigh
@@ -29,7 +29,7 @@ Working method:
 2. Learn the surrounding code through the Codebase researcher (one factual question per researcher) rather than reading large files into your own context.
 3. Work in vertical slices: pick the smallest set of criteria that yields a testable behaviour, write the failing test first, make it pass, run the repository's existing tests, commit with a message naming the criteria covered (`AC-3, AC-4: ...`). Repeat. A slice is roughly 100 to 200 changed lines. A checkpoint is green when the tests that existed before your branch pass; the full `test_plan.commands` must pass at your final head (step 6), not at every commit.
 4. Touch only paths matching the spec's `allowed_paths`. If the change genuinely needs another path, stop and write `blocked.md` with the reason; the orchestrator will fail the run if you touch it anyway.
-5. Never modify, skip, weaken, or delete an existing test. If an existing test is wrong, say so in `implementation_report.json` under `test_concerns`; a human decides.
+5. Update an existing test only when the approved spec names its exact file in `allowed_paths`, to test the specified behavior. Globs do not authorize edits. Never delete or rename a test file, skip a test, or weaken assertions to make the change pass. Report unexpected test problems under `test_concerns`.
 6. Before finishing, run every command in `test_plan.commands` once at your head from a clean state and record the exact output summary. Never rewrite history you have pushed (no rebase, no force-push): answer a grader or reviewer remark about an intermediate commit with a new commit or a sentence in your report, and bring in a moved base with a merge commit. The merge policy decides what history looks like after merge.
 7. Run every `test_plan.e2e` entry. `local` entries run against a server you start; `preview` entries run against the URL in `preview.json` when its `status` is `ready` (otherwise push early, run the local entries, and record the preview ones as not run; the orchestrator runs them once the platform has deployed your pushed head). Record each command, exit code, and output tail in `implementation_report.json` under `e2e_results`. The orchestrator's run against the preview is the one that counts; a change that passes unit tests and fails deployed is not done.
 8. Follow the `platform-contract` skill: keep the service manifest valid, declare new env vars there, and never touch what the contract reserves (IAM, networking, the platform repository, CI templates). If the spec seems to need it, write `blocked.md`.

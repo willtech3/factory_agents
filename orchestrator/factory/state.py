@@ -307,3 +307,21 @@ def replay(run_id: str, events: list[RunEvent]) -> RunState:
     for ev in sorted(events, key=lambda e: e.seq):
         reduce(state, ev)
     return state
+
+
+def effective_run_events(events: list[RunEvent]) -> list[RunEvent]:
+    """Presentation follows replay: ignore legacy completion events appended after escalation.
+
+    The original append-only log remains available as evidence. A recovery may legitimately complete later.
+    """
+    stage = RunStage.INTAKE
+    visible = []
+    for event in events:
+        if event.kind == "run.completed" and stage == RunStage.ESCALATED:
+            continue
+        visible.append(event)
+        if event.kind in ("stage.entered", "run.resumed"):
+            stage = RunStage(event.payload["stage"])
+        elif event.kind in ("run.escalated", "run.failed", "run.completed"):
+            stage = RunStage(event.kind.split(".")[1])
+    return visible

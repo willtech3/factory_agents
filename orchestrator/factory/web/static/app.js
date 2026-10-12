@@ -741,7 +741,7 @@
       const openPrs = (r.work_items || []).filter(w => w.stage === "cr_open");
       const engineerLine = openPrs.length ? ` ${openPrs.map(w => w.cr_id ? `Pull request #${w.cr_id}` : w.title).join(", ")} ${openPrs.length === 1 ? "is" : "are"} waiting on an engineer.` : "";
       const parkedLine = { failed: r.resumable ? "The run stopped. It can be resumed from where it was." : "The run stopped and cannot be resumed from here.",
-        escalated: "The run is escalated. No gate is open and it cannot be resumed from here; the way forward is a new run from the outcome.", closed: "The run is closed. Nothing more happens in it." }[r.stage];
+        escalated: r.resumable ? "The build escalated. Review the reason, then resume to recheck the saved branch and obtain a fresh merge decision." : "The run is escalated. No gate is open and it cannot be resumed from here; the way forward is a new run from the outcome.", closed: "The run is closed. Nothing more happens in it." }[r.stage];
       turn.append(el("p", { class: "lead-line" }, r.stage === "completed" ? `Nothing needs you here.${r.design_only ? " Nothing was built; start a full run from the outcome to implement the approved contracts." : engineerLine || " Every pull request is merged or closed."}` : TERMINAL[r.stage] ? (parkedLine || `${stageName}.`) : `Nothing needs you right now.${engineerLine}`));
     }
     for (const g of recorded) turn.append(el("div", { class: "notice ok" }, el("b", null, `${DECISION_LABEL[g.recorded.decision] || g.recorded.decision} recorded on ${GATE_SHORT[g.kind]}. `), s.status === "stopped" ? "It is applied once a controller drives the run again. " : "The run picks it up within seconds. ", el("a", { href: `#/gates/${g.gate_id}` }, "View")));
@@ -982,7 +982,7 @@
 
   function resumeBox(r, runId) {
     const box = el("div", { class: "stack" },
-      el("p", { class: "explain m-0" }, "Resuming does not repeat finished agent sessions: the controller re-checks the branch and carries on from the station the run reached."),
+      el("p", { class: "explain m-0" }, "Resume rechecks the branch, runs fresh verification, and continues from saved work. A changed or escalated merge decision is judged again."),
       el("div", { class: "actions" }, el("button", { class: "btn primary", type: "button", onclick: async (ev) => {
         const b = ev.currentTarget; b.disabled = true; b.textContent = "Resuming…";
         try {

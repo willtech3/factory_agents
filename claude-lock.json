@@ -30,9 +30,9 @@
     "./agents/implementer.md": {
       "kind": "agent",
       "id": "agent_01VRpRLcYCbSvLCNdVU8rKMS",
-      "version": "5",
-      "hash": "f691fb5a0b3f31233c73138f93bd6808",
-      "remote_hash": "221bb7b96a3eda558adfd3702805462e"
+      "version": "6",
+      "hash": "8455d0ab7b20b6ea55e5e9135bb15e0e",
+      "remote_hash": "e1a25894fe99d2093fe716c0b9c5dad1"
     },
     "./agents/integrator.md": {
       "kind": "agent",
@@ -51,9 +51,9 @@
     "./agents/reviewer.md": {
       "kind": "agent",
       "id": "agent_01HxQzdADN7Aomrt8hRsyTu8",
-      "version": "6",
-      "hash": "6000a21a74e99617e05ae04280dbd0db",
-      "remote_hash": "04fb75811f6a8c5b0ec9179cbf5651f3"
+      "version": "7",
+      "hash": "d1433333675eeeb7da96776e1ccee7c1",
+      "remote_hash": "cf803a96165c71b5da6c2b8cf25f4a66"
     },
     "./agents/security_reviewer.md": {
       "kind": "agent",
