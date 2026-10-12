@@ -282,7 +282,7 @@ def _git_repo(path):
 
 def test_implementation_pauses_before_the_implementer_and_resumes_from_its_artefacts(tmp_path, root, examples, monkeypatch):
     """The budget check sits in the implement loop too. A run paused there resumes through the implementation path
-    (`resume_points`), not by re-running design stages (there is no driver to run them); an older controller's log is
+    (its round steps), not by re-running design stages (there is no driver to run them); an older controller's log is
     adopted from its Gate 2 approval record."""
     from factory.stages.implement import run_implement_one
 

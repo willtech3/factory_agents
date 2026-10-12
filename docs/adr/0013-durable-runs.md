@@ -1,6 +1,6 @@
 # ADR-0013: Durable runs: a database per run, and agent sessions as steps a new controller can follow
 
-**Status:** accepted (phases 1 and 2 built) · **Date:** 2026-10-12 · Refines [ADR-0001](0001-orchestrator-driven-stage-sessions.md).
+**Status:** accepted (phases 1 and 2 built, including 2b) · **Date:** 2026-10-12 · Refines [ADR-0001](0001-orchestrator-driven-stage-sessions.md).
 
 ## Context
 A run is a Python call stack. The stages are nested function calls, and each one blocks on its agent sessions and gates. When the controller process dies, everything the stack knew is gone. The only record is the event log, and that log was written in a way that broke:
@@ -64,7 +64,7 @@ Durable execution engines (Temporal, Restate, DBOS, Inngest) all use the same pa
     - A session whose output a stage refused (`reject_output`: a missing or invalid file) is not reused either. Its step is failed, so the replay starts a new session for that work only.
 
     Budget reservations count only the sessions that will start, so a replay never pauses for work already paid for. A session's step key includes its pipeline step, because the second decomposition pass asks the same agent under the same title. Its inputs hash leaves out the dollar cap, which bounds the work but does not change it.
-14. **A build recovery reruns only that spec's implementation.** The latest recovery decision on a spec is an input of its `implement/<spec>` step. A recheck verifies the last head afresh and asks a new merge judge. A request for changes opens the next implementer round with the owner's instructions, and that corrective cycle stays authorized through later rechecks. Specs that finished, or already have a change request, are not touched.
+14. **A build recovery reruns only that spec's implementation.** The latest recovery decision on a spec is an input of its `implement/<spec>` step. A recheck verifies the last head afresh and asks a new merge judge. A request for changes sends the round it names back to the implementer with the owner's instructions, and that corrective cycle stays authorized through later rechecks. Specs that finished, or already have a change request, are not touched.
 15. **Older runs are adopted, not migrated.** A run an older controller wrote has no pipeline steps. `legacy_adoption` records the steps that controller could itself have continued from, and refuses the rest with the reason:
     - From a Gate 2 approval record: the approved contracts, each still the bytes it approved.
     - From an approval it had not acted on: the decision.
@@ -78,13 +78,24 @@ What phase 2 deleted:
 - `_persisted_specify_rounds`, `_pending_gate1_feedback`, `_pending_specify_inputs`;
 - the `pending` path through `_from_specify`.
 
-`resume_points` stays: it is how a spec's implement/review loop continues inside its step. Converting the rounds into steps of their own is the next step of phase 2.
+### Phase 2b: rounds are steps
+16. **Each implement/review round is a step, and so is the merge judgement.** Inside `implement/<spec>`:
+    - `implement/<spec>/r<n>` is round `n`: the implementer, the orchestrator's own verification of the head it reported, and the review unless the round goes straight to the judge. Its result is what the next round and the judge need: the report, the response to the last findings, the journeys, the head and base, the deterministic checks, the merged findings, and which way the loop goes next. Larger parts are blobs.
+    - `implement/<spec>/r<n>/author` is the implementer's session inside it, so a round that died after its implementer reported verifies that report instead of asking again.
+    - `implement/<spec>/judge#<k>` is the merge judgement, with `k` the number of the owner's recovery decisions on the spec. Its inputs are the final round's result and whether it is a recheck. The judge's artefact name is chosen in a sub-step (`.../name`), so a judge interrupted after it was named keeps its name.
+
+    A round's inputs are what it answers: the findings and response it carries, the journeys, the owner's notes, and whether its review was already spent. A replay gets the rounds that finished back and continues at the first that did not. Verification runs again only inside a round that did not finish, never for a recorded one.
+17. **Recovery decisions are routed by round, not reconstructed.** A recheck (approve) gets every round back from its step and asks a new judge, which verifies the final head again. A request for changes on round `m` turns round `m`'s judge-bound result into round `m + 1` with the owner's findings and instructions, and allows one more review. A round whose implementer wrote `blocked.md` raises `BuildBlocked`; its step is failed, so the decision that follows runs that implementer again.
+18. **An older controller's rounds are adopted from their artefacts** (`adopt_rounds`), once, the first time a run without round steps builds the spec. Every round with a report and merged findings becomes a finished round step. The last round becomes only its author step, so its verification and review run again, unless a corrective decision names it. A round report without the previous round's merged findings is a store the loop cannot continue from, and the build stops with the reason.
+19. **The step holds a new session's id before `session.started` is written.** `SessionDriver.run` hands the id to the step first, so a controller that dies in between leaves a session its step names and the next controller follows it.
+
+What phase 2b deleted: `resume_points`, `ResumePoint` and the `resume_from` path through `run_implement_one`.
 
 ## Phases
 Each phase deletes code that the previous one made redundant.
 
 1. **Database and session steps** (this ADR, built). Events in SQLite with write-time validation, durable session steps, reattach, supersede, idempotent tool handlers, crash leaves sessions working.
-2. **The pipeline as steps; resume is a replay** (built, decisions 10–15). Decompositions, gates, spec passes, approvals, implementations and integrations are steps with recorded results, and `factory resume` replays the pipeline. Left for its second part: each implement/review round as a step of its own, with the deterministic checks and verification as steps, which removes `resume_points`.
+2. **The pipeline as steps; resume is a replay** (built, decisions 10–15). Decompositions, gates, spec passes, approvals, implementations and integrations are steps with recorded results, and `factory resume` replays the pipeline. Its second part (built, decisions 16–19) makes each implement/review round and each merge judgement a step, which removed `resume_points`.
 3. **One verification pipeline.** `verify(target, plan) -> EvidenceBundle` and `judge(bundle, spec)`, with structured test plans and the recipe split into what is trusted and what is runtime.
 4. **A rule registry.** The rules the prompts state, the checks enforce and the rubrics score come from one registry, so they can't drift apart. Prompts are generated from it, and outputs are schema-validated when submitted.
 5. **Evals from recordings.** The recorded steps of real runs (inputs by sha256, outputs as blobs) become the replay dataset. A prompt or rubric change is gated on it.

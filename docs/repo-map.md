@@ -111,7 +111,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 |---|---|
 | `decompose.py` | 1. Outcome to work items, then Gate 1 |
 | `specify.py` | 2. Parallel spec writers, a judge loop, then Gate 2 |
-| `implement.py` | 3. Per spec: implementer, reviewer and security-reviewer passes, then the merge judge. Also holds `LocalVerifier`, `LocalPreview` and the findings merge |
+| `implement.py` | 3. Per spec: implementer, reviewer and security-reviewer passes, then the merge judge, each round and each judgement a step (`implement/<spec>/r<n>`, `implement/<spec>/judge#<k>`; `adopt_rounds` for older runs). Also holds `LocalVerifier`, `LocalPreview` and the findings merge |
 | `integrate.py` | 4. The orchestrator opens the PR at the exact head the merge judge approved, with the reviewer-first description it rendered and linted; an integrator session runs only to reword a draft the lint refuses. The approved spec, verdicts and the spec's run record stay in Factory's artifact store and are linked from the PR, not committed to the branch ([ADR-0010](adr/0010-external-integration-records.md)) |
 | `deploy_observe.py` | 5. Watches the platform deploy `main` to dev and runs e2e against it. Driven by `watcher.py` |
 | `common.py` | Shared helpers: run a session, persist outputs, provenance, open and wait on gates |

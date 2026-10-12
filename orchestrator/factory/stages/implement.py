@@ -29,8 +29,6 @@ pushed head is verified in a fresh Anthropic-hosted sandbox built from the app's
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import hashlib
 import json
 import os
@@ -57,7 +55,7 @@ from ..config import agent_model
 from ..sandbox_tools.environment_runner import NODE_ID_PLUGIN, collected_node_ids, parse_junit, write_node_id_plugin
 from ..state import WorkItemStage
 from . import RunContext
-from .common import enter_item_stage, persist_outputs, platform_skill, public, require_json, run_session, stamp_provenance, artifact_json_or_none
+from .common import enter_item_stage, persist_outputs, platform_skill, public, reject_output, require_json, run_session, stamp_provenance, artifact_json_or_none, would_reuse
 from .common import git as _git                # one git helper for every stage
 
 _SHELL: dict[str, tuple[str | None, str | None]] = {}        # per verifier workdir: (bash executable, shim dir)
@@ -696,21 +694,6 @@ def git_clauses(ctx: RunContext, repo_url: str, base_branch: str, branch: str) -
             ctx.forge.sandbox_git_instructions(repo_url, base_branch, branch, read_only=True))
 
 
-@dataclass
-class ResumePoint:
-    """Where `run_implement_one` picks a spec up again after the orchestrator died mid-loop (`factory resume`).
-
-    `round_no` is the implementer round to continue at. `report` (and `response`, from round 2 on) are that round's
-    outputs when its session finished and they were persisted: the implementer is then not run again and the loop
-    goes straight to the orchestrator's verification. `findings` is the merged review of the previous round, which
-    that round answers. Reviewer passes and the merge verdict already persisted for the round are reused too."""
-    round_no: int = 1
-    findings: dict[str, Any] | None = None
-    report: dict[str, Any] | None = None
-    response: dict[str, Any] | None = None
-    review_through: int | None = None
-
-
 def wait_for_preview(ctx: RunContext, branch: str, head_sha: str, *, poll_seconds: float = 20.0,
                      sleep=None, clock=None) -> dict[str, Any]:
     """Give the platform's pipeline time to deploy `head_sha` before running e2e against the preview.
@@ -779,54 +762,172 @@ def review_evidence_prefix(ctx: RunContext, sid: str, round_no: int, pass_id: st
     return prefix, found if ref.get("base_sha") == base_sha and ref.get("head_sha") == head_sha else None
 
 
+class BuildBlocked(RuntimeError):
+    """The implementer wrote blocked.md: it cannot go on without a change of scope or a human. Its round is not
+    recorded as finished, so the build-recovery decision that follows runs that implementer again."""
+
+
 def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base_branch: str,
                       verifier: LocalVerifier, dependency_specs: dict[str, dict], *, spec_md: str = "",
-                      resume_from: ResumePoint | None = None, guidance: str = "") -> dict[str, Any]:
+                      guidance: str = "", recovery: dict[str, Any] | None = None,
+                      corrective: dict[str, Any] | None = None) -> dict[str, Any]:
     """Drive one spec through implement/review/judge. Returns the final merge_readiness verdict. `guidance` is the owner's
     bounded Gate 2 approval notes for this spec (`runner.record_approval`), uploaded to every implementer round.
 
     `spec_md` is the writer's spec.md for this spec (the runner carries it from Gate 2); the implementer, every
-    reviewer pass and the merge judge receive it beside spec.json. `resume_from` continues the loop after a dead
-    orchestrator (see `ResumePoint`); the work item then already sits in implementing or responding, so no stage
-    event is emitted for the restart."""
-    sid, wid = spec["spec_id"], spec["work_item_id"]
+    reviewer pass and the merge judge receive it beside spec.json.
+
+    Each round is a durable step (`implement/<spec>/r<n>`, ADR-0013) with its implementer session as a step inside it
+    (`.../author`), and the merge judgement is one too (`implement/<spec>/judge#<k>`, `k` counting the owner's recovery
+    decisions on the spec). A replay gets the rounds that finished back from their steps and continues at the first that
+    did not; an older controller's rounds are adopted from their artefacts first (`adopt_rounds`). `recovery` is the
+    owner's latest build-recovery decision on the spec: a recheck (approve) verifies the final head again and asks a new
+    merge judge, and a blocked round's implementer runs again. `corrective` is their latest request for changes, which
+    stays authorized through later rechecks: the round it names goes back to the implementer with their instructions
+    and one more review is allowed."""
     _require_recorded_preview_mode(ctx)
-    spec_md = (spec_md or spec.get("_markdown") or "").strip()
-    branch = _branch_for(ctx.run_id, sid)
-    git, git_ro = git_clauses(ctx, repo_url, base_branch, branch)     # the implementer pushes; everyone else only reads
-
-    def mount(checkout: str) -> dict[str, Any] | None:
-        return ctx.forge.session_repository_resource(repo_url, checkout) if ctx.forge is not None else None
+    build = _Build(ctx, spec, repo_url, base_branch, verifier, dependency_specs, spec_md)
+    sid, wid = build.sid, build.wid
+    adopt_rounds(ctx, spec, corrective)
     current = ctx.store.state(ctx.run_id).work_items.get(wid)
-    if resume_from is None or (current is not None and (current.stage in (WorkItemStage.SPEC_APPROVED, WorkItemStage.BLOCKED, WorkItemStage.ESCALATED) or (current.stage == WorkItemStage.MERGE_JUDGING and resume_from.report is None))):
-        # A resumed item that never started (the orchestrator died, or the budget paused the run, before its first
-        # implementer) still has to leave SPEC_APPROVED; one that did start is already past it.
-        ctx.event("work_item.stage", {"stage": WorkItemStage.IMPLEMENTING.value, "branch": branch}, work_item_id=wid, spec_id=sid)
+    if current is not None and (current.stage in (WorkItemStage.SPEC_APPROVED, WorkItemStage.BLOCKED, WorkItemStage.ESCALATED)
+                                or (current.stage == WorkItemStage.MERGE_JUDGING and corrective is not None)):
+        # An item that has not started (or that the owner sent back) moves to implementing; one already in a round
+        # stays where its last recorded event put it.
+        ctx.event("work_item.stage", {"stage": WorkItemStage.IMPLEMENTING.value, "branch": build.branch}, work_item_id=wid, spec_id=sid)
+    epoch = sum(1 for e in ctx.store.events(ctx.run_id) if e.kind == "build.recovery" and e.spec_id == sid)
+    corrective_round = int(corrective["round"]) if corrective is not None else None
+    review_through = max(ctx.policy.review_max_rounds, (corrective_round or 0) + 1)
+    carried: dict[str, Any] = {"findings": None, "response": None, "det_only": False,
+                               "journeys": _blobs(ctx, latest_journeys(ctx, sid, spec))}
+    round_no = 0
+    while True:
+        round_no += 1
+        notes = guidance
+        if corrective is not None and round_no > corrective_round:
+            notes = guidance + "\n# Build recovery instructions from the owner\n" + corrective.get("comments", "")
+        inputs = {"findings": _sha_of(carried["findings"]), "response": _sha_of(carried["response"]),
+                  "det_only": carried["det_only"], "journeys": carried["journeys"], "guidance": notes,
+                  "review_through": round_no > review_through}
+        try:
+            result = steps.run_step(ctx, f"implement/{sid}/r{round_no}", inputs,
+                                    lambda n=round_no, c=carried, g=notes: build.round(n, c, g, review_through))
+        except BuildBlocked as blocked:
+            return {"result": "escalate", "reason": str(blocked)}
+        if corrective is not None and round_no == corrective_round and result["next"] == "judge":
+            # The owner sent this round back: their findings (or the round's own) go to one more implementer round.
+            findings = corrective.get("review_findings") or (_json_of(ctx, result["findings"]) if result["findings"] else None)
+            carried = {"findings": findings or {"findings": []}, "response": _json_of(ctx, result["response"]),
+                       "det_only": False, "journeys": result["journeys"]}
+            continue
+        if result["next"] == "judge":
+            break
+        carried = {"findings": _json_of(ctx, result["findings"]), "response": _json_of(ctx, result["response"]),
+                   "det_only": result["det_only"], "journeys": result["journeys"]}
+    recheck = recovery is not None and recovery.get("decision") == "approve"
+    return steps.run_step(ctx, f"implement/{sid}/judge#{epoch}", {"round": steps.inputs_sha(result), "recheck": recheck},
+                          lambda: build.judge(round_no, result, recheck))
 
-    findings: dict[str, Any] | None = resume_from.findings if resume_from else None
-    response: dict[str, Any] | None = None
-    verdict: dict[str, Any] | None = None
-    base_sha = _git(verifier.checkout(base_branch), "rev-parse", "HEAD").strip()
-    skill_uploads, skill_clause = platform_skill(ctx)
-    # Set when the previous round's only standing findings were failed deterministic checks: the implementer's
-    # response is re-verified and, if the checks now pass, goes straight to the merge judge without a review round.
-    det_only_response = resume_from is not None and findings is not None and _deterministic_only(findings["findings"])
-    journeys = latest_journeys(ctx, sid, spec)  # the change's journeys, run artifacts carried from round to round
 
-    review_through = max(ctx.policy.review_max_rounds, (resume_from.review_through or 0) if resume_from else 0)
-    for round_no in range(resume_from.round_no if resume_from else 1, max(review_through + 2, (resume_from.round_no + 1) if resume_from else 2)):
-        resumed_round = resume_from is not None and round_no == resume_from.round_no
-        # ---- implementer (round 1 implements; later rounds respond to findings)
-        uploads = {"spec.json": json.dumps(public(spec), indent=2).encode(), **skill_uploads,
-                   **{f"journeys/{name}.json": content for name, content in sorted(journeys.items())}}
-        if spec_md:
-            uploads["spec.md"] = spec_md.encode()
+def _blobs(ctx: RunContext, files: dict[str, bytes]) -> dict[str, str]:
+    return {name: ctx.store.put_blob(ctx.run_id, content) for name, content in sorted(files.items())}
+
+
+def _files(ctx: RunContext, blobs: dict[str, str]) -> dict[str, bytes]:
+    return {name: ctx.store.get_blob(ctx.run_id, sha) for name, sha in sorted(blobs.items())}
+
+
+def _sha_of(value: Any) -> str | None:
+    return None if value is None else steps.inputs_sha(value)
+
+
+def _json_of(ctx: RunContext, blob: str | None) -> Any:
+    return None if blob is None else steps.get_json(ctx, blob)
+
+
+class _Build:
+    """What every round of one spec's build shares: the branch, the base it is cut from, the git clauses and uploads."""
+
+    def __init__(self, ctx: RunContext, spec: dict[str, Any], repo_url: str, base_branch: str, verifier: LocalVerifier,
+                 dependency_specs: dict[str, dict], spec_md: str):
+        self.ctx, self.spec, self.repo_url, self.base_branch, self.verifier = ctx, spec, repo_url, base_branch, verifier
+        self.dependency_specs = dependency_specs
+        self.sid, self.wid = spec["spec_id"], spec["work_item_id"]
+        self.spec_md = (spec_md or spec.get("_markdown") or "").strip()
+        self.branch = _branch_for(ctx.run_id, self.sid)
+        self.git, self.git_ro = git_clauses(ctx, repo_url, base_branch, self.branch)   # the implementer pushes; everyone else reads
+        self.base_sha = _git(verifier.checkout(base_branch), "rev-parse", "HEAD").strip()
+        self.skill_uploads, self.skill_clause = platform_skill(ctx)
+        self.managed = ctx.cfg.preview_mode == "managed"
+
+    def mount(self, checkout: str) -> dict[str, Any] | None:
+        ctx = self.ctx
+        return ctx.forge.session_repository_resource(self.repo_url, checkout) if ctx.forge is not None else None
+
+    def spec_uploads(self) -> dict[str, bytes]:
+        out = {"spec.json": json.dumps(public(self.spec), indent=2).encode(), **self.skill_uploads}
+        if self.spec_md:
+            out["spec.md"] = self.spec_md.encode()
+        return out
+
+    # ---------------------------------------------------------------- one round
+
+    def round(self, round_no: int, carried: dict[str, Any], guidance: str, review_through: int) -> dict[str, Any]:
+        """Implementer, the orchestrator's own verification, and (unless the round goes straight to the judge) the review.
+        Its result is what the next round and the judge need, the larger parts kept as blobs."""
+        ctx, sid, wid = self.ctx, self.sid, self.wid
+        findings, det_only = carried["findings"], carried["det_only"]
+        author_inputs = {"findings": _sha_of(findings), "det_only": det_only, "journeys": carried["journeys"], "guidance": guidance}
+        reused_author = steps.recorded(ctx, f"implement/{sid}/r{round_no}/author", author_inputs)
+        author = steps.run_step(ctx, f"implement/{sid}/r{round_no}/author", author_inputs,
+                                lambda: self.author(round_no, findings, det_only, _files(ctx, carried["journeys"]), guidance))
+        report = _json_of(ctx, author["report"])
+        response = _json_of(ctx, author["response"])
+        journeys = _files(ctx, author["journeys"])
+        if findings and response is not None:
+            response["round"] = round_no - 1
+            ctx.event("review.response", {"round": round_no - 1, "dispositions": [r["disposition"] for r in response["responses"]]},
+                      work_item_id=wid, spec_id=sid, actor="agent")
+        v = self.verify(round_no, report, journeys, check_reported_head=reused_author)
+        det = v["det"]
+        result = {"report": author["report"], "response": steps.put_json(ctx, response) if response is not None else None,
+                  "journeys": author["journeys"], "head_sha": v["head_sha"], "base_sha": self.base_sha,
+                  "det": [d.to_dict() for d in det], "test_results": steps.put_json(ctx, v["test_results"]),
+                  "patch": ctx.store.put_blob(ctx.run_id, v["diff"]["patch"].encode()), "visual": _blobs(ctx, v["visual_uploads"]),
+                  "preview": v["preview"], "findings": steps.put_json(ctx, findings) if findings is not None else None,
+                  "next": "judge", "det_only": False}
+        if round_no > review_through:
+            return result            # last implementer response done; go straight to the merge judge
+        if det_only and all(d.passed for d in det):
+            # The previous round's only standing findings were the orchestrator's own checks; they pass on the
+            # pushed head, so a fresh adversarial read would re-prove what round one already proved. Straight to
+            # the judge, which still sees findings.json and the implementer's answers (post-mortem issue 6).
+            ctx.event("review.findings", {"round": round_no, "count": 0, "blocking": 0, "deterministic_only": True,
+                                          "skipped": "deterministic checks pass on the response; no review round"},
+                      work_item_id=wid, spec_id=sid)
+            return result
+        merged = self.review(round_no, report, response, findings, v, journeys)
+        result["findings"] = steps.put_json(ctx, merged)
+        standing = standing_findings(merged["findings"])
+        if not standing and all(d.passed for d in det):
+            return result            # nothing standing; skip the implementer round and go to the judge
+        # Only the orchestrator's own checks stand (no agent finding is blocking or major): the next round is an
+        # implementer response re-verified by the checks, not a fresh review of the whole diff.
+        result["det_only"] = _deterministic_only(standing)
+        enter_item_stage(ctx, wid, sid, WorkItemStage.RESPONDING, deterministic_only=result["det_only"])
+        return {**result, "next": "respond"}
+
+    def author(self, round_no: int, findings: dict[str, Any] | None, det_only: bool, journeys: dict[str, bytes],
+               guidance: str) -> dict[str, Any]:
+        """The implementer's session for this round (round 1 implements; later rounds respond to findings)."""
+        ctx, sid, wid = self.ctx, self.sid, self.wid
+        uploads = {**self.spec_uploads(), **{f"journeys/{name}.json": content for name, content in sorted(journeys.items())}}
         if guidance:
             uploads["gate2_guidance.md"] = guidance.encode()          # the owner's bounded approval notes; never a spec change
-        for dsid, ds in dependency_specs.items():
+        for dsid, ds in self.dependency_specs.items():
             uploads[f"dependency_specs/{dsid}.json"] = json.dumps(public(ds), indent=2).encode()
         review_clause, response_clause = "", ""
-        preview = preview_info(ctx, branch)
+        preview = preview_info(ctx, self.branch)
         uploads["preview.json"] = json.dumps(preview, indent=2).encode()
         preview_clause = (MANAGED_PREVIEW_CLAUSE if preview.get("mode") == "managed" else PREVIEW_CLAUSE if preview["status"] == "ready"
                           else LOCAL_PREVIEW_CLAUSE if preview.get("mode") == "local" else NO_PREVIEW_CLAUSE)
@@ -838,56 +939,56 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             uploads["findings.json"] = json.dumps(findings, indent=2).encode()
             review_clause = ("Reviewer findings are at /mnt/session/uploads/findings.json. Respond to every finding "
                              "(fixed / refuted with evidence / accepted_risk) and push the updated branch.")
-            if det_only_response:
+            if det_only:
                 review_clause += (" Every standing finding is a DET-* entry: a deterministic check the orchestrator runs itself "
                                   "(its detail and reproduction say exactly what failed). Fix the cause and push; the orchestrator "
                                   "re-runs the checks on your pushed head and, if they pass, goes straight to the merge judge.")
             response_clause = " and review_response.json"
-        if resumed_round and resume_from.report is not None:
-            # This round's implementer finished before the orchestrator died; its outputs are in the store.
-            report, response = resume_from.report, resume_from.response
-            if findings and response is None:
-                raise RuntimeError(f"cannot resume {sid} at round {round_no}: no review_response for round {round_no - 1}'s findings")
-        else:
+        session = dict(
+            prefix=f"{sid}-r{round_no}-", spec_id=sid,
+            agent_key="implementer", title=f"{ctx.run_id} implement {sid} r{round_no}", run_id=ctx.run_id,
+            uploads=uploads, work_item_id=wid,
+            description=IMPLEMENT_DESCRIPTION.format(spec_id=sid, git=self.git, review_clause=review_clause, skill_clause=self.skill_clause,
+                                                     spec_md_clause=" (spec.md is the readable form)" if self.spec_md else "",
+                                                     response_clause=response_clause, preview_clause=preview_clause,
+                                                     guidance_clause=GUIDANCE_CLAUSE if guidance else ""),
+            rubric_md=ctx.grader_rubric("implementation"), max_iterations=ctx.policy.outcome_max_iterations,
+            budget_usd=ctx.policy.stage_budget_usd["implement"],
+            repository=self.mount(self.base_branch if round_no == 1 else self.branch),
+        )
+        if not would_reuse(ctx, stage="implement", **session):
             reserve_budget(ctx, "implement")
-            res = run_session(
-                ctx, prefix=f"{sid}-r{round_no}-", spec_id=sid,
-                agent_key="implementer", title=f"{ctx.run_id} implement {sid} r{round_no}", run_id=ctx.run_id,
-                stage="implement", uploads=uploads, work_item_id=wid,
-                description=IMPLEMENT_DESCRIPTION.format(spec_id=sid, git=git, review_clause=review_clause, skill_clause=skill_clause,
-                                                         spec_md_clause=" (spec.md is the readable form)" if spec_md else "",
-                                                         response_clause=response_clause, preview_clause=preview_clause,
-                                                         guidance_clause=GUIDANCE_CLAUSE if guidance else ""),
-                rubric_md=ctx.grader_rubric("implementation"), max_iterations=ctx.policy.outcome_max_iterations,
-                budget_usd=ctx.policy.stage_budget_usd["implement"],
-                repository=mount(base_branch if round_no == 1 else branch),
-            )
-            if "blocked.md" in res.outputs:
-                persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-", work_item_id=wid, spec_id=sid)
-                ctx.event("work_item.stage", {"stage": WorkItemStage.BLOCKED.value}, work_item_id=wid, spec_id=sid)
-                return {"result": "escalate", "reason": res.outputs["blocked.md"].decode(errors="replace")}
-            report = require_json(res, "implementation_report.json")
-            stamp_provenance(report, ctx, res, "Implementer", agent_model("implementer"))
-            res.outputs["implementation_report.json"] = json.dumps(report, indent=2).encode()
-            if findings:
-                response = require_json(res, "review_response.json")
-                stamp_provenance(response, ctx, res, "Implementer", agent_model("implementer"))
-                res.outputs["review_response.json"] = json.dumps(response, indent=2).encode()
+        res = run_session(ctx, stage="implement", **session)
+        if "blocked.md" in res.outputs:
             persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-", work_item_id=wid, spec_id=sid)
-            journeys = latest_journeys(ctx, sid, spec)
-        if findings and response is not None:
-            response["round"] = round_no - 1
-            ctx.event("review.response", {"round": round_no - 1, "dispositions": [r["disposition"] for r in response["responses"]]},
-                      work_item_id=wid, spec_id=sid, actor="agent")
+            ctx.event("work_item.stage", {"stage": WorkItemStage.BLOCKED.value}, work_item_id=wid, spec_id=sid)
+            reason = res.outputs["blocked.md"].decode(errors="replace")
+            raise BuildBlocked(str(reject_output(res, reason)))    # its session is not reused: a recovery asks again
+        report = require_json(res, "implementation_report.json")
+        stamp_provenance(report, ctx, res, "Implementer", agent_model("implementer"))
+        res.outputs["implementation_report.json"] = json.dumps(report, indent=2).encode()
+        response = None
+        if findings:
+            response = require_json(res, "review_response.json")
+            stamp_provenance(response, ctx, res, "Implementer", agent_model("implementer"))
+            res.outputs["review_response.json"] = json.dumps(response, indent=2).encode()
+        persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-", work_item_id=wid, spec_id=sid)
+        return {"report": steps.put_json(ctx, report), "response": steps.put_json(ctx, response) if response is not None else None,
+                "journeys": _blobs(ctx, latest_journeys(ctx, sid, self.spec))}
 
-        # ---- authoritative verification (orchestrator side)
+    # ---------------------------------------------------------------- verification
+
+    def verify(self, round_no: int, report: dict[str, Any], journeys: dict[str, bytes], *,
+               check_reported_head: bool = False) -> dict[str, Any]:
+        """The orchestrator's own verification of the branch head: the checks no agent can override."""
+        ctx, sid, wid, spec, verifier = self.ctx, self.sid, self.wid, self.spec, self.verifier
+        base_sha, branch, managed = self.base_sha, self.branch, self.managed
         repo = verifier.checkout(branch)
         head_sha = _git(repo, "rev-parse", "HEAD").strip()
         ctx.event("verification.started", {"head_sha": head_sha, "round": round_no}, spec_id=sid, work_item_id=wid)
         diff = verifier.analyse(repo, base_sha, head_sha)
         manifest_path = repo / ctx.cfg.service_manifest_path
         manifest = _manifest_or_none(manifest_path)
-        managed = ctx.cfg.preview_mode == "managed"
         extra_det: list[CheckResult] = []
         if managed:
             # Every execution happens in the hosted sandbox; this host only read git above. Missing, unbound or
@@ -935,44 +1036,45 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         )
         test_results = {"commands": cmd_results, "e2e": e2e_results, "preview": preview, "environment": environment,
                         **({"collected_tests": collected} if managed else {})}
-        if resumed_round and report.get("head_sha") is not None:
+        if check_reported_head and report.get("head_sha") is not None:
+            # The report came from an implementer session recorded before this verification (a replayed round, or an older
+            # controller's): the branch may have moved since.
             reported_head = report.get("head_sha")
             det.append(CheckResult("implementation_head", reported_head == head_sha,
                                    f"implementation report names {reported_head}; verified candidate is {head_sha}. "
                                    "A changed candidate requires an updated implementation report and review response."))
         ctx.store.put_derived_artifact(ctx.run_id, "implement", f"{sid}-r{round_no}-deterministic_checks.json",
-                               json.dumps([d.to_dict() for d in det], indent=2).encode())
+                                       json.dumps([d.to_dict() for d in det], indent=2).encode())
         ctx.store.put_derived_artifact(ctx.run_id, "implement", f"{sid}-r{round_no}-test_results.json",
-                               json.dumps(test_results, indent=2).encode())
+                                       json.dumps(test_results, indent=2).encode())
+        return {"repo": repo, "head_sha": head_sha, "diff": diff, "det": det, "test_results": test_results, "preview": preview,
+                "visual_uploads": visual_uploads, "measured": measured, "cmd_results": cmd_results, "e2e_results": e2e_results}
 
-        if round_no > review_through:
-            break  # last implementer response done; go straight to the merge judge
-        if det_only_response and all(d.passed for d in det):
-            # The previous round's only standing findings were the orchestrator's own checks; they pass on the
-            # pushed head, so a fresh adversarial read would re-prove what round one already proved. Straight to
-            # the judge, which still sees findings.json and the implementer's answers (post-mortem issue 6).
-            ctx.event("review.findings", {"round": round_no, "count": 0, "blocking": 0, "deterministic_only": True,
-                                          "skipped": "deterministic checks pass on the response; no review round"},
-                      work_item_id=wid, spec_id=sid)
-            break
-        det_only_response = False
+    # ---------------------------------------------------------------- review
 
-        # ---- fresh-context adversarial review, shaped by the change (`review_plan`): general passes plus a security pass, merged
+    def review(self, round_no: int, report: dict[str, Any], response: dict[str, Any] | None, findings: dict[str, Any] | None,
+               v: dict[str, Any], journeys: dict[str, bytes]) -> dict[str, Any]:
+        """Fresh-context adversarial review shaped by the change (`review_plan`): general passes plus a security pass,
+        merged, with the orchestrator's failed checks as findings no reviewer can clear."""
+        ctx, sid, wid, verifier = self.ctx, self.sid, self.wid, self.verifier
+        base_sha, branch, managed, head_sha, repo, diff, det = self.base_sha, self.branch, self.managed, v["head_sha"], v["repo"], v["diff"], v["det"]
+        preview, visual_uploads = v["preview"], v["visual_uploads"]
         security_available = "security_reviewer" in ctx.cfg.agents
         previous_head = ((findings or {}).get("diff_ref") or {}).get("head_sha") if findings and response else None
         delta = delta_since(verifier, repo, previous_head, head_sha) if previous_head else None
-        plan = review_plan(ctx.policy, measured, findings, response, (delta or {}).get("added_lines"), security_available)
+        plan = review_plan(ctx.policy, v["measured"], findings, response, (delta or {}).get("added_lines"), security_available)
         if plan["scope"] == "delta" and delta is None and previous_head != head_sha:
             # The head the previous round reviewed is not in this branch's history: read the whole change again.
             plan = {**plan, "scope": "full", "security": bool(ctx.policy.security_review and security_available),
                     "security_why": "the previous head is gone; full review"}
         pass_ids = list(range(1, plan["passes"] + 1))
         with_security = plan["security"]
-        # Passes persisted before the orchestrator died or paused are reused, not paid for again.
+        # A pass that already read this exact diff (named for its base and head) is reused, not paid for again: a round
+        # that runs again after a crash keeps the reviews it had.
         review_bindings = {i: review_evidence_prefix(ctx, sid, round_no, f"p{i}", base_sha, head_sha) for i in pass_ids}
         security_prefix, saved_security = review_evidence_prefix(ctx, sid, round_no, "sec", base_sha, head_sha)
-        reused = {i: binding[1] for i, binding in review_bindings.items()} if resumed_round else {}
-        reused_sec = saved_security if resumed_round and with_security else None
+        reused = {i: binding[1] for i, binding in review_bindings.items()}
+        reused_sec = saved_security if with_security else None
         to_run = [i for i in pass_ids if reused.get(i) is None]
         run_sec = with_security and reused_sec is None
         if to_run or run_sec:
@@ -982,9 +1084,9 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 reserve_budget(ctx, "review", len(to_run), extra={"security_review": 1} if run_sec else None)
             else:
                 reserve_budget(ctx, "security_review", 1)
+        spec_uploads = self.spec_uploads()
         journey_uploads = {f"journeys/{name}.json": content for name, content in sorted(journeys.items())}
-        rev_uploads = {"spec.json": uploads["spec.json"], **({"spec.md": uploads["spec.md"]} if "spec.md" in uploads else {}), **skill_uploads,
-                       "diff.patch": diff["patch"].encode(), **visual_uploads, **journey_uploads,
+        rev_uploads = {**spec_uploads, "diff.patch": diff["patch"].encode(), **visual_uploads, **journey_uploads,
                        "implementation_report.json": json.dumps(report, indent=2).encode(),
                        "preview.json": json.dumps(preview, indent=2).encode(),
                        "deterministic_checks.json": json.dumps([d.to_dict() for d in det], indent=2).encode()}
@@ -1008,16 +1110,16 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
 
         def one_pass(i: int) -> dict[str, Any]:
             if reused.get(i) is not None:
-                return tag_pass(reused[i], str(i))      # this pass finished before the orchestrator died or paused
+                return tag_pass(reused[i], str(i))
             r = run_session(
                 ctx, prefix=review_bindings[i][0], spec_id=sid,
                 agent_key="reviewer", title=f"{ctx.run_id} review {sid} r{round_no} p{i}", run_id=ctx.run_id,
                 stage="review", uploads=rev_uploads, work_item_id=wid,
                 description=REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
-                                                      git=git_ro, round=round_no, second_round=second, skill_clause=skill_clause,
+                                                      git=self.git_ro, round=round_no, second_round=second, skill_clause=self.skill_clause,
                                                       preview_clause=rev_preview_clause),
                 rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["review"],
-                metadata={"pass": str(i)}, repository=mount(branch),
+                metadata={"pass": str(i)}, repository=self.mount(branch),
             )
             f = require_json(r, "findings.json")
             stamp_provenance(f, ctx, r, "Adversarial reviewer", agent_model("reviewer"))
@@ -1030,7 +1132,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             if not with_security:
                 return None
             if reused_sec is not None:
-                return tag_pass(reused_sec, "security")      # finished before the orchestrator died or paused
+                return tag_pass(reused_sec, "security")
             pre = managed_prechecks(diff["added_lines"]) if managed else security.prechecks(repo, diff["changed"], diff["added_lines"])
             ctx.store.put_artifact(ctx.run_id, "review", security_prefix + "security_prechecks.json", json.dumps(pre, indent=2).encode())
             security_skill = ctx.cfg.skills_dir / "security-review" / "SKILL.md"
@@ -1042,10 +1144,10 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 stage="review", uploads={**rev_uploads, "security_prechecks.json": json.dumps(pre, indent=2).encode(),
                          "skills/security-review/SKILL.md": security_skill.read_bytes()}, work_item_id=wid,
                 description=SECURITY_REVIEW_DESCRIPTION.format(spec_id=sid, base_sha=base_sha, head_sha=head_sha, branch=branch,
-                                                               git=git_ro, round=round_no, second_round=second, skill_clause=skill_clause,
+                                                               git=self.git_ro, round=round_no, second_round=second, skill_clause=self.skill_clause,
                                                                preview_clause=rev_preview_clause),
                 rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["security_review"],
-                metadata={"pass": "security"}, repository=mount(branch),
+                metadata={"pass": "security"}, repository=self.mount(branch),
             )
             f = require_json(r, "findings.json")
             stamp_provenance(f, ctx, r, "Security reviewer", agent_model("security_reviewer"))
@@ -1057,78 +1159,135 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
             sec_future = pool.submit(steps.carry(security_pass))
             passes = list(pool.map(steps.carry(one_pass), pass_ids))
             sec = sec_future.result()
-        findings = merge_findings(passes + ([sec] if sec else []), sid, round_no, base_sha, head_sha, branch,
-                                  previous=findings, response=response)
+        merged = merge_findings(passes + ([sec] if sec else []), sid, round_no, base_sha, head_sha, branch,
+                                previous=findings, response=response)
         # A failed deterministic check is a finding the implementer must answer; nobody else can clear it.
-        findings["findings"] = apply_deterministic(findings["findings"], deterministic_findings(det, cmd_results, e2e_results, managed=managed))
+        merged["findings"] = apply_deterministic(merged["findings"], deterministic_findings(det, v["cmd_results"], v["e2e_results"], managed=managed))
         ctx.store.put_derived_artifact(ctx.run_id, "review", f"{sid}-r{round_no}-findings.merged.json",
-                               json.dumps(findings, indent=2).encode())
-        record_verification_findings(ctx, sid, round_no, findings["findings"])
-        ctx.event("review.findings", {"round": round_no, "count": len(findings["findings"]),
-                                      "blocking": sum(f["severity"] == "blocking" for f in findings["findings"]),
+                                       json.dumps(merged, indent=2).encode())
+        record_verification_findings(ctx, sid, round_no, merged["findings"])
+        ctx.event("review.findings", {"round": round_no, "count": len(merged["findings"]),
+                                      "blocking": sum(f["severity"] == "blocking" for f in merged["findings"]),
                                       "passes": len(pass_ids), "security_pass": with_security, "scope": plan["scope"]},
                   work_item_id=wid, spec_id=sid, actor="agent")
-        standing = standing_findings(findings["findings"])
-        if not standing and all(d.passed for d in det):
-            break  # nothing standing; skip the implementer round and go to the judge
-        # Only the orchestrator's own checks stand (no agent finding is blocking or major): the next round is an
-        # implementer response re-verified by the checks, not a fresh review of the whole diff.
-        det_only_response = _deterministic_only(standing)
-        enter_item_stage(ctx, wid, sid, WorkItemStage.RESPONDING, deterministic_only=det_only_response)
+        return merged
 
-    # ---- merge judge (independent)
-    # The judge sees the real round (the implementer round whose head it judges; the kickoff and merge_readiness.json
-    # used to say "round 1" whatever happened), and its verdict is kept per round.
-    mj_uploads = {
-        "spec.json": json.dumps(public(spec), indent=2).encode(), "diff.patch": diff["patch"].encode(), **visual_uploads,
-        **{f"journeys/{name}.json": content for name, content in sorted(journeys.items())},
-        **({"spec.md": spec_md.encode()} if spec_md else {}),
-        "findings.json": json.dumps(findings or {"findings": []}, indent=2).encode(),
-        "review_response.json": json.dumps(response or {"responses": []}, indent=2).encode(),
-        "test_results.json": json.dumps(test_results, indent=2).encode(),
-        "deterministic_checks.json": json.dumps([d.to_dict() for d in det], indent=2).encode(),
-        **skill_uploads,
-    }
-    # Verification is fresh on resume. Reuse a ready verdict only when every uploaded input is unchanged.
-    input_hashes = {name: hashlib.sha256(content).hexdigest() for name, content in sorted(mj_uploads.items())}
-    folder = ctx.cfg.runs_dir / ctx.run_id / "artifacts" / "merge_judge"
-    original_prefix = f"{sid}-r{round_no}-"
-    attempts = sorted(folder.glob(original_prefix + "*merge_readiness.json"))
-    prior = json.loads(attempts[-1].read_text()) if resume_from and attempts else None
-    if (prior is not None and prior.get("result") == "ready" and prior.get("_head_sha") == head_sha
-            and prior.get("_base_sha") == base_sha and prior.get("_input_hashes") == input_hashes
-            and all(d.passed for d in det)):
-        ctx.event("merge.verdict", {"result": "ready", "round": round_no, "reused": True},
-                  work_item_id=wid, spec_id=sid, actor="agent")
-        return prior
-    # A new judge output is immutable, even when it revisits the same implementation round.
-    judge_prefix = original_prefix if not attempts else original_prefix + f"recheck-{len(attempts):04d}-"
-    enter_item_stage(ctx, wid, sid, WorkItemStage.MERGE_JUDGING)
-    reserve_budget(ctx, "merge_judge")
-    res = run_session(
-        ctx, prefix=judge_prefix, spec_id=sid,
-        agent_key="merge_judge", title=f"{ctx.run_id} merge-judge {sid}", run_id=ctx.run_id, stage="merge_judge",
-        uploads=mj_uploads, work_item_id=wid,
-        description=MERGE_JUDGE_DESCRIPTION.format(spec_id=sid, round=round_no, git=git_ro, skill_clause=skill_clause,
-                                                   criteria_clause=MANAGED_CRITERIA_CLAUSE if ctx.cfg.preview_mode == "managed" else
-                                                   LOCAL_CRITERIA_CLAUSE if ctx.cfg.preview_mode == "local" else CRITERIA_CLAUSE),
-        rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["merge_judge"],
-        repository=mount(branch),
-    )
-    verdict = require_json(res, "merge_readiness.json")
-    verdict["round"] = round_no
-    # Deterministic checks are not negotiable: a failing check forces another_round or escalate.
-    if any(not d.passed for d in det) and verdict["result"] == "ready":
-        verdict["result"] = "another_round"
-        verdict["summary_for_human"] = "Overridden: deterministic checks failed. " + verdict["summary_for_human"]
-    verdict["deterministic_checks"] = [d.to_dict() for d in det]
-    stamp_provenance(verdict, ctx, res, "Merge judge", agent_model("merge_judge"))
-    verdict["_input_hashes"] = input_hashes
-    verdict["_head_sha"], verdict["_branch"], verdict["_base_sha"] = head_sha, branch, base_sha
-    res.outputs["merge_readiness.json"] = json.dumps(verdict, indent=2).encode()
-    persist_outputs(ctx, "merge_judge", res, prefix=judge_prefix, work_item_id=wid, spec_id=sid)
-    ctx.event("merge.verdict", {"result": verdict["result"], "round": round_no}, work_item_id=wid, spec_id=sid, actor="agent")
-    return verdict
+    # ---------------------------------------------------------------- the merge judge
+
+    def judge(self, round_no: int, final: dict[str, Any], recheck: bool) -> dict[str, Any]:
+        """The independent merge judge on the final round. A recheck (the owner's build-recovery approve) verifies that
+        head again first: the judge never sees evidence older than the decision to look again, and an earlier verdict
+        never stands in for it."""
+        ctx, sid, wid = self.ctx, self.sid, self.wid
+        det = [CheckResult.from_dict(d) for d in final["det"]]
+        test_results = _json_of(ctx, final["test_results"])
+        patch = ctx.store.get_blob(ctx.run_id, final["patch"])
+        visual_uploads = _files(ctx, final["visual"])
+        head_sha = final["head_sha"]
+        journeys = _files(ctx, final["journeys"])
+        if recheck:
+            v = self.verify(round_no, _json_of(ctx, final["report"]), journeys, check_reported_head=True)
+            det, test_results, head_sha, visual_uploads = v["det"], v["test_results"], v["head_sha"], v["visual_uploads"]
+            patch = v["diff"]["patch"].encode()
+        findings, response = _json_of(ctx, final["findings"]), _json_of(ctx, final["response"])
+        mj_uploads = {
+            "spec.json": json.dumps(public(self.spec), indent=2).encode(), "diff.patch": patch, **visual_uploads,
+            **{f"journeys/{name}.json": content for name, content in sorted(journeys.items())},
+            **({"spec.md": self.spec_md.encode()} if self.spec_md else {}),
+            "findings.json": json.dumps(findings or {"findings": []}, indent=2).encode(),
+            "review_response.json": json.dumps(response or {"responses": []}, indent=2).encode(),
+            "test_results.json": json.dumps(test_results, indent=2).encode(),
+            "deterministic_checks.json": json.dumps([d.to_dict() for d in det], indent=2).encode(),
+            **self.skill_uploads,
+        }
+        input_hashes = {name: hashlib.sha256(content).hexdigest() for name, content in sorted(mj_uploads.items())}
+
+        def name_this_judgement() -> str:
+            # A new judge output is immutable, even when it revisits the same implementation round: the next free name,
+            # chosen once (a step of its own), so a judgement replayed after a crash keeps the name its verdict was saved
+            # under instead of looking like an earlier attempt.
+            folder = ctx.cfg.runs_dir / ctx.run_id / "artifacts" / "merge_judge"
+            original_prefix = f"{sid}-r{round_no}-"
+            attempts = sorted(folder.glob(original_prefix + "*merge_readiness.json"))
+            return original_prefix if not attempts else original_prefix + f"recheck-{len(attempts):04d}-"
+        judge_prefix = steps.run_step(ctx, f"{steps.scope()}/name", {"round": round_no}, name_this_judgement)
+        enter_item_stage(ctx, wid, sid, WorkItemStage.MERGE_JUDGING)
+        session = dict(
+            prefix=judge_prefix, spec_id=sid,
+            agent_key="merge_judge", title=f"{ctx.run_id} merge-judge {sid}", run_id=ctx.run_id,
+            uploads=mj_uploads, work_item_id=wid,
+            description=MERGE_JUDGE_DESCRIPTION.format(spec_id=sid, round=round_no, git=self.git_ro, skill_clause=self.skill_clause,
+                                                       criteria_clause=MANAGED_CRITERIA_CLAUSE if ctx.cfg.preview_mode == "managed" else
+                                                       LOCAL_CRITERIA_CLAUSE if ctx.cfg.preview_mode == "local" else CRITERIA_CLAUSE),
+            rubric_md=None, max_iterations=1, budget_usd=ctx.policy.stage_budget_usd["merge_judge"],
+            repository=self.mount(self.branch),
+        )
+        if not would_reuse(ctx, stage="merge_judge", **session):
+            reserve_budget(ctx, "merge_judge")
+        res = run_session(ctx, stage="merge_judge", **session)
+        verdict = require_json(res, "merge_readiness.json")
+        verdict["round"] = round_no
+        # Deterministic checks are not negotiable: a failing check forces another_round or escalate.
+        if any(not d.passed for d in det) and verdict["result"] == "ready":
+            verdict["result"] = "another_round"
+            verdict["summary_for_human"] = "Overridden: deterministic checks failed. " + verdict["summary_for_human"]
+        verdict["deterministic_checks"] = [d.to_dict() for d in det]
+        stamp_provenance(verdict, ctx, res, "Merge judge", agent_model("merge_judge"))
+        verdict["_input_hashes"] = input_hashes
+        verdict["_head_sha"], verdict["_branch"], verdict["_base_sha"] = head_sha, self.branch, self.base_sha
+        res.outputs["merge_readiness.json"] = json.dumps(verdict, indent=2).encode()
+        persist_outputs(ctx, "merge_judge", res, prefix=judge_prefix, work_item_id=wid, spec_id=sid)
+        ctx.event("merge.verdict", {"result": verdict["result"], "round": round_no}, work_item_id=wid, spec_id=sid, actor="agent")
+        return verdict
+
+
+def adopt_rounds(ctx: RunContext, spec: dict[str, Any], corrective: dict[str, Any] | None = None) -> None:
+    """Record the rounds an older controller left as artefacts (no round steps in the run's database), so the loop
+    continues where they stop instead of running the implementer again (ADR-0013). The latest round with an implementer
+    report keeps that report (its implementer is not run again; its verification and review are); every earlier round
+    with merged findings is recorded as answered. A latest round whose report lacks the response its findings required
+    runs its implementer again. Nothing is recorded when the run has round steps, or no report."""
+    sid = spec["spec_id"]
+    if any(s.key.startswith(f"implement/{sid}/r") for s in ctx.store.steps(ctx.run_id)):
+        return
+    folder = ctx.cfg.runs_dir / ctx.run_id / "artifacts" / "implement"
+    rounds = sorted(int(m.group(1)) for p in folder.glob(f"{sid}-r*-implementation_report.json")
+                    if (m := re.fullmatch(re.escape(sid) + r"-r(\d+)-implementation_report\.json", p.name)))
+    if not rounds:
+        return
+    n = rounds[-1]
+
+    def findings_of(k: int) -> dict[str, Any] | None:
+        found = artifact_json_or_none(ctx, "review", f"{sid}-r{k}-findings.merged.json")
+        if found is None and corrective is not None and int(corrective.get("round", 0)) == k:
+            found = corrective.get("review_findings") or {"findings": []}
+        return found
+    if n > 1 and findings_of(n - 1) is None:
+        raise RuntimeError(f"cannot continue {sid}: round {n} has a report but round {n - 1} has no merged findings")
+    journeys = _blobs(ctx, latest_journeys(ctx, sid, spec))
+    carried: dict[str, Any] = {"findings": None, "response": None, "det_only": False, "journeys": journeys}
+    for k in range(1, n + 1):
+        report = artifact_json_or_none(ctx, "implement", f"{sid}-r{k}-implementation_report.json")
+        response = artifact_json_or_none(ctx, "implement", f"{sid}-r{k}-review_response.json")
+        last = k == n and not (corrective is not None and int(corrective.get("round", 0)) == n)
+        if last:
+            if report is not None and not (carried["findings"] and response is None):
+                steps.record_step(ctx, f"implement/{sid}/r{k}/author",
+                                  {"report": steps.put_json(ctx, report), "journeys": journeys,
+                                   "response": steps.put_json(ctx, response) if response is not None else None})
+            return
+        findings = findings_of(k)
+        det = artifact_json_or_none(ctx, "implement", f"{sid}-r{k}-deterministic_checks.json") or []
+        test_results = artifact_json_or_none(ctx, "implement", f"{sid}-r{k}-test_results.json") or {}
+        standing = standing_findings((findings or {}).get("findings", []))
+        steps.record_step(ctx, f"implement/{sid}/r{k}", {
+            "report": steps.put_json(ctx, report or {}), "response": steps.put_json(ctx, response) if response is not None else None,
+            "journeys": journeys, "head_sha": ((findings or {}).get("diff_ref") or {}).get("head_sha"), "base_sha": None,
+            "det": det, "test_results": steps.put_json(ctx, test_results), "patch": ctx.store.put_blob(ctx.run_id, b""),
+            "visual": {}, "preview": test_results.get("preview") or {}, "findings": steps.put_json(ctx, findings or {"findings": []}),
+            "next": "judge" if k == n else "respond", "det_only": _deterministic_only(standing)})
+        carried = {"findings": findings or {"findings": []}, "response": response, "det_only": _deterministic_only(standing),
+                   "journeys": journeys}
 
 
 def latest_journeys(ctx: RunContext, sid: str, spec: dict[str, Any]) -> dict[str, bytes]:

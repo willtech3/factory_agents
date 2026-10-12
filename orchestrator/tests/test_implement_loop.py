@@ -224,7 +224,8 @@ def test_preview_info_in_local_mode_is_unreachable_with_no_url(tmp_path, root):
 
 
 def test_resume_on_changed_head_rechecks_preserves_proof_and_does_not_reuse_old_reviews(tmp_path, root):
-    from factory.stages.implement import ResumePoint
+    """An older controller left round 1's report for a head the branch no longer has: the report is adopted
+    (`adopt_rounds`), its implementer is not asked again, and the head check fails on the new head."""
     origin = seeded_remote(tmp_path)
     branch = "factory/run_loop0000001/spec_det"
     _push(origin, tmp_path, branch, "main", {"app/main.py": "X = 2\n", "service_manifest.json": json.dumps(HTTP_MANIFEST)}, 0)
@@ -239,8 +240,7 @@ def test_resume_on_changed_head_rechecks_preserves_proof_and_does_not_reuse_old_
         ctx.store.put_artifact(ctx.run_id, "review", f"spec_det-r1-baseold-base-headold-candidate-p{i}-findings.json",
                                json.dumps({"diff_ref": {"base_sha": "old-base", "head_sha": "old-candidate"}, "findings": []}).encode())
     verifier = LocalVerifier(str(origin), tmp_path / "runs" / ctx.run_id / "verify")
-    verdict = run_implement_one(ctx, _spec(False), str(origin), "main", verifier, {},
-                                resume_from=ResumePoint(round_no=1, report=old_report))
+    verdict = run_implement_one(ctx, _spec(False), str(origin), "main", verifier, {})
     assert verdict["result"] == "ready"
     assert _titles(driver) == ["review spec_det r1 p1", "review spec_det r1 p2", "implement spec_det r2", "merge-judge spec_det"]
     failed = ctx.store.get_json(ctx.run_id, "implement", "spec_det-r1-deterministic_checks.json")

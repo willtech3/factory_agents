@@ -280,7 +280,7 @@ def test_a_spec_implemented_before_the_controller_died_is_not_implemented_again(
     change request; the resume opens it, and builds nothing again."""
     built, opened = [], []
 
-    def implement(ctx, spec, repo_url, base_branch, verifier, deps, *, spec_md="", resume_from=None, guidance=""):
+    def implement(ctx, spec, repo_url, base_branch, verifier, deps, *, spec_md="", guidance="", recovery=None, corrective=None):
         built.append(spec["spec_id"])
         return {"result": "ready", "round": 1, "_head_sha": f"head-{spec['spec_id']}", "_branch": f"factory/{spec['spec_id']}"}
 
