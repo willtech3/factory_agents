@@ -62,9 +62,10 @@ RUN_TRANSITIONS: dict[RunStage, set[RunStage]] = {
     RunStage.ESCALATED: {RunStage.DECOMPOSING, RunStage.SPECIFYING, RunStage.IMPLEMENTING, RunStage.CLOSED, RunStage.FAILED},
     RunStage.PAUSED_BUDGET: {RunStage.DECOMPOSING, RunStage.SPECIFYING, RunStage.IMPLEMENTING, RunStage.CLOSED, RunStage.FAILED},
     RunStage.COMPLETED: set(),
-    # `run.resumed` only: a run that died during implementation picks up where its artefacts stop; one whose controller was
-    # stopped while idle at Gate 2 continues waiting on that same gate (runner.pending_gate2 verifies it first)
-    RunStage.FAILED: {RunStage.IMPLEMENTING, RunStage.GATE_2_SPEC_READINESS},
+    # `run.resumed` only: the run goes back to the stage it stopped in and its pipeline replays from there (ADR-0013;
+    # runner.stage_to_continue)
+    RunStage.FAILED: {RunStage.INTAKE, RunStage.DECOMPOSING, RunStage.GATE_1_DECOMPOSITION, RunStage.SPECIFYING,
+                      RunStage.GATE_2_SPEC_READINESS, RunStage.IMPLEMENTING, RunStage.PAUSED_BUDGET, RunStage.ESCALATED},
     RunStage.CLOSED: set(),
 }
 

@@ -1,7 +1,12 @@
 """Top-level run loop: wires the stages together and handles gate decisions.
 
-This is the deterministic reducer at the heart of the factory. Everything a human sees in
-the Factory Console is derived from the events this file appends.
+The run is a pipeline of durable steps (ADR-0013, `steps.py`): each decomposition, gate, specification pass, approval,
+implementation and integration records its result. `run` starts the pipeline; `resume` runs the same pipeline again
+from the top, and every step that finished returns its recorded result, so the run continues at the first step that
+did not: a session still working is followed, a gate still open is waited on, a decided gate's decision stands. There
+is no resume path per stage.
+
+Everything a human sees in the Factory Console is derived from the events the steps append.
 
 Gate presentation depends on `cfg.gate_surface` (ADR-0007):
 - every surface gets an artifact page per gate (`surfaces/artifact_pages.py`) when `ctx.pages` is set;
@@ -18,24 +23,24 @@ import fcntl
 import hashlib
 import json
 import re
-import time
 import uuid
-from pathlib import Path
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 
+from . import steps
 from .approvals import approval_guidance, route_lines, subset_problems
 from .budget import BudgetPaused, last_pause
 from .config import managed_gaps
-from .gates import Decision, Gate, GateDecision, GateKind, parse_budget
+from .gates import Decision, GateDecision, GateKind, parse_budget
 from .stages import RunContext
+from .stages.common import artifact_json_or_none, decision_from_event, orphaned_sessions, public, queued_gate
+from .stages.common import hosted_run, recorded_preview_mode  # noqa: F401  the Console imports recorded_preview_mode from here
 from .stages.decompose import gate_1, run_decompose
-from .stages.common import artifact_json_or_none, gate_decision, orphaned_sessions, public
 from .stages.implement import LocalVerifier, ResumePoint, run_implement_one
 from .stages.integrate import run_integrate
 from .stages.specify import gate_2, run_specify
-from .stages.common import hosted_run, recorded_preview_mode  # noqa: F401  the Console imports recorded_preview_mode from here
-from .state import RunStage, WorkItemStage
+from .state import RunStage, RunState, WorkItemStage, reduce
 from .surfaces.artifact_pages import render_gate1_page, render_gate2_page
 
 
@@ -99,7 +104,7 @@ def run(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
     ctx.store.put_artifact(ctx.run_id, "intake", "outcome.json", json.dumps(outcome, indent=2).encode())
     if ctx.tracker is not None:
         ctx.tracker.register_run(ctx.run_id, outcome)
-    return until_budget_pause(lambda: _from_decompose(ctx, outcome))
+    return until_budget_pause(lambda: pipeline(ctx, outcome))
 
 
 def until_budget_pause(step: Callable[[], RunStage]) -> RunStage:
@@ -113,81 +118,195 @@ def until_budget_pause(step: Callable[[], RunStage]) -> RunStage:
         return RunStage.PAUSED_BUDGET
 
 
-def _from_decompose(ctx: RunContext, outcome: dict[str, Any], feedback: str | None = None,
-                    prior: dict[str, Any] | None = None) -> RunStage:
-    """Stage 1 and Gate 1 (loop until approved or rejected), then the rest of the run. `feedback` and `prior` are
-    the owner's request-changes and the decomposition it was about, when resuming a re-decomposition."""
-    # ---------------- Stage 1 + Gate 1 (loop until approved or rejected)
-    while True:
-        decomposition, shas = run_decompose(ctx, outcome, feedback, prior)
-        if ctx.tracker is not None:
-            ctx.tracker.register_work_items(ctx.run_id, decomposition)
-        dec_md = ctx.store.get_artifact(ctx.run_id, "decompose", f"r{decomposition['revision']}-decomposition.md")
-        files = {"decomposition.md": dec_md, "decomposition.json": json.dumps(decomposition, indent=2).encode()}
-        page = render_gate1_page(ctx.run_id, outcome, decomposition, dec_md.decode(errors="replace"), shas)
-        urls = _present(ctx, files, "gate_1", page, {"decomposition.md": "full", "decomposition.json": "work-items"})
-        d = gate_1(ctx, outcome, decomposition, shas, urls)
-        if d.decision == Decision.APPROVE:
-            approval_notes = notes_by_item(d.comments, [w["work_item_id"] for w in decomposition["work_items"]])
-            break
-        if d.decision == Decision.REJECT:
-            ctx.event("stage.entered", {"stage": RunStage.CLOSED.value}, stage="gate_1", actor="human")
-            return RunStage.CLOSED
-        feedback, prior = _feedback(ctx, d), decomposition
-    return _from_specify(ctx, outcome, decomposition, approval_notes or None, None)
+# ---------------------------------------------------------------- the pipeline, as durable steps
 
-
-def _from_specify(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[str, Any],
-                  human_comments: dict[str, str] | None, prior_specs: dict[str, dict] | None,
-                  previous_verdict: dict[str, Any] | None = None, round_offset: int = 0,
-                  pending: "PendingGate2 | None" = None) -> RunStage:
-    """Stage 2 and Gate 2 (loop until approved or rejected), then implementation unless the run is design-only.
-    `human_comments` are the owner's notes per work item (Gate 1 approval notes, or routed Gate 2 feedback with
-    `prior_specs` as the drafts they were about). `previous_verdict` is the verdict the owner sent back, if any, and
-    `round_offset` the last round already in the store: rounds keep counting across send-backs and resumes, so no
-    artefact name is reused. `pending` (a recovered controller, `resume`) is a Gate 2 already open on the verified
-    final artefacts: the first pass waits for the owner's decision on that very gate instead of writing and opening one."""
-    # ---------------- Stage 2 + Gate 2
-    while True:
-        if pending is not None:
-            specs, verdict, spec_md = pending.specs, pending.verdict, pending.spec_md
-            d = wait_for_gate(ctx, pending.gate_id, pending.kind)
-            pending = None
-        else:
-            specs, verdict, spec_md, d = _specify_and_gate(ctx, outcome, decomposition, human_comments, prior_specs,
-                                                           previous_verdict, round_offset)
-        if d.decision == Decision.REJECT:
-            ctx.event("stage.entered", {"stage": RunStage.CLOSED.value}, stage="gate_2", actor="human")
-            return RunStage.CLOSED
-        if d.decision in (Decision.APPROVE, Decision.APPROVE_SUBSET):
-            approved = set(d.approved_subset) if d.decision == Decision.APPROVE_SUBSET else set(specs)
-            problems = subset_problems(specs, d.approved_subset) if d.decision == Decision.APPROVE_SUBSET else []
-            if problems:
-                # The decision surfaces refuse such a selection; one that still arrives never starts any implementation.
-                raise RuntimeError(f"Gate 2 {d.gate_id}: the approved selection is not dependency-valid ({'; '.join(problems)}); "
-                                   f"nothing was implemented")
-            selected = {sid: s for sid, s in specs.items() if sid in approved}
-            guidance = record_approval(ctx, d, selected)
-            for sid in sorted(approved):
-                ctx.event("work_item.stage", {"stage": WorkItemStage.SPEC_APPROVED.value, "spec_id": sid},
-                          work_item_id=specs[sid]["work_item_id"], spec_id=sid, actor="human")
-            specs = selected
-            break
-        human_comments, prior_specs = _route_gate2_feedback(ctx, d, specs)
-        previous_verdict, round_offset = verdict, max(int(verdict.get("round") or round_offset + 1), round_offset)
-    spec_verdict = verdict
+def pipeline(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
+    """The run from the outcome to its change requests. Between steps it only computes from earlier steps' results, so
+    running it again (`resume`) reaches the same steps with the same inputs and gets their recorded results back."""
+    decomposed = _decomposition_approved(ctx, outcome)
+    if decomposed is None:
+        return RunStage.CLOSED
+    decomposition, notes = decomposed
+    contracts = _contracts_approved(ctx, outcome, decomposition, notes)
+    if contracts is None:
+        return RunStage.CLOSED
+    specs, spec_md, verdict, approval = contracts
     if ctx.policy.design_only:
         ctx.event("run.completed", {"design_only": True, "approved_specs": sorted(specs),
                                     "note": "design-only run: no implementation stage was requested"}, stage="gate_2")
         return RunStage.COMPLETED
+    _check_approved_contracts(ctx, approval)
+    return implement_and_integrate(ctx, outcome, specs, spec_md, verdict, guidance=approval["guidance"])
 
-    return implement_and_integrate(ctx, outcome, specs, spec_md, spec_verdict, guidance=guidance)
+
+def _decomposition_approved(ctx: RunContext, outcome: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str] | None] | None:
+    """Stage 1 and Gate 1, one step each per pass, until the owner approves (the decomposition and their notes per work
+    item) or rejects (None). A request for changes sends the next pass their feedback and the decomposition it was about."""
+    feedback: str | None = None
+    prior: dict[str, Any] | None = None
+    n = 0
+    while True:
+        n += 1
+        decomposition, shas = _decompose_step(ctx, outcome, n, feedback, prior)
+        gate = _gate_1_step(ctx, outcome, n, decomposition, shas)
+        decision = gate["decision"]["decision"]
+        if decision == Decision.APPROVE.value:
+            return decomposition, gate["notes"] or None
+        if decision == Decision.REJECT.value:
+            _close(ctx, "gate_1")
+            return None
+        feedback, prior = gate["feedback"], decomposition
+
+
+def _decompose_step(ctx: RunContext, outcome: dict[str, Any], n: int, feedback: str | None,
+                    prior: dict[str, Any] | None) -> tuple[dict[str, Any], dict[str, str]]:
+    def body() -> dict[str, Any]:
+        decomposition, shas = run_decompose(ctx, outcome, feedback, prior)
+        if ctx.tracker is not None:
+            ctx.tracker.register_work_items(ctx.run_id, decomposition)
+        return {"decomposition": steps.put_json(ctx, decomposition), "shas": shas}
+    result = steps.run_step(ctx, f"decompose#{n}", {"outcome": _sha(outcome), "feedback": feedback, "prior": _sha(prior)}, body)
+    return steps.get_json(ctx, result["decomposition"]), result["shas"]
+
+
+def _gate_1_step(ctx: RunContext, outcome: dict[str, Any], n: int, decomposition: dict[str, Any],
+                 shas: dict[str, str]) -> dict[str, Any]:
+    """Gate 1 on pass `n`'s decomposition. The result keeps what the next step needs from the decision: the feedback as
+    the owner wrote it then (tracker comments can change later), or the approval notes per work item."""
+    def body() -> dict[str, Any]:
+        dec_md = ctx.store.get_artifact(ctx.run_id, "decompose", f"r{decomposition['revision']}-decomposition.md")
+        files = {"decomposition.md": dec_md, "decomposition.json": json.dumps(decomposition, indent=2).encode()}
+        page = render_gate1_page(ctx.run_id, outcome, decomposition, dec_md.decode(errors="replace"), shas)
+        d = gate_1(ctx, outcome, decomposition, shas,
+                   lambda: _present(ctx, files, "gate_1", page, {"decomposition.md": "full", "decomposition.json": "work-items"}))
+        return {"decision": _decision_record(d),
+                "feedback": _feedback(ctx, d) if d.decision == Decision.REQUEST_CHANGES else None,
+                "notes": notes_by_item(d.comments, [w["work_item_id"] for w in decomposition["work_items"]])
+                if d.decision == Decision.APPROVE else None}
+    return steps.run_step(ctx, f"gate_1#{n}", {"decomposition": _sha(decomposition), "shas": shas}, body, kind="gate")
+
+
+def _contracts_approved(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[str, Any], notes: dict[str, str] | None
+                        ) -> tuple[dict[str, dict], dict[str, str], dict[str, Any], dict[str, Any]] | None:
+    """Stage 2 and Gate 2, one step each per pass, until the owner approves (the approved specs, their spec.md, the
+    judge's verdict and the approval) or rejects (None). Rounds keep counting across passes, so no artefact name the
+    owner decided on is reused; a send-back gives the writers the routed feedback and the drafts it was about, and the
+    first judge of the next pass the verdict the owner saw."""
+    human_comments: dict[str, str] | None = notes
+    prior_specs: dict[str, dict] | None = None
+    previous_verdict: dict[str, Any] | None = None
+    round_offset = 0
+    n = 0
+    while True:
+        n += 1
+        written = _specify_step(ctx, outcome, decomposition, n, human_comments, prior_specs, previous_verdict, round_offset)
+        specs, verdict, spec_md = written["specs"], written["verdict"], written["spec_md"]
+        gate = _gate_2_step(ctx, outcome, n, written)
+        d = decision_from_event(gate["decision"])
+        if d.decision == Decision.REJECT:
+            _close(ctx, "gate_2")
+            return None
+        if d.decision in (Decision.APPROVE, Decision.APPROVE_SUBSET):
+            approval = _approve_step(ctx, n, d, specs)
+            selected = {sid: s for sid, s in specs.items() if sid in approval["approved"]}
+            return selected, spec_md, verdict, approval
+        human_comments, prior_specs = _route_gate2_feedback(gate["feedback"], specs)
+        previous_verdict, round_offset = verdict, max(int(verdict.get("round") or round_offset + 1), round_offset)
+
+
+def _specify_step(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[str, Any], n: int,
+                  human_comments: dict[str, str] | None, prior_specs: dict[str, dict] | None,
+                  previous_verdict: dict[str, Any] | None, round_offset: int) -> dict[str, Any]:
+    """Pass `n` of the writers and the judge. The result is the specs (with each writer's spec.md), the verdict, and the
+    spec.md per spec, kept as one blob."""
+    def body() -> str:
+        specs, verdict = run_specify(ctx, outcome, decomposition, human_comments, prior_specs,
+                                     previous_verdict=previous_verdict, round_offset=round_offset)
+        return steps.put_json(ctx, {"specs": specs, "verdict": verdict,
+                                    "spec_md": {sid: _spec_markdown(ctx, s) for sid, s in specs.items()}})
+    inputs = {"decomposition": _sha(decomposition), "comments": human_comments, "previous_verdict": _sha(previous_verdict),
+              "prior": {w: _sha(public(s)) for w, s in sorted((prior_specs or {}).items())}, "round_offset": round_offset}
+    blob = steps.run_step(ctx, f"specify#{n}", inputs, body)
+    return {**steps.get_json(ctx, blob), "blob": blob}
+
+
+def _gate_2_step(ctx: RunContext, outcome: dict[str, Any], n: int, written: dict[str, Any]) -> dict[str, Any]:
+    """Gate 2 on pass `n`'s specs: publish them as the gate's `final-*` artefacts, present them, wait for the decision."""
+    specs, verdict, spec_md = written["specs"], written["verdict"], written["spec_md"]
+
+    def body() -> dict[str, Any]:
+        # `final-*` point at the current candidate for the gate (replaced on every pass); the per-round artefacts the
+        # owner decided on keep their names and are never overwritten.
+        spec_shas = {f"{sid}.json": ctx.store.put_artifact(ctx.run_id, "specify", f"final-{sid}.json",
+                                                            json.dumps(public(s), indent=2).encode(), replace=True)
+                     for sid, s in specs.items()}
+        for sid, md in spec_md.items():
+            if md:
+                ctx.store.put_artifact(ctx.run_id, "specify", f"final-{sid}.md", md.encode(), replace=True)
+        spec_shas["verdict.json"] = ctx.store.put_artifact(ctx.run_id, "judge", "final-verdict.json",
+                                                           json.dumps(verdict, indent=2).encode(), replace=True)
+
+        def urls() -> dict[str, str]:
+            files = {**{f"specs/{sid}.json": json.dumps(public(s), indent=2).encode() for sid, s in specs.items()},
+                     **{f"specs/{sid}.md": spec_md[sid].encode() for sid in specs if spec_md.get(sid)},
+                     "verdict.json": json.dumps(verdict, indent=2).encode()}
+            page = render_gate2_page(ctx.run_id, outcome, {sid: public(s) for sid, s in specs.items()}, verdict, spec_shas, spec_md)
+            anchors = {f"specs/{sid}.json": f"spec-{sid}" for sid in specs}
+            anchors.update({f"specs/{sid}.md": f"spec-{sid}" for sid in specs})
+            published = _present(ctx, files, "gate_2", page, anchors)
+            return {**published, **{f"{sid}.json": published.get(f"specs/{sid}.json", "") for sid in specs},
+                    "verdict.json": published.get("verdict.json", "")}
+        d = gate_2(ctx, outcome, specs, verdict, spec_shas, urls)
+        return {"decision": _decision_record(d), "feedback": _feedback(ctx, d) if d.decision == Decision.REQUEST_CHANGES else None}
+    return steps.run_step(ctx, f"gate_2#{n}", {"specs": written["blob"]}, body, kind="gate")
+
+
+def _approve_step(ctx: RunContext, n: int, d: GateDecision, specs: dict[str, dict]) -> dict[str, Any]:
+    """Record what Gate 2 approved: each approved spec's sha256, the owner's bounded notes per spec, and the work items'
+    move to spec_approved. A selection that is not dependency-valid never starts any implementation."""
+    def body() -> dict[str, Any]:
+        approved = set(d.approved_subset) if d.decision == Decision.APPROVE_SUBSET else set(specs)
+        problems = subset_problems(specs, d.approved_subset) if d.decision == Decision.APPROVE_SUBSET else []
+        if problems:
+            # The decision surfaces refuse such a selection; one that still arrives never starts any implementation.
+            raise RuntimeError(f"Gate 2 {d.gate_id}: the approved selection is not dependency-valid ({'; '.join(problems)}); "
+                               f"nothing was implemented")
+        selected = {sid: s for sid, s in specs.items() if sid in approved}
+        guidance = record_approval(ctx, d, selected)
+        for sid in sorted(approved):
+            ctx.event("work_item.stage", {"stage": WorkItemStage.SPEC_APPROVED.value, "spec_id": sid},
+                      work_item_id=specs[sid]["work_item_id"], spec_id=sid, actor="human")
+        hashes = {sid: hashlib.sha256(ctx.store.get_artifact(ctx.run_id, "specify", f"final-{sid}.json")).hexdigest()
+                  for sid in sorted(approved)}
+        return {"gate_id": d.gate_id, "approved": hashes, "guidance": guidance}
+    return steps.run_step(ctx, f"approve#{n}", {"gate": d.gate_id}, body)
+
+
+def _check_approved_contracts(ctx: RunContext, approval: dict[str, Any]) -> None:
+    """Nothing is built from a spec whose stored bytes differ from what Gate 2 approved."""
+    for sid, sha in approval["approved"].items():
+        if hashlib.sha256(ctx.store.get_artifact(ctx.run_id, "specify", f"final-{sid}.json")).hexdigest() != sha:
+            raise RuntimeError(f"specify/final-{sid}.json no longer matches the spec Gate 2 {approval['gate_id']} approved")
+
+
+def _close(ctx: RunContext, stage: str) -> None:
+    if ctx.store.state(ctx.run_id).stage != RunStage.CLOSED:
+        ctx.event("stage.entered", {"stage": RunStage.CLOSED.value}, stage=stage, actor="human")
+
+
+def _decision_record(d: GateDecision) -> dict[str, Any]:
+    return {"gate_id": d.gate_id, "decision": d.decision.value, "decided_by": d.decided_by, "comments": d.comments,
+            "approved_subset": list(d.approved_subset), "artifact_shas": list(d.artifact_shas)}
+
+
+def _sha(value: Any) -> str | None:
+    return None if value is None else steps.inputs_sha(value)
 
 
 def record_approval(ctx: RunContext, d: GateDecision, approved: dict[str, dict]) -> dict[str, str]:
     """Keep what Gate 2 approved and the owner's notes with it: the sha256 of each approved spec as stored for the gate
     (`specify/final-<spec_id>.json`) and the bounded per-spec guidance from the decision's comments. The implementer gets
-    the guidance; a resume re-reads both and refuses a spec whose bytes no longer match what was approved."""
+    the guidance; implementation refuses a spec whose bytes no longer match what was approved."""
     hashes = {sid: hashlib.sha256(ctx.store.get_artifact(ctx.run_id, "specify", f"final-{sid}.json")).hexdigest()
               for sid in sorted(approved)}
     if any(sha not in d.artifact_shas for sha in hashes.values()):
@@ -202,70 +321,14 @@ def record_approval(ctx: RunContext, d: GateDecision, approved: dict[str, dict])
     return record["guidance"]
 
 
-def approved_record(ctx: RunContext, events: list[Any], specs: dict[str, dict]) -> dict[str, str]:
-    """The guidance a resumed implementation carries, after checking each approved spec is still the approved bytes."""
-    produced = next((ev.payload for ev in reversed(events) if ev.kind == "artifact.produced"
-                     and ev.payload.get("artifact_type") == "gate2_approval"), None)
-    if produced is None:
-        raise RuntimeError(f"{ctx.run_id} has no recorded Gate 2 approval to resume from")
-    record = json.loads(ctx.store.get_artifact(ctx.run_id, "gate_2", Path(produced["path"]).name))
-    if set(record["approved"]) != set(specs):
-        raise RuntimeError(f"the specs marked approved ({sorted(specs)}) differ from Gate 2 {record['gate_id']}'s approval "
-                           f"({sorted(record['approved'])})")
-    for sid, sha in record["approved"].items():
-        if hashlib.sha256(ctx.store.get_artifact(ctx.run_id, "specify", f"final-{sid}.json")).hexdigest() != sha:
-            raise RuntimeError(f"specify/final-{sid}.json no longer matches the spec Gate 2 {record['gate_id']} approved")
-    return {sid: text for sid, text in record.get("guidance", {}).items() if sid in specs}
-
-
-def _specify_and_gate(ctx: RunContext, outcome: dict[str, Any], decomposition: dict[str, Any], human_comments: dict[str, str] | None,
-                      prior_specs: dict[str, dict] | None, previous_verdict: dict[str, Any] | None, round_offset: int
-                      ) -> tuple[dict[str, dict], dict[str, Any], dict[str, str], GateDecision]:
-    """One specification pass and its Gate 2: write and judge the specs, publish them as the gate's `final-*`
-    artefacts, present them, and wait for the owner's decision."""
-    specs, verdict = run_specify(ctx, outcome, decomposition, human_comments, prior_specs,
-                                 previous_verdict=previous_verdict, round_offset=round_offset)
-    # `final-*` point at the current candidate for the gate (replaced on every cycle); the per-round artefacts the
-    # owner decided on keep their names and are never overwritten.
-    spec_shas = {f"{sid}.json": ctx.store.put_artifact(ctx.run_id, "specify", f"final-{sid}.json",
-                                                        json.dumps(public(s), indent=2).encode(), replace=True)
-                 for sid, s in specs.items()}
-    spec_md = {sid: _spec_markdown(ctx, s) for sid, s in specs.items()}
-    for sid, md in spec_md.items():
-        if md:
-            ctx.store.put_artifact(ctx.run_id, "specify", f"final-{sid}.md", md.encode(), replace=True)
-    spec_shas["verdict.json"] = ctx.store.put_artifact(ctx.run_id, "judge", "final-verdict.json",
-                                                       json.dumps(verdict, indent=2).encode(), replace=True)
-    files = {**{f"specs/{sid}.json": json.dumps(public(s), indent=2).encode() for sid, s in specs.items()},
-             **{f"specs/{sid}.md": spec_md[sid].encode() for sid in specs if spec_md[sid]},
-             "verdict.json": json.dumps(verdict, indent=2).encode()}
-    page = render_gate2_page(ctx.run_id, outcome, {sid: public(s) for sid, s in specs.items()}, verdict, spec_shas, spec_md)
-    anchors = {f"specs/{sid}.json": f"spec-{sid}" for sid in specs}
-    anchors.update({f"specs/{sid}.md": f"spec-{sid}" for sid in specs})
-    urls = _present(ctx, files, "gate_2", page, anchors)
-    urls = {**urls, **{f"{sid}.json": urls.get(f"specs/{sid}.json", "") for sid in specs},
-            "verdict.json": urls.get("verdict.json", "")}
-    d = gate_2(ctx, outcome, specs, verdict, spec_shas, urls)
-    return specs, verdict, spec_md, d
-
-
-def _route_gate2_feedback(ctx: RunContext, d: GateDecision, specs: dict[str, dict]
-                          ) -> tuple[dict[str, str], dict[str, dict]]:
+def _route_gate2_feedback(feedback: str, specs: dict[str, dict]) -> tuple[dict[str, str], dict[str, dict]]:
     """request_changes at Gate 2: per-item lines (`spec_x: ...` or `wi-x: ...`) go to that item, the rest to every
     item; the writers also get the draft the owner commented on."""
-    fb = _feedback(ctx, d)
     ids = [s["work_item_id"] for s in specs.values()] + list(specs)
-    routed = notes_by_item(fb, ids)
-    human_comments = {s["work_item_id"]: (routed.get(s["work_item_id"]) or routed.get(sid) or fb) for sid, s in specs.items()}
+    routed = notes_by_item(feedback, ids)
+    human_comments = {s["work_item_id"]: (routed.get(s["work_item_id"]) or routed.get(sid) or feedback) for sid, s in specs.items()}
     prior_specs = {s["work_item_id"]: s for s in specs.values()}
     return human_comments, prior_specs
-
-
-def _decision_from_event(p: dict[str, Any]) -> GateDecision:
-    """The GateDecision a `gate.decided` event recorded, for feeding a resumed stage the same feedback."""
-    return GateDecision(gate_id=p["gate_id"], decision=Decision(p["decision"]), decided_by=p.get("decided_by", "human"),
-                        comments=p.get("comments", ""), approved_subset=tuple(p.get("approved_subset", [])),
-                        artifact_shas=tuple(p.get("artifact_shas", [])))
 
 
 def _spec_markdown(ctx: RunContext, spec: dict[str, Any]) -> str:
@@ -369,20 +432,25 @@ def comparison_branch(ctx: RunContext, repo: dict[str, Any], verifier: LocalVeri
     return default_branch
 
 
+
+
 def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dict[str, dict], spec_md: dict[str, str],
                             spec_verdict: dict[str, Any] | None, resume: dict[str, ResumePoint] | None = None,
                             guidance: dict[str, str] | None = None) -> RunStage:
-    """Stage 3 + 4 per approved spec, in dependency waves. `resume` (from `factory resume`) says where each spec's
-    implement/review loop continues; specs whose change request is already open are not touched again. `guidance` is the
-    owner's bounded Gate 2 approval notes per spec (`record_approval`), handed to that spec's implementer."""
+    """Stage 3 + 4 per approved spec, in dependency waves, each spec an implementation step and an integration step.
+    A replay gets the specs that finished back from their steps; a spec whose implementation did not finish continues
+    where its artefacts stop (`resume_points`). Specs whose change request is already open are not touched again.
+    `guidance` is the owner's bounded Gate 2 approval notes per spec (`record_approval`), handed to that spec's
+    implementer. `resume` overrides the resume points (tests)."""
     repo = outcome["target_repositories"][0]
-    if resume is None:
+    if ctx.store.state(ctx.run_id).stage != RunStage.IMPLEMENTING:
         ctx.event("stage.entered", {"stage": RunStage.IMPLEMENTING.value}, stage="implement")
     auth_url = ctx.forge.authenticated_url(repo["url"]) if ctx.forge is not None else repo["url"]
     verifier = LocalVerifier(auth_url, ctx.cfg.runs_dir / ctx.run_id / "verify")
     default_branch = comparison_branch(ctx, repo, verifier)
     cr_by_spec: dict[str, int] = _open_change_requests(ctx)                       # finished before a resume
     merged_or_open: set[str] = set(cr_by_spec)
+    stopped: dict[str, str] = {}                                                  # spec -> why it did not reach a change request
     remaining = {sid: s for sid, s in specs.items() if sid not in merged_or_open}
     while remaining:
         ready = [s for s in remaining.values()
@@ -393,42 +461,21 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
         for spec in ready[: ctx.policy.parallel_implementations]:
             sid = spec["spec_id"]
             deps = {dsid: specs[dsid] for dsid in spec["dependencies"]["specs"] if dsid in specs}
-            base_branch, blocker = base_branch_for(ctx, spec, cr_by_spec, default_branch)
-            if blocker:
-                ctx.event("run.escalated", {"reason": f"{sid}: {blocker}"}, spec_id=sid)
-                ctx.notifier.escalated(ctx.run_id, f"{sid}: {blocker}")
-                remaining.pop(sid)
-                continue
-            if base_branch != default_branch:
-                ctx.event("artifact.produced", {"artifact_type": "stacked_base", "base_branch": base_branch,
-                                                "note": "the dependency's change request is open but not merged; this item is built on its branch"},
-                          work_item_id=spec["work_item_id"], spec_id=sid, stage="implement")
-            verdict = run_implement_one(ctx, spec, repo["url"], base_branch, verifier, deps,
-                                        spec_md=spec_md.get(sid, ""), resume_from=(resume or {}).get(sid),
-                                        guidance=(guidance or {}).get(sid, ""))
+            verdict = _implement_step(ctx, spec, repo["url"], cr_by_spec, default_branch, verifier, deps,
+                                      spec_md.get(sid, ""), (guidance or {}).get(sid, ""), (resume or {}).get(sid))
+            remaining.pop(sid)
             if verdict["result"] != "ready":
-                ctx.event("run.escalated", {"reason": f"{sid}: merge judge said {verdict['result']}",
-                                            "summary": verdict.get("summary_for_human", verdict.get("reason"))},
-                          spec_id=sid)
-                ctx.notifier.escalated(ctx.run_id, f"{sid}: {verdict['result']}")
-                remaining.pop(sid)
+                stopped[sid] = str(verdict.get("reason") or verdict["result"])
                 continue
-            findings = json.loads(ctx.store.get_artifact(ctx.run_id, "review", _latest(ctx, "review", f"{sid}-", "-findings.merged.json")))
-            response = _latest_json_or(ctx, "implement", f"{sid}-", "-review_response.json", {"responses": []})
-            test_results = json.loads(ctx.store.get_artifact(ctx.run_id, "implement", _latest(ctx, "implement", f"{sid}-", "-test_results.json")))
-            sessions = _sessions_for(ctx, sid, spec["work_item_id"])
-            summary = {"run_id": ctx.run_id, "outcome_title": outcome["title"], "reviewers": [outcome["owner"]["handle"]],
-                       "sessions": sessions, "list_cost_usd": ctx.store.state(ctx.run_id).list_cost_usd,
-                       "sessions_cost_usd": round(sum(s["list_cost_usd"] or 0.0 for s in sessions), 2),
-                       "sessions_duration_seconds": sum(s["duration_seconds"] or 0 for s in sessions),
-                       "sessions_duration": _hms(sum(s["duration_seconds"] or 0 for s in sessions))}
-            cr = run_integrate(ctx, spec, verdict, findings, response, test_results, summary, base_branch,
-                               verifier=verifier, spec_md=spec_md.get(sid, ""), spec_verdict=spec_verdict)
+            cr = _integrate_step(ctx, outcome, spec, verdict, spec_md.get(sid, ""), spec_verdict, verifier)
             cr_by_spec[sid] = int(cr.get("id", cr.get("iid")))
             merged_or_open.add(sid)   # Gate 3 (human review + merge) is tracked by the CR watcher, not this loop
-            remaining.pop(sid)
 
-    if ctx.store.state(ctx.run_id).stage == RunStage.ESCALATED:
+    if stopped or ctx.store.state(ctx.run_id).stage == RunStage.ESCALATED:
+        if ctx.store.state(ctx.run_id).stage != RunStage.ESCALATED:
+            # every escalation came back from a recorded step, which reported it when it ran: the run waits again
+            sid = sorted(stopped)[0]
+            ctx.event("run.escalated", {"reason": f"{sid}: {stopped[sid]}"}, spec_id=sid)
         from . import build_recovery
         recovery = build_recovery.snapshot(ctx.store, ctx.run_id)
         if recovery:
@@ -436,6 +483,77 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
         return RunStage.ESCALATED          # a spec escalated: the run waits for a person, it has not completed
     ctx.event("run.completed", {"specs_with_change_requests": sorted(merged_or_open)})
     return RunStage.COMPLETED
+
+
+def _implement_step(ctx: RunContext, spec: dict[str, Any], repo_url: str, cr_by_spec: dict[str, int], default_branch: str,
+                    verifier: LocalVerifier, deps: dict[str, dict], spec_md: str, guidance: str,
+                    resume_from: ResumePoint | None) -> dict[str, Any]:
+    """One spec's implement/review/judge loop as a step; its result is the merge verdict, or why it stopped. The latest
+    build-recovery decision on the spec is one of its inputs, so the owner's recovery runs it again: a recheck verifies
+    the last head afresh and asks a new merge judge, a request for changes opens the next implementer round with the
+    owner's instructions."""
+    sid, wid = spec["spec_id"], spec["work_item_id"]
+    recovery = _latest_recovery(ctx, sid)
+    corrective = _latest_recovery(ctx, sid, Decision.REQUEST_CHANGES.value)   # stays authorized through later rechecks
+
+    def body() -> dict[str, Any]:
+        base_branch, blocker = base_branch_for(ctx, spec, cr_by_spec, default_branch)
+        if blocker:
+            ctx.event("run.escalated", {"reason": f"{sid}: {blocker}"}, spec_id=sid)
+            ctx.notifier.escalated(ctx.run_id, f"{sid}: {blocker}")
+            return {"result": "blocked", "reason": blocker}
+        if base_branch != default_branch:
+            ctx.event("artifact.produced", {"artifact_type": "stacked_base", "base_branch": base_branch,
+                                            "note": "the dependency's change request is open but not merged; this item is built on its branch"},
+                      work_item_id=wid, spec_id=sid, stage="implement")
+        point, notes = resume_from, guidance
+        item = ctx.store.state(ctx.run_id).work_items.get(wid)
+        if point is None and item is not None and item.stage != WorkItemStage.SPEC_APPROVED:
+            point = resume_points(ctx, {sid: spec})[sid]           # started before: continue where its artefacts stop
+        if corrective is not None:
+            n = int(corrective["round"]) + 1
+            notes = notes + "\n# Build recovery instructions from the owner\n" + corrective.get("comments", "")
+            point = point or ResumePoint()
+            if point.round_no < n:
+                point = ResumePoint(round_no=n, findings=corrective.get("review_findings") or point.findings)
+            point.review_through = n
+        verdict = run_implement_one(ctx, spec, repo_url, base_branch, verifier, deps, spec_md=spec_md, resume_from=point,
+                                    guidance=notes)
+        if verdict["result"] != "ready":
+            ctx.event("run.escalated", {"reason": f"{sid}: merge judge said {verdict['result']}",
+                                        "summary": verdict.get("summary_for_human", verdict.get("reason"))}, spec_id=sid)
+            ctx.notifier.escalated(ctx.run_id, f"{sid}: {verdict['result']}")
+        return {**verdict, "_base_branch": base_branch}
+    marker = None if recovery is None else {k: recovery.get(k) for k in ("event_id", "revision", "decision", "gate_id")}
+    return steps.run_step(ctx, f"implement/{sid}", {"spec": _sha(public(spec)), "guidance": guidance, "recovery": marker}, body)
+
+
+def _integrate_step(ctx: RunContext, outcome: dict[str, Any], spec: dict[str, Any], verdict: dict[str, Any], spec_md: str,
+                    spec_verdict: dict[str, Any] | None, verifier: LocalVerifier) -> dict[str, Any]:
+    """Open the change request for the head the merge judge approved."""
+    sid = spec["spec_id"]
+
+    def body() -> dict[str, Any]:
+        findings = json.loads(ctx.store.get_artifact(ctx.run_id, "review", _latest(ctx, "review", f"{sid}-", "-findings.merged.json")))
+        response = _latest_json_or(ctx, "implement", f"{sid}-", "-review_response.json", {"responses": []})
+        test_results = json.loads(ctx.store.get_artifact(ctx.run_id, "implement", _latest(ctx, "implement", f"{sid}-", "-test_results.json")))
+        sessions = _sessions_for(ctx, sid, spec["work_item_id"])
+        summary = {"run_id": ctx.run_id, "outcome_title": outcome["title"], "reviewers": [outcome["owner"]["handle"]],
+                   "sessions": sessions, "list_cost_usd": ctx.store.state(ctx.run_id).list_cost_usd,
+                   "sessions_cost_usd": round(sum(s["list_cost_usd"] or 0.0 for s in sessions), 2),
+                   "sessions_duration_seconds": sum(s["duration_seconds"] or 0 for s in sessions),
+                   "sessions_duration": _hms(sum(s["duration_seconds"] or 0 for s in sessions))}
+        judged = {k: v for k, v in verdict.items() if k != "_base_branch"}
+        return run_integrate(ctx, spec, judged, findings, response, test_results, summary, verdict["_base_branch"],
+                             verifier=verifier, spec_md=spec_md, spec_verdict=spec_verdict)
+    return steps.run_step(ctx, f"integrate/{sid}", {"head": verdict.get("_head_sha"), "base": verdict.get("_base_branch")}, body)
+
+
+def _latest_recovery(ctx: RunContext, sid: str, decision: str | None = None) -> dict[str, Any] | None:
+    """The owner's latest build-recovery decision on this spec (`build_recovery.apply_decision`), of `decision` when
+    given, if any."""
+    return next((e.payload for e in reversed(ctx.store.events(ctx.run_id))
+                 if e.kind == "build.recovery" and e.spec_id == sid and decision in (None, e.payload.get("decision"))), None)
 
 
 def _open_change_requests(ctx: RunContext) -> dict[str, int]:
@@ -521,12 +639,8 @@ def _rounds(ctx: RunContext, stage: str, prefix: str, suffix: str) -> list[int]:
     return sorted(out)
 
 
-# ---------------------------------------------------------------- a controller stopped while idle at Gate 2
+# ---------------------------------------------------------------- one controller per run
 
-GATE_POLL_SECONDS = 10.0
-GATE2_KINDS = (GateKind.SPEC_READINESS, GateKind.ESCALATION)
-GATE2_OPTIONS = {Decision.APPROVE, Decision.APPROVE_SUBSET, Decision.REQUEST_CHANGES, Decision.REJECT}
-_SAFE_SPEC_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _HELD_LOCKS: dict[str, Any] = {}
 
 
@@ -560,98 +674,32 @@ def controller_lock(runs_dir: Path, run_id: str) -> Iterator[None]:
         handle.close()
 
 
-@dataclasses.dataclass(frozen=True)
-class PendingGate2:
-    """A Gate 2 still waiting for its owner when its controller stopped, with the exact artefacts it presented."""
-    gate_id: str
-    kind: GateKind
-    presented: dict[str, str]                  # artefact name as presented -> sha256
-    specs: dict[str, dict]
-    spec_md: dict[str, str]
-    verdict: dict[str, Any]
-    decomposition: dict[str, Any]
+
+# ---------------------------------------------------------------- resume: decide what is pending, then replay
+
+RESUMABLE = {RunStage.FAILED, RunStage.PAUSED_BUDGET, RunStage.INTAKE, RunStage.DECOMPOSING, RunStage.GATE_1_DECOMPOSITION,
+             RunStage.SPECIFYING, RunStage.GATE_2_SPEC_READINESS, RunStage.IMPLEMENTING}
 
 
-def _queued_gate(queue: Any, gate_id: str) -> Gate | None:
-    """The gate as the decision surface holds it (the record decisions are validated against), from any composed queue."""
-    for q in getattr(queue, "queues", [queue]):
-        finder = getattr(q, "gate", None)
-        gate = finder(gate_id) if callable(finder) else getattr(q, "gates", {}).get(gate_id)
-        if isinstance(gate, Gate):
-            return gate
-    return None
-
-
-def pending_gate2(ctx: RunContext, events: list[Any] | None = None) -> PendingGate2:
-    """The run's pending Gate 2 when its controller was stopped while idle at it, verified, or RuntimeError saying why
-    not. Nothing is written. The run must be `failed` with the last gate a still-undecided specification-readiness or
-    escalation gate, the only open gate; after it only the stop (`run.failed`, no session interrupted) and earlier
-    recoveries of this same gate. Every artefact the gate presented must be stored with exactly the presented sha256
-    (`specify/final-<spec_id>.json`, `judge/final-verdict.json`), and the gate surface's record of the gate must be the
-    one the log opened, so a decision is checked against what the owner was shown."""
-    st = ctx.store.state(ctx.run_id)
-    events = events if events is not None else ctx.store.events(ctx.run_id)
-    if st.stage != RunStage.FAILED:
-        raise RuntimeError(f"run {ctx.run_id} is {st.stage.value}; a pending Gate 2 can be recovered only after its controller "
-                           f"was stopped (the stop records run.failed)")
-    opened = [ev for ev in events if ev.kind == "gate.opened"]
-    if not opened or opened[-1].payload.get("kind") not in {k.value for k in GATE2_KINDS}:
-        raise RuntimeError(f"run {ctx.run_id} did not stop at Gate 2 (its last gate is {opened[-1].payload.get('kind') if opened else 'none'})")
-    gate_ev = opened[-1]
-    gate_id, kind = gate_ev.payload["gate_id"], GateKind(gate_ev.payload["kind"])
-    if set(st.open_gates) != {gate_id}:
-        raise RuntimeError(f"Gate 2 {gate_id} is not the run's only open gate (open: {sorted(st.open_gates) or 'none'}); "
-                           f"a decided gate is not recovered")
-    stage_before = next((ev.payload.get("stage") for ev in reversed(events) if ev.seq < gate_ev.seq and ev.kind == "stage.entered"), None)
-    if stage_before != RunStage.GATE_2_SPEC_READINESS.value:
-        raise RuntimeError(f"Gate 2 {gate_id} was opened outside the Gate 2 stage ({stage_before})")
-    after = [ev for ev in events if ev.seq > gate_ev.seq]
-    for ev in after:
-        if ev.kind == "run.failed" and not (ev.payload.get("interrupted_sessions") or ev.payload.get("sessions_left_running") or []):
-            continue
-        if ev.kind == "run.resumed" and ev.payload.get("gate_id") == gate_id and ev.payload.get("stage") == RunStage.GATE_2_SPEC_READINESS.value:
-            continue
-        raise RuntimeError(f"{ev.kind} (event {ev.seq}) follows Gate 2 {gate_id}; only a controller stopped while idle at the gate is recovered")
-    if not after or after[-1].kind != "run.failed":
-        raise RuntimeError(f"run {ctx.run_id} has no stop recorded after Gate 2 {gate_id}")
-    presented = {a["name"]: a["sha256"] for a in gate_ev.payload.get("artifacts", [])}
-    sids = [n[:-len(".json")] for n in presented if n != "verdict.json"]
-    if "verdict.json" not in presented or not sids or any(not n.endswith(".json") or not _SAFE_SPEC_ID.match(n[:-len(".json")]) for n in presented if n != "verdict.json"):
-        raise RuntimeError(f"Gate 2 {gate_id} did not present one judge verdict and the specs as <spec_id>.json")
-
-    def verified(stage: str, name: str, presented_as: str) -> bytes:
-        try:
-            content = ctx.store.get_artifact(ctx.run_id, stage, name)
-        except FileNotFoundError:
-            raise RuntimeError(f"{stage}/{name}, presented at Gate 2 {gate_id} as {presented_as}, is missing") from None
-        if hashlib.sha256(content).hexdigest() != presented[presented_as]:
-            raise RuntimeError(f"{stage}/{name} no longer matches the sha256 Gate 2 {gate_id} presented as {presented_as}; "
-                               f"the owner was shown different bytes")
-        return content
-    specs = {sid: json.loads(verified("specify", f"final-{sid}.json", f"{sid}.json")) for sid in sids}
-    verdict = json.loads(verified("judge", "final-verdict.json", "verdict.json"))
-    if any(s.get("spec_id") != sid for sid, s in specs.items()):
-        raise RuntimeError(f"a spec stored for Gate 2 {gate_id} names a different spec_id")
-    if (kind == GateKind.SPEC_READINESS) != ((verdict.get("overall") or {}).get("result") == "pass"):
-        raise RuntimeError(f"Gate 2 {gate_id} is {kind.value} but the verdict it presented says {(verdict.get('overall') or {}).get('result')}")
-    queued = _queued_gate(ctx.queue, gate_id)
-    if queued is None:
-        raise RuntimeError(f"the gate surface holds no record of Gate 2 {gate_id}; a decision could not be checked against what it presented")
-    if queued.kind != kind or {a.name: a.sha256 for a in queued.artifacts} != presented or set(queued.options) != GATE2_OPTIONS:
-        raise RuntimeError(f"the gate surface's record of Gate 2 {gate_id} differs from the gate the run opened")
-    revs = _rounds(ctx, "decompose", "r", "-decomposition.json")
-    if not revs:
-        raise RuntimeError(f"run {ctx.run_id} holds no decomposition")
-    decomposition = json.loads(ctx.store.get_artifact(ctx.run_id, "decompose", f"r{max(revs)}-decomposition.json"))
-    items = {w["work_item_id"] for w in decomposition["work_items"]}
-    if any(s.get("work_item_id") not in items for s in specs.values()):
-        raise RuntimeError(f"a spec at Gate 2 {gate_id} belongs to no work item of the run's latest decomposition")
-    return PendingGate2(gate_id=gate_id, kind=kind, presented=presented, specs=specs,
-                        spec_md={sid: _spec_markdown(ctx, s) for sid, s in specs.items()}, verdict=verdict, decomposition=decomposition)
+def stage_to_continue(st: Any, events: list[Any]) -> RunStage:
+    """The stage a resumed run re-enters: the last one it worked in before it failed or paused at a budget (the run's
+    cap, or one session's cap while its controller waited on that gate), implementation for a recovered build, or the
+    stage it is in when its controller was killed before it could record anything. The replayed pipeline moves on from
+    there with its own `stage.entered` events."""
+    if st.stage == RunStage.ESCALATED:
+        return RunStage.IMPLEMENTING                 # a recovered build (`resumable_build_escalation`)
+    if st.stage not in (RunStage.FAILED, RunStage.PAUSED_BUDGET):
+        return st.stage
+    state, stage = RunState(run_id=st.run_id), RunStage.INTAKE
+    for ev in events:
+        reduce(state, ev)
+        if state.stage not in (RunStage.FAILED, RunStage.PAUSED_BUDGET):
+            stage = state.stage
+    return stage
 
 
 def stopped_at_gate2(events: list[Any]) -> bool:
-    """The run stopped while in the Gate 2 stage (its last stage.entered), whatever `pending_gate2` then finds."""
+    """The run stopped while in the Gate 2 stage (its last stage.entered)."""
     last = next((ev.payload.get("stage") for ev in reversed(events) if ev.kind == "stage.entered"), None)
     return last == RunStage.GATE_2_SPEC_READINESS.value
 
@@ -669,13 +717,14 @@ def recovery_config_problems(cfg: Any) -> list[str]:
 
 def preflight(ctx: RunContext, events: list[Any] | None = None, budget_usd: float | None = None) -> None:
     """Refusals `resume` would raise, checked before anything is written (the CLI calls it before the drive, so a
-    refusal never records run.failed): a managed run continued without managed verification, and every condition of
-    a pending Gate 2 recovery."""
+    refusal never records run.failed): a run that has ended or escalated outside a build, a managed run continued
+    without managed verification, a pending build-recovery decision that cannot be applied, and a run an older
+    controller left in a state its log cannot be replayed from (`adopt_legacy_run`)."""
     events = events if events is not None else ctx.store.events(ctx.run_id)
+    st = ctx.store.state(ctx.run_id)
     if hosted_run(events) and ctx.cfg.preview_mode != "managed":
         raise RuntimeError(f"run {ctx.run_id} verifies in a hosted sandbox (preview mode managed); resume it with the managed "
                            f"configuration, never with local or platform execution")
-    st = ctx.store.state(ctx.run_id)
     if any(g.get("kind") == "build_recovery" for g in st.open_gates.values()):
         from . import build_recovery
         try:
@@ -684,38 +733,260 @@ def preflight(ctx: RunContext, events: list[Any] | None = None, budget_usd: floa
             build_recovery.apply_decision(ctx.store, ctx.queue, ctx.run_id, dry_run=True)
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
-
+    if st.stage not in RESUMABLE and not resumable_build_escalation(st, events):
+        raise RuntimeError(f"run {ctx.run_id} is {st.stage.value}; a run that has ended cannot be resumed, and an escalated one "
+                           f"only after an approved build's recovery decision: only a stopped, failed, paused or recovered run "
+                           f"can be resumed")
     if st.stage == RunStage.FAILED and stopped_at_gate2(events):
-        if budget_usd is not None:
-            raise RuntimeError("recovering a pending Gate 2 does not change the run budget; resume without --budget")
-        pending_gate2(ctx, events)
         problems = recovery_config_problems(ctx.cfg)
         if problems:
             raise RuntimeError("cannot continue into managed verification: " + "; ".join(problems))
+    _check_gate_records(ctx, st)
+    legacy_adoption(ctx, events)          # raises when an older controller's log cannot be continued; writes nothing
+    approvals = [s for s in ctx.store.steps(ctx.run_id) if s.key.startswith("approve#") and s.status == "done"]
+    if approvals:
+        _check_approved_contracts(ctx, max(approvals, key=lambda s: int(s.key.split("#")[1])).result)
 
 
-def wait_for_gate(ctx: RunContext, gate_id: str, kind: GateKind) -> GateDecision:
-    """Poll an already open gate for the owner's decision; each surface validates it against the gate's presented hashes."""
-    while True:
-        d = gate_decision(ctx, gate_id, kind)
-        if d is not None:
-            return d
-        time.sleep(GATE_POLL_SECONDS)
+def _check_gate_records(ctx: RunContext, st: Any) -> None:
+    """Every open gate the replay may wait on again must be held by the gate surface as the log opened it: a decision is
+    checked against the surface's record, so a record that differs could pass a decision on something else."""
+    for gate_id, opened in st.open_gates.items():
+        if opened.get("kind") in (GateKind.BUDGET.value, GateKind.BUILD_RECOVERY.value):
+            continue
+        held = queued_gate(ctx.queue, gate_id)
+        if held is None:
+            continue
+        logged = {a["name"]: a["sha256"] for a in opened.get("artifacts", [])}
+        options = opened.get("options")
+        if (held.kind.value != opened.get("kind") or {a.name: a.sha256 for a in held.artifacts} != logged
+                or (options is not None and sorted(o.value for o in held.options) != sorted(options))):
+            raise RuntimeError(f"the gate surface's record of gate {gate_id} differs from the gate the run opened; a decision "
+                               f"could not be checked against what it presented")
 
 
-def _resume_pending_gate2(ctx: RunContext, outcome: dict[str, Any]) -> RunStage:
-    """Continue the same run at its pending Gate 2 on this controller: the gate is not reopened, nothing is regenerated,
-    no agent runs before the owner decides, and the decision then takes Gate 2's usual path."""
+def resume(ctx: RunContext, budget_usd: float | None = None) -> RunStage:
+    """`factory resume <run_id>`: continue a run that stopped, failed, paused at its budget, or escalated in a build the
+    owner has since decided to recover.
+
+    Whatever is pending is decided first: the build-recovery decision is applied (reject closes the run), a budget pause
+    is settled from its gate or `budget_usd` (reject closes the run, otherwise the cap is raised), and `budget_usd` for a
+    run that did not pause replaces its cap. Then `run.resumed` returns the run to the stage it stopped in and the
+    pipeline runs again from the top: every step that finished returns its recorded result, so the run continues at the
+    first step that did not. A session still working is followed, a gate still open is waited on (none is opened twice),
+    and a build recovery runs the recovered spec's implementation again: verification is fresh, and an escalation
+    verdict never stands in for the recovery decision.
+
+    The run's controller lock is held for the whole drive, so two controllers never replay (and wait on) the same run;
+    another process holding it is a `RunLocked` refusal before anything is written."""
     with controller_lock(ctx.cfg.runs_dir, ctx.run_id):
-        preflight(ctx)                                   # again, under the lock
-        pending = pending_gate2(ctx)
-        _, round_offset = _persisted_specify_rounds(ctx, pending.decomposition)
-        ctx.event("run.resumed", {"stage": RunStage.GATE_2_SPEC_READINESS.value, "from": RunStage.FAILED.value,
-                                  "gate_id": pending.gate_id, "kind": pending.kind.value, "artifacts": dict(sorted(pending.presented.items())),
-                                  "preview_mode": ctx.cfg.preview_mode, "app_id": ctx.cfg.app_id,
-                                  "test_profile_sha256": ctx.cfg.test_profile_sha256, "test_vaults": len(ctx.cfg.test_vault_ids)},
-                  stage="gate_2")
-        return _from_specify(ctx, outcome, pending.decomposition, None, None, round_offset=round_offset, pending=pending)
+        return _resume(ctx, budget_usd)
+
+
+def _resume(ctx: RunContext, budget_usd: float | None) -> RunStage:
+    st = ctx.store.state(ctx.run_id)
+    events = ctx.store.events(ctx.run_id)
+    outcome = json.loads(ctx.store.get_artifact(ctx.run_id, "intake", "outcome.json"))
+    preflight(ctx, events, budget_usd)
+    from . import build_recovery
+    recovery = build_recovery.apply_decision(ctx.store, ctx.queue, ctx.run_id)
+    if recovery and recovery["decision"] == "reject":
+        return RunStage.CLOSED
+    st, events = ctx.store.state(ctx.run_id), ctx.store.events(ctx.run_id)
+    preflight(ctx, events, budget_usd)
+    adopt_legacy_run(ctx, events)
+    stage = stage_to_continue(st, events)
+    if st.stage == RunStage.PAUSED_BUDGET and last_pause(events) is not None:
+        if not _settle_budget_pause(ctx, st, events, budget_usd):
+            return RunStage.CLOSED
+    elif budget_usd is not None and budget_usd != st.budget_usd:
+        _raise_budget(ctx, st, float(budget_usd), by="cli", gate_id=None)
+    ctx.event("run.resumed", {"stage": stage.value, "from": st.stage.value, "sessions_to_follow": orphaned_sessions(ctx),
+                              **_pending_gate(ctx), "preview_mode": ctx.cfg.preview_mode, "app_id": ctx.cfg.app_id,
+                              "test_profile_sha256": ctx.cfg.test_profile_sha256, "test_vaults": len(ctx.cfg.test_vault_ids)},
+              stage=_EVENT_STAGE.get(stage, stage.value))
+    return until_budget_pause(lambda: pipeline(ctx, outcome))
+
+
+_EVENT_STAGE = {RunStage.DECOMPOSING: "decompose", RunStage.GATE_1_DECOMPOSITION: "gate_1", RunStage.SPECIFYING: "specify",
+                RunStage.GATE_2_SPEC_READINESS: "gate_2", RunStage.IMPLEMENTING: "implement"}
+
+
+def _pending_gate(ctx: RunContext) -> dict[str, Any]:
+    """The gate the resumed run will wait on again, when one is open: its id, kind and the artefacts it presented."""
+    open_gates = [g for g in ctx.store.state(ctx.run_id).open_gates.values() if g.get("kind") != GateKind.BUDGET.value]
+    if len(open_gates) != 1:
+        return {}
+    g = open_gates[0]
+    return {"gate_id": g["gate_id"], "kind": g.get("kind"),
+            "artifacts": dict(sorted((a["name"], a["sha256"]) for a in g.get("artifacts", [])))}
+
+
+def _settle_budget_pause(ctx: RunContext, st: Any, events: list[Any], budget_usd: float | None) -> bool:
+    """Apply the owner's decision on the budget gate (or `budget_usd`): False when it closes the run."""
+    pause = last_pause(events)
+    action, new_budget, decision = budget_decision(ctx, st, events, budget_usd)
+    gate_id = pause.get("gate_id")
+    by = decision.decided_by if decision is not None else "cli"
+    if gate_id and gate_id in st.open_gates:
+        ctx.event("gate.decided", {"gate_id": gate_id, "kind": GateKind.BUDGET.value,
+                                   "decision": Decision.REJECT.value if action == "close" else Decision.APPROVE.value,
+                                   "comments": decision.comments if decision is not None else f"budget_usd: {new_budget:g}",
+                                   "approved_subset": [], "artifact_shas": list(decision.artifact_shas) if decision is not None else [],
+                                   "decided_by": by}, stage="budget", actor="human")
+    if action == "close":
+        ctx.event("stage.entered", {"stage": RunStage.CLOSED.value}, stage="budget", actor="human")
+        return False
+    if new_budget != st.budget_usd:
+        _raise_budget(ctx, st, new_budget, by=by, gate_id=gate_id)
+    else:
+        ctx.policy = dataclasses.replace(ctx.policy, run_budget_usd=new_budget)
+    return True
+
+
+# ---------------------------------------------------------------- runs an older controller wrote
+
+def legacy_adoption(ctx: RunContext, events: list[Any]) -> dict[str, Any] | None:
+    """The steps to record for a run an older controller wrote (no pipeline steps in its database), so the pipeline can
+    replay it, or None for a run that needs none. Adopted: what that controller presented at Gate 2 (each artefact
+    checked against the sha256 the owner was shown), the Gate 2 approval and its record when there is one, else the
+    approval decision it had not acted on yet, else nothing after the gate (a controller stopped while idle at it: the
+    replay waits on that same gate). Writes nothing; raises RuntimeError for a log it cannot continue."""
+    if any(s.key.startswith("decompose#") for s in ctx.store.steps(ctx.run_id)):
+        return None
+    decomposition = _latest_decomposition(ctx)
+    if decomposition is None and not any(ev.kind == "gate.opened" for ev in events):
+        return None                      # nothing was produced yet: the pipeline starts from the decomposition
+    approval = next((ev.payload for ev in reversed(events) if ev.kind == "artifact.produced"
+                     and ev.payload.get("artifact_type") == "gate2_approval"), None)
+    if approval is not None:
+        return _adopted_from_approval(ctx, events, approval, decomposition)
+    gate1 = next((ev.payload for ev in reversed(events) if ev.kind == "gate.decided"
+                  and ev.payload.get("kind") == GateKind.DECOMPOSITION_REVIEW.value), None)
+    if decomposition is None or gate1 is None or gate1.get("decision") != Decision.APPROVE.value:
+        raise RuntimeError(f"run {ctx.run_id} was written by an older controller and stopped before Gate 1 approved its "
+                           f"decomposition; start a new run from its outcome")
+    notes = notes_by_item(gate1.get("comments", ""), [w["work_item_id"] for w in decomposition["work_items"]])
+    adopted: dict[str, Any] = {"decompose#1": {"decomposition": decomposition, "shas": {}},
+                               "gate_1#1": {"decision": {**gate1, "decided_by": gate1.get("decided_by", "human")},
+                                            "feedback": None, "notes": notes or None}}
+    opened = next((ev for ev in reversed(events) if ev.kind == "gate.opened"
+                   and ev.payload.get("kind") in (GateKind.SPEC_READINESS.value, GateKind.ESCALATION.value)), None)
+    if opened is None:
+        raise RuntimeError(f"run {ctx.run_id} was written by an older controller and stopped before Gate 2; start a new run "
+                           f"from its outcome")
+    gate2 = opened.payload
+    adopted["specify#1"] = _presented_contracts(ctx, gate2)
+    decided = next((ev.payload for ev in events if ev.kind == "gate.decided" and ev.payload.get("gate_id") == gate2["gate_id"]), None)
+    if decided is None:
+        st = ctx.store.state(ctx.run_id)
+        if set(st.open_gates) != {gate2["gate_id"]}:
+            raise RuntimeError(f"Gate 2 {gate2['gate_id']} is not the run's only open gate (open: {sorted(st.open_gates) or 'none'})")
+        for ev in events:
+            if ev.seq <= opened.seq or (ev.kind == "run.failed" and not (ev.payload.get("interrupted_sessions")
+                                                                         or ev.payload.get("sessions_left_running"))):
+                continue
+            if not (ev.kind == "run.resumed" and ev.payload.get("gate_id") == gate2["gate_id"]):
+                raise RuntimeError(f"{ev.kind} (event {ev.seq}) follows Gate 2 {gate2['gate_id']}; only a controller stopped "
+                                   f"while idle at the gate is recovered")
+        return adopted                   # the replay reaches Gate 2 with the presented bytes and waits on that same gate
+    if decided.get("decision") not in (Decision.APPROVE.value, Decision.APPROVE_SUBSET.value):
+        raise RuntimeError(f"run {ctx.run_id} was written by an older controller and stopped after its Gate 2 was decided "
+                           f"({decided.get('decision')}); start a new run from its outcome")
+    adopted["gate_2#1"] = {"decision": {**decided, "decided_by": decided.get("decided_by", "human")}, "feedback": None}
+    return adopted                       # decided but not acted on: the replay records the approval
+
+
+def _adopted_from_approval(ctx: RunContext, events: list[Any], approval: dict[str, Any],
+                           decomposition: dict[str, Any] | None) -> dict[str, Any]:
+    """An older controller's run past its Gate 2 approval: the approval record names the approved contracts (each still
+    the bytes it approved), so the replay goes straight to their implementation."""
+    record = json.loads(ctx.store.get_artifact(ctx.run_id, "gate_2", Path(approval["path"]).name))
+    for sid, sha in record["approved"].items():
+        try:
+            content = ctx.store.get_artifact(ctx.run_id, "specify", f"final-{sid}.json")
+        except FileNotFoundError:
+            raise RuntimeError(f"specify/final-{sid}.json, approved at Gate 2 {record['gate_id']}, is missing") from None
+        if hashlib.sha256(content).hexdigest() != sha:
+            raise RuntimeError(f"specify/final-{sid}.json no longer matches the spec Gate 2 {record['gate_id']} approved")
+    if decomposition is None:
+        registered = next((ev.payload for ev in reversed(events) if ev.kind == "artifact.produced"
+                           and ev.payload.get("artifact_type") == "decomposition" and "work_items" in ev.payload), None)
+        decomposition = {"revision": (registered or {}).get("revision", 1), "work_items": (registered or {}).get("work_items", [])}
+    specs = {sid: json.loads(ctx.store.get_artifact(ctx.run_id, "specify", f"final-{sid}.json")) for sid in record["approved"]}
+    spec_md = {sid: _spec_markdown(ctx, s) for sid, s in specs.items()}
+    for sid, md in spec_md.items():
+        if md:
+            specs[sid]["_markdown"] = md
+    verdict = artifact_json_or_none(ctx, "judge", "final-verdict.json") or {}
+    decided = next((ev.payload for ev in events if ev.kind == "gate.decided" and ev.payload.get("gate_id") == record["gate_id"]), None)
+    decision = decided or {"gate_id": record["gate_id"], "decision": record.get("decision", Decision.APPROVE.value),
+                           "decided_by": record.get("decided_by", "human"), "comments": "",
+                           "approved_subset": sorted(record["approved"]), "artifact_shas": sorted(record["approved"].values())}
+    return {"decompose#1": {"decomposition": decomposition, "shas": {}},
+            "gate_1#1": {"decision": {"gate_id": "adopted", "decision": Decision.APPROVE.value, "decided_by": "human"},
+                         "feedback": None, "notes": None},
+            "specify#1": {"specs": specs, "verdict": verdict, "spec_md": spec_md},
+            "gate_2#1": {"decision": {**decision, "decided_by": decision.get("decided_by", "human")}, "feedback": None},
+            "approve#1": {"gate_id": record["gate_id"], "approved": record["approved"], "guidance": record.get("guidance", {})}}
+
+
+def adopt_legacy_run(ctx: RunContext, events: list[Any]) -> None:
+    """Record `legacy_adoption`'s steps, once. The blobs hold the decomposition and the contracts as the log has them."""
+    adopted = legacy_adoption(ctx, events)
+    if not adopted:
+        return
+    for key, result in adopted.items():
+        if key == "decompose#1":
+            result = {"decomposition": steps.put_json(ctx, result["decomposition"]), "shas": result["shas"]}
+        elif key == "specify#1":
+            result = steps.put_json(ctx, result)
+        steps.record_step(ctx, key, result, kind="gate" if key.startswith("gate") else "task")
+
+
+def _latest_decomposition(ctx: RunContext) -> dict[str, Any] | None:
+    revs = _rounds(ctx, "decompose", "r", "-decomposition.json")
+    return json.loads(ctx.store.get_artifact(ctx.run_id, "decompose", f"r{max(revs)}-decomposition.json")) if revs else None
+
+
+_SAFE_SPEC_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def _presented_contracts(ctx: RunContext, gate: dict[str, Any]) -> dict[str, Any]:
+    """The specs, verdict and spec.md an older controller's Gate 2 presented, each checked against the sha256 the gate
+    showed the owner."""
+    gate_id = gate["gate_id"]
+    presented = {a["name"]: a["sha256"] for a in gate.get("artifacts", [])}
+    sids = [n[:-len(".json")] for n in presented if n != "verdict.json"]
+    if "verdict.json" not in presented or not sids or any(not n.endswith(".json") or not _SAFE_SPEC_ID.match(n[:-len(".json")])
+                                                          for n in presented if n != "verdict.json"):
+        raise RuntimeError(f"Gate 2 {gate_id} did not present one judge verdict and the specs as <spec_id>.json")
+
+    def verified(stage: str, name: str, presented_as: str) -> bytes:
+        try:
+            content = ctx.store.get_artifact(ctx.run_id, stage, name)
+        except FileNotFoundError:
+            raise RuntimeError(f"{stage}/{name}, presented at Gate 2 {gate_id} as {presented_as}, is missing") from None
+        if hashlib.sha256(content).hexdigest() != presented[presented_as]:
+            raise RuntimeError(f"{stage}/{name} no longer matches the sha256 Gate 2 {gate_id} presented as {presented_as}; "
+                               f"the owner was shown different bytes")
+        return content
+    specs = {sid: json.loads(verified("specify", f"final-{sid}.json", f"{sid}.json")) for sid in sids}
+    verdict = json.loads(verified("judge", "final-verdict.json", "verdict.json"))
+    if any(s.get("spec_id") != sid for sid, s in specs.items()):
+        raise RuntimeError(f"a spec stored for Gate 2 {gate_id} names a different spec_id")
+    kind = GateKind(gate["kind"])
+    if (kind == GateKind.SPEC_READINESS) != ((verdict.get("overall") or {}).get("result") == "pass"):
+        raise RuntimeError(f"Gate 2 {gate_id} is {kind.value} but the verdict it presented says {(verdict.get('overall') or {}).get('result')}")
+    decomposition = _latest_decomposition(ctx) or {"work_items": []}
+    items = {w["work_item_id"] for w in decomposition["work_items"]}
+    if any(s.get("work_item_id") not in items for s in specs.values()):
+        raise RuntimeError(f"a spec at Gate 2 {gate_id} belongs to no work item of the run's latest decomposition")
+    spec_md = {sid: _spec_markdown(ctx, s) for sid, s in specs.items()}
+    for sid, md in spec_md.items():
+        if md:
+            specs[sid]["_markdown"] = md
+    return {"specs": specs, "verdict": verdict, "spec_md": spec_md}
 
 
 def resumable_build_escalation(st: Any, events: list[Any]) -> bool:
@@ -733,74 +1004,6 @@ def resumable_build_escalation(st: Any, events: list[Any]) -> bool:
                 and all(wi.cr_id is not None or wi.stage in (WorkItemStage.BLOCKED, WorkItemStage.MERGE_JUDGING,
                                                             WorkItemStage.ESCALATED, WorkItemStage.SPEC_APPROVED)
                         for wi in st.work_items.values()))
-
-
-def resume(ctx: RunContext, budget_usd: float | None = None) -> RunStage:
-    """`factory resume <run_id>`: continue a run that stopped before reaching its pull requests.
-
-    Two cases. A run that **failed or was killed during implementation** (the orchestrator crashed or lost a
-    session's outputs): nothing before Gate 2 is re-run; the outcome, the approved specs and the judge's verdict
-    are read back from the store, and each spec's loop continues at the round whose work the store holds
-    (`resume_points`). A run **paused at its budget** (`PAUSED_BUDGET`, see `budget.py`): the owner's decision on
-    the budget gate is applied first (reject closes the run; approve, or `budget_usd` from `--budget`, raises the
-    cap and records `budget.raised`), then the run re-enters the stage the check interrupted. Implementation
-    continues from its artefacts as above; a pause in decomposition or specification re-runs that stage from its
-    start with the owner's last gate feedback, because the design stages are cheap and keep no partial state.
-    `budget_usd` given for a failed run just replaces the cap for the rest of it.
-
-    A settled build escalation may also be resumed after its recorded contract approval. Verification is rerun,
-    and an escalation verdict is never reused as the recovery decision.
-
-    A third case: a run whose controller was **stopped while idle at Gate 2** (`run.failed` right after the gate opened,
-    no session interrupted). The same run continues at that same gate (`pending_gate2` verifies it and every artefact
-    it presented): this controller waits for the owner's decision, then approve, approve_subset, request_changes and
-    reject take Gate 2's usual path. This is how a run moves to a newer controller (managed verification included,
-    which then needs the approved recipe fingerprint) before anyone approves implementation."""
-    st = ctx.store.state(ctx.run_id)
-    events = ctx.store.events(ctx.run_id)
-    outcome = json.loads(ctx.store.get_artifact(ctx.run_id, "intake", "outcome.json"))
-    preflight(ctx, events, budget_usd)
-    from . import build_recovery
-    recovery = build_recovery.apply_decision(ctx.store, ctx.queue, ctx.run_id)
-    if recovery and recovery["decision"] == "reject":
-        return RunStage.CLOSED
-    st, events = ctx.store.state(ctx.run_id), ctx.store.events(ctx.run_id)
-    preflight(ctx, events, budget_usd)
-    if st.stage == RunStage.PAUSED_BUDGET:
-        return until_budget_pause(lambda: _resume_after_budget_pause(ctx, outcome, st, events, budget_usd))
-    if st.stage == RunStage.FAILED and stopped_at_gate2(events):
-        return until_budget_pause(lambda: _resume_pending_gate2(ctx, outcome))
-    if st.stage not in (RunStage.FAILED, RunStage.IMPLEMENTING) and not resumable_build_escalation(st, events):
-        raise RuntimeError(f"run {ctx.run_id} is {st.stage.value}; only a run that failed or stopped during implementation, "
-                           f"paused at its budget, or escalated after an approved build, can be resumed")
-    if budget_usd is not None and budget_usd != st.budget_usd:
-        _raise_budget(ctx, st, float(budget_usd), by="cli", gate_id=None)
-    return until_budget_pause(lambda: _resume_implementation(ctx, outcome, events, st.stage))
-
-
-def _resume_implementation(ctx: RunContext, outcome: dict[str, Any], events: list[Any], from_stage: RunStage) -> RunStage:
-    if not any(ev.kind == "stage.entered" and ev.payload.get("stage") == RunStage.IMPLEMENTING.value for ev in events):
-        raise RuntimeError(f"run {ctx.run_id} never reached the implementation stage; start a new run instead")
-    approved = [ev.payload["spec_id"] for ev in events
-                if ev.kind == "work_item.stage" and ev.payload.get("stage") == WorkItemStage.SPEC_APPROVED.value]
-    specs = {sid: json.loads(ctx.store.get_artifact(ctx.run_id, "specify", f"final-{sid}.json")) for sid in dict.fromkeys(approved)}
-    spec_verdict = artifact_json_or_none(ctx, "judge", "final-verdict.json")
-    spec_md = {sid: _spec_markdown(ctx, s) for sid, s in specs.items()}
-    guidance = approved_record(ctx, events, specs)
-    points = resume_points(ctx, specs)
-    recovery = next((e.payload for e in reversed(events) if e.kind == "build.recovery" and e.payload.get("decision") == "request_changes"), None)
-    if recovery:
-        sid, n = recovery["spec_id"], recovery["round"] + 1
-        if sid in points:
-            guidance[sid] = guidance.get(sid, "") + "\n# Build recovery instructions from the owner\n" + recovery["comments"]
-            if points[sid].round_no < n:
-                points[sid] = ResumePoint(round_no=n, findings=recovery.get("review_findings") or points[sid].findings)
-            points[sid].review_through = n
-    ctx.event("run.resumed", {"stage": RunStage.IMPLEMENTING.value, "from": from_stage.value,
-                              "points": {sid: {"round": pt.round_no, "implementer_done": pt.report is not None} for sid, pt in points.items()},
-                              "sessions_to_follow": orphaned_sessions(ctx)},
-              stage="implement")
-    return implement_and_integrate(ctx, outcome, specs, spec_md, spec_verdict, resume=points, guidance=guidance)
 
 
 # ---------------------------------------------------------------- budget pauses
@@ -843,92 +1046,3 @@ def _raise_budget(ctx: RunContext, st: Any, new_budget: float, by: str, gate_id:
     ctx.event("budget.raised", {"budget_usd": new_budget, "previous_budget_usd": previous, "spent_usd": round(st.list_cost_usd, 2),
                                 "gate_id": gate_id, "decided_by": by}, stage="budget", actor="human")
 
-
-def _resume_after_budget_pause(ctx: RunContext, outcome: dict[str, Any], st: Any, events: list[Any],
-                               budget_usd: float | None) -> RunStage:
-    pause = last_pause(events)
-    action, new_budget, decision = budget_decision(ctx, st, events, budget_usd)
-    gate_id = pause.get("gate_id")
-    by = decision.decided_by if decision is not None else "cli"
-    if gate_id and gate_id in st.open_gates:
-        ctx.event("gate.decided", {"gate_id": gate_id, "kind": GateKind.BUDGET.value,
-                                   "decision": Decision.REJECT.value if action == "close" else Decision.APPROVE.value,
-                                   "comments": decision.comments if decision is not None else f"budget_usd: {new_budget:g}",
-                                   "approved_subset": [], "artifact_shas": list(decision.artifact_shas) if decision is not None else [],
-                                   "decided_by": by}, stage="budget", actor="human")
-    if action == "close":
-        ctx.event("stage.entered", {"stage": RunStage.CLOSED.value}, stage="budget", actor="human")
-        return RunStage.CLOSED
-    if new_budget != st.budget_usd:
-        _raise_budget(ctx, st, new_budget, by=by, gate_id=gate_id)
-    else:
-        ctx.policy = dataclasses.replace(ctx.policy, run_budget_usd=new_budget)
-    paused_in = RunStage(pause.get("stage") or pause.get("run_stage"))
-    events = ctx.store.events(ctx.run_id)
-    if paused_in == RunStage.IMPLEMENTING:
-        return _resume_implementation(ctx, outcome, events, from_stage=RunStage.PAUSED_BUDGET)
-    if paused_in == RunStage.DECOMPOSING:
-        feedback, prior = _pending_gate1_feedback(ctx, events)
-        ctx.event("run.resumed", {"stage": RunStage.DECOMPOSING.value, "from": RunStage.PAUSED_BUDGET.value,
-                                  "with_feedback": feedback is not None, "sessions_to_follow": orphaned_sessions(ctx)},
-                  stage="decompose")
-        return _from_decompose(ctx, outcome, feedback, prior)
-    if paused_in == RunStage.SPECIFYING:
-        revs = _rounds(ctx, "decompose", "r", "-decomposition.json")
-        if not revs:
-            raise RuntimeError(f"run {ctx.run_id} paused while specifying but holds no decomposition; start a new run instead")
-        decomposition = json.loads(ctx.store.get_artifact(ctx.run_id, "decompose", f"r{max(revs)}-decomposition.json"))
-        human_comments, prior_specs = _pending_specify_inputs(ctx, events, decomposition)
-        previous_verdict, round_offset = _persisted_specify_rounds(ctx, decomposition)
-        ctx.event("run.resumed", {"stage": RunStage.SPECIFYING.value, "from": RunStage.PAUSED_BUDGET.value,
-                                  "with_feedback": prior_specs is not None, "sessions_to_follow": orphaned_sessions(ctx)},
-                  stage="specify")
-        return _from_specify(ctx, outcome, decomposition, human_comments, prior_specs, previous_verdict, round_offset)
-    raise RuntimeError(f"run {ctx.run_id} paused in {paused_in.value}, which has no resume path")
-
-
-def _persisted_specify_rounds(ctx: RunContext, decomposition: dict[str, Any]) -> tuple[dict[str, Any] | None, int]:
-    """What a resumed specification stage continues from: the last judge verdict in the store (the writers revise
-    against its issues, the judge sees it as previous_verdict.json) and the highest round any writer draft or verdict
-    already carries. The store never overwrites an artefact, so the stage picks up at the next round."""
-    judged = _rounds(ctx, "judge", "r", "-verdict.json")
-    rounds = list(judged)
-    for w in decomposition["work_items"]:
-        rounds += _rounds(ctx, "specify", f"{w['work_item_id']}-r", "-spec.json")
-    verdict = artifact_json_or_none(ctx, "judge", f"r{max(judged)}-verdict.json") if judged else None
-    return verdict, max(rounds, default=0)
-
-
-def _pending_gate1_feedback(ctx: RunContext, events: list[Any]) -> tuple[str | None, dict[str, Any] | None]:
-    """When the pause interrupted a re-decomposition after request-changes at Gate 1: the owner's feedback (gate
-    comments plus tracker comments, as `_feedback` builds it) and the decomposition it was about."""
-    last_dec = next((ev for ev in reversed(events) if ev.kind == "artifact.produced"
-                     and ev.payload.get("artifact_type") == "decomposition" and "work_items" in ev.payload), None)
-    last_gate = next((ev for ev in reversed(events) if ev.kind == "gate.decided"
-                      and ev.payload.get("kind") == GateKind.DECOMPOSITION_REVIEW.value), None)
-    if last_dec is None or last_gate is None or last_gate.seq < last_dec.seq \
-            or last_gate.payload.get("decision") != Decision.REQUEST_CHANGES.value:
-        return None, None
-    prior = json.loads(ctx.store.get_artifact(ctx.run_id, "decompose", f"r{last_dec.payload['revision']}-decomposition.json"))
-    return _feedback(ctx, _decision_from_event(last_gate.payload)), prior
-
-
-def _pending_specify_inputs(ctx: RunContext, events: list[Any], decomposition: dict[str, Any]
-                            ) -> tuple[dict[str, str] | None, dict[str, dict] | None]:
-    """What the spec writers were about to receive when the pause hit: the Gate 1 approval notes on a first pass,
-    or the routed Gate 2 request-changes feedback with the drafts it was about."""
-    last_gate = next((ev for ev in reversed(events) if ev.kind == "gate.decided"), None)
-    if last_gate is None:
-        return None, None
-    p = last_gate.payload
-    if p.get("kind") == GateKind.DECOMPOSITION_REVIEW.value and p.get("decision") == Decision.APPROVE.value:
-        notes = notes_by_item(p.get("comments", ""), [w["work_item_id"] for w in decomposition["work_items"]])
-        return (notes or None), None
-    if p.get("kind") in (GateKind.SPEC_READINESS.value, GateKind.ESCALATION.value) and p.get("decision") == Decision.REQUEST_CHANGES.value:
-        opened = next((ev for ev in reversed(events) if ev.kind == "gate.opened" and ev.payload.get("gate_id") == p.get("gate_id")), None)
-        names = [a["name"] for a in (opened.payload.get("artifacts", []) if opened else [])]
-        sids = [n[:-len(".json")] for n in names if n.endswith(".json") and n != "verdict.json"]
-        specs = {sid: json.loads(ctx.store.get_artifact(ctx.run_id, "specify", f"final-{sid}.json")) for sid in sids}
-        if specs:
-            return _route_gate2_feedback(ctx, _decision_from_event(p), specs)
-    return None, None

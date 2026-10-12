@@ -399,6 +399,7 @@ def resume(run_id: str, forge: bool = typer.Option(True, help="Talk to the forge
 
 def _resume_locked(ctx, run_id: str, st, events, current, new_budget) -> None:
     """`factory resume` once the run's controller lock is held: every refusal before the drive, so none writes run.failed."""
+    from .budget import last_pause
     from .runner import budget_decision, preflight, resume as resume_pipeline
     from .state import RunStage
 
@@ -408,7 +409,7 @@ def _resume_locked(ctx, run_id: str, st, events, current, new_budget) -> None:
     except RuntimeError as e:
         typer.echo(f"cannot resume run {run_id}: {e}")
         raise typer.Exit(1)
-    if st.stage == RunStage.PAUSED_BUDGET:
+    if st.stage == RunStage.PAUSED_BUDGET and last_pause(events) is not None:
         try:                      # refuse here, before any event is written, when nothing has decided the pause yet
             action, raised_to, _ = budget_decision(ctx, st, events, new_budget)
         except RuntimeError as e:

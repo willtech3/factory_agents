@@ -141,14 +141,18 @@ def local_activity_url(runs_dir: Path, activity_id: str | None) -> str | None:
     return None
 
 
-def _resumable_after_failure(st, events) -> bool:
-    """`factory resume` continues a failed run from its artefacts when it reached the build, or when it died while idle at
-    Gate 2 (runner.stopped_at_gate2): the sentence and the Resume button follow what resume accepts."""
+def _resumable_after_failure(st, events, replayable: bool) -> bool:
+    """`factory resume` replays a failed run's pipeline from its recorded steps, so any failed run that has them continues
+    where it stopped (ADR-0013). A run an older controller wrote (`replayable` False) continues only from what that
+    controller could continue: the build, or a Gate 2 it stopped idle at (runner.legacy_adoption). The sentence and the
+    Resume button follow what resume accepts."""
     from ..runner import resumable_build_escalation
     if resumable_build_escalation(st, events):
         return True
     if st.stage != RunStage.FAILED:
         return False
+    if replayable:
+        return True
     last = next((ev.payload.get("stage") for ev in reversed(events) if ev.kind == "stage.entered"), None)
     return last == RunStage.GATE_2_SPEC_READINESS.value or any(
         ev.kind == "stage.entered" and ev.payload.get("stage") == "implementing" for ev in events)
@@ -313,12 +317,12 @@ class Console:
                     for ev in effective_run_events(events) if ev.kind in TIMELINE_KINDS]
         design_only = any(ev.kind == "run.completed" and ev.payload.get("design_only") for ev in events) or \
             any(ev.kind == "run.created" and ev.payload.get("design_only") for ev in events)
-        # A run that died in the implementation stage, or paused at its run budget, continues from its artefacts
-        # (`factory resume`); a budget pause first needs the owner's decision on the budget gate. A run paused because
-        # one session hit its own cap is still being driven: its orchestrator waits on that gate, so nothing to resume.
+        # A run that failed, or paused at its run budget, continues where its steps stop (`factory resume`); a budget
+        # pause first needs the owner's decision on the budget gate. A run paused because one session hit its own cap is
+        # still being driven: its orchestrator waits on that gate, so nothing to resume.
         budget = self._budget(st, events, gates)
         paused = budget["paused"]
-        resumable = paused or _resumable_after_failure(st, events)
+        resumable = paused or _resumable_after_failure(st, events, self._replayable(run_id))
         # Gate 3 and Stage 5 are followed by `factory watch`, a separate process; its heartbeat says whether one is running.
         pending = [wi.work_item_id for wi in pending_work_items(st)]
         watch = {"pending": pending, "watchable": bool(pending), "heartbeat": watcher_heartbeat(self.cfg.runs_dir, run_id)}
@@ -391,10 +395,15 @@ class Console:
         return {"gates": gates, "questions": questions}
 
     # ---- gates
+    def _replayable(self, run_id: str) -> bool:
+        """The run records its pipeline steps (a controller since ADR-0013 phase 2 wrote it)."""
+        return any(s.key.startswith("decompose#") for s in self.store.steps(run_id))
+
     def _gate_resumable(self, run_id: str, st, events) -> bool:
         """Whether a decision recorded on this stopped run can ever be applied (see run_detail)."""
         try:
-            return self._budget(st, events, self.queue.open_gates())["paused"] or _resumable_after_failure(st, events)
+            return self._budget(st, events, self.queue.open_gates())["paused"] or \
+                _resumable_after_failure(st, events, self._replayable(run_id))
         except Exception:  # noqa: BLE001 - a gate page must render even when the budget record is unreadable
             return False
 
@@ -770,14 +779,14 @@ class Console:
         return self.resume_run(run_id)
 
     def resume_run(self, run_id: str, body: ResumeBody | None = None) -> dict[str, Any]:
-        """Continue a run that failed during implementation or paused at its budget: spawns `factory resume <run_id>`
+        """Continue a run that failed or paused at its budget: spawns `factory resume <run_id>`
         the way start_run spawns `factory run`, so the Console never holds the orchestrator's state itself. For a
         budget pause the owner's decision must exist first; `budget_usd` in the body records an approve with that
         cap on the budget gate before spawning, so one click raises and continues."""
         detail = self.run_detail(run_id)
         if not detail["resumable"]:
-            raise HTTPException(409, f"run {run_id} is {detail['stage']}; only a failed run that reached implementation, "
-                                     f"a run paused at its budget, or an approved build escalation, can be resumed")
+            raise HTTPException(409, f"run {run_id} is {detail['stage']}; only a failed run, a run paused at its budget, "
+                                     f"or an approved build escalation, can be resumed")
         live = self.resuming(run_id)
         if live:
             raise HTTPException(409, f"run {run_id} is already being resumed (pid {live})")

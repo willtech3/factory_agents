@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 
 from factory import cli, runner
 from factory.gates import Decision, GateKind, LogNotifier, StaleDecision
-from factory.stages import RunContext
+from factory.stages import RunContext, common
 from factory.stages.common import gate_decision, open_gate
 from factory.state import IllegalTransition, Policy, RunStage
 from factory.store import RunStore
@@ -100,7 +100,7 @@ def test_request_changes_goes_back_to_the_writers_with_routed_feedback_and_the_n
 def test_the_recovered_controller_waits_for_a_decision_made_later(tmp_path, root, monkeypatch):
     gate, _ = park(tmp_path, root)
     ctx = context(tmp_path, root)
-    monkeypatch.setattr(runner, "GATE_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(common, "GATE_POLL_SECONDS", 0.05)
     threading.Timer(0.3, lambda: FileQueue(tmp_path / "runs" / "_queue").record_decision(gate.gate_id, "approve", "will")).start()
     assert runner.resume(ctx) == RunStage.COMPLETED and ctx.driver.calls == []
 
@@ -119,7 +119,7 @@ def test_a_second_stop_and_recovery_of_the_same_gate_works(tmp_path, root, monke
 
     class Stopped(Exception):
         pass
-    monkeypatch.setattr(runner.time, "sleep", lambda s: (_ for _ in ()).throw(Stopped()))
+    monkeypatch.setattr(common.time, "sleep", lambda s: (_ for _ in ()).throw(Stopped()))
     ctx = context(tmp_path, root)
     with pytest.raises(Stopped):
         runner.resume(ctx)
@@ -165,18 +165,27 @@ def test_a_gate_record_that_differs_from_the_log_is_refused(tmp_path, root):
     refused(tmp_path, root, "differs from the gate the run opened")
 
 
-def test_a_run_still_waiting_at_gate_2_is_not_taken_over(tmp_path, root):
-    park(tmp_path, root, stop=False)
-    refused(tmp_path, root, "gate_2_spec_readiness")
+def test_a_controller_killed_at_gate_2_before_it_recorded_anything_is_taken_over(tmp_path, root):
+    """No run.failed: the process was killed. Nobody holds the run's lock (`factory resume` takes it), so the resumed
+    controller waits on that same gate."""
+    gate, _ = park(tmp_path, root, stop=False)
+    ctx = context(tmp_path, root)
+    ctx.queue.record_decision(gate.gate_id, "approve", "will")
+    n = len(ctx.store.events(RUN))
+    assert runner.resume(ctx) == RunStage.COMPLETED and ctx.driver.calls == []
+    assert "gate.opened" not in [e.kind for e in after_resume(ctx, n)]
 
 
-def test_a_decided_gate_is_not_recovered(tmp_path, root):
+def test_a_decision_the_dead_controller_had_not_acted_on_is_acted_on(tmp_path, root):
     gate, _ = park(tmp_path, root, stop=False)
     ctx = context(tmp_path, root)
     ctx.queue.record_decision(gate.gate_id, "approve", "will")
     gate_decision(ctx, gate.gate_id, gate.kind)                 # decided, then the controller died before acting on it
     ctx.event("run.failed", {"reason": "crash", "interrupted_sessions": []})
-    refused(tmp_path, root, "not the run's only open gate")
+    assert runner.resume(ctx) == RunStage.COMPLETED and ctx.driver.calls == []
+    events = ctx.store.events(RUN)
+    assert [e.payload["gate_id"] for e in events if e.kind == "gate.decided"].count(gate.gate_id) == 1
+    assert {e.spec_id for e in events if e.kind == "work_item.stage" and e.payload["stage"] == "spec_approved"} == {"spec_a", "spec_b"}
 
 
 @pytest.mark.parametrize("after", [("session.started", {"session_id": "s", "agent_key": "spec_writer"}),
@@ -198,9 +207,7 @@ def test_a_run_that_stopped_elsewhere_takes_no_gate_2_path(tmp_path, root):
     ctx.event("stage.entered", {"stage": "gate_1_decomposition"}, stage="gate_1")
     open_gate(ctx, GateKind.DECOMPOSITION_REVIEW, {"decomposition.json": SHA}, "plan", ["will"], (Decision.APPROVE, Decision.REJECT))
     ctx.event("run.failed", {"reason": "stopped by signal 15", "interrupted_sessions": []})
-    refused(tmp_path, root, "never reached the implementation stage")
-    with pytest.raises(RuntimeError, match="did not stop at Gate 2"):
-        runner.pending_gate2(context(tmp_path, root))
+    refused(tmp_path, root, "stopped before Gate 1 approved its decomposition")
 
 
 def test_a_held_controller_lock_is_refused(tmp_path, root):
@@ -221,11 +228,12 @@ def test_managed_recovery_needs_the_approved_recipe_fingerprint(tmp_path, root):
             test_profile_sha256="b" * 64, managed_verify_budget_usd=0.0)
 
 
-def test_a_budget_change_is_not_part_of_a_gate_recovery(tmp_path, root):
-    park(tmp_path, root)
+def test_a_budget_change_at_a_gate_recovery_raises_the_cap_and_waits_on_the_same_gate(tmp_path, root):
+    gate, _ = park(tmp_path, root)
     ctx = context(tmp_path, root)
-    with pytest.raises(RuntimeError, match="does not change the run budget"):
-        runner.resume(ctx, budget_usd=99)
+    ctx.queue.record_decision(gate.gate_id, "approve", "will")
+    assert runner.resume(ctx, budget_usd=99) == RunStage.COMPLETED
+    assert ctx.store.state(RUN).budget_usd == 99 and "gate.opened" not in [e.kind for e in ctx.store.events(RUN)[-8:]]
 
 
 def test_a_run_moved_to_managed_verification_never_resumes_without_it(tmp_path, root, monkeypatch):
@@ -244,7 +252,7 @@ def test_a_failed_run_still_cannot_jump_to_other_stages(tmp_path, root):
     ctx = context(tmp_path, root)
     before = ctx.store.state(RUN).last_seq
     with pytest.raises(IllegalTransition):                                       # refused when written, so nothing is
-        ctx.event("run.resumed", {"stage": "specifying"})                         # only implementing or gate 2 from failed
+        ctx.event("run.resumed", {"stage": "completed"})                          # only a stage the run can stop in
     assert ctx.store.state(RUN).last_seq == before                                # appended and the run stays readable
 
 
