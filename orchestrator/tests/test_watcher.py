@@ -261,7 +261,7 @@ def test_approve_reobserves_the_next_pipeline_then_escalates(tmp_path, root, exa
     assert forge.calls["latest_pipeline"] == 4        # two observations, two lookups each
 
 
-def test_dev_e2e_failure_then_request_changes_routes_back_to_implementing(tmp_path, root, examples):
+def test_dev_e2e_failure_then_request_changes_routes_back_to_implementing(tmp_path, root, examples, schemas_dir):
     forge = FakeForge(cr_states=("merged",), pipeline=("success",))
     queue = InMemoryQueue()
     ctx = _ctx(tmp_path, root, forge, queue)
@@ -286,6 +286,7 @@ def test_dev_e2e_failure_then_request_changes_routes_back_to_implementing(tmp_pa
     assert ctx.store.state(RUN).work_items[WID].stage == WorkItemStage.IMPLEMENTING
     fb = ctx.store.get_artifact(RUN, "deploy", f"{SID}-deploy_feedback.md").decode()
     assert "pgcrypto" in fb and "502" in fb
+    assert_log_valid(ctx.store, RUN, schemas_dir)                   # e2e.dev_failed among its events
 
 
 def test_decided_but_unapplied_gate_is_applied_after_a_restart(tmp_path, root, examples):

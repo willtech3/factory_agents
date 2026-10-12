@@ -154,6 +154,7 @@ def test_visual_requests_stay_invisible_to_local_workers(tmp_path, root):
     run, _, _ = run_verifier(tmp_path, root, {"app/main.py": "X = 1\n"}, driver=Watching(tmp_path / "unused", tmp_path))
     assert run.e2e[0]["visual"]["status"] == "passed"
     assert seen["open"] and seen["pending"] == []
+    assert all((p.parent / "closed").exists() for p in seen["open"])     # and closed once the round has read them
 
 
 @pytest.mark.parametrize("target", ["local", "preview"])

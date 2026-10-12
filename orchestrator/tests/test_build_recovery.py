@@ -115,6 +115,11 @@ def test_console_recovery_of_a_deleted_app_uses_the_recorded_session_binding(tmp
     console = create_app(make_config(root, ctx.cfg.runs_dir)).state.console
     env = console.resume_environment(gate2.RUN, console.run_detail(gate2.RUN))
     assert env["FACTORY_TEST_VAULT_IDS"] == "vlt_1" and env["FACTORY_TEST_PROFILE_SHA256"] == "a" * 64
+    from fastapi import HTTPException
+    session.environment_id = "env_other"                       # not the environment the run recorded
+    with pytest.raises(HTTPException) as refused:
+        console.resume_environment(gate2.RUN, console.run_detail(gate2.RUN))
+    assert refused.value.status_code == 409
 
 
 def test_recovery_gate_is_bound_and_retry_is_recorded_once(tmp_path, root, monkeypatch):
