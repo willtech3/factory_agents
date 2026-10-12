@@ -12,18 +12,17 @@ import json
 import time
 
 import pytest
-import test_bun_verification as tbv
-import test_hosted_verification as hv
+import support.bun as bun_support
+import support.hosted as hosted
 
 from factory import checks
 from factory.hosted_verifier import _runtime, pytest_collection
 from factory.sandbox_tools import environment_runner as er
-from factory.stages import common
 from factory.stages.implement import LocalVerifier, _diff_lines, run_implement_one
 
-sandbox_double = hv.sandbox_double
-no_host_execution = hv.no_host_execution
-fake_bun = tbv.fake_bun
+sandbox_double = hosted.sandbox_double
+no_host_execution = hosted.no_host_execution
+fake_bun = bun_support.fake_bun
 REQUEST = {"head_sha": "a" * 40, "profile_path": "ops/recipe.json"}
 
 
@@ -31,7 +30,7 @@ REQUEST = {"head_sha": "a" * 40, "profile_path": "ops/recipe.json"}
 
 def test_the_app_is_reached_at_localhost_and_probed_at_127(tmp_path, monkeypatch):
     assert er.app_base_url({"id": "app", "port": 3000}) == "http://localhost:3000"
-    env, runtime = er.sandbox_env({}, hv.RECIPE, REQUEST, tmp_path, tmp_path / "evidence")
+    env, runtime = er.sandbox_env({}, hosted.RECIPE, REQUEST, tmp_path, tmp_path / "evidence")
     assert env["BASE_URL"] == "http://localhost:8080" and runtime["base_url"] == env["BASE_URL"] and runtime["health_host"] == "127.0.0.1"
     monkeypatch.undo()                                             # the real health(), not the autouse stand-in
     seen = []
@@ -48,17 +47,17 @@ def test_the_app_is_reached_at_localhost_and_probed_at_127(tmp_path, monkeypatch
 
 
 def test_a_recipe_without_an_app_service_has_no_base_url(tmp_path):
-    worker_only = {**hv.RECIPE, "services": [{"id": "worker", "port": 9000, "health_path": "/"}]}
+    worker_only = {**hosted.RECIPE, "services": [{"id": "worker", "port": 9000, "health_path": "/"}]}
     env, runtime = er.sandbox_env({}, worker_only, REQUEST, tmp_path, tmp_path / "evidence")
     assert env["BASE_URL"] == "" and runtime["base_url"] == ""
     assert er.app_base_url(None) == ""
 
 
 def test_the_controller_issues_browser_requests_for_the_origin_the_harness_uses(tmp_path, root):
-    run, driver, _ = hv.run_verifier(tmp_path, root, {"app/main.py": "X = 1\n"})
+    run, driver, _ = hosted.run_verifier(tmp_path, root, {"app/main.py": "X = 1\n"})
     request = json.loads(driver.calls[0]["uploads"]["environment-request.json"])
     visual_request = request["change"]["e2e"][0]["visual_request"]
-    assert visual_request["base_url"] == "http://localhost:8080" == er.app_base_url(hv.RECIPE["services"][0])
+    assert visual_request["base_url"] == "http://localhost:8080" == er.app_base_url(hosted.RECIPE["services"][0])
     assert run.record["app_base_url"] == "http://localhost:8080"
     assert run.e2e[0]["visual"]["base_url"] == "http://localhost:8080", "the evidence names the origin the browser used"
 
@@ -156,14 +155,14 @@ def test_diff_lines_reads_headers_only_before_the_first_hunk():
 def test_analyse_reports_removed_lines_and_counts_a_rename_as_removing_the_old_path(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    hv.git(repo, "init", "-q", "-b", "main")
-    hv.write(repo, {"tests/models.test.ts": "a\nb\n", "tests/old.test.ts": "x\n"})
-    hv.git(repo, "add", "-A"); hv.git(repo, "commit", "-q", "-m", "base")
-    base = hv.git(repo, "rev-parse", "HEAD").strip()
-    hv.write(repo, {"tests/models.test.ts": "a\nb\nc\n"})
-    hv.git(repo, "mv", "tests/old.test.ts", "tests/renamed.test.ts")
-    hv.git(repo, "add", "-A"); hv.git(repo, "commit", "-q", "-m", "change")
-    diff = LocalVerifier("unused", tmp_path / "v").analyse(repo, base, hv.git(repo, "rev-parse", "HEAD").strip())
+    hosted.git(repo, "init", "-q", "-b", "main")
+    hosted.write(repo, {"tests/models.test.ts": "a\nb\n", "tests/old.test.ts": "x\n"})
+    hosted.git(repo, "add", "-A"); hosted.git(repo, "commit", "-q", "-m", "base")
+    base = hosted.git(repo, "rev-parse", "HEAD").strip()
+    hosted.write(repo, {"tests/models.test.ts": "a\nb\nc\n"})
+    hosted.git(repo, "mv", "tests/old.test.ts", "tests/renamed.test.ts")
+    hosted.git(repo, "add", "-A"); hosted.git(repo, "commit", "-q", "-m", "change")
+    diff = LocalVerifier("unused", tmp_path / "v").analyse(repo, base, hosted.git(repo, "rev-parse", "HEAD").strip())
     assert diff["added_lines"]["tests/models.test.ts"] == ["c"] and diff["removed_lines"]["tests/models.test.ts"] == []
     assert "tests/old.test.ts" in diff["deleted"] and "tests/renamed.test.ts" in diff["changed"]
 
@@ -171,13 +170,13 @@ def test_analyse_reports_removed_lines_and_counts_a_rename_as_removing_the_old_p
 @pytest.mark.parametrize("allowed, passes", [(["app/**", "tests/test_a.py"], True), (["app/**", "tests/**"], False)])
 @pytest.mark.parametrize("test_body", ["def test_a():\n    assert 1 == 1\n", "import pytest\n@pytest.mark.skip(reason='skip')\ndef test_a():\n    assert True\n"])
 def test_a_managed_round_permits_approved_test_updates_but_still_detects_skips(tmp_path, root, no_host_execution, allowed, passes, test_body):
-    origin = hv.remote(tmp_path)
+    origin = hosted.remote(tmp_path)
     grown = test_body
-    driver = hv.Driver(origin, tmp_path, change_files={"app/main.py": "X = 1\n", "tests/test_a.py": grown})
-    ctx = hv.context(tmp_path, root, driver)
-    spec = {**hv.spec(), "allowed_paths": allowed}
-    run_implement_one(ctx, spec, str(origin), "main", LocalVerifier(str(origin), tmp_path / "runs" / hv.RUN_ID / "verify"), {})
-    det = {d["check"]: d for d in hv.artifact(ctx, "implement", "spec_hosted-r1-deterministic_checks.json")}
+    driver = hosted.Driver(origin, tmp_path, change_files={"app/main.py": "X = 1\n", "tests/test_a.py": grown})
+    ctx = hosted.context(tmp_path, root, driver)
+    spec = {**hosted.spec(), "allowed_paths": allowed}
+    run_implement_one(ctx, spec, str(origin), "main", LocalVerifier(str(origin), tmp_path / "runs" / hosted.RUN_ID / "verify"), {})
+    det = {d["check"]: d for d in hosted.artifact(ctx, "implement", "spec_hosted-r1-deterministic_checks.json")}
     assert det["protected_tests"]["passed"] is passes, det["protected_tests"]["detail"]
     assert det["test_weakening"]["passed"] is ("pytest.mark.skip" not in test_body)
 
@@ -193,44 +192,44 @@ def test_pytest_is_collected_unless_every_command_is_bun():
 
 
 def test_a_bun_only_round_skips_pytest_collection_and_still_proves_its_criterion(tmp_path, root, fake_bun, no_host_execution):
-    origin = hv.remote(tmp_path)
-    driver = tbv.BunDriver(origin, tmp_path, bun_tests=[tbv.PASSING_BUN], extra_env=tbv.env_of(fake_bun))
-    driver.report = {"criteria": [{"ac_id": "AC-1", "tests": [tbv.PASSING_BUN]}], "head_commit": "x"}
-    ctx = hv.context(tmp_path, root, driver)
-    spec = tbv.bun_spec(["bun test src/catalog"])
+    origin = hosted.remote(tmp_path)
+    driver = bun_support.BunDriver(origin, tmp_path, bun_tests=[bun_support.PASSING_BUN], extra_env=bun_support.env_of(fake_bun))
+    driver.report = {"criteria": [{"ac_id": "AC-1", "tests": [bun_support.PASSING_BUN]}], "head_commit": "x"}
+    ctx = hosted.context(tmp_path, root, driver)
+    spec = bun_support.bun_spec(["bun test src/catalog"])
     spec["acceptance_criteria"] = spec["acceptance_criteria"][:1]
-    run_implement_one(ctx, spec, str(origin), "main", LocalVerifier(str(origin), tmp_path / "runs" / hv.RUN_ID / "verify"), {})
-    results = hv.artifact(ctx, "implement", "spec_hosted-r1-test_results.json")
+    run_implement_one(ctx, spec, str(origin), "main", LocalVerifier(str(origin), tmp_path / "runs" / hosted.RUN_ID / "verify"), {})
+    results = hosted.artifact(ctx, "implement", "spec_hosted-r1-test_results.json")
     assert results["collected_tests"] is None
     assert results["environment"]["collection"] == {"framework": "pytest", "status": "skipped",
                                                     "reason": pytest_collection(["bun test"])["collect_skip_reason"]}
-    det = {d["check"]: d for d in hv.artifact(ctx, "implement", "spec_hosted-r1-deterministic_checks.json")}
+    det = {d["check"]: d for d in hosted.artifact(ctx, "implement", "spec_hosted-r1-deterministic_checks.json")}
     assert det["ac_test_mapping"]["passed"] and "UNVERIFIED" not in det["ac_test_mapping"]["detail"]
     assert not list((tmp_path).glob("sandbox-*/logs/collect.log")), "no pytest collection ran"
 
 
 def test_a_pytest_round_still_records_its_collection(tmp_path, root):
-    run, _, _ = hv.run_verifier(tmp_path, root, {"app/main.py": "X = 1\n"})
+    run, _, _ = hosted.run_verifier(tmp_path, root, {"app/main.py": "X = 1\n"})
     assert run.record["collection"]["status"] == "passed" and run.record["collection"]["collected"] >= 1
 
 
 # ---------------------------------------------------------------------------------------------- 5. what verification cost
 
 def finished(ctx):
-    return [e for e in ctx.store.events(hv.RUN_ID) if e.kind == "session.finished"]
+    return [e for e in ctx.store.events(hosted.RUN_ID) if e.kind == "session.finished"]
 
 
 def test_a_completed_verification_is_charged_once(tmp_path, root):
-    run, _, ctx = hv.run_verifier(tmp_path, root, {"app/main.py": "X = 1\n"})
+    run, _, ctx = hosted.run_verifier(tmp_path, root, {"app/main.py": "X = 1\n"})
     events = finished(ctx)
     assert len(events) == 1 and events[0].payload["session_id"] == run.record["session_id"] and events[0].stage == "verify"
-    assert events[0].spec_id == "spec_hosted" and ctx.store.state(hv.RUN_ID).list_cost_usd == pytest.approx(run.record["cost_usd"])
+    assert events[0].spec_id == "spec_hosted" and ctx.store.state(hosted.RUN_ID).list_cost_usd == pytest.approx(run.record["cost_usd"])
 
 
 def test_a_failed_or_unbound_verification_is_charged_too(tmp_path, root):
-    driver = hv.Driver(tmp_path / "unused", tmp_path, tamper=lambda report: report.update(head_sha="f" * 40))
-    run, _, ctx = hv.run_verifier(tmp_path, root, {"app/main.py": "X = 1\n"}, driver=driver)
-    assert not run.setup.passed and len(finished(ctx)) == 1 and ctx.store.state(hv.RUN_ID).list_cost_usd == pytest.approx(0.4)
+    driver = hosted.Driver(tmp_path / "unused", tmp_path, tamper=lambda report: report.update(head_sha="f" * 40))
+    run, _, ctx = hosted.run_verifier(tmp_path, root, {"app/main.py": "X = 1\n"}, driver=driver)
+    assert not run.setup.passed and len(finished(ctx)) == 1 and ctx.store.state(hosted.RUN_ID).list_cost_usd == pytest.approx(0.4)
 
 
 def test_the_run_budget_pauses_the_run_before_a_hosted_verification_starts(tmp_path, root):
@@ -242,17 +241,17 @@ def test_the_run_budget_pauses_the_run_before_a_hosted_verification_starts(tmp_p
     from factory.hosted_verifier import HostedVerifier
     from factory.state import RunStage
 
-    repo, base, head = hv.candidate(tmp_path, {"app/main.py": "X = 1\n"})
-    driver = hv.Driver(tmp_path / "unused", tmp_path)
-    ctx = hv.context(tmp_path, root, driver)
+    repo, base, head = hosted.candidate(tmp_path, {"app/main.py": "X = 1\n"})
+    driver = hosted.Driver(tmp_path / "unused", tmp_path)
+    ctx = hosted.context(tmp_path, root, driver)
     for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness", "implementing"):
         ctx.event("stage.entered", {"stage": stage})
     ctx.policy = dataclasses.replace(ctx.policy, run_budget_usd=3.0)          # below the $4 hosted verification cap
     with pytest.raises(BudgetPaused):
-        HostedVerifier(ctx, tmp_path / "verify").verify(repo, base, head, hv.spec(), branch="b", round_no=1, work_item_id="wi-hosted")
+        HostedVerifier(ctx, tmp_path / "verify").verify(repo, base, head, hosted.spec(), branch="b", round_no=1, work_item_id="wi-hosted")
     assert not driver.calls
-    assert ctx.store.state(hv.RUN_ID).stage == RunStage.PAUSED_BUDGET
-    paused = next(e.payload for e in ctx.store.events(hv.RUN_ID) if e.kind == "budget.reached")
+    assert ctx.store.state(hosted.RUN_ID).stage == RunStage.PAUSED_BUDGET
+    paused = next(e.payload for e in ctx.store.events(hosted.RUN_ID) if e.kind == "budget.reached")
     assert paused["next"]["stage"] == "verify" and paused["next"]["cap_usd"] == 4.0
 
 

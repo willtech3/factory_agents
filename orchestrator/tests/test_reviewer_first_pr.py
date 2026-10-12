@@ -13,14 +13,14 @@ BANNED = [r"\bAC-\d", r"\bF-\d", r"\bDET-", r"(?i)merge judge", r"(?i)orchestrat
 
 
 def _integrate(tmp_path, root, examples, *, evaluation=False, extra_files=None):
-    from test_session_cutoff import AutoQueue, _ctx
+    from support.sessions import AutoQueue, run_after_gate_1
 
     from factory.gates import Decision
     from factory.stages.integrate import run_integrate
     from factory.state import WorkItemStage
     _, work, base, head = case.repository(tmp_path, extra_files)
     opened, created = [], []
-    ctx = _ctx(tmp_path / "runs", root, examples, case.integrator(opened), AutoQueue(Decision.APPROVE))
+    ctx = run_after_gate_1(tmp_path / "runs", root, examples, case.integrator(opened), AutoQueue(Decision.APPROVE))
     ctx.event("artifact.produced", {"artifact_type": "decomposition", "revision": 1,
                                     "work_items": [{"work_item_id": case.WORK_ITEM, "title": "Frontier models", "depends_on": []}]})
     for run_stage in ("specifying", "gate_2_spec_readiness", "implementing"):
@@ -57,7 +57,7 @@ def _integrate(tmp_path, root, examples, *, evaluation=False, extra_files=None):
 
 def github(created):
     """The real GitHub client against a scripted API: the orphan evidence branch for the media, then the pull request."""
-    from test_forge import Seq, _forge
+    from support.forge_http import Seq, github_forge
     repo = "/repos/willtech3/evergreen_chat"
 
     def pull(body, params):
@@ -71,7 +71,7 @@ def github(created):
               f"PATCH {repo}/git/refs/heads/factory-evidence": {"object": {"sha": "commit1"}},
               f"POST {repo}/pulls": (201, pull), f"POST {repo}/issues/120/labels": (200, []),
               f"POST {repo}/pulls/120/requested_reviewers": (201, {})}
-    forge, api = _forge(routes)
+    forge, api = github_forge(routes)
     forge.repo = "willtech3/evergreen_chat"
     return forge, api
 

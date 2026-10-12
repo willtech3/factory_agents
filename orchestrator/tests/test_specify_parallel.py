@@ -1,9 +1,9 @@
 """Spec writers run all at once by default; dependency-order waves only when the policy asks. No network."""
 import json
 import threading
-from types import SimpleNamespace
 
 from conftest import make_config
+from support.sessions import stage_result
 
 from factory.gates import InMemoryQueue, LogNotifier
 from factory.stages import RunContext
@@ -37,9 +37,8 @@ class Driver:
                 self.active -= 1
             wid = kw["work_item_id"]
             spec = dict(self.examples["spec_smart_retries"], spec_id=f"spec_{wid.removeprefix('wi-')}", work_item_id=wid)
-            return SimpleNamespace(session_id="s", agent_id="w", agent_version=1, outcome_result="satisfied", outcome_iterations=1,
-                                   list_cost_usd=0.1, stop_reason="end_turn", events_seen=1, custom_tool_calls=[],
-                                   outputs={"spec.json": json.dumps(spec).encode(), "spec.md": f"# {wid} as written in round {round_no}".encode()})
+            return stage_result({"spec.json": json.dumps(spec).encode(), "spec.md": f"# {wid} as written in round {round_no}".encode()},
+                                agent_id="w", cost=0.1)
         self.judge_uploads = sorted(kw["uploads"])
         verdict = dict(self.examples["verdict_round2"], round=round_no)
         revise = getattr(self, "revise_first", {})
@@ -51,9 +50,8 @@ class Driver:
                 if ps["spec_id"] in revise:
                     ps["issues"] = [{"issue_id": "I-1", "severity": "blocking", "location": ps["spec_id"],
                                      "description": "tighten AC-3", "suggested_resolution": "say which clock"}]
-        return SimpleNamespace(session_id="j", agent_id="j", agent_version=1, outcome_result=None, outcome_iterations=0,
-                               list_cost_usd=0.1, stop_reason="end_turn", events_seen=1, custom_tool_calls=[],
-                               outputs={"verdict.json": json.dumps(verdict).encode()})
+        return stage_result({"verdict.json": json.dumps(verdict).encode()}, sid="j", agent_id="j", cost=0.1,
+                            outcome_result=None, iterations=0)
 
 
 def _ctx(tmp_path, root, examples, policy):

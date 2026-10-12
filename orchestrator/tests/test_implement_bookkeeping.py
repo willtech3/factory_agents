@@ -5,10 +5,10 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from conftest import make_config
+from support.sessions import stage_result
 from support.events import assert_log_valid
 
 from factory.checks import CheckResult
@@ -104,8 +104,7 @@ class Driver:
 
     @staticmethod
     def _res(sid, agent, outputs, cost):
-        return SimpleNamespace(session_id=sid, agent_id=agent, agent_version=1, outcome_result="satisfied", outcome_iterations=1,
-                               list_cost_usd=cost, stop_reason="end_turn", events_seen=1, custom_tool_calls=[], outputs=outputs)
+        return stage_result(outputs, sid=sid, agent_id=agent, cost=cost)
 
 
 def _spec(examples):

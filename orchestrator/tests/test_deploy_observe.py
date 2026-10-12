@@ -8,7 +8,7 @@ from conftest import make_config
 from factory.gates import InMemoryQueue, LogNotifier
 from factory.stages import RunContext
 from factory.stages.deploy_observe import observe_once, wait_for_pipeline
-from factory.state import Policy, WorkItemStage
+from factory.state import Policy
 from factory.store import RunStore
 
 RUN = "run_deploy0001"

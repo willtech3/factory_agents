@@ -4,25 +4,7 @@ from types import SimpleNamespace
 import httpx
 
 from conftest import make_config
-
-
-class Page:
-    def __init__(self, data): self.data = data; self.has_more = False
-
-
-class FakeStream:
-    """Yields the events given, then raises if told to (the peer closing the connection mid-stream)."""
-    def __init__(self, events, then_raise=None): self.events, self.then_raise = events, then_raise
-    def __enter__(self): return self
-    def __exit__(self, *a): return False
-    def __iter__(self):
-        yield from self.events
-        if self.then_raise:
-            raise self.then_raise
-
-
-def ev(id_, type_, **kw):
-    return SimpleNamespace(id=id_, type=type_, **kw)
+from support.sessions import FakeStream, Page, ev
 
 
 def test_stream_drop_is_reopened_and_events_are_not_handled_twice(tmp_path, root, monkeypatch):

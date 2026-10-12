@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from conftest import make_config
-from test_session_stream import FakeStream, Page, ev
+from support.sessions import FakeStream, Page, ev
 
 from factory.config import AgentRef
 from factory.gates import Decision, Gate, GateKind, Question
@@ -132,10 +132,10 @@ def test_result_accepted_before_disconnect_is_not_sent_again(tmp_path, root, mon
 
 
 def test_accepted_iteration_cutoff_counts_each_session_once(tmp_path, root, examples):
-    from test_session_cutoff import AutoQueue, Driver, _ctx
+    from support.sessions import AutoQueue, SpecStageDriver, run_after_gate_1
 
     from factory.stages.specify import run_specify
-    ctx = _ctx(tmp_path, root, examples, Driver(examples, judge_truncations=0, writer_iterations_exhausted=True),
+    ctx = run_after_gate_1(tmp_path, root, examples, SpecStageDriver(examples, judge_truncations=0, writer_iterations_exhausted=True),
                AutoQueue(Decision.APPROVE))
     run_specify(ctx, examples["outcome"], examples["decomposition"])
     st = ctx.store.state(ctx.run_id)
@@ -144,11 +144,11 @@ def test_accepted_iteration_cutoff_counts_each_session_once(tmp_path, root, exam
 
 
 def test_missing_output_still_records_session_spend(tmp_path, root, examples):
-    from test_session_cutoff import AutoQueue, _ctx, _result
+    from support.sessions import AutoQueue, run_after_gate_1, stage_result
 
     from factory.stages.specify import run_specify
-    result = _result({"spec.json": json.dumps(examples["spec_smart_retries"]).encode()})
-    ctx = _ctx(tmp_path, root, examples, SimpleNamespace(run=lambda **kw: result), AutoQueue(Decision.APPROVE))
+    result = stage_result({"spec.json": json.dumps(examples["spec_smart_retries"]).encode()})
+    ctx = run_after_gate_1(tmp_path, root, examples, SimpleNamespace(run=lambda **kw: result), AutoQueue(Decision.APPROVE))
     decomposition = {**examples["decomposition"], "work_items": examples["decomposition"]["work_items"][:1]}
     with pytest.raises(RuntimeError, match="no spec.md"):
         run_specify(ctx, examples["outcome"], decomposition)
@@ -158,11 +158,11 @@ def test_missing_output_still_records_session_spend(tmp_path, root, examples):
 
 @pytest.mark.parametrize("blocking", [False, True])
 def test_defaulted_questions_do_not_remain_waiting(tmp_path, root, examples, blocking):
-    from test_session_cutoff import AutoQueue, Driver, _ctx
+    from support.sessions import AutoQueue, SpecStageDriver, run_after_gate_1
 
     from factory.sessions import SessionContext
     from factory.stages.common import make_ask_human
-    ctx = _ctx(tmp_path, root, examples, Driver(examples), AutoQueue(Decision.APPROVE))
+    ctx = run_after_gate_1(tmp_path, root, examples, SpecStageDriver(examples), AutoQueue(Decision.APPROVE))
     handler = make_ask_human(ctx, "writer", timeout_hours=0)
     answer = handler({"question": "Which default?", "blocking": blocking, "default_if_unanswered": "A"},
                      SessionContext("s", ctx.run_id, "specify", "wi-test"))
@@ -180,11 +180,11 @@ def test_new_decomposition_removes_superseded_pending_items():
 
 @pytest.mark.parametrize("stop, outcome", [("terminated", None), ("end_turn", "interrupted"), ("end_turn", "failed")])
 def test_interrupted_session_outputs_never_advance_the_pipeline(tmp_path, root, examples, stop, outcome):
-    from test_session_cutoff import AutoQueue, _ctx, _result
+    from support.sessions import AutoQueue, run_after_gate_1, stage_result
 
     from factory.stages.common import SessionTruncated, run_session
-    result = _result({"spec.json": b"{}"}, stop_reason=stop, outcome_result=outcome)
-    ctx = _ctx(tmp_path, root, examples, SimpleNamespace(run=lambda **kw: result), AutoQueue(Decision.APPROVE))
+    result = stage_result({"spec.json": b"{}"}, stop_reason=stop, outcome_result=outcome)
+    ctx = run_after_gate_1(tmp_path, root, examples, SimpleNamespace(run=lambda **kw: result), AutoQueue(Decision.APPROVE))
     with pytest.raises(SessionTruncated, match="did not finish"):
         run_session(ctx, stage="specify", rubric_md="rubric")
     assert ctx.store.state(ctx.run_id).list_cost_usd == 0.5

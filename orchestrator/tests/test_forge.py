@@ -1,6 +1,5 @@
 """Forge selection and the GitHub client's request shapes, through httpx's MockTransport. No network."""
 import base64
-import json
 
 import httpx
 import pytest
@@ -9,44 +8,8 @@ from conftest import make_config
 from factory import config as cfgmod
 from factory.forge import PIPELINE_TERMINAL, make_forge
 from factory.forge.github import GitHubForge
+from support.forge_http import Recorder, Seq, github_forge
 from factory.forge.gitlab import GitLabForge
-
-
-class Seq(list):
-    """Route value: one (status, payload) per call in order; the last one repeats. A plain list is a JSON array."""
-
-
-class Recorder:
-    """Scripted forge API: records every request; answers from a route table (method + decoded path -> json/status)."""
-
-    def __init__(self, routes):
-        self.routes = routes
-        self.calls = []
-        self.raw_paths = []                              # as sent, so a missing percent-encoding shows
-
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content) if request.content else None
-        self.raw_paths.append(request.url.raw_path.decode().split("?")[0])
-        self.calls.append((request.method, request.url.path, dict(request.url.params), body))
-        key = f"{request.method} {request.url.path}"
-        resp = self.routes.get(key)
-        if resp is None:
-            return httpx.Response(404, json={"message": f"no route {key}"})
-        if isinstance(resp, Seq):                        # one response per call, the last one repeats
-            idx = self.calls.count((request.method, request.url.path, dict(request.url.params), body)) - 1
-            resp = resp[min(idx, len(resp) - 1)]
-        status, payload = (resp if isinstance(resp, tuple) else (200, resp))
-        if callable(payload):
-            payload = payload(body, dict(request.url.params))
-        if isinstance(payload, str):
-            return httpx.Response(status, text=payload)
-        return httpx.Response(status, json=payload)
-
-
-def _forge(routes, **kw) -> tuple[GitHubForge, Recorder]:
-    rec = Recorder(routes)
-    f = GitHubForge("https://github.com", "ghp_test", "will/ledgerline", transport=httpx.MockTransport(rec), **kw)
-    return f, rec
 
 
 # ---------------------------------------------------------------- selection and config aliases
@@ -102,7 +65,7 @@ def test_github_commit_files_uses_git_data_api():
         "POST /repos/will/ledgerline/git/commits": (201, {"sha": "commit1"}),
         "PATCH /repos/will/ledgerline/git/refs/heads/main": {"object": {"sha": "commit1"}},
     }
-    f, rec = _forge(routes)
+    f, rec = github_forge(routes)
     sha = f.commit_files("main", "factory: platform contract skill",
                          {".claude/skills/platform-contract/SKILL.md": b"# skill", ".github/workflows/preview.yml": b"on: push"})
     assert sha == "commit1"
@@ -134,7 +97,7 @@ def test_github_pull_request_flow():
             {"user": {"login": "sam"}, "state": "COMMENTED"}],
         "POST /repos/will/ledgerline/issues/7/comments": (201, {"id": 1}),
     }
-    f, rec = _forge(routes)
+    f, rec = github_forge(routes)
     cr = f.create_change_request(source_branch="factory/run_1/spec_x", target_branch="main", title="spec_x: title",
                                  description="body", labels=["factory", "spec:spec_x"], reviewers=["will"], draft=False)
     assert (cr.id, cr.url) == (7, "https://github.com/will/ledgerline/pull/7")
@@ -161,7 +124,7 @@ def test_github_workflow_runs_and_deployments():
             if p.get("ref") == "factory/run_1/spec_x" or p.get("environment") == "dev" else []),
         "GET /repos/will/ledgerline/deployments/3/statuses": [{"state": "success", "environment_url": "https://run-1-spec-x.preview.example.com"}],
     }
-    f, rec = _forge(routes)
+    f, rec = github_forge(routes)
     pipe = f.latest_pipeline("factory/run_1/spec_x", "h1")
     assert pipe["status"] == "running" and pipe["sha"] == "h1" and pipe["status"] not in PIPELINE_TERMINAL
     assert rec.calls[0][2] == {"branch": "factory/run_1/spec_x", "per_page": "1", "head_sha": "h1"}
@@ -171,7 +134,7 @@ def test_github_workflow_runs_and_deployments():
     env = f.environment("dev")
     assert env["external_url"] == "https://run-1-spec-x.preview.example.com" and env["state"] == "success"
     # a workflow-scoped forge looks under /actions/workflows/<file>/runs
-    f2, rec2 = _forge({"GET /repos/will/ledgerline/actions/workflows/preview.yml/runs": {"workflow_runs": []}}, workflow="preview.yml")
+    f2, rec2 = github_forge({"GET /repos/will/ledgerline/actions/workflows/preview.yml/runs": {"workflow_runs": []}}, workflow="preview.yml")
     assert f2.latest_pipeline("main") is None and rec2.calls[0][1].endswith("/actions/workflows/preview.yml/runs")
 
 
@@ -224,7 +187,7 @@ def test_gitlab_merge_request_flow_and_pipeline_reads():
 
 
 def test_github_session_resource_and_git_instructions():
-    f, _ = _forge({})
+    f, _ = github_forge({})
     res = f.session_repository_resource("https://github.com/will/ledgerline.git", "factory/run_1/spec_x")
     assert res == {"type": "github_repository", "url": "https://github.com/will/ledgerline", "mount_path": "/workspace/repo",
                    "authorization_token": "ghp_test", "checkout": {"type": "branch", "name": "factory/run_1/spec_x"}}
@@ -280,7 +243,7 @@ def test_github_reads_what_onboarding_needs_and_bounds_it():
         "GET /repos/will/ledgerline/contents/big.json": {"encoding": "base64", "size": 10**6, "content": ""},
         "POST /repos/will/ledgerline/git/refs": Seq([(201, {"ref": "refs/heads/b"}), (422, {"message": "Reference already exists"})]),
     }
-    f, rec = _forge(routes)
+    f, rec = github_forge(routes)
     assert f.repository_info()["default_branch"] == "main"
     assert f.commit_sha("release/1.0") == "c" * 40
     assert "/repos/will/ledgerline/commits/release%2F1.0" in rec.raw_paths          # a ref is one path segment

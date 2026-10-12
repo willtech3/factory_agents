@@ -2,7 +2,6 @@ import base64
 import json
 import subprocess
 
-import pytest
 from fastapi.testclient import TestClient
 
 from conftest import EXAMPLES, make_config

@@ -432,7 +432,7 @@ def test_budget_pause_is_shown_decided_and_resumed_from_the_console(client, monk
 
 def test_console_shows_a_budget_gate(client):
     """A budget gate (a session stopped on its cap; post-mortem issue 17) has no artefacts and renders as a summary."""
-    from factory.gates import ArtifactRef, Decision, Gate, GateKind
+    from factory.gates import Decision, Gate, GateKind
 
     store = client.console.store
     rid = "run_budget0000a"

@@ -1,5 +1,4 @@
 """The security pass: deterministic pre-checks, pass tagging through the merge, and the standing rule."""
-from pathlib import Path
 
 from factory import checks, security
 from factory.stages.implement import merge_findings, standing_findings, tag_pass

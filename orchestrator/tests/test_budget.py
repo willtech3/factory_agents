@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from conftest import make_config
+from support.sessions import stage_result
 from support.events import assert_log_valid
 
 from factory import runner
@@ -52,9 +53,7 @@ class Driver:
             outputs = {"verdict.json": json.dumps(self.examples["verdict_round2"]).encode()}
         else:
             raise AssertionError(f"unexpected session {key}")
-        return SimpleNamespace(session_id=f"sesn_{len(self.calls)}", agent_id=key, agent_version=1, outcome_result="satisfied",
-                               outcome_iterations=1, list_cost_usd=self.COST[key], stop_reason="end_turn", events_seen=1,
-                               custom_tool_calls=[], outputs=outputs)
+        return stage_result(outputs, sid=f"sesn_{len(self.calls)}", agent_id=key, cost=self.COST[key])
 
     def keys(self):
         return [c["agent_key"] for c in self.calls]

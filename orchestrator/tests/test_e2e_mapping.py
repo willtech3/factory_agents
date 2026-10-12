@@ -3,7 +3,7 @@ from copy import deepcopy
 
 import pytest
 from factory import checks
-import test_hosted_verification as hv
+import support.hosted as hosted
 from factory.stages.implement import LocalVerifier, run_implement_one
 
 
@@ -71,19 +71,19 @@ def test_a_nonvisual_service_journey_needs_its_actual_command_result():
     assert not mapped(spec, rows).passed
 
 
-sandbox_double = hv.sandbox_double
-no_host_execution = hv.no_host_execution
+sandbox_double = hosted.sandbox_double
+no_host_execution = hosted.no_host_execution
 
 
 def test_automated_ui_mapping_survives_the_full_hosted_controller_round(tmp_path, root, monkeypatch, no_host_execution):
-    spec = hv.spec()
+    spec = hosted.spec()
     spec['acceptance_criteria'][1]['verification'] = 'automated_test'
-    monkeypatch.setattr(hv, 'REPORT', {'criteria': [
+    monkeypatch.setattr(hosted, 'REPORT', {'criteria': [
         {'ac_id': 'AC-1', 'tests': ['tests/test_a.py::test_a']},
         {'ac_id': 'AC-2', 'tests': ['e2e:0']}], 'head_commit': 'x'})
-    origin = hv.remote(tmp_path)
-    ctx = hv.context(tmp_path, root, hv.Driver(origin, tmp_path))
+    origin = hosted.remote(tmp_path)
+    ctx = hosted.context(tmp_path, root, hosted.Driver(origin, tmp_path))
     verdict = run_implement_one(ctx, spec, str(origin), 'main', LocalVerifier(str(origin), tmp_path/'verify'), {})
-    det = {r['check']: r for r in hv.artifact(ctx, 'implement', 'spec_hosted-r1-deterministic_checks.json')}
+    det = {r['check']: r for r in hosted.artifact(ctx, 'implement', 'spec_hosted-r1-deterministic_checks.json')}
     assert verdict['result'] == 'ready'
     assert det['ac_test_mapping']['passed'] and det['visual_e2e']['passed']
