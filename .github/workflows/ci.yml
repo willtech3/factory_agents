@@ -41,7 +41,10 @@ jobs:
       - run: python -m pip install "ruff==0.17.0"
       # From orchestrator/: ruff resolves the relative globs in a --config file against the working directory. --config
       # also gives the eval graders, which sit outside orchestrator/, the same rules.
-      - run: ruff check --config pyproject.toml factory tests ../evals/graders ../evals/run_eval.py
+      - run: ruff check --config pyproject.toml factory tests ../evals/graders ../evals/run_eval.py ../evals/gate.py
+      # A changed agent prompt or rubric needs an eval receipt for its exact bytes: a replay of recorded sessions, or a
+      # waiver with its reason (ADR-0016). Standard library only, so it runs before any install.
+      - run: python ../evals/gate.py
 
   browser:
     name: browser runner (real Chromium)

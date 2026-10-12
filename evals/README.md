@@ -21,8 +21,32 @@ evals/
     deterministic.py        wraps orchestrator/factory/checks.py for eval use
     stochastic.py           LLM judge with N votes, position swap, bootstrap CI, kappa
   run_eval.py               runs one stage over one dataset for one agent version; writes results/<timestamp>/
+                            --recorded: regrades or replays a dataset of recorded sessions (below)
+  gate.py                   CI: every prompt and rubric has an eval receipt for its exact bytes
+  receipts.json             per role: the prompt and rubric sha256 last cleared, and how (replayed or waived)
   results/                  gitignored
+  recordings/               gitignored: datasets exported from real runs
 ```
+
+## Recorded sessions and receipts ([ADR-0016](../docs/adr/0016-evals-from-recordings.md))
+
+Every agent session of a real run records what it was asked and what it returned. `factory eval export <run_id> --out
+evals/recordings/<name>` turns a run's sessions into a dataset, labelled with what the run made of each one (the
+orchestrator's checks of an implementer's head, a reviewer's merged findings, a merge verdict, the owner's gate decision).
+
+```
+python evals/run_eval.py --recorded evals/recordings/live --agent merge_judge --regrade
+python evals/run_eval.py --recorded evals/recordings/live --agent merge_judge --replay --runs 3 --receipt
+```
+
+`--regrade` grades the recorded outputs with today's checks. `--replay` asks the agent version the controller is
+configured with the same sessions again and grades both the same way: the output validates on receipt and the judges keep
+their decision rules. It regresses when its credible interval lies wholly below the recorded versions'.
+
+A change to `agents/*.md` or `rubrics/*.md` needs a receipt for its bytes before CI passes (`evals/gate.py`):
+`--replay --receipt` records one for a replay that did not regress, and `factory eval waive --agent <role> --reason
+"..."` records a person's decision that the change needs none. Recordings hold repository content and owners' notes:
+keep them out of the repository.
 
 ## Datasets (see `datasets/*/README.md`)
 

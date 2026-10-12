@@ -148,6 +148,28 @@ def session_inputs_sha(stage: str, kw: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(doc, sort_keys=True, default=str).encode()).hexdigest()
 
 
+RECORDED_UPLOAD_BYTES = 4 * 1024 * 1024    # larger uploads (a hosted verification's source archive) are recorded by sha256 only
+
+
+def session_inputs_record(ctx: RunContext, stage: str, kw: dict[str, Any]) -> str:
+    """What a session was asked to do, as a blob its step keeps (ADR-0016): the fields `session_inputs_sha` hashes, the
+    work item and spec it served, and each upload by sha256 with its bytes as a blob up to `RECORDED_UPLOAD_BYTES`. A
+    recorded session can then be asked again of another agent version (`factory eval export`, `evals/run_eval.py`)."""
+    repository = kw.get("repository")
+    if isinstance(repository, dict):
+        repository = {k: v for k, v in repository.items() if k != "authorization_token"}
+    uploads = {}
+    for name, content in sorted((kw.get("uploads") or {}).items()):
+        sha = hashlib.sha256(content).hexdigest()
+        uploads[name] = {"sha256": sha, "bytes": len(content),
+                         "blob": ctx.store.put_blob(ctx.run_id, content) if len(content) <= RECORDED_UPLOAD_BYTES else None}
+    doc = {"stage": stage, **{k: kw.get(k) for k in ("agent_key", "title", "description", "rubric_md", "max_iterations",
+                                                     "model_override", "system_override", "environment_id", "vault_ids",
+                                                     "metadata", "schema_names", "work_item_id", "budget_usd")},
+           "repository": repository, "custom_tools": sorted(kw.get("custom_tools") or {}), "uploads": uploads}
+    return steps.put_json(ctx, json.loads(json.dumps(doc, default=str)))
+
+
 STOPPED = {"interrupted", "unreachable"}   # how `_drive` ends the sessions in flight when someone stops the run
 UNFINISHED = {"terminated", "interrupted", "unreachable"}   # stop reasons `run_session` refuses as a result
 
@@ -183,7 +205,7 @@ def session_step(ctx: RunContext, *, stage: str, prefix: str = "", spec_id: str 
             ctx.event("session.reattached", {"session_id": step.session_id, "step": key, "attempt": step.attempt},
                       stage=stage, actor="platform", work_item_id=wid, spec_id=spec_id)
             res = ctx.driver.run(stage=stage, attach_session_id=step.session_id, **kw)
-            return _rejectable(ctx, key, _finish_step(ctx, stage, key, res, wid, spec_id))
+            return _rejectable(ctx, key, _finish_step(ctx, stage, key, res, wid, spec_id, kw))
         else:
             _supersede(ctx, stage, key, step.session_id, wid, spec_id)
     store.begin_step(run_id, key, "session", inputs)
@@ -199,7 +221,7 @@ def session_step(ctx: RunContext, *, stage: str, prefix: str = "", spec_id: str 
         if not created:
             store.fail_step(run_id, key, f"{type(e).__name__}: {str(e)[:500]}")
         raise          # a session that exists stays `running` under its step, for the next controller to reattach to
-    return _rejectable(ctx, key, _finish_step(ctx, stage, key, res, wid, spec_id))
+    return _rejectable(ctx, key, _finish_step(ctx, stage, key, res, wid, spec_id, kw))
 
 
 def _rejectable(ctx: RunContext, key: str, res: StageResult) -> StageResult:
@@ -220,10 +242,11 @@ def reject_output(res: StageResult, why: str) -> RuntimeError:
 
 
 def _finish_step(ctx: RunContext, stage: str, key: str, res: StageResult, work_item_id: str | None,
-                 spec_id: str | None) -> StageResult:
+                 spec_id: str | None, kw: dict[str, Any]) -> StageResult:
     res.finished_at = getattr(res, "finished_at", None) or datetime.now(UTC).isoformat()
     record_session_finished(ctx, stage, res, work_item_id=work_item_id, spec_id=spec_id)
-    ctx.store.finish_step(ctx.run_id, key, _step_result(ctx, res))
+    ctx.store.finish_step(ctx.run_id, key, {**_step_result(ctx, res), "spec_id": spec_id,
+                                            "inputs": session_inputs_record(ctx, stage, kw)})
     return res
 
 

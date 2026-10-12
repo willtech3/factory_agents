@@ -4,6 +4,14 @@
     python evals/run_eval.py --stage spec_judge --dataset spec-defects --runs 5 --agent-version 4
     python evals/run_eval.py --stage decomposer --dataset outcomes-golden --runs 5 --split test
     python evals/run_eval.py --stage reviewer --dataset review-mutations --runs 3
+    python evals/run_eval.py --recorded runs/_evals/live --agent merge_judge --regrade
+    python evals/run_eval.py --recorded runs/_evals/live --agent merge_judge --replay --runs 3 --receipt
+
+`--recorded` grades a dataset of real sessions (`factory eval export <run_id> --out <dir>`, ADR-0016) instead of a
+labelled one: `--regrade` grades the recorded outputs with today's checks, and `--replay` asks the agent version the
+controller is configured with the same sessions again, grades its outputs the same way, and compares the two. With
+`--receipt`, a replay that does not regress records the role's eval receipt (evals/receipts.json, which CI requires
+for every prompt and rubric: evals/gate.py).
 
 Shape of the loop (the stage-specific `produce_*` functions drive a Managed Agents session
 through the orchestrator's SessionDriver with the same prompts production uses, pinned to the
@@ -56,6 +64,84 @@ def produce(stage: str, item: dict, agent_version: int | None, run_idx: int) -> 
     )
 
 
+# ---------------------------------------------------------------------- recorded sessions (ADR-0016)
+
+def ask_human_default(tool_input: dict, _ctx) -> str:
+    """No person answers in an eval: a question gets its own default, as an unattended run would give it."""
+    return json.dumps({"answer": tool_input.get("default_if_unanswered") or "No answer in this evaluation; use your default.",
+                       "answered_by": "eval"})
+
+
+def replay_one(driver, item: dict, uploads: dict, run_id: str, n: int):
+    """Ask `driver` (a SessionDriver, or a test double) the recorded session `item` again, with the uploads it got."""
+    i = item["inputs"]
+    tools = {"ask_human": ask_human_default} if "ask_human" in (i.get("custom_tools") or []) else None
+    return driver.run(agent_key=item["agent_key"], title=f"eval {i.get('title')} #{n}", run_id=run_id, stage=item["stage"],
+                      uploads=uploads, description=i.get("description") or "", rubric_md=i.get("rubric_md"),
+                      max_iterations=int(i.get("max_iterations") or 1), budget_usd=float(i.get("budget_usd") or 5.0),
+                      custom_tools=tools, model_override=i.get("model_override"), metadata=i.get("metadata"),
+                      system_override=i.get("system_override"), environment_id=i.get("environment_id") or None,
+                      schema_names=tuple(i["schema_names"]) if i.get("schema_names") else None)
+
+
+def ok_rate(rows: list[dict]) -> dict:
+    oks = [float(r["grade"]["ok"]) for r in rows]
+    return {"n": len(oks), "ok": int(sum(oks)), "posterior": sto.beta_credible_interval(int(sum(oks)), len(oks)) if oks else None}
+
+
+def regressed(baseline: dict, candidate: dict) -> bool:
+    """The decision rule: the candidate's credible interval for `ok` lies wholly below the recorded versions'."""
+    if not baseline["posterior"] or not candidate["posterior"]:
+        return False
+    (_, base_lo, _), (_, _, cand_hi) = baseline["posterior"], candidate["posterior"]      # (mean, low, high)
+    return cand_hi < base_lo
+
+
+def run_recorded(args, driver=None, root: Path = HERE.parent) -> dict:
+    from factory import receipts, recordings
+    schemas = root / "schemas"
+    items = [i for i in recordings.load(args.recorded) if i["agent_key"] == args.agent]
+    baseline = [{"item_id": i["item_id"], "grade": recordings.grade(args.agent, {n: recordings.blob(args.recorded, sha)
+                                                                              for n, sha in i["outputs"].items()},
+                                                                     schemas, recordings.spec_of(args.recorded, i)),
+                 "labels": i.get("labels"), "agent_version": i.get("agent_version")} for i in items]
+    summary: dict = {"agent": args.agent, "dataset": str(args.recorded), "items": len(items), "recorded": ok_rate(baseline)}
+    rows = [{"kind": "recorded", **r} for r in baseline]
+    if args.replay:
+        if driver is None:
+            from factory import config as cfgmod
+            from factory.sessions import SessionDriver
+            driver = SessionDriver(cfgmod.load(), unattended=True)
+        run_id = "eval_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        replayed, skipped = [], []
+        for item in items:
+            uploads = recordings.uploads(args.recorded, item)
+            if uploads is None:
+                skipped.append(item["item_id"])           # an upload too large to record: this session cannot be asked again
+                continue
+            recorded = next(b for b in baseline if b["item_id"] == item["item_id"])
+            for n in range(args.runs):
+                res = replay_one(driver, item, uploads, run_id, n)
+                g = recordings.grade(args.agent, res.outputs or {}, schemas, recordings.spec_of(args.recorded, item))
+                replayed.append({"kind": "replayed", "item_id": item["item_id"], "run": n, "grade": g,
+                                 "same_result": g.get("result") == recorded["grade"].get("result") if "result" in g else None,
+                                 "list_cost_usd": getattr(res, "list_cost_usd", None), "session_id": getattr(res, "session_id", None)})
+        rows += replayed
+        summary.update(replayed=ok_rate(replayed), skipped=skipped,
+                       same_result=sto.bootstrap_ci([float(r["same_result"]) for r in replayed if r["same_result"] is not None])
+                       if any(r["same_result"] is not None for r in replayed) else None)
+        summary["regressed"] = regressed(summary["recorded"], summary["replayed"])
+        if args.receipt:
+            if summary["regressed"] or not replayed:
+                summary["receipt"] = "not recorded: " + ("the replay regressed" if replayed else "nothing could be replayed")
+            else:
+                receipts.record(root, args.agent, "replayed", dataset=Path(args.recorded).name, items=len(items),
+                                runs=args.runs, recorded=summary["recorded"], replayed=summary["replayed"])
+                summary["receipt"] = "recorded"
+    summary["rows"] = rows
+    return summary
+
+
 def grade(stage: str, item: dict, artifact: dict, aux: dict) -> dict:
     if stage == "decomposer":
         return det.grade_decomposition(item["outcome"], artifact, item)
@@ -70,14 +156,33 @@ def grade(stage: str, item: dict, artifact: dict, aux: dict) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stage", required=True, choices=["decomposer", "spec_writer", "spec_judge", "reviewer"])
-    ap.add_argument("--dataset", required=True)
+    ap.add_argument("--stage", choices=["decomposer", "spec_writer", "spec_judge", "reviewer"])
+    ap.add_argument("--dataset")
+    ap.add_argument("--recorded", type=Path, default=None, help="A dataset of recorded sessions (factory eval export)")
+    ap.add_argument("--agent", default=None, help="With --recorded: the role whose sessions are graded")
+    ap.add_argument("--regrade", action="store_true", help="With --recorded: grade the recorded outputs only")
+    ap.add_argument("--replay", action="store_true", help="With --recorded: ask the configured agent version again")
+    ap.add_argument("--receipt", action="store_true", help="With --replay: record the role's eval receipt unless it regressed")
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--split", default=None)
     ap.add_argument("--agent-version", type=int, default=None)
     ap.add_argument("--from-artifacts", type=Path, default=None,
                     help="Directory of pre-produced artifacts named <item_id>.run<N>.json; grades them instead of producing.")
     args = ap.parse_args()
+    if args.recorded:
+        if not args.agent:
+            ap.error("--recorded needs --agent")
+        summary = run_recorded(args)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out_dir = HERE / "results" / f"{stamp}-recorded-{args.agent}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "rows.jsonl").write_text("\n".join(json.dumps(r) for r in summary.pop("rows")) + "\n")
+        (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+        print(json.dumps(summary, indent=2))
+        print(f"wrote {out_dir}")
+        return 1 if summary.get("regressed") else 0
+    if not args.stage or not args.dataset:
+        ap.error("--stage and --dataset, or --recorded and --agent")
 
     items = load_items(args.dataset, args.split)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
