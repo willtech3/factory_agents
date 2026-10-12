@@ -50,7 +50,7 @@ from typing import Any
 
 from .. import visual
 from .. import checks, security, size
-from ..hosted_verifier import ENVIRONMENT_CHECK, HostedVerifier, preview_record
+from ..hosted_verifier import ENVIRONMENT_CHECK, HostedVerifier, journey_name, preview_record
 from ..budget import reserve_budget
 from ..checks import CheckResult
 from ..state import WorkItemStage
@@ -839,7 +839,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     # Set when the previous round's only standing findings were failed deterministic checks: the implementer's
     # response is re-verified and, if the checks now pass, goes straight to the merge judge without a review round.
     det_only_response = resume_from is not None and findings is not None and _deterministic_only(findings["findings"])
-    journeys = latest_journeys(ctx, sid)        # the change's journeys, run artifacts carried from round to round
+    journeys = latest_journeys(ctx, sid, spec)  # the change's journeys, run artifacts carried from round to round
 
     for round_no in range(resume_from.round_no if resume_from else 1, ctx.policy.review_max_rounds + 2):
         resumed_round = resume_from is not None and round_no == resume_from.round_no
@@ -896,7 +896,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 stamp_provenance(response, ctx, res, "Implementer", "claude-opus-5-5")
                 res.outputs["review_response.json"] = json.dumps(response, indent=2).encode()
             persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-", work_item_id=wid, spec_id=sid)
-            journeys = latest_journeys(ctx, sid)
+            journeys = latest_journeys(ctx, sid, spec)
         if findings and response is not None:
             response["round"] = round_no - 1
             ctx.event("review.response", {"round": round_no - 1, "dispositions": [r["disposition"] for r in response["responses"]]},
@@ -1137,16 +1137,24 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     return verdict
 
 
-def latest_journeys(ctx: RunContext, sid: str) -> dict[str, bytes]:
-    """name -> content of the newest `journeys/<name>.json` any implementer round of this spec wrote (a later round may
-    rewrite one journey and leave the others)."""
+def latest_journeys(ctx: RunContext, sid: str, spec: dict[str, Any]) -> dict[str, bytes]:
+    """Newest journey outputs named in the spec, including provider listings that flatten `journeys/<name>.json`
+    to `<name>.json`. A later round may rewrite one journey and leave the others; unrelated reports never qualify."""
     root = ctx.cfg.runs_dir / ctx.run_id / "artifacts" / "implement"
-    found: dict[str, tuple[int, Path]] = {}
-    for path in root.glob(f"{sid}-r*-journeys/*.json") if root.is_dir() else []:
-        m = re.fullmatch(re.escape(sid) + r"-r(\d+)-journeys", path.parent.name)
-        if m and (path.stem not in found or int(m.group(1)) > found[path.stem][0]):
-            found[path.stem] = (int(m.group(1)), path)
-    return {name: path.read_bytes() for name, (_, path) in sorted(found.items())}
+    names = {name for entry in spec["test_plan"].get("e2e", []) if (name := journey_name(entry["command"]))}
+    found: dict[str, tuple[int, bytes]] = {}
+    for name in sorted(names):
+        pattern = re.compile(re.escape(sid) + r"-r(\d+)-(?:journeys/)?" + re.escape(name) + r"\.json")
+        paths = [*root.glob(f"{sid}-r*-{name}.json"), *root.glob(f"{sid}-r*-journeys/{name}.json")]
+        matches = [(int(m.group(1)), path) for path in paths if (m := pattern.fullmatch(path.relative_to(root).as_posix()))]
+        if not matches:
+            continue
+        latest = max(round_no for round_no, _ in matches)
+        contents = {path.read_bytes() for round_no, path in matches if round_no == latest}
+        if len(contents) != 1:
+            raise ValueError(f"conflicting journey outputs for {name} in {sid} round {latest}")
+        found[name] = (latest, contents.pop())
+    return {name: content for name, (_, content) in sorted(found.items())}
 
 
 def record_verification_findings(ctx: RunContext, sid: str, round_no: int, findings: list[dict[str, Any]]) -> None:
