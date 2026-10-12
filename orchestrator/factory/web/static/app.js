@@ -823,9 +823,9 @@
   function recoveryCard(r) {
     if (r.resuming) return card("Recovery started", el("p", { role: "status" }, "Your decision is recorded. The controller is starting; this page will follow its progress."));
     const rec = r.recovery, failed = (rec.checks || []).filter(x => !x.passed);
-    const details = el("details", { class: "more" }, el("summary", null, "Judge's explanation and evidence"),
+    const details = el("details", { class: "more" }, el("summary", null, "Full explanation and evidence"),
       el("p", null, rec.summary), el("ul", null, (rec.risks || []).map(x => el("li", null, x))),
-      rec.artifact ? el("a", { href: `/api/artifacts/${r.run_id}/${rec.artifact}`, target: "_blank", rel: "noopener" }, "Open full merge decision") : null);
+      rec.artifact ? el("a", { href: `/api/artifacts/${r.run_id}/${rec.artifact}`, target: "_blank", rel: "noopener" }, "Open full report") : null);
     const labels = { hosted_environment: "Environment baseline", test_plan_commands: "Build and code checks" };
     const notes = el("textarea", { "aria-label": "Recovery instructions", placeholder: "What has been repaired, or what should the implementer change?" });
     const status = el("p", { role: "status", class: "explain" });
@@ -843,7 +843,7 @@
     return card("Your turn", el("div", { class: "recovery", id: "recovery" },
       el("p", { class: "lead-line" }, failed.length ? `${plural(failed.length, "required check")} still failing. The saved work needs a recovery decision.` : "The build needs your decision before it can continue."),
       failed.length ? el("ul", { class: "recovery-blockers" }, failed.map(x => el("li", null, el("b", null, labels[x.check] || words(x.check)), el("span", { class: "explain" }, x.detail)))) : null,
-      el("p", { class: "explain" }, `${(rec.criteria || []).filter(c => c.status === "met").length} of ${(rec.criteria || []).length} acceptance criteria met · candidate ${(rec.head_sha || "").slice(0, 10)}`), details, options), "Build paused for a decision", "call");
+      el("p", { class: "explain" }, `${(rec.criteria || []).length ? `${rec.criteria.filter(c => c.status === "met").length} of ${rec.criteria.length} acceptance criteria met · ` : "Awaiting fresh verification · "}candidate ${(rec.head_sha || "").slice(0, 10)}`), details, options), "Build paused for a decision", "call");
   }
   function visualEvidenceCard(r) {
     const current = r.visual_evidence.filter(e => e.current), earlier = r.visual_evidence.filter(e => !e.current);
