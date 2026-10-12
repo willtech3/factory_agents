@@ -817,10 +817,11 @@
     if (recordAt) { const rec = document.getElementById(`record-${decodeURIComponent(recordAt[1])}`); if (rec) { rec.open = true; setTimeout(() => rec.scrollIntoView(), 0); } }
     state.lastKey.run = runKey(r);
     // A parked run stops polling; one paused at its budget keeps polling so the page follows the resume it started.
-    if (!(TERMINAL[r.stage] || r.stage === "completed") || r.stage === "paused_budget") startPoll(refreshWhenChanged("run", async () => runKey(await api(`/api/runs/${runId}`)), () => viewRun(runId)), 4000);
+    if (!(TERMINAL[r.stage] || r.stage === "completed") || r.stage === "paused_budget" || r.resuming) startPoll(refreshWhenChanged("run", async () => runKey(await api(`/api/runs/${runId}`)), () => viewRun(runId)), 4000);
     else stopPoll();
   }
   function recoveryCard(r) {
+    if (r.resuming) return card("Recovery started", el("p", { role: "status" }, "Your decision is recorded. The controller is starting; this page will follow its progress."));
     const rec = r.recovery, failed = (rec.checks || []).filter(x => !x.passed);
     const details = el("details", { class: "more" }, el("summary", null, "Judge's explanation and evidence"),
       el("p", null, rec.summary), el("ul", null, (rec.risks || []).map(x => el("li", null, x))),
