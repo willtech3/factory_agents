@@ -33,7 +33,7 @@ flowchart TB
     stages["stages/<br/>decompose, specify, implement,<br/>integrate, deploy_observe"]
     checks["checks.py, security.py<br/>deterministic checks"]
     localv["LocalVerifier<br/>preview mode local"]
-    store[("runs/run_id/<br/>events.jsonl + artifacts")]
+    store[("runs/run_id/<br/>run.db (events, steps) + artifacts")]
     queue[("runs/_queue/<br/>open gates and decisions")]
   end
   subgraph ws["Anthropic workspace"]
@@ -56,7 +56,7 @@ flowchart TB
   console -- "reads" --> store
 ```
 
-The controller never runs inside the sandbox, and agents never call each other. A stage starts a session, uploads its inputs (artifacts, schemas, rubrics, the platform skill, `sandbox_tools/validate.py`), waits for it to finish, downloads its outputs, validates them, runs the deterministic checks, and appends events. Everything the Console shows is derived from `events.jsonl` by `state.reduce` and `summary.summarize`, so any run can be replayed (`factory replay`).
+The controller never runs inside the sandbox, and agents never call each other. A stage starts a session, uploads its inputs (artifacts, schemas, rubrics, the platform skill, `sandbox_tools/validate.py`), waits for it to finish, downloads its outputs, validates them, runs the deterministic checks, and appends events. Each session is a durable step that records its session id before anything waits on it, so a controller that dies leaves sessions the next one follows ([ADR-0013](adr/0013-durable-runs.md)). Everything the Console shows is derived from the run's events by `state.reduce` and `summary.summarize`, so any run can be replayed (`factory replay`).
 
 A human decides a gate by writing to the file queue, either from the Console or with `factory decide`. The run process polls the queue and accepts a decision only if it names the same artifact hashes the gate showed ([ADR-0005](adr/0005-gates-bind-to-artifact-hashes.md)).
 
@@ -92,7 +92,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 |---|---|
 | `runner.py` | Wires the stages together, handles gate decisions, Gate 2 subsets, stacked dependants, resume, and the per-run controller lock |
 | `state.py` | Event types, the run and work-item state machine (`reduce`), and `Policy` (loop limits and per-stage budgets) |
-| `store.py` | Append-only `events.jsonl` and the artifact files (each with its sha256) under `runs/<run_id>/` |
+| `store.py` | One SQLite database per run (`run.db`): the event log, validated as each event is written, and the steps table (one durable step per agent session); the artifact files (each with its sha256) and content-addressed blobs under `runs/<run_id>/`. Imports an older run's `events.jsonl` on first open; `factory export-events` writes it back out |
 | `gates.py` | Gates and in-session questions: the protocols, hash binding, and the composite queue that lets several surfaces decide |
 | `approvals.py` | What a Gate 2 approval may select, and how the owner's notes are routed to each spec |
 | `budget.py` | Run budget enforcement. Pauses before the session that would exceed `constraints.budget_usd` |

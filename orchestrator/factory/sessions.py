@@ -17,6 +17,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import anthropic
@@ -90,14 +91,25 @@ class SessionDriver:
                 print(f"[session] could not interrupt {sid}: {str(e)[:120]}")
             if self.on_session_finished:
                 try:
-                    self.on_session_finished({**info, "session_id": sid, "list_cost_usd": self._list_cost(sid),
+                    self.on_session_finished({**info, "session_id": sid, "list_cost_usd": self.list_cost(sid),
                                               "outcome_result": "interrupted", "stop_reason": "interrupted" if reached else "unreachable"})
                 except Exception as e:  # noqa: BLE001  (bookkeeping must not stop the shutdown)
                     print(f"[session] could not record the end of {sid}: {str(e)[:120]}")
         self.active.clear()
         return done
 
-    def _list_cost(self, session_id: str) -> float | None:
+    def interrupt_session(self, session_id: str) -> bool:
+        """Send `user.interrupt` to one session: one an earlier controller started whose inputs have changed since, so
+        nobody will read what it produces (`stages/common.session_step`, ADR-0013). Returns whether it was reached."""
+        try:
+            self.client.beta.sessions.events.send(session_id=session_id, events=[{"type": "user.interrupt"}],
+                                                  timeout=SHORT_CALL_TIMEOUT)
+            return True
+        except Exception as e:  # noqa: BLE001
+            print(f"[session] could not interrupt {session_id}: {str(e)[:120]}")
+            return False
+
+    def list_cost(self, session_id: str) -> float | None:
         try:
             final = self.client.beta.sessions.retrieve(session_id=session_id, timeout=SHORT_CALL_TIMEOUT)
             return int(final.usage.list_cost.amount) / 100.0
@@ -151,10 +163,38 @@ class SessionDriver:
         vault_ids: list[str] | None = None,
         system_override: str | None = None,
         schema_names: tuple[str, ...] | None = None,
+        attach_session_id: str | None = None,
+        on_created: Callable[[str], None] | None = None,
     ) -> StageResult:
         """`repository` is a session resource from `Forge.session_repository_resource` (the native
         `github_repository` mount, cloned through Anthropic's git proxy at /workspace/repo) or None when
-        the forge has no native resource and the agent clones with the vault credential (GitLab, ADR-0003)."""
+        the forge has no native resource and the agent clones with the vault credential (GitLab, ADR-0003).
+
+        `attach_session_id` follows a session an earlier controller started instead of creating one: the drain below
+        catches up on its history, so a session that finished while no controller watched returns at once, and one
+        still working is followed to its end. `on_created` gets a new session's id before anything waits on it, so a
+        controller that dies can be replaced by one that reattaches (`stages/common.session_step`, ADR-0013)."""
+        agent_ref = self.cfg.agents[agent_key]
+        if attach_session_id:
+            print(f"[session] {stage} {title}: reattaching to {self.cfg.console_session_url(attach_session_id)}")
+            self.active[attach_session_id] = {"agent_id": agent_ref.id, "agent_version": agent_ref.version, "agent_key": agent_key,
+                                              "stage": stage, "run_id": run_id, "work_item_id": work_item_id, "title": title}
+            return self._follow(attach_session_id, agent_ref, run_id, stage, work_item_id, custom_tools)
+        session_id = self._create(agent_key=agent_key, title=title, run_id=run_id, stage=stage, uploads=uploads,
+                                  description=description, rubric_md=rubric_md, max_iterations=max_iterations,
+                                  budget_usd=budget_usd, work_item_id=work_item_id, model_override=model_override,
+                                  metadata=metadata, repository=repository, environment_id=environment_id, vault_ids=vault_ids,
+                                  system_override=system_override, schema_names=schema_names)
+        if on_created:
+            on_created(session_id)
+        return self._follow(session_id, agent_ref, run_id, stage, work_item_id, custom_tools)
+
+    def _create(self, *, agent_key: str, title: str, run_id: str, stage: str, uploads: dict[str, bytes], description: str,
+                rubric_md: str | None, max_iterations: int, budget_usd: float, work_item_id: str | None,
+                model_override: dict[str, Any] | None, metadata: dict[str, str] | None, repository: dict[str, Any] | None,
+                environment_id: str | None, vault_ids: list[str] | None, system_override: str | None,
+                schema_names: tuple[str, ...] | None) -> str:
+        """Upload the inputs, create the session with its kickoff, and record it as started. Returns its id."""
         agent_ref = self.cfg.agents[agent_key]
         if model_override or system_override:
             agent: Any = {"type": "agent_with_overrides", "id": agent_ref.id}
@@ -205,7 +245,13 @@ class SessionDriver:
             self.on_session_started({"session_id": session.id, "agent_id": agent_ref.id, "agent_version": agent_ref.version,
                                      "agent_key": agent_key, "stage": stage, "run_id": run_id, "work_item_id": work_item_id,
                                      "title": title, "console_url": self.cfg.console_session_url(session.id)})
+        return session.id
 
+    def _follow(self, session_id: str, agent_ref: Any, run_id: str, stage: str, work_item_id: str | None,
+                custom_tools: dict[str, CustomToolHandler] | None) -> StageResult:
+        """Drain the session's events to its end (answering custom tool calls and paused tool confirmations), then
+        read its cost and fetch what it wrote to /mnt/session/outputs/."""
+        session = SimpleNamespace(id=session_id)
         ctx = SessionContext(session_id=session.id, run_id=run_id, stage=stage, work_item_id=work_item_id)
         outcome_result: str | None = None
         iterations = 0

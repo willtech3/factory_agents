@@ -2,7 +2,7 @@
 
 What it is for: writing an outcome, watching runs, and deciding Gate 1 and Gate 2 (and answering blocking
 questions) from a page that puts the judge's summary first and binds the decision to the artifact hashes
-the page showed (ADR-0005). It is the `web` gate surface: it reads `runs/<run_id>/events.jsonl` and the
+the page showed (ADR-0005). It is the `web` gate surface: it reads each run's events (`runs/<run_id>/run.db`) and the
 artifacts, and writes decisions and answers to `runs/_queue/`, exactly where `factory decide` writes them,
 so a running `factory run` picks them up unchanged. No agent, forge, or tracker call happens here.
 
@@ -38,7 +38,7 @@ from ..config import REPO_ROOT, Config
 from ..errors import Refusal
 from ..gates import Decision, GateKind, parse_budget
 from ..state import RunStage, effective_run_events, replay
-from ..store import RunStore
+from ..store import RunStore, run_exists
 from ..summary import _stage_before, controller_running, summarize
 from ..surfaces.artifact_pages import render_gate1_page, render_gate2_page
 from ..surfaces.filequeue import FileQueue
@@ -54,7 +54,7 @@ EXAMPLES = {p.parent.name: p for p in sorted((REPO_ROOT / "examples").glob("*/ou
 TIMELINE_KINDS = {"run.created", "repository.created", "stage.entered", "session.started", "gate.opened", "gate.decided", "question.asked", "question.answered",
                   "judge.verdict", "review.findings", "review.response", "merge.verdict", "cr.opened", "cr.merged", "cr.closed",
                   "deploy.started", "deploy.succeeded", "deploy.failed", "e2e.dev_passed", "e2e.dev_failed", "budget.reached",
-                  "budget.raised", "session.truncated", "run.escalated", "run.failed", "run.resumed", "run.completed", "session.finished",
+                  "budget.raised", "session.truncated", "session.reattached", "session.superseded", "run.escalated", "run.failed", "run.resumed", "run.completed", "session.finished",
                   "work_item.stage"}
 
 
@@ -134,7 +134,7 @@ def local_activity_url(runs_dir: Path, activity_id: str | None) -> str | None:
     """Workspace sessions outlive local checkouts; only link to records this Console can open."""
     if not isinstance(activity_id, str):
         return None
-    if RUN_ID.fullmatch(activity_id) and (runs_dir / activity_id / "events.jsonl").is_file():
+    if RUN_ID.fullmatch(activity_id) and run_exists(runs_dir, activity_id):
         return f"#/runs/{activity_id}"
     if re.fullmatch(r"app_[a-f0-9]{12}", activity_id) and (runs_dir / "_apps" / activity_id / "app.json").is_file():
         return f"#/apps/{activity_id}"
@@ -186,13 +186,16 @@ def crew_roster(events) -> list[dict[str, Any]]:
             if cut and not row["live"]:
                 row["interrupted_by"] = "failure"
         elif ev.kind == "run.resumed":
-            # a resume starts new sessions; whatever its dead predecessor left open was cut short, not finished
+            # a resume follows the sessions its dead predecessor left working (ADR-0013); any other session it left open
+            # (a log from before durable steps) was cut short, not finished
+            keep = set(p.get("sessions_to_follow") or [])
             for row in by_role.values():
-                if row["live"]:
-                    row["live"].clear()
-                    row["finished_at"] = ev.at
-                    row["state"] = "interrupted"
-                    row["interrupted_by"] = "resume"
+                if any(sid not in keep for sid in row["live"]):
+                    row["live"] = [sid for sid in row["live"] if sid in keep]
+                    if not row["live"]:
+                        row["finished_at"] = ev.at
+                        row["state"] = "interrupted"
+                        row["interrupted_by"] = "resume"
         elif ev.kind == "run.failed":
             # sessions the orchestrator interrupted on its way out never get a session.finished of their own: they were
             # cut short, and the Console must not show them as done
@@ -240,13 +243,11 @@ class Console:
         return run_id
 
     def summary(self, run_id: str) -> dict[str, Any]:
-        """`summary.summarize` for one run, cached on the event log's size and mtime and on whether a controller holds
-        the run's lock. A finished run is replayed once per Console process; the Runs page's poll then costs a stat
+        """`summary.summarize` for one run, cached on its newest event's seq and on whether a controller holds the run's
+        lock. A finished run is replayed once per Console process; the Runs page's poll then costs one indexed query
         and one non-blocking flock attempt per run."""
-        log = self.cfg.runs_dir / run_id / "events.jsonl"
-        st = log.stat()
         alive = controller_running(self.cfg.runs_dir, run_id)
-        key = (st.st_size, st.st_mtime_ns, alive)
+        key = (self.store.last_seq(run_id), alive)
         hit = self._summaries.get(run_id)
         if hit is None or hit[0] != key:
             events = self.store.events(run_id)
@@ -281,7 +282,7 @@ class Console:
         return out
 
     def run_detail(self, run_id: str) -> dict[str, Any]:
-        if not RUN_ID.match(run_id) or not (self.cfg.runs_dir / run_id / "events.jsonl").is_file():
+        if not RUN_ID.match(run_id) or not run_exists(self.cfg.runs_dir, run_id):
             raise HTTPException(404, f"no run {run_id}")       # checked first: RunStore.events would create the directory
         events = self.store.events(run_id)
         if not any(ev.kind == "run.created" for ev in events):

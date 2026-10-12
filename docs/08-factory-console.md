@@ -8,7 +8,7 @@ cd orchestrator && .venv/bin/pip install -e ".[web]"
 .venv/bin/factory runs                # the same history in the terminal; --active for the unfinished ones
 ```
 
-Configuration is read from the environment and from `.env` at the repository root (`ANTHROPIC_API_KEY`, `ANTHROPIC_WORKSPACE_ID`, `FORGE_REPO`, `FORGE_TOKEN`, and the rest of [07-personal-e2e-setup.md](07-personal-e2e-setup.md)); values already set in the environment win. The Console reads `runs/<run_id>/events.jsonl` and the artifacts, and writes decisions and answers to `runs/_queue/`, exactly where `factory decide` and `factory answer` write them, so a `factory run` started from the Console or from a terminal picks them up unchanged.
+Configuration is read from the environment and from `.env` at the repository root (`ANTHROPIC_API_KEY`, `ANTHROPIC_WORKSPACE_ID`, `FORGE_REPO`, `FORGE_TOKEN`, and the rest of [07-personal-e2e-setup.md](07-personal-e2e-setup.md)); values already set in the environment win. The Console reads each run's events from `runs/<run_id>/run.db` and the artifacts, and writes decisions and answers to `runs/_queue/`, exactly where `factory decide` and `factory answer` write them, so a `factory run` started from the Console or from a terminal picks them up unchanged.
 
 ## The screens
 

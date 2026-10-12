@@ -220,9 +220,16 @@ def _context(cfg, outcome: dict, run_id: str, *, forge: bool, design_only: bool,
 
 
 def _drive(ctx, pipeline):
-    """Run `pipeline(ctx)` with the stop and crash handling every run gets: a signal or an exception interrupts the
-    sessions still in flight and records run.failed, so a dead orchestrator never looks like a run in progress."""
+    """Run `pipeline(ctx)` with the stop and crash handling every run gets, recording run.failed either way so a dead
+    orchestrator never looks like a run in progress.
+
+    A stop (SIGTERM, SIGINT) is someone deciding the run should not spend: the sessions in flight are interrupted. A
+    crash is the controller's failure, not the sessions': they keep working under their own caps, each one's step
+    holds its id, and `factory resume` reattaches to them (ADR-0013). Interrupting them threw their work away (live
+    run 1 lost five sessions this way)."""
     import signal
+
+    from .stages.common import close_orphaned_sessions
 
     def _stop(signum, frame):
         stopped = ctx.driver.interrupt_active()
@@ -235,16 +242,23 @@ def _drive(ctx, pipeline):
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, _stop)
     try:
-        return pipeline(ctx)
+        result = pipeline(ctx)
     except SystemExit:
         raise
     except Exception as e:  # noqa: BLE001
-        stopped = ctx.driver.interrupt_active()
+        running = sorted(ctx.driver.active) if ctx.driver is not None else []
         try:
-            ctx.event("run.failed", {"reason": f"{type(e).__name__}: {str(e)[:500]}", "interrupted_sessions": stopped})
+            ctx.event("run.failed", {"reason": f"{type(e).__name__}: {str(e)[:500]}", "interrupted_sessions": [],
+                                     "sessions_left_running": running})
         except Exception:  # noqa: BLE001
             pass
         raise
+    if ctx.driver is not None:
+        try:
+            close_orphaned_sessions(ctx)
+        except Exception as e:  # noqa: BLE001  (bookkeeping after the run must not fail it)
+            print(f"[run] could not close the sessions a resumed run left behind: {str(e)[:200]}")
+    return result
 
 
 def apply_preview_choice(cfg, preview: str | None = None, app_id: str | None = None, test_profile_sha256: str | None = None,
@@ -586,6 +600,21 @@ def replay(run_id: str):
     st = RunStore(cfg.runs_dir).state(run_id)
     typer.echo(json.dumps({"stage": st.stage.value, "work_items": {k: v.stage.value for k, v in st.work_items.items()},
                            "cost": st.list_cost_usd, "events": st.last_seq + 1}, indent=2))
+
+
+@app.command("export-events")
+def export_events(run_id: str, out: Path = typer.Option(None, "--out", help="Write here instead of standard output")):
+    """The run's event log as JSONL, one event per line in seq order (the format the eval reference runs keep)."""
+    cfg = cfgmod.load()
+    store = RunStore(cfg.runs_dir)
+    if not store.exists(run_id):
+        raise typer.BadParameter(f"no run {run_id} under {cfg.runs_dir}")
+    text = store.export_events(run_id)
+    if out is None:
+        typer.echo(text, nl=False)
+    else:
+        out.write_text(text)
+        typer.echo(f"{text.count(chr(10))} events written to {out}")
 
 
 @app.command()

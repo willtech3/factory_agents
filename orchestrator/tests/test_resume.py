@@ -125,7 +125,7 @@ def test_evaluation_target_is_pinned_and_survives_resume(tmp_path, root):
     from types import SimpleNamespace
     from factory.runner import comparison_branch
     ctx = _ctx(tmp_path, root)
-    ctx.event('run.created', {'outcome_id': 'o'})
+    ctx.event('run.created', {'outcome_id': 'o', 'budget_usd': 50})
     work = tmp_path / 'repo'
     work.mkdir()
     def git(*args):

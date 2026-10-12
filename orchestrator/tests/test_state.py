@@ -35,11 +35,13 @@ def test_happy_path_run_state(tmp_path, examples):
 
 
 def test_illegal_run_transition(tmp_path):
+    """Refused when written: an illegal event is never appended, so the run stays readable (run_8d9b17b4f5 became
+    unreadable everywhere when one was)."""
     store = RunStore(tmp_path)
     store.append("run_x", "run.created", {"type": "orchestrator"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o"})
-    store.append("run_x", "stage.entered", {"type": "orchestrator"}, {"stage": "implementing"})  # intake -> implementing
     with pytest.raises(IllegalTransition):
-        store.state("run_x")
+        store.append("run_x", "stage.entered", {"type": "orchestrator"}, {"stage": "implementing"})  # intake -> implementing
+    assert [e.kind for e in store.events("run_x")] == ["run.created"] and store.state("run_x").stage == RunStage.INTAKE
 
 
 def test_illegal_work_item_transition(tmp_path, examples):
@@ -47,9 +49,9 @@ def test_illegal_work_item_transition(tmp_path, examples):
     store.append("run_y", "run.created", {"type": "orchestrator"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o"})
     store.append("run_y", "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
                                                                  "work_items": examples["decomposition"]["work_items"]})
-    store.append("run_y", "work_item.stage", {"type": "orchestrator"}, {"stage": "merged"}, work_item_id="wi-smart-retries")
     with pytest.raises(IllegalTransition):
-        store.state("run_y")
+        store.append("run_y", "work_item.stage", {"type": "orchestrator"}, {"stage": "merged"}, work_item_id="wi-smart-retries")
+    assert store.state("run_y").work_items["wi-smart-retries"].stage.value == "pending"
 
 
 def test_gate_decision_binds_artifact_hashes():
@@ -117,18 +119,16 @@ def test_illegal_deploy_transitions(tmp_path, examples):
     store.append("run_f", "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
                                                                  "work_items": examples["decomposition"]["work_items"]})
     _merge_item(store, "run_f", "wi-smart-retries")
-    store.append("run_f", "work_item.stage", {"type": "orchestrator"}, {"stage": "deployed_dev"}, work_item_id="wi-smart-retries")
     with pytest.raises(IllegalTransition):   # merged -> deployed_dev skips the observation
-        store.state("run_f")
+        store.append("run_f", "work_item.stage", {"type": "orchestrator"}, {"stage": "deployed_dev"}, work_item_id="wi-smart-retries")
     store2 = RunStore(tmp_path / "g")
     store2.append("run_g", "run.created", {"type": "orchestrator"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o"})
     store2.append("run_g", "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
                                                                   "work_items": examples["decomposition"]["work_items"]})
     _merge_item(store2, "run_g", "wi-smart-retries")
     store2.append("run_g", "work_item.stage", {"type": "orchestrator"}, {"stage": "deploying_dev"}, work_item_id="wi-smart-retries")
-    store2.append("run_g", "work_item.stage", {"type": "orchestrator"}, {"stage": "implementing"}, work_item_id="wi-smart-retries")
     with pytest.raises(IllegalTransition):   # deploying_dev -> implementing only via the escalation gate
-        store2.state("run_g")
+        store2.append("run_g", "work_item.stage", {"type": "orchestrator"}, {"stage": "implementing"}, work_item_id="wi-smart-retries")
 
 
 def test_design_only_runs_complete_at_gate_2(tmp_path):

@@ -1,11 +1,12 @@
 """Helpers shared by stage modules."""
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import threading
 import time
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -50,8 +51,7 @@ def run_session(ctx: RunContext, *, stage: str, prefix: str = "", spec_id: str |
     accepts the last output as it stands (the judges downstream still check it); reject closes the run and raises
     `SessionTruncated`. Before this, live run 1's cut-off judge verdict drove a writer round and a decomposer that
     exhausted its grader would have reached Gate 1 unflagged."""
-    res = ctx.driver.run(stage=stage, **kw)
-    record_session_finished(ctx, stage, res, work_item_id=kw.get("work_item_id"), spec_id=spec_id)
+    res = session_step(ctx, stage=stage, prefix=prefix, spec_id=spec_id, attempt=attempt, **kw)
     if res.stop_reason in {"terminated", "interrupted", "unreachable"} or res.outcome_result in {"interrupted", "failed"}:
         persist_outputs(ctx, stage, res, prefix=f"{prefix}unfinished{attempt}-",
                         work_item_id=kw.get("work_item_id"), spec_id=spec_id)
@@ -108,6 +108,131 @@ def run_session(ctx: RunContext, *, stage: str, prefix: str = "", spec_id: str |
     # (budget.py); when it does not fit, the run pauses at its budget instead of starting the session.
     reserve_budget(ctx, stage, 1, cap_usd=raised)
     return run_session(ctx, stage=stage, prefix=prefix, spec_id=spec_id, attempt=attempt + 1, **{**kw, "budget_usd": raised})
+
+
+def session_step_key(stage: str, prefix: str, title: str, attempt: int) -> str:
+    """The step a session runs under. Titles name the run, the stage, the spec and the round; prefixes add what binds a
+    session to its inputs (a reviewer pass's base and head, a judge's recheck number); `attempt` is the budget re-run."""
+    return f"session/{stage}/{prefix}{title}#{attempt}"
+
+
+def session_inputs_sha(stage: str, kw: dict[str, Any]) -> str:
+    """Everything that decides what a session is asked to do: who, with which instructions, model and limits, on
+    which files and repository. Two calls with the same hash ask for the same work. The repository's credential is
+    left out: it says how to reach the work, not what it is, and a rotated token must not supersede a session."""
+    uploads = kw.get("uploads") or {}
+    repository = kw.get("repository")
+    if isinstance(repository, dict):
+        repository = {k: v for k, v in repository.items() if k != "authorization_token"}
+    doc = {"stage": stage, **{k: kw.get(k) for k in ("agent_key", "title", "description", "rubric_md", "max_iterations",
+                                                     "budget_usd", "model_override", "system_override", "environment_id",
+                                                     "vault_ids", "metadata", "schema_names")},
+           "repository": repository,
+           "custom_tools": sorted(kw.get("custom_tools") or {}),
+           "uploads": {name: hashlib.sha256(content).hexdigest() for name, content in sorted(uploads.items())}}
+    return hashlib.sha256(json.dumps(doc, sort_keys=True, default=str).encode()).hexdigest()
+
+
+STOPPED = {"interrupted", "unreachable"}   # how `_drive` ends the sessions in flight when someone stops the run
+
+
+def session_step(ctx: RunContext, *, stage: str, prefix: str = "", spec_id: str | None = None, attempt: int = 1,
+                 **kw: Any) -> StageResult:
+    """`ctx.driver.run` as a durable step (ADR-0013). The step records the session's id as soon as it exists, so a
+    controller that dies leaves a session its successor can follow: a call with the same step and the same inputs
+    reattaches to a session still running under it instead of starting (and paying for) another. A running session
+    whose inputs have since changed is interrupted and recorded as superseded, and one a stop interrupted is not
+    followed; a new session starts in both cases.
+
+    A session that returned is not reused: whether a finished judgement or verification may stand is the caller's
+    decision (the merge judge reuses only a ready verdict on unchanged inputs; a build recovery wants fresh evidence).
+    `session.finished` is recorded before the step closes, so the spend of a session that returned is counted once
+    whichever side of that boundary a crash falls on."""
+    store, run_id = ctx.store, ctx.run_id
+    wid = kw.get("work_item_id")
+    key = session_step_key(stage, prefix, str(kw.get("title", "")), attempt)
+    inputs = session_inputs_sha(stage, kw)
+    step = store.step(run_id, key)
+    if step is not None and step.status == "running" and step.session_id:
+        ended = store.state(run_id).finished_sessions.get(step.session_id)
+        if ended in STOPPED:
+            store.fail_step(run_id, key, f"{ended}: the run was stopped while this session worked")
+        elif step.inputs_sha == inputs:
+            ctx.event("session.reattached", {"session_id": step.session_id, "step": key, "attempt": step.attempt},
+                      stage=stage, actor="platform", work_item_id=wid, spec_id=spec_id)
+            res = ctx.driver.run(stage=stage, attach_session_id=step.session_id, **kw)
+            return _finish_step(ctx, stage, key, res, wid, spec_id)
+        else:
+            _supersede(ctx, stage, key, step.session_id, wid, spec_id)
+    store.begin_step(run_id, key, "session", inputs)
+    created: list[str] = []
+
+    def on_created(session_id: str) -> None:
+        created.append(session_id)
+        store.set_step_session(run_id, key, session_id)
+
+    try:
+        res = ctx.driver.run(stage=stage, on_created=on_created, **kw)
+    except BaseException as e:
+        if not created:
+            store.fail_step(run_id, key, f"{type(e).__name__}: {str(e)[:500]}")
+        raise          # a session that exists stays `running` under its step, for the next controller to reattach to
+    return _finish_step(ctx, stage, key, res, wid, spec_id)
+
+
+def _finish_step(ctx: RunContext, stage: str, key: str, res: StageResult, work_item_id: str | None,
+                 spec_id: str | None) -> StageResult:
+    record_session_finished(ctx, stage, res, work_item_id=work_item_id, spec_id=spec_id)
+    ctx.store.finish_step(ctx.run_id, key, _step_result(ctx, res))
+    return res
+
+
+def _step_result(ctx: RunContext, res: StageResult) -> dict[str, Any]:
+    """What a finished session step records: how the session ended and the files it returned, kept as blobs and named
+    by sha256, so a step's result can be read back without the stage code that persisted it (replays, evals)."""
+    return {"session_id": res.session_id, "stop_reason": res.stop_reason, "outcome_result": res.outcome_result,
+            "outcome_iterations": res.outcome_iterations, "list_cost_usd": res.list_cost_usd,
+            "outputs": {name: ctx.store.put_blob(ctx.run_id, content) for name, content in sorted((res.outputs or {}).items())}}
+
+
+CHANGED_INPUTS = "its inputs changed before a controller followed it to the end"
+
+
+def _supersede(ctx: RunContext, stage: str, key: str, session_id: str, work_item_id: str | None,
+               spec_id: str | None, reason: str = CHANGED_INPUTS) -> None:
+    """Stop a session nobody will follow (its inputs changed while no controller watched it), charge what it spent
+    and record why."""
+    stop = getattr(ctx.driver, "interrupt_session", None)
+    reached = bool(stop(session_id)) if callable(stop) else False
+    ctx.event("session.superseded", {"session_id": session_id, "step": key, "interrupted": reached, "reason": reason},
+              stage=stage, actor="platform", work_item_id=work_item_id, spec_id=spec_id)
+    if session_id not in ctx.store.state(ctx.run_id).finished_sessions:
+        cost = getattr(ctx.driver, "list_cost", None)
+        ctx.event("session.finished", {"session_id": session_id, "list_cost_usd": cost(session_id) if callable(cost) else None,
+                                       "outcome_result": "interrupted", "stop_reason": "superseded" if reached else "unreachable"},
+                  stage=stage, actor="platform", work_item_id=work_item_id, spec_id=spec_id)
+    ctx.store.fail_step(ctx.run_id, key, f"superseded: {reason}")
+
+
+def orphaned_sessions(ctx: RunContext) -> list[str]:
+    """Sessions working under a step no controller follows: what a dead controller left running. Read before the
+    resumed pipeline starts, they are the sessions it will reattach to (or supersede) when it reaches their steps."""
+    return [s.session_id for s in ctx.store.steps(ctx.run_id) if s.kind == "session" and s.status == "running" and s.session_id]
+
+
+def close_orphaned_sessions(ctx: RunContext) -> list[str]:
+    """Once a run has ended, stop and charge every session still running under a step it never reached again (a
+    resumed run took another path: an escalation, a different decision at a gate). A run that only paused (at its
+    budget, at a gate) keeps them for the resume that follows. Returns their ids."""
+    if ctx.store.state(ctx.run_id).stage not in TERMINAL:
+        return []
+    closed = []
+    for s in ctx.store.steps(ctx.run_id):
+        if s.kind == "session" and s.status == "running" and s.session_id:
+            _supersede(ctx, s.key.split("/")[1], s.key, s.session_id, None, None,
+                       reason="the run ended without reaching its step again")
+            closed.append(s.session_id)
+    return closed
 
 
 def _owner_handles(ctx: RunContext) -> list[str]:
@@ -263,13 +388,16 @@ def record_session_finished(ctx: RunContext, stage: str, res: StageResult, *, wo
     """Charge returned sessions before parsing outputs, including missing/malformed artifacts."""
     # A truncated result is saved before its gate, then saved under the normal prefix
     # if the owner accepts it. Both artifact sets are useful; the spend is counted once.
-    if not getattr(res, "finish_recorded", False):
-        ctx.event("session.finished", {"session_id": res.session_id, "agent_id": res.agent_id,
+    # A controller that reattached to a session its predecessor saw finish reports the same end again (ADR-0013).
+    if getattr(res, "finish_recorded", False) or res.session_id in ctx.store.state(ctx.run_id).finished_sessions:
+        res.finish_recorded = True
+        return
+    ctx.event("session.finished", {"session_id": res.session_id, "agent_id": res.agent_id,
                                    "agent_version": res.agent_version, "list_cost_usd": res.list_cost_usd,
                                    "outcome_result": res.outcome_result, "stop_reason": res.stop_reason,
                                    "outcome_iterations": res.outcome_iterations},
-                  stage=stage, actor="platform", work_item_id=work_item_id, spec_id=spec_id)
-        res.finish_recorded = True
+              stage=stage, actor="platform", work_item_id=work_item_id, spec_id=spec_id)
+    res.finish_recorded = True
 
 
 def stamp_provenance(artifact: dict[str, Any], ctx: RunContext, res: StageResult, agent_name: str, model: str,
@@ -308,9 +436,31 @@ def require_json(res: StageResult, name: str) -> dict[str, Any]:
 def make_ask_human(ctx: RunContext, role: str, poll_seconds: float = 5.0, timeout_hours: float = 48.0):
     """Custom tool handler: surface the question, block until answered, return the answer text.
 
-    Non-blocking questions return their default immediately and are logged for the gate.
+    Non-blocking questions return their default immediately and are logged for the gate. A call the session already
+    made (the same `custom_tool_use_id`, replayed to a controller that reattached to the session; ADR-0013) is not asked
+    again: an answered question returns its answer, an open one is waited on where its first asking left off.
     """
+    def wait(question_id: str, default: str, stage: str | None, work_item_id: str | None, deadline: float) -> str:
+        while time.time() < deadline:
+            a: Answer | None = ctx.queue.answer(question_id)
+            if a is not None:
+                ctx.event("question.answered", {"question_id": question_id, "answer": a.answer,
+                                                "answered_by": a.answered_by}, stage=stage, actor="human")
+                return json.dumps({"answer": a.answer, "answered_by": a.answered_by})
+            time.sleep(poll_seconds)
+        ctx.event("question.answered", {"question_id": question_id, "answer": default,
+                                        "answered_by": "default", "reason": "timeout"},
+                  stage=stage, work_item_id=work_item_id)
+        return json.dumps({"answer": default, "note": "no human answer within SLA; default applied"})
+
     def handler(tool_input: dict[str, Any], sctx: SessionContext) -> str:
+        asked = _asked_before(ctx, sctx.custom_tool_use_id)
+        if asked is not None:
+            p, answered = asked
+            if answered is not None:
+                return json.dumps({"answer": answered.get("answer"), "answered_by": answered.get("answered_by")})
+            started = datetime.fromisoformat(p["_at"]).timestamp()
+            return wait(p["question_id"], p.get("default", ""), sctx.stage, sctx.work_item_id, started + timeout_hours * 3600)
         q = Question(run_id=ctx.run_id, asked_by=role, question=tool_input["question"],
                      why_it_matters=tool_input.get("why_it_matters", ""),
                      default_if_unanswered=tool_input.get("default_if_unanswered", ""),
@@ -321,7 +471,8 @@ def make_ask_human(ctx: RunContext, role: str, poll_seconds: float = 5.0, timeou
         ctx.queue.ask(q)
         ctx.notifier.question_asked(q)
         ctx.event("question.asked", {"question_id": q.question_id, "question": q.question, "blocking": q.blocking,
-                                     "default": q.default_if_unanswered, "asked_by": role}, stage=sctx.stage,
+                                     "default": q.default_if_unanswered, "asked_by": role,
+                                     "custom_tool_use_id": sctx.custom_tool_use_id}, stage=sctx.stage,
                   actor="agent")
         if not q.blocking:
             ctx.event("question.answered", {"question_id": q.question_id, "answer": q.default_if_unanswered,
@@ -329,19 +480,22 @@ def make_ask_human(ctx: RunContext, role: str, poll_seconds: float = 5.0, timeou
                       stage=sctx.stage, work_item_id=sctx.work_item_id)
             return json.dumps({"answer": q.default_if_unanswered, "note": "non-blocking: default applied; "
                                "the human will see this question at the next gate"})
-        deadline = time.time() + timeout_hours * 3600
-        while time.time() < deadline:
-            a: Answer | None = ctx.queue.answer(q.question_id)
-            if a is not None:
-                ctx.event("question.answered", {"question_id": q.question_id, "answer": a.answer,
-                                                "answered_by": a.answered_by}, stage=sctx.stage, actor="human")
-                return json.dumps({"answer": a.answer, "answered_by": a.answered_by})
-            time.sleep(poll_seconds)
-        ctx.event("question.answered", {"question_id": q.question_id, "answer": q.default_if_unanswered,
-                                        "answered_by": "default", "reason": "timeout"},
-                  stage=sctx.stage, work_item_id=sctx.work_item_id)
-        return json.dumps({"answer": q.default_if_unanswered, "note": "no human answer within SLA; default applied"})
+        return wait(q.question_id, q.default_if_unanswered, sctx.stage, sctx.work_item_id, time.time() + timeout_hours * 3600)
     return handler
+
+
+def _asked_before(ctx: RunContext, custom_tool_use_id: str | None) -> tuple[dict[str, Any], dict[str, Any] | None] | None:
+    """The `question.asked` payload (with its time as `_at`) a tool call already produced, and its `question.answered`
+    payload when there is one; None for a call not seen before."""
+    if not custom_tool_use_id:
+        return None
+    events = ctx.store.events(ctx.run_id)
+    asked = next((ev for ev in events if ev.kind == "question.asked" and ev.payload.get("custom_tool_use_id") == custom_tool_use_id), None)
+    if asked is None:
+        return None
+    qid = asked.payload["question_id"]
+    answered = next((ev.payload for ev in events if ev.kind == "question.answered" and ev.payload.get("question_id") == qid), None)
+    return {**asked.payload, "_at": asked.at}, answered
 
 
 def open_gate(ctx: RunContext, kind: GateKind, artifacts: dict[str, str], summary: str, assignees: list[str],
