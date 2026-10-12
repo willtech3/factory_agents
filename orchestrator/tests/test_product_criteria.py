@@ -44,7 +44,8 @@ def test_specify_refuses_it_before_the_judge(tmp_path, root, examples):
     def run(**kw):
         if kw["agent_key"] == "spec_writer":
             return stage_result({"spec.json": json.dumps(spec).encode(), "spec.md": b"# spec"})
-        verdict = {"round": 1, "overall": {"result": "pass", "blocking_issue_count": 0, "summary_for_human": "ok"},
+        verdict = {"verdict_id": "ver_fake0001", "decomposition_id": decomposition["decomposition_id"], "round": 1,
+                   "overall": {"result": "pass", "blocking_issue_count": 0, "summary_for_human": "ok"},
                    "per_spec": [{"spec_id": spec["spec_id"], "criteria": [], "issues": []}],
                    "coherence": {"interface_mismatches": [], "overlaps": [], "gaps": [], "ordering_problems": [], "contradictions": []},
                    "goal_coverage": []}

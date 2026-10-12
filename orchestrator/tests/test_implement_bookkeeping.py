@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from support import artifacts
 from conftest import make_config
 from support.sessions import stage_result
 from support.events import assert_log_valid
@@ -90,7 +91,7 @@ class Driver:
             out = {"implementation_report.json": json.dumps(report).encode()}
             if "findings.json" in kw["uploads"]:
                 ids = [f["finding_id"] for f in json.loads(kw["uploads"]["findings.json"])["findings"]]
-                out["review_response.json"] = json.dumps({"responses": [{"finding_id": i, "disposition": "fixed", "explanation": "mapped real tests"} for i in ids],
+                out["review_response.json"] = json.dumps({**artifacts.response(SID, [{"finding_id": i} for i in ids]),
                                                           "produced_by": dict(self.PLACEHOLDER)}).encode()
             return self._res(sid, f"agent_{key}", out, 3.3)
         if key == "reviewer":

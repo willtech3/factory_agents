@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from support import artifacts
 from support.hosted import (
     REPORT,
     RUN_ID,
@@ -83,11 +84,10 @@ class JourneyDriver(Driver):
                 outputs[self.journey_filename] = json.dumps(self.journey).encode()
             if "findings.json" in kw["uploads"]:
                 answered = json.loads(kw["uploads"]["findings.json"])["findings"]
-                outputs["review_response.json"] = json.dumps({"responses": [{"finding_id": f["finding_id"], "disposition": "fixed",
-                                                                            "explanation": "done"} for f in answered]}).encode()
+                outputs["review_response.json"] = json.dumps(artifacts.response("spec_hosted", answered)).encode()
             return result(outputs)
         if kw["agent_key"] in ("reviewer", "security_reviewer") and self.findings is not None:
-            return result({"findings.json": json.dumps({"findings": self.findings, "checks_performed": [], "spec_conformance": []}).encode()})
+            return result({"findings.json": json.dumps(artifacts.findings("spec_hosted", self.findings)).encode()})
         self.calls.pop()
         return super().run(**kw)
 
@@ -192,8 +192,8 @@ def test_code_answering_the_evidence_protocol_is_refused(tmp_path, root):
 
 
 def test_a_finding_about_the_journeys_own_plumbing_never_stands(tmp_path, root):
-    plumbing = {"finding_id": "F-1", "severity": "blocking", "category": "test_quality", "status": "open", "target": "verification",
-                "claim": "the journey reports a 403 redirect as failed", "evidence": {"locations": ["journeys/greet.json:1"]}}
+    plumbing = artifacts.finding(1, severity="blocking", category="test_quality", target="verification",
+                                 claim="the journey reports a 403 redirect as failed", location="journeys/greet.json:1")
     assert standing_findings([plumbing]) == [] and standing_findings([{**plumbing, "target": "change"}])
     ctx, _, verdict = _loop(tmp_path, root, findings=[plumbing])
     assert verdict["result"] == "ready"
@@ -203,7 +203,7 @@ def test_a_finding_about_the_journeys_own_plumbing_never_stands(tmp_path, root):
 
 
 def test_corrective_implementers_receive_the_saved_journey_bytes(tmp_path,root):
-    finding={"finding_id":"F-1","severity":"major","category":"correctness","status":"open","target":"change", "claim":"Correct the greeting", "evidence":{"locations":["app/main.py:1"]}}
+    finding=artifacts.finding(1, severity="major", target="change", claim="Correct the greeting")
     _,driver,_=_loop(tmp_path,root,findings=[finding])
     authors=[c for c in driver.calls if c.get("stage") != "verify" and c["agent_key"] == "implementer"]
     assert len(authors)>1

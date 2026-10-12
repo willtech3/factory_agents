@@ -26,13 +26,13 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from .. import checks, steps
+from .. import checks, rules, steps
 from ..budget import reserve_budget
 from ..config import agent_model
 from ..gates import Decision, GateKind
 from ..state import RunStage, WorkItemStage
 from . import RunContext
-from .common import auto_approval, hosted_planning_clause, make_ask_human, size_clause, open_gate_and_wait, persist_outputs, platform_skill, public, reject_output, require_json, rubric_text, run_session, stamp_provenance, would_reuse
+from .common import auto_approval, hosted_planning_clause, make_ask_human, size_clause, open_gate_and_wait, persist_outputs, platform_skill, public, reject_output, require_json, require_valid, rubric_text, run_session, stamp_provenance, would_reuse
 
 WRITER_DESCRIPTION = """Write the specification for work item {work_item_id} ({title}).
 Inputs are under /mnt/session/uploads/ (outcome.json, decomposition.json, work_item.json, sibling_specs/,
@@ -174,6 +174,14 @@ def _judge(ctx: RunContext, outcome, decomposition, specs: dict[str, dict], roun
     verdict = require_json(res, "verdict.json")
     verdict["round"] = round_no
     stamp_provenance(verdict, ctx, res, "Spec judge", agent_model("spec_judge"))
+    require_valid(ctx, res, "verdict.json", verdict, "judge_verdict.schema.json")
+    broken = rules.spec_pass_violations(verdict)
+    if broken:
+        # rule spec-pass: a pass with a blocking issue or a criterion at 0 is not a pass, whatever the judge wrote
+        verdict["overall"]["result"] = "revise"
+        verdict["overall"]["blocking_issue_count"] = max(verdict["overall"]["blocking_issue_count"], 1)
+        verdict["overall"]["summary_for_human"] = (f"Overridden (rule spec-pass): {'; '.join(broken)}. "
+                                                   + verdict["overall"]["summary_for_human"])[:2000]
     res.outputs["verdict.json"] = json.dumps(verdict, indent=2).encode()
     persist_outputs(ctx, "judge", res, prefix=f"r{round_no}-")
     ctx.event("judge.verdict", {"round": round_no, "result": verdict["overall"]["result"],

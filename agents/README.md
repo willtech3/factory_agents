@@ -25,7 +25,8 @@ Review the plan, then re-run with `--yes` once you agree with it. `claude-lock.j
 ## Conventions every prompt follows
 
 - **Instruction budget.** Prompts stay under about 80 lines. Anything longer belongs in a skill under `.claude/skills/` in the target repo or in `rubrics/`. Each rule should trace to a failure we observed or a cited source in `docs/research/`.
-- **Artifacts, not chat.** Agents coordinate through files under `/mnt/session/outputs/`, validated against `schemas/`. No agent reads another agent's transcript.
+- **Artifacts, not chat.** Agents coordinate through files under `/mnt/session/outputs/`, validated against `schemas/` by the agent and again by the orchestrator on receipt. No agent reads another agent's transcript.
+- **Rules live in the registry.** Each prompt ends in a `## Rules` block generated from `orchestrator/factory/rules.py` (`factory rules`; [ADR-0015](../docs/adr/0015-rule-registry.md)). Prose cites a rule's id instead of restating it, and the block is edited only through the registry.
 - **Judges never author.** Spec judge and merge judge report; they do not rewrite specs or code. This keeps the role separation that makes their verdicts worth anything.
 - **Tests are a contract.** Implementers may add tests and may not modify or delete existing tests unless the spec's `allowed_paths` explicitly includes them. The orchestrator enforces this deterministically.
 - **Say so when stuck.** Every agent has an explicit way to stop and report rather than improvise: `ask_human` for the planning agents, an `open_questions` block for writers, `escalate` results for judges.

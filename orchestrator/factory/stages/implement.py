@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import visual
-from .. import checks, security, steps, verification
+from .. import checks, rules, security, steps, verification
 from ..hosted_verifier import ENVIRONMENT_CHECK
 from ..budget import reserve_budget
 from ..checks import CheckResult
@@ -49,7 +49,8 @@ from ..verification import (evidence_from_reports, journey_name, passed_test_ids
                             wait_for_preview)
 from ..state import WorkItemStage
 from . import RunContext
-from .common import enter_item_stage, persist_outputs, platform_skill, public, reject_output, require_json, run_session, stamp_provenance, artifact_json_or_none, would_reuse
+from .common import (artifact_json_or_none, enter_item_stage, persist_outputs, platform_skill, public, reject_output, require_json,
+                     require_valid, run_session, schema_problems, stamp_provenance, would_reuse)
 from .common import git as _git                # one git helper for every stage
 
 NO_FORGE_GIT_SETUP = """Git access: no forge is configured for this run. The repository at {repo_url} is not reachable
@@ -345,7 +346,7 @@ class _Build:
             response["round"] = round_no - 1
             ctx.event("review.response", {"round": round_no - 1, "dispositions": [r["disposition"] for r in response["responses"]]},
                       work_item_id=wid, spec_id=sid, actor="agent")
-        v = self.verify(round_no, report, journeys, check_reported_head=reused_author)
+        v = self.verify(round_no, report, journeys, check_reported_head=reused_author, response=response)
         det = v["det"]
         result = {"report": author["report"], "response": steps.put_json(ctx, response) if response is not None else None,
                   "journeys": author["journeys"], "head_sha": v["head_sha"], "base_sha": self.base_sha,
@@ -436,7 +437,7 @@ class _Build:
     # ---------------------------------------------------------------- verification
 
     def verify(self, round_no: int, report: dict[str, Any], journeys: dict[str, bytes], *,
-               check_reported_head: bool = False) -> dict[str, Any]:
+               check_reported_head: bool = False, response: dict[str, Any] | None = None) -> dict[str, Any]:
         """The orchestrator's own verification of the branch head (`verification.verify`) and the checks no agent can
         override (`verification.judge`)."""
         ctx, sid, wid, spec, verifier = self.ctx, self.sid, self.wid, self.spec, self.verifier
@@ -452,6 +453,7 @@ class _Build:
         det = verification.judge(bundle, spec, diff=diff, report=report, manifest_path=repo / ctx.cfg.service_manifest_path,
                                  schema_dir=ctx.cfg.schemas_dir, size=measured, size_budget_lines=ctx.policy.size_budget_lines,
                                  reported_head=report.get("head_sha") if check_reported_head else None)
+        det.append(report_schema_check(ctx, report, response))
         test_results = bundle.test_results()
         ctx.store.put_derived_artifact(ctx.run_id, "implement", f"{sid}-r{round_no}-deterministic_checks.json",
                                        json.dumps([d.to_dict() for d in det], indent=2).encode())
@@ -533,6 +535,7 @@ class _Build:
             )
             f = require_json(r, "findings.json")
             stamp_provenance(f, ctx, r, "Adversarial reviewer", agent_model("reviewer"))
+            require_valid(ctx, r, "findings.json", f, "review_findings.schema.json")
             r.outputs["findings.json"] = json.dumps(f, indent=2).encode()
             persist_outputs(ctx, "review", r, prefix=review_bindings[i][0], work_item_id=wid, spec_id=sid)
             return tag_pass(f, str(i))
@@ -561,6 +564,7 @@ class _Build:
             )
             f = require_json(r, "findings.json")
             stamp_provenance(f, ctx, r, "Security reviewer", agent_model("security_reviewer"))
+            require_valid(ctx, r, "findings.json", f, "review_findings.schema.json")
             r.outputs["findings.json"] = json.dumps(f, indent=2).encode()
             persist_outputs(ctx, "review", r, prefix=security_prefix, work_item_id=wid, spec_id=sid)
             return tag_pass(f, "security")
@@ -596,7 +600,8 @@ class _Build:
         head_sha = final["head_sha"]
         journeys = _files(ctx, final["journeys"])
         if recheck:
-            v = self.verify(round_no, _json_of(ctx, final["report"]), journeys, check_reported_head=True)
+            v = self.verify(round_no, _json_of(ctx, final["report"]), journeys, check_reported_head=True,
+                            response=_json_of(ctx, final["response"]))
             det, test_results, head_sha, visual_uploads = v["det"], v["test_results"], v["head_sha"], v["visual_uploads"]
             patch = v["diff"]["patch"].encode()
         findings, response = _json_of(ctx, final["findings"]), _json_of(ctx, final["response"])
@@ -637,12 +642,14 @@ class _Build:
         res = run_session(ctx, stage="merge_judge", **session)
         verdict = require_json(res, "merge_readiness.json")
         verdict["round"] = round_no
-        # Deterministic checks are not negotiable: a failing check forces another_round or escalate.
-        if any(not d.passed for d in det) and verdict["result"] == "ready":
-            verdict["result"] = "another_round"
-            verdict["summary_for_human"] = "Overridden: deterministic checks failed. " + verdict["summary_for_human"]
         verdict["deterministic_checks"] = [d.to_dict() for d in det]
         stamp_provenance(verdict, ctx, res, "Merge judge", agent_model("merge_judge"))
+        require_valid(ctx, res, "merge_readiness.json", verdict, "merge_readiness.schema.json")
+        broken = rules.merge_ready_violations(verdict, self.spec, det)
+        if broken:
+            # rule merge-ready: the checks and the criteria table are not negotiable; another round, or a person
+            verdict["result"] = "another_round"
+            verdict["summary_for_human"] = f"Overridden (rule merge-ready): {'; '.join(broken)}. " + verdict["summary_for_human"]
         verdict["_input_hashes"] = input_hashes
         verdict["_head_sha"], verdict["_branch"], verdict["_base_sha"] = head_sha, self.branch, self.base_sha
         res.outputs["merge_readiness.json"] = json.dumps(verdict, indent=2).encode()
@@ -750,6 +757,16 @@ def _deterministic_only(findings: list[dict[str, Any]]) -> bool:
     return bool(findings) and all(str(f.get("finding_id", "")).startswith("DET-") for f in findings)
 
 
+def report_schema_check(ctx: RunContext, report: dict[str, Any], response: dict[str, Any] | None) -> CheckResult:
+    """The implementer's report and response validated on receipt (rule `artifact-schema`): a failed check, which the next
+    round answers like any other, rather than a refused session (its branch and its work are good)."""
+    problems = [f"implementation_report.json {p}" for p in schema_problems(ctx, report, "implementation_report.schema.json")]
+    if response is not None:
+        problems += [f"review_response.json {p}" for p in schema_problems(ctx, response, "review_response.schema.json")]
+    return CheckResult("report_schema", not problems, "the report validates against its schema" + (" and so does the response" if response else "")
+                       if not problems else "; ".join(problems), {"errors": problems})
+
+
 ENVIRONMENTAL_MARKERS = ("address already in use", "eaddrinuse")
 
 
@@ -799,28 +816,18 @@ def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]]
             rows = [r for r in (e2e_results or []) if r.get("target", "preview") == target and not checks.row_passed(r)]
             repro = "; ".join(f"{r['command']} -> exit {r.get('exit_code')}: {((r.get('diagnostic') or {}).get('summary') or r.get('stderr_tail') or r.get('stdout_tail') or '')[-300:]}" for r in rows)
             environmental = is_environmental(rows)
-        fix = {"ac_test_mapping": "Map every automated acceptance criterion to a test in implementation_report.json `criteria` ([{ac_id, tests: [...]}]) using pytest node ids exactly as `pytest --collect-only -q` prints them, or Bun ids `path/x.test.ts::outer describe > test name`; the orchestrator only counts tests its own run of the test plan collected or reported and saw pass (Bun only from direct `bun test` commands).",
-               "test_plan_commands": "Make every test_plan command exit 0 from a clean checkout; if a command depends on a port or host, make it robust or pick a free port.",
-               "protected_tests": ("Existing tests are protected. An approved spec may name an existing test file by its exact path in "
-                                   "allowed_paths; that file may then be updated to test the specified behavior. "
-                                   "Globs do not authorize existing test edits. Never delete or rename an existing test file, "
-                                   "skip a test, or weaken assertions to make the change pass."),
-               SETUP_CHECK: ("The hosted verification could not run on this head; the detail says why. A failed recipe prepare phase is "
-                             "fixed in the change. A change to the recipe's trusted part (network, secrets, data, command_environment), a missing "
-                             "recipe, or test credentials that are not attached needs a person to re-approve the app's recipe: do not "
-                             "edit those to get past it.") if managed else
-                            "Make the repository installable into a fresh virtual environment: a pyproject.toml whose dependencies resolve (runtime plus a dev/test extra for the test plan), or a `runtime.setup` command in the service manifest that installs what the tests and the entrypoint need.",
-               ENVIRONMENT_CHECK: "The app did not start, its services did not answer their health paths, or the recipe's baseline check failed in the hosted sandbox (hosted_verification.json has the phases). Make the change keep the app starting and the baseline journey working; the recipe's commands and services may change with it, its trusted part may not."}.get(name, "Fix the cause named in the detail.")
+        rule = rules.rule_for_check(name)
+        fix = rules.fix_for(name, hosted=managed)
         if environmental:
             fix = ("The failure reads as environmental (a port already in use on the verification host), not as a defect in the "
                    "change: make the command bind a free port or reuse $BASE_URL instead of a fixed port, then push; the "
                    "orchestrator re-runs the check. ") + fix
         out.append({
             "finding_id": f"DET-{name}", "severity": "blocking",
-            "category": "security" if name == "secret_scan" else ("test_quality" if name in ("ac_test_mapping", "test_plan_commands", "test_weakening", "protected_tests", "e2e_coverage", "e2e_local", "e2e_preview", SETUP_CHECK, ENVIRONMENT_CHECK) else "spec_deviation"),
+            "category": rule.category if rule else "spec_deviation",
             "claim": f"Deterministic check `{name}` failed: {d.detail}",
             "evidence": {"locations": ["deterministic_checks.json:1"], **({"reproduction": repro} if repro else {}), "observed": d.detail},
-            "violates": [f"orchestrator check {name} (cannot be overridden by any judge)"],
+            "violates": [f"rule {rule.id if rule else name}: orchestrator check {name} (cannot be overridden by any judge)"],
             "refutation_condition": f"`{name}` passes on the orchestrator's next verification of the pushed head",
             "status": "open",
             "suggested_fix": fix,
