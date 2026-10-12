@@ -10,6 +10,7 @@ import sys
 import tarfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from test_hosted_verification import (
@@ -27,7 +28,7 @@ from test_hosted_verification import (
 
 from factory import checks
 from factory.sandbox_tools import environment_runner as er
-from factory.stages.implement import LocalVerifier, run_implement_one, standing_findings
+from factory.stages.implement import LocalVerifier, latest_journeys, run_implement_one, standing_findings
 
 SCRIPTED = Path(__file__).parent / "support" / "scripted_browser.py"
 JOURNEY = {"version": 1, "name": "greet", "input": "pointer", "steps": [
@@ -67,9 +68,9 @@ def sandbox(kw, scratch: Path):
 
 
 class JourneyDriver(Driver):
-    def __init__(self, *a, journey=JOURNEY, findings=None, **kw):
+    def __init__(self, *a, journey=JOURNEY, journey_filename="journeys/greet.json", findings=None, **kw):
         super().__init__(*a, **kw)
-        self.journey, self.findings = journey, findings
+        self.journey, self.journey_filename, self.findings = journey, journey_filename, findings
 
     def run(self, **kw):
         self.calls.append(kw)
@@ -79,7 +80,7 @@ class JourneyDriver(Driver):
             push(self.origin, self.scratch, f"factory/{RUN_ID}/spec_hosted", self.change_files, len(self.calls))
             outputs = {"implementation_report.json": json.dumps(REPORT).encode()}
             if self.journey is not None:
-                outputs["journeys/greet.json"] = json.dumps(self.journey).encode()
+                outputs[self.journey_filename] = json.dumps(self.journey).encode()
             if "findings.json" in kw["uploads"]:
                 answered = json.loads(kw["uploads"]["findings.json"])["findings"]
                 outputs["review_response.json"] = json.dumps({"responses": [{"finding_id": f["finding_id"], "disposition": "fixed",
@@ -100,8 +101,10 @@ def _loop(tmp_path, root, **driver_kw):
     return ctx, driver, verdict
 
 
-def test_a_ui_change_is_proved_by_the_factory_runner_and_adds_no_browser_test_files(tmp_path, root):
-    ctx, driver, verdict = _loop(tmp_path, root)
+@pytest.mark.parametrize("journey_filename", ["journeys/greet.json", "greet.json"])
+def test_a_ui_change_is_proved_by_the_factory_runner_and_adds_no_browser_test_files(tmp_path, root, journey_filename):
+    # The live provider lists a nested output using only its basename. Both shapes must reach the hosted runner.
+    ctx, driver, verdict = _loop(tmp_path, root, journey_filename=journey_filename)
     assert verdict["result"] == "ready"
     verify = next(kw for kw in driver.calls if kw.get("stage") == "verify")
     assert {"tools/browser_runner.py", "journeys/greet.json"} <= set(verify["uploads"])
@@ -137,6 +140,31 @@ def test_a_missing_or_malformed_journey_blocks_the_entry_before_any_browser_runs
     ctx, _, _ = _loop(tmp_path / "b", root, journey=bad)
     summary = artifact(ctx, "implement", "spec_hosted-r1-test_results.json")["e2e"][0]["visual"]["summary"]
     assert "not a runnable journey" in summary and "1 steps but the spec's visual contract has 2" in summary
+
+
+def test_journey_recovery_uses_latest_round_across_flat_and_nested_outputs(tmp_path):
+    ctx = SimpleNamespace(cfg=SimpleNamespace(runs_dir=tmp_path), run_id=RUN_ID)
+    directory = tmp_path / RUN_ID / "artifacts" / "implement"
+    directory.mkdir(parents=True)
+    (directory / "spec_hosted-r1-journeys").mkdir()
+    (directory / "spec_hosted-r1-journeys/greet.json").write_bytes(b"old nested journey")
+    (directory / "spec_hosted-r2-greet.json").write_bytes(b"new flat journey")
+    (directory / "spec_hosted-r9-implementation_report.json").write_bytes(b"unrelated report")
+    (directory / "other_spec-r9-greet.json").write_bytes(b"another spec")
+    assert latest_journeys(ctx, "spec_hosted", spec("factory:journey greet")) == {"greet": b"new flat journey"}
+    (directory / "spec_hosted-r3-journeys").mkdir()
+    (directory / "spec_hosted-r3-journeys/greet.json").write_bytes(b"newest nested journey")
+    assert latest_journeys(ctx, "spec_hosted", spec("factory:journey greet")) == {"greet": b"newest nested journey"}
+
+
+def test_conflicting_flat_and_nested_journeys_cannot_silently_choose_different_evidence(tmp_path):
+    ctx = SimpleNamespace(cfg=SimpleNamespace(runs_dir=tmp_path), run_id=RUN_ID)
+    directory = tmp_path / RUN_ID / "artifacts" / "implement"
+    (directory / "spec_hosted-r1-journeys").mkdir(parents=True)
+    (directory / "spec_hosted-r1-journeys/greet.json").write_bytes(b"nested journey")
+    (directory / "spec_hosted-r1-greet.json").write_bytes(b"different flat journey")
+    with pytest.raises(ValueError, match="conflicting journey outputs for greet"):
+        latest_journeys(ctx, "spec_hosted", spec("factory:journey greet"))
 
 
 def test_the_harness_refuses_a_journey_that_differs_from_the_one_bound(tmp_path):
