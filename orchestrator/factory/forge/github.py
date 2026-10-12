@@ -1,7 +1,7 @@
 """GitHub forge (orchestrator side). The default `Forge` implementation.
 
 REST calls only, through httpx, against api.github.com (or `<FORGE_URL>/api/v3` for GitHub
-Enterprise Server). Pull requests, labels, and comments come from the Pulls and Issues APIs;
+Enterprise Server). Pull requests and labels come from the Pulls and Issues APIs;
 multi-file commits use the Git Data API (blobs, trees, commits, refs) so one commit carries every
 file; pipelines are GitHub Actions workflow runs; preview and dev URLs come from the Deployments
 API (`environment_url` on the latest deployment status).

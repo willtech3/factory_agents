@@ -2,7 +2,7 @@
 
 This is the first real run. It uses the defaults the orchestrator now has: GitHub as the forge ([ADR-0008](adr/0008-pluggable-forge-github-default.md)) and Linear as the gate surface ([ADR-0007](adr/0007-pluggable-gate-surfaces.md)). The platform and GitHub paths have run live (2026-10-10, see the [post-mortem](postmortems/2026-10-10-first-live-runs.md)); those runs decided gates in the Console (`FACTORY_GATE_SURFACE=web`), so the Linear surface has not been confirmed live. Expect field-name surprises in `surfaces/tracker.py` and fix them as you go.
 
-What you need: an Anthropic Console account with Managed Agents access, a personal GitHub account, a personal Linear workspace (free tier is fine), Python 3.11+, git, and the `ant` CLI (`brew install anthropics/tap/ant`; version 1.30 or later for `ant apply`).
+What you need: an Anthropic Console account with Managed Agents access, a personal GitHub account, a personal Linear workspace (free tier is fine), Python 3.12+, git, and the `ant` CLI (`brew install anthropics/tap/ant`; version 1.30 or later for `ant apply`).
 
 ## 0. The quickest real test: a design run
 
@@ -22,7 +22,7 @@ ant apply --yes agents environments              # writes claude-lock.json (alre
 
 The outcome's repository does not have to exist. Mark it `"create": true` in the outcome (or tick "Create this repository if it does not exist" on the Console's outcome form) and name the URL you want, such as `https://github.com/<you>/new-service`. Before the run starts, the orchestrator creates it on the code host (private unless `visibility: public`, initialised with a README) and commits the preview workflow template, then records `repository.created` on the run. The token needs repository administration rights for that one call (fine-grained: Administration read/write; classic: `repo`). The decomposer is told the repository is empty and makes the first work item the project skeleton: build and test commands, the service manifest at the contract's path, the preview workflow; everything else depends on it. `FORGE_REPO` can be left unset: it is taken from the outcome's URL, and must match it when set.
 
-The factory seeds `.claude/skills/platform-contract/SKILL.md` (from `skills/platform-contract/`, so the agents know what this platform provides and requires) into every repository whose default branch lacks it, created or existing, and also uploads it into every session as `skills/platform-contract/SKILL.md`. A repository it creates also gets `.github/workflows/preview.yml`. The workflow needs a token with the `workflow` scope (`gh auth refresh -s workflow`); without it the run logs the refusal and continues, which is fine with `FACTORY_PREVIEW=local`.
+The factory seeds `.claude/skills/platform-contract/SKILL.md` (from `skills/platform-contract/`, so the agents know what this platform provides and requires) into a repository it creates, and uploads it into every session as `skills/platform-contract/SKILL.md`. A repository it creates also gets `.github/workflows/preview.yml`. The workflow needs a token with the `workflow` scope (`gh auth refresh -s workflow`); without it the run logs the refusal and continues, which is fine with `FACTORY_PREVIEW=local`.
 
 ## 2. A small target repository
 

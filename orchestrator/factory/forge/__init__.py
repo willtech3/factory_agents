@@ -2,7 +2,7 @@
 
 A *change request* (CR) is a GitHub pull request or a GitLab merge request. The orchestrator
 only ever needs the small slice of forge behaviour listed on the `Forge` protocol: commits for seeding a
-repository, change requests for Gate 3, labels and comments on them, and read-only pipeline/deployment
+repository, change requests for Gate 3 and labels on them, and read-only pipeline/deployment
 lookups for preview and dev URLs. Nothing is committed and no change request is opened before Gate 3
 (ADR-0011). Everything forge-specific lives in `forge/github.py` and `forge/gitlab.py`.
 

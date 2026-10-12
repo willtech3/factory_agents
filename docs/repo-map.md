@@ -142,7 +142,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 | Module | Role |
 |---|---|
 | `forge/__init__.py` | The `Forge` protocol, `make_forge`, and `ensure_repository` (creates and seeds a new repository) |
-| `forge/github.py` | GitHub REST: branches, multi-file commits, PRs, labels, comments, Actions runs, Deployments |
+| `forge/github.py` | GitHub REST: branches, multi-file commits, PRs, labels, Actions runs, Deployments |
 | `forge/gitlab.py` | GitLab REST, the second forge |
 | `surfaces/filequeue.py` | The `file`/`web` gate surface: JSON files under `runs/_queue/` shared by the run process, `factory decide` and the Console |
 | `surfaces/artifact_pages.py` | Renders one self-contained HTML page per gate for reading |

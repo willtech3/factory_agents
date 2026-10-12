@@ -37,6 +37,7 @@ RECIPE = {"schema_version": 1, "name": "hosted-test", "runtime": "linux",
 MANIFEST = {"service": "hosted-app", "runtime": {"kind": "python", "entrypoint": "python -m app", "port": 8080},
             "health": {"path": "/health"}, "env": [], "test_environment": {"profile": "ops/recipe.json"}}
 
+# Stands in for a browser command inside the sandbox: answers the controller's request with per-step screenshots.
 SHOT = f"""import base64, json, os, pathlib
 req = json.loads(pathlib.Path(os.environ["FACTORY_VISUAL_REQUEST"]).read_text())
 out = pathlib.Path(os.environ["FACTORY_EVIDENCE_DIR"])

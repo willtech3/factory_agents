@@ -712,8 +712,8 @@ def wait_for_preview(ctx: RunContext, branch: str, head_sha: str, *, poll_second
     """Give the platform's pipeline time to deploy `head_sha` before running e2e against the preview.
 
     Bounded by `policy.preview_wait_seconds`; a preview still `pending` or `unavailable` at the deadline
-    stays that way and `e2e_preview` fails closed (not run is not passed). Polling is the source of truth;
-    a pipeline webhook can shorten the wait but is not relied on.
+    stays that way and `e2e_preview` fails closed (not run is not passed). The forge is polled; nothing
+    pushes deployment state to the controller.
     """
     import time as _t
     sleep = sleep or _t.sleep
