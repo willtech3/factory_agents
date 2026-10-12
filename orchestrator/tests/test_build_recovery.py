@@ -154,3 +154,11 @@ def test_corrective_round_can_restart_after_its_report_is_saved(tmp_path,root,mo
     ctx.store.put_artifact(tgr.RUN,'implement','spec_a-r2-review_response.json',b'{"responses":[]}')
     points=runner.resume_points(ctx,tgr.SPECS)
     assert points['spec_a'].report['head_sha']=='new'
+
+
+def test_recovery_rejects_unknown_run_before_creating_directories(tmp_path,root):
+    app=create_app(make_config(root,tmp_path/'runs')); client=TestClient(app)
+    for run_id in ('not-a-run','run_missing0001'):
+        result=client.post(f'/api/runs/{run_id}/recovery',json={'revision':'x','decision':'reject'})
+        assert result.status_code == 404
+        assert not (tmp_path/'runs'/run_id).exists()
