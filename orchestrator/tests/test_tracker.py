@@ -212,7 +212,10 @@ def test_questions_are_threaded_comments(surface, examples):
     q.ask(qu2)
     fake.human_comment(run_issue, f"{qu2.question_id}: yes, cascade")
     assert q.answer(qu2.question_id).answer.endswith("yes, cascade")
-    # notifier hooks post notes without failing
+    # notifier hooks: a change request is noted on its work item's issue, an escalation on the run issue
+    issues = q.register_work_items("run_abc1234567", examples["decomposition"])
     q.change_request_opened("run_abc1234567", "spec_smart-retries", "https://github.com/x/pull/1")
     q.escalated("run_abc1234567", "budget")
-    assert any("Escalated" in c["body"] for c in fake.comments.values())
+    notes = [(c["issueId"], c["body"]) for c in fake.comments.values() if "factory-note" in c["body"]]
+    assert [i for i, b in notes if "https://github.com/x/pull/1" in b] == [issues["wi-smart-retries"]]
+    assert [i for i, b in notes if "Escalated" in b] == [run_issue]

@@ -6,13 +6,13 @@ Console is driven through its endpoints with the child process spawn captured, a
 import json
 
 import pytest
-import test_gate_recovery as tgr
+import support.gate2 as gate2
 from conftest import make_config
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from factory import cli, runner
+from factory.errors import Refusal
 from factory.approvals import MAX_GUIDANCE_CHARS, approval_guidance, presented_specs, subset_problems
 from factory.gates import InMemoryQueue, LogNotifier
 from factory.onboarding import AppOnboarding
@@ -23,11 +23,11 @@ from factory.store import RunStore
 from factory.surfaces.filequeue import FileQueue
 from factory.web.app import create_app
 
-RUN = tgr.RUN
+RUN = gate2.RUN
 
 
 def dependent_specs():
-    a, b, c = tgr.spec("spec_a", "wi-a"), tgr.spec("spec_b", "wi-b"), tgr.spec("spec_c", "wi-a")
+    a, b, c = gate2.spec("spec_a", "wi-a"), gate2.spec("spec_b", "wi-b"), gate2.spec("spec_c", "wi-a")
     b["dependencies"] = {"specs": ["spec_a"]}                      # b needs a, presented at the same gate
     c["dependencies"] = {"specs": ["spec_b", "spec_elsewhere"]}    # c needs b; spec_elsewhere is outside this run
     return {"spec_a": a, "spec_b": b, "spec_c": c}
@@ -37,8 +37,8 @@ def dependent_specs():
 def parked(tmp_path, root, monkeypatch):
     """A run stopped idle at Gate 2 over three specs with a dependency chain a <- b <- c, and an implementation stand-in
     that records what it was handed (nothing executes)."""
-    monkeypatch.setattr(tgr, "SPECS", dependent_specs())
-    gate, shas = tgr.park(tmp_path, root, design_only=False)
+    monkeypatch.setattr(gate2, "SPECS", dependent_specs())
+    gate, shas = gate2.park(tmp_path, root, design_only=False)
     seen = {}
 
     def implement(ctx, outcome, specs, spec_md, spec_verdict, resume=None, guidance=None):
@@ -59,7 +59,7 @@ def approve(tmp_path, root, gate, decision, comments="", subset=None, *, direct=
             "artifact_shas": [a["sha256"] for a in rec["artifacts"]]}}))
     else:
         queue.record_decision(gate.gate_id, decision, "will", comments, subset)
-    ctx = tgr.context(tmp_path, root, design_only=False)
+    ctx = gate2.context(tmp_path, root, design_only=False)
     return ctx, runner.resume(ctx)
 
 
@@ -104,7 +104,7 @@ def test_the_runner_never_implements_an_invalid_selection_that_reached_the_queue
     with pytest.raises(RuntimeError, match="not dependency-valid.*spec_b depends on spec_a.*nothing was implemented"):
         approve(tmp_path, root, parked["gate"], "approve_subset", subset=["spec_b"], direct=True)
     assert parked["seen"] == {}
-    assert approved_events(tgr.context(tmp_path, root)) == []
+    assert approved_events(gate2.context(tmp_path, root)) == []
 
 
 def test_a_valid_selection_implements_only_the_selection(parked, tmp_path, root):
@@ -116,7 +116,12 @@ def test_presented_specs_are_read_back_by_the_hash_the_gate_showed(parked, tmp_p
     rec = FileQueue(tmp_path / "runs" / "_queue")._load("gates.json")[parked["gate"].gate_id]
     assert sorted(presented_specs(tmp_path / "runs", RUN, rec["artifacts"])) == ["spec_a", "spec_b", "spec_c"]
     final = tmp_path / "runs" / RUN / "artifacts" / "specify" / "final-spec_b.json"
-    final.write_text(final.read_text().replace('"spec_b"', '"spec_b" ', 1))
+    shown = final.read_text()
+    # final-* moved on to a later cycle, but the round the gate showed is still stored: it is found by its hash
+    (final.parent / "wi-b-r1-spec.json").write_text(shown)
+    final.write_text(shown.replace('"spec_b"', '"spec_b" ', 1))
+    assert presented_specs(tmp_path / "runs", RUN, rec["artifacts"])["spec_b"] == json.loads(shown)
+    (final.parent / "wi-b-r1-spec.json").unlink()
     with pytest.raises(ValueError, match="spec_b this gate presented"):
         presented_specs(tmp_path / "runs", RUN, rec["artifacts"])
 
@@ -151,19 +156,19 @@ def test_a_resumed_implementation_keeps_the_notes_and_refuses_a_changed_spec(par
     ctx.event("stage.entered", {"stage": "implementing"}, stage="implement")
     ctx.event("run.failed", {"reason": "crash", "interrupted_sessions": []})
     parked["seen"].clear()
-    runner.resume(tgr.context(tmp_path, root, design_only=False))
+    runner.resume(gate2.context(tmp_path, root, design_only=False))
     assert "pin the schema version" in parked["seen"]["guidance"]["spec_a"] and parked["seen"]["specs"] == ["spec_a"]
     ctx.event("run.failed", {"reason": "crash again", "interrupted_sessions": []})
     final = tmp_path / "runs" / RUN / "artifacts" / "specify" / "final-spec_a.json"
     final.write_text(final.read_text() + " ")
     with pytest.raises(RuntimeError, match="no longer matches the spec Gate 2 .* approved"):
-        runner.resume(tgr.context(tmp_path, root, design_only=False))
+        runner.resume(gate2.context(tmp_path, root, design_only=False))
 
 
 def test_the_implementer_receives_the_notes_as_an_upload_and_a_clause(tmp_path, root, monkeypatch):
-    from test_implement_loop import _remote
+    from support.repos import seeded_remote
 
-    origin = _remote(tmp_path)
+    origin = seeded_remote(tmp_path)
 
     class Captured(Exception):
         pass
@@ -180,7 +185,7 @@ def test_the_implementer_receives_the_notes_as_an_upload_and_a_clause(tmp_path, 
     ctx.event("artifact.produced", {"artifact_type": "decomposition", "revision": 1, "work_items": [{"work_item_id": "wi-a", "depends_on": []}]})
     for st in ("spec_drafting", "spec_judging", "spec_approved"):
         ctx.event("work_item.stage", {"stage": st}, work_item_id="wi-a")
-    spec = {**tgr.spec("spec_a", "wi-a"), "acceptance_criteria": []}
+    spec = {**gate2.spec("spec_a", "wi-a"), "acceptance_criteria": []}
     with pytest.raises(Captured):
         implement_stage.run_implement_one(ctx, spec, str(origin), "main", implement_stage.LocalVerifier(str(origin), runs / RUN / "verify"),
                                           {}, guidance="# The owner's notes\n- pin the schema version\n")
@@ -213,9 +218,9 @@ def console(tmp_path, root, monkeypatch):
     console = app.state.console
     console.outcomes_dir.mkdir(parents=True, exist_ok=True)
     (console.outcomes_dir / "out_evergreen.json").write_text(json.dumps({
-        **tgr.OUTCOME, "outcome_id": "out_evergreen", "target_repositories": [{"url": REPO, "default_branch": "main"}]}))
+        **gate2.OUTCOME, "outcome_id": "out_evergreen", "target_repositories": [{"url": REPO, "default_branch": "main"}]}))
     (console.outcomes_dir / "out_otherrepo.json").write_text(json.dumps({
-        **tgr.OUTCOME, "outcome_id": "out_otherrepo", "target_repositories": [{"url": "https://github.com/willtech3/other", "default_branch": "main"}]}))
+        **gate2.OUTCOME, "outcome_id": "out_otherrepo", "target_repositories": [{"url": "https://github.com/willtech3/other", "default_branch": "main"}]}))
     return {"client": TestClient(app), "spawned": spawned, "cfg": cfg}
 
 
@@ -282,7 +287,7 @@ def test_the_cli_binds_the_same_way_and_refuses_an_explicit_local_preview(tmp_pa
     with pytest.raises(cli.typer.Exit):
         cli._bind_onboarded_app(cfg, outcome, explicit_preview="local")
     assert cli._bind_onboarded_app(cfg, {"target_repositories": [{"url": "https://github.com/x/y"}]}, None) is cfg
-    monkeypatch.setattr(AppOnboarding, "binding_for", lambda self, target, app_id=None: (_ for _ in ()).throw(HTTPException(409, "several apps")))
+    monkeypatch.setattr(AppOnboarding, "binding_for", lambda self, target, app_id=None: (_ for _ in ()).throw(Refusal(409, "several apps")))
     with pytest.raises(cli.typer.Exit):
         cli._bind_onboarded_app(cfg, outcome, explicit_preview=None)
 
@@ -296,7 +301,7 @@ def test_notes_for_unselected_contracts_do_not_become_general_guidance():
 
 def test_recording_approval_refuses_bytes_changed_since_the_gate(parked, tmp_path, root):
     from factory.gates import Decision, GateDecision
-    ctx = tgr.context(tmp_path, root, design_only=False)
+    ctx = gate2.context(tmp_path, root, design_only=False)
     gate = parked["gate"]
     d = GateDecision(gate_id=gate.gate_id, decision=Decision.APPROVE, decided_by="owner",
                      artifact_shas=tuple(parked["shas"].values()))

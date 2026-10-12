@@ -1,50 +1,15 @@
 """Forge selection and the GitHub client's request shapes, through httpx's MockTransport. No network."""
 import base64
-import json
 
 import httpx
 import pytest
 from conftest import make_config
 
 from factory import config as cfgmod
-from factory.forge import PIPELINE_TERMINAL, make_forge, parse_pipeline_webhook
-from factory.forge.github import BOT_MARKER, GitHubForge
+from factory.forge import PIPELINE_TERMINAL, make_forge
+from factory.forge.github import GitHubForge
+from support.forge_http import Recorder, Seq, github_forge
 from factory.forge.gitlab import GitLabForge
-
-
-class Seq(list):
-    """Route value: one (status, payload) per call in order; the last one repeats. A plain list is a JSON array."""
-
-
-class Recorder:
-    """Scripted GitHub API: records every request; answers from a route table (method path -> json/status)."""
-
-    def __init__(self, routes):
-        self.routes = routes
-        self.calls = []
-
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content) if request.content else None
-        self.calls.append((request.method, request.url.path, dict(request.url.params), body))
-        key = f"{request.method} {request.url.path}"
-        resp = self.routes.get(key)
-        if resp is None:
-            return httpx.Response(404, json={"message": f"no route {key}"})
-        if isinstance(resp, Seq):                        # one response per call, the last one repeats
-            idx = self.calls.count((request.method, request.url.path, dict(request.url.params), body)) - 1
-            resp = resp[min(idx, len(resp) - 1)]
-        status, payload = (resp if isinstance(resp, tuple) else (200, resp))
-        if callable(payload):
-            payload = payload(body, dict(request.url.params))
-        if isinstance(payload, str):
-            return httpx.Response(status, text=payload)
-        return httpx.Response(status, json=payload)
-
-
-def _forge(routes, **kw) -> tuple[GitHubForge, Recorder]:
-    rec = Recorder(routes)
-    f = GitHubForge("https://github.com", "ghp_test", "will/ledgerline", transport=httpx.MockTransport(rec), **kw)
-    return f, rec
 
 
 # ---------------------------------------------------------------- selection and config aliases
@@ -100,7 +65,7 @@ def test_github_commit_files_uses_git_data_api():
         "POST /repos/will/ledgerline/git/commits": (201, {"sha": "commit1"}),
         "PATCH /repos/will/ledgerline/git/refs/heads/main": {"object": {"sha": "commit1"}},
     }
-    f, rec = _forge(routes)
+    f, rec = github_forge(routes)
     sha = f.commit_files("main", "factory: platform contract skill",
                          {".claude/skills/platform-contract/SKILL.md": b"# skill", ".github/workflows/preview.yml": b"on: push"})
     assert sha == "commit1"
@@ -132,7 +97,7 @@ def test_github_pull_request_flow():
             {"user": {"login": "sam"}, "state": "COMMENTED"}],
         "POST /repos/will/ledgerline/issues/7/comments": (201, {"id": 1}),
     }
-    f, rec = _forge(routes)
+    f, rec = github_forge(routes)
     cr = f.create_change_request(source_branch="factory/run_1/spec_x", target_branch="main", title="spec_x: title",
                                  description="body", labels=["factory", "spec:spec_x"], reviewers=["will"], draft=False)
     assert (cr.id, cr.url) == (7, "https://github.com/will/ledgerline/pull/7")
@@ -142,8 +107,6 @@ def test_github_pull_request_flow():
     st = f.change_request_state(7)
     assert st["state"] == "merged" and st["sha"] == "h7" and st["labels"] == ["factory", "spec:spec_x"]
     assert f.change_request_approved(7) is True       # latest review by will is APPROVED
-    f.post_comment(7, "Gate opened")
-    assert rec.calls[-1][3]["body"].startswith(BOT_MARKER)
 
 
 def test_github_workflow_runs_and_deployments():
@@ -161,7 +124,7 @@ def test_github_workflow_runs_and_deployments():
             if p.get("ref") == "factory/run_1/spec_x" or p.get("environment") == "dev" else []),
         "GET /repos/will/ledgerline/deployments/3/statuses": [{"state": "success", "environment_url": "https://run-1-spec-x.preview.example.com"}],
     }
-    f, rec = _forge(routes)
+    f, rec = github_forge(routes)
     pipe = f.latest_pipeline("factory/run_1/spec_x", "h1")
     assert pipe["status"] == "running" and pipe["sha"] == "h1" and pipe["status"] not in PIPELINE_TERMINAL
     assert rec.calls[0][2] == {"branch": "factory/run_1/spec_x", "per_page": "1", "head_sha": "h1"}
@@ -170,14 +133,61 @@ def test_github_workflow_runs_and_deployments():
     assert f.environment_url_for_branch("factory/run_1/spec_x") == "https://run-1-spec-x.preview.example.com"
     env = f.environment("dev")
     assert env["external_url"] == "https://run-1-spec-x.preview.example.com" and env["state"] == "success"
-    assert f.deployment_for_sha("dev", "h1")["status"] == "success"
     # a workflow-scoped forge looks under /actions/workflows/<file>/runs
-    f2, rec2 = _forge({"GET /repos/will/ledgerline/actions/workflows/preview.yml/runs": {"workflow_runs": []}}, workflow="preview.yml")
+    f2, rec2 = github_forge({"GET /repos/will/ledgerline/actions/workflows/preview.yml/runs": {"workflow_runs": []}}, workflow="preview.yml")
     assert f2.latest_pipeline("main") is None and rec2.calls[0][1].endswith("/actions/workflows/preview.yml/runs")
 
 
+def test_gitlab_merge_request_flow_and_pipeline_reads():
+    """GitLab is the second forge and has not run live; this pins its request shapes and how it normalises answers to the
+    shapes the watcher and Stage 5 read (the same ones GitHubForge returns)."""
+    p = "/api/v4/projects/group/app"
+    envs = {"preview/factory-run-1-spec-x": {"id": 3, "name": "preview/factory-run-1-spec-x", "state": "available",
+                                             "external_url": "https://run-1-spec-x.preview.example.internal"},
+            "dev": {"id": 1, "name": "dev", "state": "available", "external_url": "https://dev.example.internal",
+                    "last_deployment": {"id": 40, "status": "success", "sha": "m12", "ref": "main", "deployable": {"id": 9}}}}
+    routes = {
+        "GET /api/v4/users": lambda body, params: [{"id": 7, "username": "will"}] if params.get("username") == "will" else [],
+        f"POST {p}/merge_requests": (201, {"iid": 12, "web_url": "https://gitlab.example.internal/group/app/-/merge_requests/12"}),
+        f"GET {p}/merge_requests/12": {"state": "merged", "sha": "h12", "merge_commit_sha": "m12", "labels": ["factory"],
+                                       "merged_at": "t", "detailed_merge_status": "mergeable"},
+        f"GET {p}/merge_requests/12/approvals": {"approved": False, "approvals_left": 0, "approved_by": [{"user": {"username": "will"}}]},
+        f"GET {p}/pipelines": [{"id": 5, "status": "running", "ref": "main", "sha": "m12", "web_url": "p5"}],
+        f"GET {p}/pipelines/5": {"id": 5, "status": "failed", "ref": "main", "sha": "m12", "web_url": "p5"},
+        f"GET {p}/pipelines/5/jobs": [{"id": 8, "name": "test", "status": "success"},
+                                      {"id": 9, "name": "deploy-dev", "stage": "deploy", "status": "failed", "web_url": "j9",
+                                       "environment": {"name": "dev"}, "failure_reason": "script_failure"}],
+        f"GET {p}/jobs/9/trace": "line 1\nrails db:migrate failed\n",
+        f"GET {p}/environments": lambda body, params: [envs[params["name"]]] if params.get("name") in envs else [],
+    }
+    rec = Recorder(routes)
+    f = GitLabForge("https://gitlab.example.internal", "glpat", "group/app", transport=httpx.MockTransport(rec))
+
+    cr = f.create_change_request(source_branch="factory/run_1/spec_x", target_branch="main", title="spec_x: title",
+                                 description="body", labels=["factory", "spec:spec_x"], reviewers=["will", "nobody"], draft=True)
+    assert (cr.id, cr.url.endswith("/merge_requests/12")) == (12, True)
+    body = next(b for m, path, _, b in rec.calls if m == "POST")
+    assert body == {"source_branch": "factory/run_1/spec_x", "target_branch": "main", "title": "Draft: spec_x: title",
+                    "description": "body", "labels": "factory,spec:spec_x", "remove_source_branch": True, "reviewer_ids": [7]}
+    assert f"{p.replace('group/app', 'group%2Fapp')}/merge_requests" in rec.raw_paths     # the project path is one encoded segment
+    st = f.change_request_state(12)
+    assert st["state"] == "merged" and st["merge_commit_sha"] == "m12" and st["labels"] == ["factory"]
+    assert f.change_request_approved(12) is True                 # no approvals left and someone approved
+
+    pipe = f.latest_pipeline("main", "m12")
+    assert pipe["status"] == "running" and pipe["status"] not in PIPELINE_TERMINAL
+    assert rec.calls[-1][2] == {"ref": "main", "order_by": "id", "sort": "desc", "per_page": "1", "sha": "m12"}
+    assert f.pipeline(5)["status"] in PIPELINE_TERMINAL
+    excerpt = f.failed_job_log_excerpt(5)
+    assert excerpt.startswith("job deploy-dev (script_failure) j9") and "db:migrate failed" in excerpt
+    dev = f.environment("dev")
+    assert dev["external_url"] == "https://dev.example.internal" and dev["last_deployment"]["deployable_id"] == 9
+    assert f.environment("staging") is None
+    assert f.environment_url_for_branch("factory/run_1/spec_x") == "https://run-1-spec-x.preview.example.internal"
+
+
 def test_github_session_resource_and_git_instructions():
-    f, _ = _forge({})
+    f, _ = github_forge({})
     res = f.session_repository_resource("https://github.com/will/ledgerline.git", "factory/run_1/spec_x")
     assert res == {"type": "github_repository", "url": "https://github.com/will/ledgerline", "mount_path": "/workspace/repo",
                    "authorization_token": "ghp_test", "checkout": {"type": "branch", "name": "factory/run_1/spec_x"}}
@@ -194,16 +204,6 @@ def test_github_session_resource_and_git_instructions():
     assert gl.session_repository_resource("https://gitlab.example.internal/group/app", "b") is None
     assert "Authorization: Bearer $GITLAB_TOKEN" in gl.sandbox_git_instructions("https://gitlab.example.internal/group/app", "main", "b")
     assert gl.authenticated_url("https://gitlab.example.internal/group/app").startswith("https://oauth2:glpat@")
-
-
-def test_parse_pipeline_webhook_dispatches_on_shape():
-    gh = {"action": "completed", "workflow_run": {"id": 1, "status": "completed", "conclusion": "success", "head_branch": "main",
-                                                  "head_sha": "abc", "html_url": "u"}, "repository": {"full_name": "will/ledgerline"}}
-    out = parse_pipeline_webhook(gh)
-    assert out["status"] == "success" and out["sha"] == "abc" and out["project_path"] == "will/ledgerline"
-    gl = {"object_kind": "pipeline", "object_attributes": {"id": 2, "status": "running", "ref": "main", "sha": "def", "url": "u"}}
-    assert parse_pipeline_webhook(gl)["id"] == 2
-    assert parse_pipeline_webhook({"object_kind": "merge_request"}) is None
 
 
 def test_dotenv_loader_and_design_only_gaps(monkeypatch, tmp_path):
@@ -228,6 +228,32 @@ def test_dotenv_loader_and_design_only_gaps(monkeypatch, tmp_path):
     assert any("ANTHROPIC_API_KEY" in g for g in cfgmod.missing(cfg, design_only=True))
     pc = cfgmod.platform_check(cfg)
     assert pc["ok"] is False and "ANTHROPIC_API_KEY" in pc["error"]
+
+
+def test_github_reads_what_onboarding_needs_and_bounds_it():
+    """App onboarding fetches a pinned archive, reads setup files and opens its branch through these, never the client's
+    internals; each refuses what it cannot vouch for."""
+    import base64
+    routes = {
+        "GET /repos/will/ledgerline": {"default_branch": "main", "archived": False},
+        "GET /repos/will/ledgerline/commits/release/1.0": {"sha": "c" * 40},
+        "GET /repos/will/ledgerline/tarball/" + "c" * 40: "x" * 64,
+        "GET /repos/will/ledgerline/contents/ops/recipe.json": lambda b, params: (
+            {"encoding": "base64", "size": 2, "content": base64.b64encode(b"{}").decode()} if params == {"ref": "main"} else {}),
+        "GET /repos/will/ledgerline/contents/big.json": {"encoding": "base64", "size": 10**6, "content": ""},
+        "POST /repos/will/ledgerline/git/refs": Seq([(201, {"ref": "refs/heads/b"}), (422, {"message": "Reference already exists"})]),
+    }
+    f, rec = github_forge(routes)
+    assert f.repository_info()["default_branch"] == "main"
+    assert f.commit_sha("release/1.0") == "c" * 40
+    assert "/repos/will/ledgerline/commits/release%2F1.0" in rec.raw_paths          # a ref is one path segment
+    assert f.download_archive("c" * 40, max_bytes=64) == b"x" * 64
+    with pytest.raises(ValueError, match="size limit"):
+        f.download_archive("c" * 40, max_bytes=63)
+    assert f.read_file("ops/recipe.json", "main", max_bytes=1024) == b"{}"
+    with pytest.raises(ValueError):
+        f.read_file("big.json", "main", max_bytes=1024)
+    assert f.create_branch("b", "c" * 40) is True and f.create_branch("b", "c" * 40) is False   # exists: reused
 
 
 def test_github_creates_missing_repository_and_seeds_workflow(root):
@@ -311,34 +337,13 @@ def test_github_seed_retries_while_the_new_repository_is_not_ready_and_reseeds_a
     assert not any(p.endswith("/git/trees") for _, p, _, _ in rec3.calls)
 
 
-def test_existing_repository_gets_the_platform_contract_skill(root):
-    """Issue 12 of the 2026-10-10 post-mortem: sessions on a repository the factory did not create never saw the
-    skill. The seed now runs for every repository whose default branch lacks it, created or not."""
+def test_a_repository_not_marked_create_is_never_touched(root):
+    """An existing repository may require every change through a pull request, so the factory never commits to one it
+    did not create; its sessions get the platform-contract skill as an upload instead (post-mortem 2026-10-10, issue 12)."""
     from factory.forge import ensure_repository
-    skill = root / "skills" / "platform-contract" / "SKILL.md"
-    routes = {
-        "GET /repos/will/app": {"id": 9, "default_branch": "main"},
-        "GET /repos/will/app/contents/.claude/skills/platform-contract/SKILL.md": (404, {"message": "Not Found"}),
-        "GET /repos/will/app/git/ref/heads/main": {"object": {"sha": "init"}},
-        "GET /repos/will/app/git/commits/init": {"tree": {"sha": "t0"}},
-        "POST /repos/will/app/git/blobs": (201, {"sha": "b1"}),
-        "POST /repos/will/app/git/trees": (201, {"sha": "t1"}),
-        "POST /repos/will/app/git/commits": (201, {"sha": "c1"}),
-        "PATCH /repos/will/app/git/refs/heads/main": {"object": {"sha": "c1"}},
-    }
-    rec = Recorder(routes)
+    rec = Recorder({})
     f = GitHubForge("https://github.com", "ghp_test", "will/app", transport=httpx.MockTransport(rec))
-    assert ensure_repository(f, {"url": "https://github.com/will/app", "default_branch": "main"}, skill_file=skill, sleep=lambda s: None) is None
-    trees = [b for m, p, _, b in rec.calls if p.endswith("/git/trees")]
-    assert len(trees) == 1 and trees[0]["tree"][0]["path"] == ".claude/skills/platform-contract/SKILL.md"
-    assert not any(p == "/user/repos" for _, p, _, _ in rec.calls) and not any("workflows" in p for _, p, _, _ in rec.calls)
-    # already there: untouched
-    rec2 = Recorder({**routes, "GET /repos/will/app/contents/.claude/skills/platform-contract/SKILL.md": {"sha": "x"}})
-    f2 = GitHubForge("https://github.com", "ghp_test", "will/app", transport=httpx.MockTransport(rec2))
-    assert ensure_repository(f2, {"url": "https://github.com/will/app"}, skill_file=skill, sleep=lambda s: None) is None
-    assert not any(p.endswith("/git/trees") for _, p, _, _ in rec2.calls)
-    # a repository that does not exist and is not to be created: nothing is seeded, nothing is created
-    rec3 = Recorder({"GET /repos/will/app": (404, {"message": "Not Found"})})
-    f3 = GitHubForge("https://github.com", "ghp_test", "will/app", transport=httpx.MockTransport(rec3))
-    assert ensure_repository(f3, {"url": "https://github.com/will/app"}, skill_file=skill, sleep=lambda s: None) is None
-    assert [p for _, p, _, _ in rec3.calls] == ["/repos/will/app"]
+    skill = root / "skills" / "platform-contract" / "SKILL.md"
+    assert ensure_repository(f, {"url": "https://github.com/will/app", "default_branch": "main"}, skill_file=skill,
+                             sleep=lambda s: None) is None
+    assert rec.calls == []

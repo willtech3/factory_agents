@@ -4,7 +4,7 @@ from factory.stages.implement import merge_findings
 
 
 def test_merge_findings_dedupes_and_keeps_strictest(examples):
-    f1 = examples["findings_round1"]
+    f1 = copy.deepcopy(examples["findings_round1"])        # merge_findings renumbers in place; keep the shared fixture intact
     f2 = copy.deepcopy(f1)
     # Second pass found the same concurrency bug but rated it major, plus a new finding.
     f2["findings"][0]["severity"] = "major"

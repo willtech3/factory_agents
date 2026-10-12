@@ -21,7 +21,7 @@ def test_gate1_page_has_summary_coverage_items_questions_and_hashes(examples, tm
     for q in dec["open_questions"]:
         assert html.escape(q["question"][:40]) in page
     assert "a" * 64 in page and "b" * 64 in page and "ADR-0005" in page
-    assert "<ul><li>one</li>" in page and "<pre>\ncode\n</pre>" in page.replace("<pre>", "<pre>\n", 1) or "<pre>" in page
+    assert "<ul>\n<li>one</li>\n<li>two</li>\n</ul>" in page and "<pre>\ncode\n</pre>" in page      # the decomposition.md, rendered
     url = LocalHtmlPublisher(tmp_path).publish("run_abc1234567", "gate_1", page)
     assert url.startswith("file://") and (tmp_path / "run_abc1234567" / "pages" / "gate_1.html").read_text() == page
     assert ClaudeArtifactPublisher(tmp_path).publish("run_abc1234567", "gate_1b", page).endswith("gate_1b.html")

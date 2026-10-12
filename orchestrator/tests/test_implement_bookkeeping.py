@@ -5,9 +5,11 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
+import pytest
 from conftest import make_config
+from support.sessions import stage_result
+from support.events import assert_log_valid
 
 from factory.checks import CheckResult
 from factory.gates import InMemoryQueue, LogNotifier
@@ -102,8 +104,7 @@ class Driver:
 
     @staticmethod
     def _res(sid, agent, outputs, cost):
-        return SimpleNamespace(session_id=sid, agent_id=agent, agent_version=1, outcome_result="satisfied", outcome_iterations=1,
-                               list_cost_usd=cost, stop_reason="end_turn", events_seen=1, custom_tool_calls=[], outputs=outputs)
+        return stage_result(outputs, sid=sid, agent_id=agent, cost=cost)
 
 
 def _spec(examples):
@@ -173,7 +174,8 @@ def test_one_round_to_ready_with_every_hand_off_and_the_bookkeeping(tmp_path, ro
     assert [s["session_id"] for s in sessions] == ["sesn_implementer_1", "sesn_reviewer_1", "sesn_merge_judge_1"]
     assert all(s["duration_seconds"] is not None and s["duration"] != "n/a" and s["agent_key"] for s in sessions)
     st = ctx.store.state(RUN)                                                   # the log replays
-    assert st.work_items[WID].stage == WorkItemStage.MERGE_JUDGING and st.list_cost_usd == 3.3 + 2.6 + 0.9
+    assert st.work_items[WID].stage == WorkItemStage.MERGE_JUDGING and st.list_cost_usd == pytest.approx(3.3 + 2.6 + 0.9)
+    assert_log_valid(ctx.store, ctx.run_id, root / "schemas")        # verification.started included
 
 
 def test_a_fabricated_mapping_costs_a_round_and_the_judge_sees_round_two(tmp_path, root, examples):

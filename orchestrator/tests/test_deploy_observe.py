@@ -1,14 +1,14 @@
-"""Stage 5 without a network: a scripted pipeline source and e2e runner drive `observe_deploy`."""
+"""Stage 5 pieces without a network: a scripted pipeline source and e2e runner drive `wait_for_pipeline` and `observe_once`
+(the watcher's full Stage 5 flow is in test_watcher.py)."""
 from pathlib import Path
 
 import pytest
 
 from conftest import make_config
-from factory.gates import Decision, GateDecision, InMemoryQueue, LogNotifier
-from factory.forge import parse_pipeline_webhook
+from factory.gates import InMemoryQueue, LogNotifier
 from factory.stages import RunContext
-from factory.stages.deploy_observe import handle_pipeline_webhook, observe_deploy, wait_for_pipeline
-from factory.state import Policy, WorkItemStage
+from factory.stages.deploy_observe import observe_once, wait_for_pipeline
+from factory.state import Policy
 from factory.store import RunStore
 
 RUN = "run_deploy0001"
@@ -42,18 +42,6 @@ class ScriptedSource:
         return {"id": 1, "name": name, "external_url": self.env_url, "state": "available", "last_deployment": None}
 
 
-class AutoDecide(InMemoryQueue):
-    def __init__(self, decision: Decision, comments: str = ""):
-        super().__init__()
-        self.auto, self.comments, self.opened = decision, comments, []
-
-    def open(self, gate):
-        super().open(gate)
-        self.opened.append(gate)
-        self.decide(GateDecision(gate_id=gate.gate_id, decision=self.auto, decided_by="sam.k", comments=self.comments,
-                                 artifact_shas=tuple(a.sha256 for a in gate.artifacts)))
-
-
 def _ctx(tmp_path: Path, root: Path, queue) -> RunContext:
     cfg = make_config(root, tmp_path)
     return RunContext(cfg=cfg, store=RunStore(tmp_path), driver=None, queue=queue, notifier=LogNotifier(), forge=None,
@@ -84,95 +72,13 @@ def test_wait_for_pipeline_polls_to_terminal():
     obs = wait_for_pipeline(ScriptedSource(["running"]), "main", SHA, poll_seconds=0, timeout_seconds=10,
                             sleep=lambda s: None, clock=lambda: next(ticks))
     assert obs.status == "timed_out"
-
-
-def test_observe_deploy_happy_path(tmp_path, root, examples):
-    ctx = _ctx(tmp_path, root, AutoDecide(Decision.REJECT))
-    _seed_merged(ctx, examples)
-    spec = examples["spec_smart_retries"]
-    ran = []
-
-    def run_e2e(url, entries):
-        ran.append(url)
-        return [{"command": e["command"], "target": "preview", "exit_code": 0, "covers_ac": e["covers_ac"]} for e in entries]
-
-    stage = observe_deploy(ctx, spec, SHA, "main", ScriptedSource(["running", "success"]), run_e2e,
-                           smoke_commands=("curl -fsS $BASE_URL/up",), poll_seconds=0, sleep=lambda s: None)
-    assert stage == WorkItemStage.DEPLOYED_DEV
-    assert ran == ["https://dev.ledgerline.internal"]
-    assert [k for k in _kinds(ctx) if k.startswith(("deploy", "e2e", "gate"))] == \
-        ["deploy.started", "deploy.succeeded", "e2e.dev_passed"]
-    st = ctx.store.state(RUN).work_items["wi-smart-retries"]
-    assert st.stage == WorkItemStage.DEPLOYED_DEV and st.dev_environment_url == "https://dev.ledgerline.internal"
-    passed = next(e for e in ctx.store.events(RUN) if e.kind == "e2e.dev_passed")
-    # The spec's three preview entries plus the smoke command ran; the local entry did not.
-    assert len(passed.payload["results"]) == 4
-    assert not ctx.queue.opened  # no gate on success
-
-
-def test_pipeline_failure_opens_gate_and_routes_back_to_implementing(tmp_path, root, examples):
-    queue = AutoDecide(Decision.REQUEST_CHANGES, comments="Migration needs the pgcrypto extension; add it additively.")
-    ctx = _ctx(tmp_path, root, queue)
-    _seed_merged(ctx, examples)
-    stage = observe_deploy(ctx, examples["spec_smart_retries"], SHA, "main", ScriptedSource(["pending", "failed"]),
-                           lambda url, entries: [], poll_seconds=0, sleep=lambda s: None)
-    assert stage == WorkItemStage.IMPLEMENTING
-    assert ctx.store.state(RUN).work_items["wi-smart-retries"].stage == WorkItemStage.IMPLEMENTING
-    gate = queue.opened[0]
-    assert gate.kind.value == "deploy_failure" and "db:migrate" in gate.summary
-    assert {Decision.REQUEST_CHANGES, Decision.APPROVE, Decision.REJECT} == set(gate.options)
-    kinds = [k for k in _kinds(ctx) if k.startswith(("deploy", "e2e", "gate"))]
-    assert kinds == ["deploy.started", "deploy.failed", "gate.opened", "gate.decided"]
-    failed = next(e for e in ctx.store.events(RUN) if e.kind == "deploy.failed")
-    assert "db:migrate" in failed.payload["log_excerpt"]
-    feedback = ctx.store.get_artifact(RUN, "deploy", "spec_smart-retries-deploy_feedback.md").decode()
-    assert "pgcrypto" in feedback and "db:migrate" in feedback
-
-
-def test_dev_e2e_failure_opens_gate_and_reject_closes(tmp_path, root, examples):
-    queue = AutoDecide(Decision.REJECT)
-    ctx = _ctx(tmp_path, root, queue)
-    _seed_merged(ctx, examples)
-
-    def run_e2e(url, entries):
-        return [{"command": e["command"], "target": "preview", "exit_code": 0 if i else 1, "covers_ac": e["covers_ac"],
-                 "stderr_tail": "expected 200, got 502"} for i, e in enumerate(entries)]
-
-    stage = observe_deploy(ctx, examples["spec_smart_retries"], SHA, "main", ScriptedSource(["success"]), run_e2e,
-                           poll_seconds=0, sleep=lambda s: None)
-    assert stage == WorkItemStage.CLOSED
-    kinds = [k for k in _kinds(ctx) if k.startswith(("deploy", "e2e", "gate"))]
-    assert kinds == ["deploy.started", "deploy.succeeded", "e2e.dev_failed", "gate.opened", "gate.decided"]
-    assert "502" in queue.opened[0].summary
-
-
-def test_approve_reobserves_once_then_escalates(tmp_path, root, examples):
-    queue = AutoDecide(Decision.APPROVE)
-    ctx = _ctx(tmp_path, root, queue)
-    _seed_merged(ctx, examples)
-    src = ScriptedSource(["failed"])
-    stage = observe_deploy(ctx, examples["spec_smart_retries"], SHA, "main", src, lambda u, e: [],
-                           poll_seconds=0, sleep=lambda s: None, max_reobserve=1)
-    assert stage == WorkItemStage.ESCALATED and len(queue.opened) == 2
-    assert ctx.store.state(RUN).work_items["wi-smart-retries"].stage == WorkItemStage.ESCALATED
-
-
-def test_webhook_stub_records_deploy_started_once(tmp_path, root, examples):
-    """GitLab Pipeline Hook shape; the GitHub workflow_run shape is covered in test_forge.py."""
-    ctx = _ctx(tmp_path, root, AutoDecide(Decision.REJECT))
-    _seed_merged(ctx, examples)
-    payload = {"object_kind": "pipeline", "object_attributes": {"id": 9, "status": "running", "ref": "main", "sha": SHA,
-                                                                "url": "https://gitlab.example.internal/p/-/pipelines/9"},
-               "project": {"path_with_namespace": "ledgerline/app"},
-               "builds": [{"name": "deploy-dev", "environment": {"name": "dev"}}]}
-    assert parse_pipeline_webhook({"object_kind": "merge_request"}) is None
-    mapping = {SHA: ("wi-smart-retries", "spec_smart-retries")}
-    assert handle_pipeline_webhook(ctx, payload, mapping, "main")["environments"] == ["dev"]
-    handle_pipeline_webhook(ctx, payload, mapping, "main")
-    assert _kinds(ctx).count("deploy.started") == 1
-    assert handle_pipeline_webhook(ctx, dict(payload, object_attributes={**payload["object_attributes"], "ref": "feature"}),
-                                   mapping, "main") is None
-    assert ctx.store.state(RUN).work_items["wi-smart-retries"].dev_pipeline_id == 9
+    no_pipe = ScriptedSource(["success"])
+    no_pipe.latest_pipeline = lambda ref, sha=None: None
+    ticks = iter([0, 1, 2, 100])
+    obs = wait_for_pipeline(no_pipe, "main", SHA, poll_seconds=0, timeout_seconds=10, sleep=lambda s: None, clock=lambda: next(ticks))
+    assert obs.status == "no_pipeline"
+    obs = wait_for_pipeline(ScriptedSource(["success"], env_url=None), "main", SHA, poll_seconds=0, sleep=lambda s: None)
+    assert obs.status == "failed" and "no external_url" in obs.log_excerpt     # a deploy with nowhere to test is not a pass
 
 
 def test_wait_for_preview_polls_until_ready(tmp_path, root, examples):
@@ -189,7 +95,7 @@ def test_wait_for_preview_polls_until_ready(tmp_path, root, examples):
         def environment_url_for_branch(self, branch, prefix="preview/"):
             return "https://factory-run-x-spec.preview.example.internal" if self.n >= 3 else None
 
-    ctx = _ctx(tmp_path, root, AutoDecide(Decision.REJECT))
+    ctx = _ctx(tmp_path, root, InMemoryQueue())
     ctx.forge = FakeForge()
     info = wait_for_preview(ctx, "factory/run_x/spec_y", SHA, poll_seconds=0, sleep=lambda s: None)
     assert info["status"] == "ready" and info["url"].startswith("https://") and ctx.forge.n == 3
@@ -199,7 +105,6 @@ def test_wait_for_preview_polls_until_ready(tmp_path, root, examples):
 
 def test_managed_deploy_never_executes_local_callback(tmp_path,root,examples):
     from dataclasses import replace
-    from factory.stages.deploy_observe import observe_once
     ctx=_ctx(tmp_path,root,InMemoryQueue());ctx.cfg=replace(ctx.cfg,preview_mode='managed')
     _seed_merged(ctx,examples)
     def forbidden(*args): raise AssertionError('local app execution attempted')
@@ -211,7 +116,6 @@ def test_managed_deploy_never_executes_local_callback(tmp_path,root,examples):
 def test_deploy_preserves_hosted_mode_after_gate_recovery(tmp_path, root, examples, watcher_mode):
     """A fresh watcher must honor the hosted mode recorded by a recovered controller."""
     from dataclasses import replace
-    from factory.stages.deploy_observe import observe_once
 
     ctx = _ctx(tmp_path, root, InMemoryQueue())
     ctx.cfg = replace(ctx.cfg, preview_mode=watcher_mode)

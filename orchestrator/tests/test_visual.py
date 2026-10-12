@@ -2,7 +2,6 @@ import base64
 import json
 import subprocess
 
-import pytest
 from fastapi.testclient import TestClient
 
 from conftest import EXAMPLES, make_config
@@ -56,11 +55,23 @@ def test_missing_stale_and_failed_visual_evidence_block_pass(tmp_path):
     assert not checks.e2e_passed([row]).passed
 
 
-@pytest.mark.parametrize('name', ['../outside.png', '/tmp/outside.png', 'screen.html'])
-def test_visual_media_path_and_type_rejected(tmp_path, name):
+def test_visual_media_outside_the_evidence_directory_is_rejected(tmp_path):
     directory, request = visual.new_request(tmp_path, tmp_path, 'a' * 40, 'http://localhost:9999', entry())
-    report(directory, request, media=[{'file': name, 'role': 'screenshot'}])
-    assert visual.collect(directory, request, 0)['status'] == 'blocked'
+    (directory.parent / 'outside.png').write_bytes(PNG)              # a real image, just not in the evidence directory
+    for name in ('../outside.png', str(directory.parent / 'outside.png')):
+        report(directory, request, media=[{'file': name, 'role': 'screenshot'}])
+        assert visual.collect(directory, request, 0)['status'] == 'blocked', name
+
+
+def test_visual_media_must_be_an_image_or_video_by_suffix_and_signature(tmp_path):
+    directory, request = visual.new_request(tmp_path, tmp_path, 'a' * 40, 'http://localhost:9999', entry())
+    (directory / 'screen.html').write_text('<script>alert(1)</script>')
+    (directory / 'fake.png').write_bytes(b'<svg onload="alert(1)"></svg>')     # an image suffix, not an image
+    for name in ('screen.html', 'fake.png'):
+        report(directory, request, media=[{'file': name, 'role': 'screenshot'}])
+        assert visual.collect(directory, request, 0)['status'] == 'blocked', name
+    report(directory, request)                                         # the same report with a real PNG passes
+    assert visual.collect(directory, request, 0)['status'] == 'passed'
 
 
 def test_symlink_and_oversized_media_rejected(tmp_path, monkeypatch):

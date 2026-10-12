@@ -25,7 +25,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, SecretStr
 
@@ -35,6 +35,7 @@ from .. import checks
 from .. import config as cfgmod
 from ..budget import last_pause
 from ..config import REPO_ROOT, Config
+from ..errors import Refusal
 from ..gates import Decision, GateKind, parse_budget
 from ..state import RunStage, effective_run_events, replay
 from ..store import RunStore, run_exists
@@ -715,7 +716,7 @@ class Console:
                     from ..onboarding import AppOnboarding
                     try:
                         binding = AppOnboarding(self.cfg).run_settings(record["app_id"], target)
-                    except HTTPException as exc:
+                    except Refusal as exc:
                         if exc.status_code != 404:
                             raise
                         # The cloud session is authoritative for the references it actually used.
@@ -991,6 +992,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     from ..app_environments import AppEnvironments
     environments = AppEnvironments(cfg, onboarding)
     app.state.environments = environments
+
+    @app.exception_handler(Refusal)
+    def refused(request, exc: Refusal):                  # the controller's refusals answer like HTTPException does
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
 
     @app.get("/", include_in_schema=False)
     def index():

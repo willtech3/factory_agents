@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import make_config
+from support.sessions import stage_result
 from factory import onboarding
 from factory import sessions
 from factory import test_environments as te
@@ -77,7 +78,7 @@ def hosted(monkeypatch, tmp_path, root, report, outputs=None, recipe=RECIPE):
             request = json.loads(kw["uploads"]["environment-request.json"])
             files = {"environment-result.json": json.dumps({**request, **report}).encode()}
             files.update({k: json.dumps(v).encode() for k, v in (outputs or {}).items()})
-            return SimpleNamespace(session_id="sesn_test", list_cost_usd=0.42, stop_reason="end_turn", outputs=files)
+            return stage_result(files, sid="sesn_test", cost=0.42)
 
         def interrupt_active(self):
             return []
@@ -184,8 +185,8 @@ def test_a_failed_verification_reaches_the_person_and_the_next_discovery(monkeyp
 
         def run(self, **kw):
             sent.update(kw)
-            return SimpleNamespace(session_id="sesn_d", list_cost_usd=0.5, stop_reason="end_turn",
-                                   outputs={"onboarding-plan.json": json.dumps({k: v for k, v in plan.items() if k != "profile"}).encode()})
+            return stage_result({"onboarding-plan.json": json.dumps({k: v for k, v in plan.items() if k != "profile"}).encode()},
+                                sid="sesn_d")
 
         def interrupt_active(self):
             return []
@@ -228,8 +229,7 @@ def test_a_discovery_that_ends_without_a_plan_says_why_and_the_next_discovery_he
 
         def run(self, **kw):
             sent.append(kw)
-            return SimpleNamespace(session_id="sesn_d", list_cost_usd=0.5, stop_reason="end_turn", outputs={},
-                                   last_message="I was blocked writing start.sh.\n\nShould I finish it as described?")
+            return stage_result({}, sid="sesn_d", last_message="I was blocked writing start.sh.\n\nShould I finish it as described?")
 
         def interrupt_active(self):
             return []
@@ -267,8 +267,7 @@ def test_a_plan_without_a_recipe_stays_in_needs_input_once_its_question_is_answe
             pass
 
         def run(self, **kw):
-            return SimpleNamespace(session_id="sesn_d", list_cost_usd=0.5, stop_reason="end_turn",
-                                   outputs={"onboarding-plan.json": json.dumps(plan).encode()})
+            return stage_result({"onboarding-plan.json": json.dumps(plan).encode()}, sid="sesn_d")
 
         def interrupt_active(self):
             return []
@@ -309,7 +308,7 @@ def test_owner_feedback_is_in_the_task_not_only_in_the_request(monkeypatch, tmp_
 
         def run(self, **kw):
             sent.update(kw)
-            return SimpleNamespace(session_id="sesn_d", list_cost_usd=0.5, stop_reason="end_turn", outputs={}, last_message="")
+            return stage_result({}, sid="sesn_d", last_message="")
 
         def interrupt_active(self):
             return []

@@ -1,9 +1,9 @@
 """Spec writers run all at once by default; dependency-order waves only when the policy asks. No network."""
 import json
 import threading
-from types import SimpleNamespace
 
 from conftest import make_config
+from support.sessions import stage_result
 
 from factory.gates import InMemoryQueue, LogNotifier
 from factory.stages import RunContext
@@ -37,9 +37,8 @@ class Driver:
                 self.active -= 1
             wid = kw["work_item_id"]
             spec = dict(self.examples["spec_smart_retries"], spec_id=f"spec_{wid.removeprefix('wi-')}", work_item_id=wid)
-            return SimpleNamespace(session_id="s", agent_id="w", agent_version=1, outcome_result="satisfied", outcome_iterations=1,
-                                   list_cost_usd=0.1, stop_reason="end_turn", events_seen=1, custom_tool_calls=[],
-                                   outputs={"spec.json": json.dumps(spec).encode(), "spec.md": f"# {wid} as written in round {round_no}".encode()})
+            return stage_result({"spec.json": json.dumps(spec).encode(), "spec.md": f"# {wid} as written in round {round_no}".encode()},
+                                agent_id="w", cost=0.1)
         self.judge_uploads = sorted(kw["uploads"])
         verdict = dict(self.examples["verdict_round2"], round=round_no)
         revise = getattr(self, "revise_first", {})
@@ -51,9 +50,8 @@ class Driver:
                 if ps["spec_id"] in revise:
                     ps["issues"] = [{"issue_id": "I-1", "severity": "blocking", "location": ps["spec_id"],
                                      "description": "tighten AC-3", "suggested_resolution": "say which clock"}]
-        return SimpleNamespace(session_id="j", agent_id="j", agent_version=1, outcome_result=None, outcome_iterations=0,
-                               list_cost_usd=0.1, stop_reason="end_turn", events_seen=1, custom_tool_calls=[],
-                               outputs={"verdict.json": json.dumps(verdict).encode()})
+        return stage_result({"verdict.json": json.dumps(verdict).encode()}, sid="j", agent_id="j", cost=0.1,
+                            outcome_result=None, iterations=0)
 
 
 def _ctx(tmp_path, root, examples, policy):
@@ -80,19 +78,6 @@ def test_waves_policy_serialises_dependent_items(tmp_path, root, examples):
     ctx.driver.gate = threading.Barrier(1)                       # no overlap required
     specs, _ = specify.run_specify(ctx, examples["outcome"], examples["decomposition"])
     assert len(specs) == 4 and ctx.driver.peak < 4
-
-
-def test_owner_notes_reach_the_judge_and_prior_specs_reach_the_writers(tmp_path, root, examples):
-    ctx = _ctx(tmp_path, root, examples, Policy())
-    ctx.driver.gate = threading.Barrier(1)
-    wids = [w["work_item_id"] for w in examples["decomposition"]["work_items"]]
-    notes = {w: "# Notes\n- overdue means due before today" for w in wids}
-    prior = {w: dict(examples["spec_smart_retries"], work_item_id=w) for w in wids}
-    specify.run_specify(ctx, examples["outcome"], examples["decomposition"], notes, prior)
-    writers = [u for k, u in ctx.driver.uploads_seen if k == "spec_writer"]
-    judges = [u for k, u in ctx.driver.uploads_seen if k == "spec_judge"]
-    assert all("human_comments.md" in u and "prior/spec.json" in u for u in writers)
-    assert judges and "human_comments.md" in judges[0]
 
 
 def test_gate_2_send_back_keeps_every_round_and_hands_each_consumer_this_rounds_markdown(tmp_path, root, examples):

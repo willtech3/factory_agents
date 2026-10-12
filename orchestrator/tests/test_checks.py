@@ -22,7 +22,6 @@ def test_protected_tests_blocks_existing_test_edits():
         modified_files=["spec/models/account_spec.rb", "app/models/account.rb"],
         deleted_files=[],
         existing_test_files=["spec/models/account_spec.rb"],
-        allowed_paths=["app/models/**", "spec/models/**"],
     )
     assert not r.passed and "account_spec" in r.detail
 
@@ -51,16 +50,6 @@ def test_spec_traceability(examples):
     assert checks.spec_traceability(examples["spec_smart_retries"], examples["decomposition"]).passed
     bad = dict(examples["spec_smart_retries"], work_item_id="wi-nope")
     assert not checks.spec_traceability(bad, examples["decomposition"]).passed
-
-
-def test_ac_test_mapping(examples):
-    spec = examples["spec_smart_retries"]
-    report = {"criteria": [{"ac_id": ac["ac_id"], "tests": [f"t_{ac['ac_id']}"]} for ac in spec["acceptance_criteria"]
-                                    if ac["verification"] == "automated_test"]}
-    passing = [f"t_{ac['ac_id']}" for ac in spec["acceptance_criteria"]]
-    assert checks.ac_test_mapping(spec, report, passing).passed
-    r = checks.ac_test_mapping(spec, report, passing[:-1])  # one test missing from the passing set
-    assert not r.passed
 
 
 def test_commands_passed():
@@ -146,7 +135,11 @@ def test_ac_test_mapping_reads_the_report_shape_the_implementer_writes():
 
 
 def test_failed_deterministic_checks_become_blocking_findings(schemas_dir):
-    from factory.checks import CheckResult, schema_valid
+    import json
+
+    import jsonschema
+
+    from factory.checks import CheckResult
     from factory.stages.implement import deterministic_findings
 
     det = [CheckResult("diff_scope", True, "ok"), CheckResult("test_plan_commands", False, "failed: ['make e2e']"),
@@ -156,7 +149,8 @@ def test_failed_deterministic_checks_become_blocking_findings(schemas_dir):
     assert [f["finding_id"] for f in fs] == ["DET-test_plan_commands", "DET-ac_test_mapping"]
     assert all(f["severity"] == "blocking" and f["status"] == "open" for f in fs)
     assert "port in use" in fs[0]["evidence"]["reproduction"]
-    doc = {"review_id": "rev_x", "spec_id": "spec_x", "round": 1, "diff_ref": {"base_sha": "a", "head_sha": "b", "branch": "c"},
-           "checks_performed": [], "findings": fs, "spec_conformance": [], "produced_by": {}}
-    r = schema_valid(doc, schemas_dir / "review_findings.schema.json", schemas_dir)
-    assert r.passed or "produced_by" in r.detail, r.detail       # findings themselves must be schema-shaped
+    # They travel in findings.json beside the reviewers' findings, so each must be a valid Finding of that schema.
+    schema = json.loads((schemas_dir / "review_findings.schema.json").read_text())
+    finding = jsonschema.Draft202012Validator({**schema["$defs"]["Finding"], "$defs": schema["$defs"]})
+    for f in fs:
+        assert not [e.message for e in finding.iter_errors(f)], f
