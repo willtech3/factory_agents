@@ -503,6 +503,24 @@ def require_json(res: StageResult, name: str) -> dict[str, Any]:
         raise reject_output(res, f"session {res.session_id} wrote {name} that is not JSON: {e}") from e
 
 
+def schema_problems(ctx: RunContext, artifact: dict[str, Any], schema: str) -> list[str]:
+    """`artifact`'s schema errors, without the orchestrator's private keys, at most eight."""
+    from .. import checks
+    errors = checks.schema_errors(public(artifact), ctx.cfg.schemas_dir / schema, ctx.cfg.schemas_dir)
+    return [f"{'/'.join(str(x) for x in e.path) or '$'}: {e.message[:300]}" for e in errors[:8]]
+
+
+def require_valid(ctx: RunContext, res: StageResult, name: str, artifact: dict[str, Any], schema: str) -> dict[str, Any]:
+    """`artifact`, the session's `name` as the stage completed it, validated on receipt (rule `artifact-schema`). An
+    invalid verdict or set of findings is refused (`reject_output`): nothing the schema does not hold reaches a gate,
+    the merge judge or the change request."""
+    problems = schema_problems(ctx, artifact, schema)
+    if problems:
+        raise reject_output(res, f"session {res.session_id} wrote {name} that does not validate against {schema} "
+                                 f"(rule artifact-schema): {'; '.join(problems)}")
+    return artifact
+
+
 def make_ask_human(ctx: RunContext, role: str, poll_seconds: float = 5.0, timeout_hours: float = 48.0):
     """Custom tool handler: surface the question, block until answered, return the answer text.
 

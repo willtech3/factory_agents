@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 from conftest import make_config
+from support import artifacts
 from support.sessions import stage_result
 
 from factory import security, verification
@@ -53,7 +54,7 @@ seen = json.loads(os.environ.get("SHOT_VIEWPORT") or "null") or req["viewport"]
 VISUAL = {"persona": "Visitor", "viewport": {"width": 1024, "height": 700}, "steps": ["Open the page", "Click Show greeting"],
           "environment": {"name": "Hosted recipe", "data": "synthetic", "authentication": "none-required"}}
 
-REPORT = {"criteria": [{"ac_id": "AC-1", "tests": ["tests/test_a.py::test_a"]}], "head_commit": "x"}
+REPORT = artifacts.report("spec_hosted", [{"ac_id": "AC-1", "tests": ["tests/test_a.py::test_a"]}])
 
 RUN_ID = "run_hosted00000001"
 
@@ -159,13 +160,12 @@ class Driver:
             outputs = {"implementation_report.json": json.dumps(REPORT).encode()}
             if "findings.json" in kw["uploads"]:
                 answered = json.loads(kw["uploads"]["findings.json"])["findings"]
-                outputs["review_response.json"] = json.dumps({"responses": [{"finding_id": f["finding_id"], "disposition": "fixed",
-                                                                            "explanation": "done"} for f in answered]}).encode()
+                outputs["review_response.json"] = json.dumps(artifacts.response("spec_hosted", answered)).encode()
             return result(outputs)
         if key in ("reviewer", "security_reviewer"):
-            return result({"findings.json": json.dumps({"findings": [], "checks_performed": [], "spec_conformance": []}).encode()})
+            return result({"findings.json": json.dumps(artifacts.findings("spec_hosted")).encode()})
         if key == "merge_judge":
-            return result({"merge_readiness.json": json.dumps({"result": "ready", "summary_for_human": "fine", "criteria": []}).encode()})
+            return result({"merge_readiness.json": json.dumps(artifacts.merge_readiness(json.loads(kw["uploads"]["spec.json"]))).encode()})
         raise AssertionError(f"unexpected agent {key}")
 
 def remote(tmp_path: Path) -> Path:

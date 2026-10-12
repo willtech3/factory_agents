@@ -619,6 +619,20 @@ def export_events(run_id: str, out: Path = typer.Option(None, "--out", help="Wri
 
 
 @app.command()
+def rules(check: bool = typer.Option(False, "--check", help="Exit 1 when a generated block differs; write nothing")):
+    """Render the rule registry (factory/rules.py) into the agent prompts and the implementation rubric (ADR-0015)."""
+    from . import rules as rules_mod
+
+    if check:
+        stale = rules_mod.drift(cfgmod.REPO_ROOT)
+        for path in stale:
+            typer.echo(f"out of date: {path.relative_to(cfgmod.REPO_ROOT)} (run `factory rules`)")
+        raise typer.Exit(1 if stale else 0)
+    for path in rules_mod.write(cfgmod.REPO_ROOT):
+        typer.echo(f"rendered {path.relative_to(cfgmod.REPO_ROOT)}")
+
+
+@app.command()
 def timing(run_id: str, as_json: bool = typer.Option(False, "--json", help="The full report as JSON")):
     """Where the run's wall clock went: waiting on a person, agents (by stage), the controller, stopped."""
     from . import timing as timing_mod

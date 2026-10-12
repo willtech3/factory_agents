@@ -81,7 +81,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 
 | Module | Role |
 |---|---|
-| `cli.py` | The `factory` command: `doctor`, `run`, `gates`, `decide`, `answer`, `status`, `replay`, `timing`, `resume`, `watch`, `runs`, `web`, plus the `environment` and `browser` sub-commands |
+| `cli.py` | The `factory` command: `doctor`, `run`, `gates`, `decide`, `answer`, `status`, `replay`, `timing`, `resume`, `watch`, `runs`, `rules`, `web`, plus the `environment` and `browser` sub-commands |
 | `web/app.py` | The Factory Console: a FastAPI app with Runs, Board, Start a run, Outcomes, Apps and Settings, a JSON API, and gate review pages. It starts runs, resumes and watchers as background `factory` processes |
 | `web/static/` | The Console UI: one HTML page, vanilla JS and CSS, no build step |
 | `web/repositories.py` | Read-only GitHub repository search for the Console's repository picker |
@@ -125,6 +125,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 | `verification.py` | The one verification pipeline ([ADR-0014](adr/0014-one-verification-pipeline.md)): `verify(target, plan)` returns an `EvidenceBundle` on every target (hosted, local, platform) and `judge(bundle, spec)` returns the merge checks; also preview lookup and test evidence from reports |
 | `plans.py` | The spec's test plan as the controller runs it: structured `{runner, select}` commands and `journey` entries rendered to command text |
 | `local_verifier.py` | The controller's own verification host for the local and platform targets: a clean clone, a per-run virtualenv, each command in its own process group (`LocalVerifier`), and the service started from its manifest (`LocalPreview`) |
+| `rules.py` | The rule registry ([ADR-0015](adr/0015-rule-registry.md)): every rule's id, text, enforcement (check, judge, advice), roles, checks and fix. Renders the `## Rules` block of each agent prompt and the deterministic part of the implementation rubric (`factory rules`), and holds the judges' post-conditions |
 | `checks.py` | Deterministic checks no agent can override: schema validity, DAG, metric coverage, diff scope, protected tests, test weakening, criterion-to-test mapping, command results, manifest, visual evidence; `row_passed`, the one definition of a passing verification row |
 | `security.py` | Deterministic security pre-checks (secret scan, plus dependency audit and SAST when the tools exist) |
 | `hosted_verifier.py` | The hosted target: verifies a candidate commit in a hosted sandbox built from the app's recipe (its trusted part pinned, its runtime part verified like code) and turns the results into bundle rows |
