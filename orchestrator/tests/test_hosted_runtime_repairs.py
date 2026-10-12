@@ -233,22 +233,27 @@ def test_a_failed_or_unbound_verification_is_charged_too(tmp_path, root):
     assert not run.setup.passed and len(finished(ctx)) == 1 and ctx.store.state(hv.RUN_ID).list_cost_usd == pytest.approx(0.4)
 
 
-def test_a_session_run_session_already_charged_is_not_charged_again(tmp_path, root, monkeypatch):
-    real = common.run_session
+def test_the_run_budget_pauses_the_run_before_a_hosted_verification_starts(tmp_path, root):
+    """A hosted verification commits its cap like any session: when the run budget cannot cover it, the run pauses at its
+    budget before any sandbox session exists (budget.py), rather than spending past constraints.budget_usd."""
+    import dataclasses
 
-    def cut_off_then_accepted(ctx, **kw):           # run_session persists a cut-off result before its gate; approve keeps it
-        res = real(ctx, **kw)
-        common.record_session_finished(ctx, kw["stage"], res, spec_id=kw.get("spec_id"))
-        return res
-    monkeypatch.setattr(common, "run_session", cut_off_then_accepted)
-    _, _, ctx = hv.run_verifier(tmp_path, root, {"app/main.py": "X = 1\n"})
-    assert len(finished(ctx)) == 1
+    from factory.budget import BudgetPaused
+    from factory.hosted_verifier import HostedVerifier
+    from factory.state import RunStage
 
-
-def test_the_run_cap_counts_verification_spend(tmp_path, root):
-    _, _, ctx = hv.run_verifier(tmp_path, root, {"app/main.py": "X = 1\n"})
-    state = ctx.store.state(hv.RUN_ID)
-    assert state.sessions_finished == 1 and state.list_cost_usd > 0
+    repo, base, head = hv.candidate(tmp_path, {"app/main.py": "X = 1\n"})
+    driver = hv.Driver(tmp_path / "unused", tmp_path)
+    ctx = hv.context(tmp_path, root, driver)
+    for stage in ("decomposing", "gate_1_decomposition", "specifying", "gate_2_spec_readiness", "implementing"):
+        ctx.event("stage.entered", {"stage": stage})
+    ctx.policy = dataclasses.replace(ctx.policy, run_budget_usd=3.0)          # below the $4 hosted verification cap
+    with pytest.raises(BudgetPaused):
+        HostedVerifier(ctx, tmp_path / "verify").verify(repo, base, head, hv.spec(), branch="b", round_no=1, work_item_id="wi-hosted")
+    assert not driver.calls
+    assert ctx.store.state(hv.RUN_ID).stage == RunStage.PAUSED_BUDGET
+    paused = next(e.payload for e in ctx.store.events(hv.RUN_ID) if e.kind == "budget.reached")
+    assert paused["next"]["stage"] == "verify" and paused["next"]["cap_usd"] == 4.0
 
 
 def test_generator_of_deleted_tests_is_not_consumed_before_protection():

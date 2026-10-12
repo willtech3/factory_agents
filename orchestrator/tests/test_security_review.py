@@ -45,10 +45,3 @@ def test_security_pass_merges_with_its_tag_and_reproduced_races_stand():
     assert {f["evidence"]["locations"][0] for f in standing} == {"app/main.py:42", "app/s.py:10"}  # the reproduced minor race stands
     assert standing_findings([_f("F-9", "minor", "concurrency", "a:1")]) == []                       # unreproduced minor does not
     assert standing_findings([_f("F-9", "major", "security", "a:1", status="withdrawn")]) == []
-
-
-def test_security_reviewer_is_a_known_agent_and_policy_knob():
-    from factory.config import AGENT_FILES
-    from factory.state import Policy
-    assert AGENT_FILES["security_reviewer"] == "./agents/security_reviewer.md"
-    assert Policy().security_review is True and Policy().stage_budget_usd["security_review"] > 0

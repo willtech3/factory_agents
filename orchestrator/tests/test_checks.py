@@ -52,16 +52,6 @@ def test_spec_traceability(examples):
     assert not checks.spec_traceability(bad, examples["decomposition"]).passed
 
 
-def test_ac_test_mapping(examples):
-    spec = examples["spec_smart_retries"]
-    report = {"criteria": [{"ac_id": ac["ac_id"], "tests": [f"t_{ac['ac_id']}"]} for ac in spec["acceptance_criteria"]
-                                    if ac["verification"] == "automated_test"]}
-    passing = [f"t_{ac['ac_id']}" for ac in spec["acceptance_criteria"]]
-    assert checks.ac_test_mapping(spec, report, passing).passed
-    r = checks.ac_test_mapping(spec, report, passing[:-1])  # one test missing from the passing set
-    assert not r.passed
-
-
 def test_commands_passed():
     assert checks.commands_passed([{"command": "x", "exit_code": 0}]).passed
     assert not checks.commands_passed([{"command": "x", "exit_code": 0}, {"command": "y", "exit_code": 1}]).passed

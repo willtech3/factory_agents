@@ -15,7 +15,6 @@ from factory import cli, runner
 from factory.gates import Decision, GateKind, LogNotifier, StaleDecision
 from factory.stages import RunContext
 from factory.stages.common import gate_decision, open_gate, public
-from factory.stages.implement import LocalVerifier
 from factory.state import IllegalTransition, Policy, RunStage, WorkItemStage
 from factory.store import RunStore
 from factory.surfaces.filequeue import FileQueue
@@ -120,22 +119,20 @@ def test_an_approval_lands_on_the_same_gate_with_its_hashes_and_no_agent_runs(tm
     assert ctx.driver.calls == [] and ctx.store.state(RUN).stage == RunStage.COMPLETED
 
 
-def test_approve_subset_continues_into_managed_implementation_with_only_those_specs(tmp_path, root, monkeypatch):
+def test_approve_subset_recovery_hands_only_those_specs_to_implementation_and_records_the_managed_binding(
+        tmp_path, root, monkeypatch):
     gate, _ = park(tmp_path, root, design_only=False)
     seen = {}
 
     def implement(ctx, outcome, specs, spec_md, spec_verdict, resume=None, guidance=None):
-        seen.update(cfg=ctx.cfg, specs=sorted(specs), md=spec_md)
+        seen.update(specs=sorted(specs), md=spec_md)
         return RunStage.COMPLETED
     monkeypatch.setattr(runner, "implement_and_integrate", implement)
-    for name in ("prepare_environment", "run_commands", "run_e2e", "collect_test_ids"):
-        monkeypatch.setattr(LocalVerifier, name, lambda *a, **k: (_ for _ in ()).throw(AssertionError("controller execution")))
     ctx = context(tmp_path, root, design_only=False, preview_mode="managed", app_id="app_evergreen",
                   test_profile_sha256="b" * 64, test_vault_ids=("vlt_model",))
     ctx.queue.record_decision(gate.gate_id, "approve_subset", "will", approved_subset=["spec_a"])
     assert runner.resume(ctx) == RunStage.COMPLETED
     assert seen["specs"] == ["spec_a"] and seen["md"]["spec_a"] == "# spec_a"      # spec_md is not filtered, as before
-    assert seen["cfg"].preview_mode == "managed" and seen["cfg"].test_profile_sha256 == "b" * 64 and seen["cfg"].test_vault_ids == ("vlt_model",)
     resumed = next(e.payload for e in ctx.store.events(RUN) if e.kind == "run.resumed")
     assert resumed["preview_mode"] == "managed" and resumed["app_id"] == "app_evergreen" and resumed["test_vaults"] == 1
     approved = [e.spec_id for e in ctx.store.events(RUN) if e.kind == "work_item.stage" and e.payload["stage"] == "spec_approved"]

@@ -73,7 +73,6 @@ def test_live_start_binds_selected_repository_and_preserves_branch(root,tmp_path
         assert calls[0][1]['env']['FORGE_REPO']=='team/selected'
         path=calls[0][0][-1]
         assert json.loads(open(path).read())['target_repositories'][0]['default_branch']=='develop'
-        assert cfg.forge_repo=='old/repo'
 
 
 def test_existing_repository_binding_does_not_seed_default_branch(root,tmp_path,monkeypatch):

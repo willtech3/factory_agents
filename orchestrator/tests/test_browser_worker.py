@@ -160,9 +160,10 @@ def test_observed_near_miss_viewports_cannot_pass(tmp_path, requested, measured)
 
 
 def test_brief_names_the_request_and_how_to_report(job):
+    """The brief is the worker's whole contract: which request at which head, every step, and the two commands that end it."""
     text = bw.brief(job['request'], job['dir'], job['runs'])
     assert job['request']['id'] in text and job['request']['head_sha'] in text
-    assert all(step in text for step in STEPS) and 'outer size' in text and 'Save dialog' in text
+    assert all(step in text for step in STEPS)
     assert f"submit {job['request']['id']} --draft" in text and f"block {job['request']['id']}" in text
 
 

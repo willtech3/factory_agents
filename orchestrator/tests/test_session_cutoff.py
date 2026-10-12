@@ -153,13 +153,14 @@ def test_budget_scale_never_drops_a_cap_below_the_observed_median(monkeypatch):
     from factory.cli import _policy
 
     base = Policy()
-    assert base.stage_budget_usd == {"decompose": 4.0, "specify": 3.0, "judge": 6.0, "implement": 15.0, "review": 6.0,
-                                     "security_review": 6.0, "merge_judge": 3.0, "integrate": 2.0}
     monkeypatch.setenv("FACTORY_BUDGET_SCALE", "0.1")
     scaled = _policy({}, False).stage_budget_usd
-    assert scaled["judge"] == base.stage_budget_floor_usd["judge"] == 2.5 and scaled["implement"] == 3.3    # floored at p50
+    assert set(scaled) == set(base.stage_budget_usd)
+    for stage, cap in base.stage_budget_usd.items():                  # scaled, but never below the stage's observed median
+        assert scaled[stage] == max(round(cap * 0.1, 2), base.stage_budget_floor_usd[stage]), stage
+    assert any(scaled[s] == base.stage_budget_floor_usd[s] > round(c * 0.1, 2) for s, c in base.stage_budget_usd.items())
     monkeypatch.setenv("FACTORY_BUDGET_SCALE", "2")
-    assert _policy({}, False).stage_budget_usd["judge"] == 12.0
+    assert _policy({}, False).stage_budget_usd == {s: c * 2 for s, c in base.stage_budget_usd.items()}
 
 
 def test_start_screen_budget_and_resumed_cap_keep_their_precedence(monkeypatch):

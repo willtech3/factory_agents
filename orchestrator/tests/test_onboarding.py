@@ -79,8 +79,9 @@ def test_answers_invalidate_review_and_never_become_credentials(manager,plan):
     r=create(manager); aid=r['app_id']; plan['questions']=[{'id':'auth','prompt':'Test login?','required':True}]
     manager.update(aid,plan=plan,plan_sha256=fingerprint(plan))
     manager.answers(aid,{'auth':'Use a synthetic test identity'})
-    r=manager.get(aid)
-    assert r['plan_sha256'] is None and r['credentials']==[]
+    assert manager.get(aid)['plan_sha256'] is None
+    stored=json.loads((manager.folder(aid)/'app.json').read_text())     # get() hides undeclared credentials; read the record
+    assert stored['answers']=={'auth':'Use a synthetic test identity'} and not stored.get('credentials')
     with pytest.raises(HTTPException):
         manager.answers(aid,{'unknown':'answer'})
 

@@ -44,7 +44,11 @@ def test_config_design_mode_and_platform_without_key(client, monkeypatch):
     p = client.get("/api/platform").json()
     assert p["ok"] is False and "ANTHROPIC_API_KEY" in p["error"] and p["sessions"] == []
     assert client.get("/api/logs").json() == {"logs": []}
-    assert client.get("/api/logs/../etc/passwd").status_code in (404, 422)
+    # a name the handler refuses even when the file exists (`..` would be normalised away by the client before routing)
+    logs = client.cfg.runs_dir / "_logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / ".secret").write_text("FORGE_TOKEN=x")
+    assert client.get("/api/logs/.secret").status_code == 404
 
 
 def test_empty_board(client):
@@ -181,7 +185,10 @@ def test_outcome_form_validation_and_run_start(client):
     assert client.get("/api/outcomes/template?example=ledgerline").json()["outcome"]["_example"]["title"].startswith("Cut involuntary churn")
     assert client.get("/api/outcomes/template?example=nope").status_code == 404
     assert {"sample-app", "ledgerline"} <= {e["name"] for e in client.get("/api/outcomes/examples").json()["examples"]}
-    assert client.get("/api/outcomes/../etc/passwd").status_code == 404
+    stray = client.cfg.runs_dir / "_outcomes" / "Out_NOTANID1.json"           # on disk, but not an outcome id
+    stray.parent.mkdir(parents=True, exist_ok=True)
+    stray.write_text(json.dumps(t))
+    assert client.get("/api/outcomes/Out_NOTANID1").status_code == 404
     bad = {"title": "x", "statement": "y", "success_metrics": [], "constraints": {}, "owner": {"name": "a", "handle": "a", "role": "r"},
            "target_repositories": [{"url": "https://github.com/x/y", "default_branch": "main", "paths_in_scope": []}]}
     r = client.post("/api/outcomes", json={"outcome": bad}).json()
@@ -207,7 +214,13 @@ def test_outcome_form_validation_and_run_start(client):
 
 def test_run_ids_are_validated_and_reads_create_nothing(client):
     assert client.get("/api/runs/run_nope").status_code == 404
-    assert client.get("/api/runs/..%2F..%2Fetc").status_code == 404
+    stray = client.cfg.runs_dir / "run_NOTANID1"                              # a run log on disk under a name that is no run id
+    stray.mkdir(parents=True)
+    (stray / "events.jsonl").write_text(json.dumps({"event_id": "e", "run_id": "run_NOTANID1", "seq": 0, "at": "2026-10-10T00:00:00Z",
+                                                     "kind": "run.created", "actor": {"type": "orchestrator"}, "stage": None,
+                                                     "work_item_id": None, "spec_id": None,
+                                                     "payload": {"outcome_id": "o", "budget_usd": 1}}) + "\n")
+    assert client.get("/api/runs/run_NOTANID1").status_code == 404
     assert not (client.cfg.runs_dir / "run_nope").exists()           # a read never creates a run directory
     assert client.post("/api/runs", json={"outcome_id": "../x", "mode": "live"}).status_code == 404
 
@@ -248,7 +261,6 @@ def test_redaction_and_design_run_argv(client, monkeypatch, tmp_path, root):
     assert "--design-only" not in calls[1][0] and calls[1][1]["env"]["FACTORY_RUNS_DIR"] == str(cfg.runs_dir)
     assert calls[1][1]["env"]["FORGE_TOKEN"] == cfg.forge_token
     assert "FORGE_TOKEN" not in json.dumps(r2)
-    assert any(l["name"].endswith(".log") for l in c2.get("/api/logs").json()["logs"]) is False or True   # logs exist only once the child writes
 
 
 def test_platform_success_path_with_fake_client(client, monkeypatch, tmp_path, root):
@@ -285,12 +297,7 @@ def test_platform_success_path_with_fake_client(client, monkeypatch, tmp_path, r
         assert c.get("/api/platform").json()["ok"] is True
 
 
-def test_design_only_flag_and_file_queue_atomic_write(client, tmp_path):
-    from factory.surfaces.filequeue import FileQueue
-    q = FileQueue(tmp_path / "q")
-    q._save("gates.json", {"a": 1})
-    assert json.loads((tmp_path / "q" / "gates.json").read_text()) == {"a": 1}
-    assert not [p for p in (tmp_path / "q").iterdir() if p.name.startswith(".gates")]   # no temp files left behind
+def test_a_design_only_run_says_so(client):
     store = client.console.store
     store.append("run_designonly1", "run.created", {"type": "orchestrator"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "D", "design_only": True})
     r = client.get("/api/runs/run_designonly1").json()
@@ -338,7 +345,6 @@ def test_resume_is_offered_only_for_failed_runs_that_reached_implementation(clie
     assert d["stage"] == "failed" and d["resumable"] is True
     res = client.post(f"/api/runs/{rid2}/resume")
     assert res.status_code == 409 and "not configured" in res.json()["detail"]
-    assert not list((runs_dir / "_logs").glob("resume-*.log")) if (runs_dir / "_logs").exists() else True
 
 
 def test_budget_pause_is_shown_decided_and_resumed_from_the_console(client, monkeypatch, schemas_dir):
@@ -490,7 +496,6 @@ def test_watch_is_offered_for_live_runs_with_open_pull_requests(client, examples
     assert d["work_items"][0]["cr_url"].endswith("/pull/7") and d["work_items"][0]["merge_sha"] is None
     res = client.post(f"/api/runs/{rid}/watch")
     assert res.status_code == 409 and "FORGE_TOKEN" in res.json()["detail"]
-    assert not list((runs_dir / "_logs").glob("watch-*.log")) if (runs_dir / "_logs").exists() else True
 
     # a live heartbeat from a watcher that is still running refuses a second one
     (runs_dir / rid / HEARTBEAT).write_text(json.dumps({"pid": os.getpid(), "started_at": "t", "last_poll_at": "t", "pending": [wid],

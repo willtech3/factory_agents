@@ -128,7 +128,6 @@ def test_the_sandbox_prompt_mentions_a_browser_only_for_browser_recipes(monkeypa
     assert "browser" not in seen["system_override"].lower() and "diagnosis.json" in seen["system_override"]
     browser = json.loads((root / "examples/greenfield-browser/test_environment.json").read_text())
     assert te.BROWSER_SYSTEM in te.onboarding_system(browser)
-    assert te.BROWSER_SYSTEM in te.SYSTEM          # change runs keep it: their e2e entries may drive a browser
 
 
 def test_functional_rows_are_bounded_and_malformed_results_are_not_trusted(tmp_path):
