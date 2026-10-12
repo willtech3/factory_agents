@@ -185,6 +185,21 @@ def test_a_re_judgement_gets_what_changed_and_re_scores_only_that(tmp_path, root
     assert diff.startswith("--- previous/spec_dunning-emails.json") and '"revision": 2' in diff
 
 
+def test_a_user_visible_criterion_without_an_e2e_entry_is_sent_back_before_gate_2(tmp_path, root, examples):
+    """e2e_coverage is a property of the spec: checked only at merge, an approved spec missing an entry failed a check
+    no implementer round could fix."""
+    import copy
+    uncovered = copy.deepcopy(examples)
+    uncovered["spec_smart_retries"]["test_plan"]["e2e"] = [e for e in uncovered["spec_smart_retries"]["test_plan"]["e2e"]
+                                                           if "AC-8" not in e["covers_ac"]]
+    ctx = _ctx(tmp_path, root, uncovered, Policy(spec_judge_max_rounds=1))
+    ctx.driver.gate = threading.Barrier(1)
+    _, verdict = specify.run_specify(ctx, examples["outcome"], examples["decomposition"])
+    assert verdict["overall"]["result"] == "revise"
+    issues = [i for ps in verdict["per_spec"] for i in ps["issues"] if i["issue_id"] == "DET-e2e_coverage"]
+    assert issues and all(i["severity"] == "blocking" and "AC-8" in i["description"] for i in issues)
+
+
 def test_spec_changes_lists_changed_and_unchanged_specs_and_skips_new_ones():
     previous = {"spec_a": {"spec_id": "spec_a", "goal": "x", "_markdown": "old"}, "spec_b": {"spec_id": "spec_b", "goal": "y"}}
     current = {"spec_a": {"spec_id": "spec_a", "goal": "x", "_markdown": "new prose only"},

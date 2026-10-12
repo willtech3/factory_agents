@@ -257,6 +257,7 @@ def test_managed_round_runs_everything_in_the_sandbox_and_passes_on_bound_eviden
     env = results["environment"]
     assert env["mode"] == "managed" and env["host"] == "anthropic-cloud" and env["app_id"] == "app_test" and env["bound"]
     assert env["profile_path"] == "ops/recipe.json" and env["profile_sha256"] == te.fingerprint(RECIPE)
+    assert env["session_model"] == {"id": "claude-haiku-5-5", "effort": "low"}       # recorded with the evidence it produced
     assert results["commands"][0]["exit_code"] == 0 and results["commands"][0]["location"] == "hosted-sandbox"
     assert results["commands"][0]["tests"]["passed"] == ["tests/test_a.py::test_a"]
     assert "tests/test_a.py::test_a" in results["collected_tests"]

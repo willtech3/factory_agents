@@ -155,8 +155,11 @@ class HostedVerifier:
             sandbox_entries.append({"index": index, "command": entry["command"], "target": entry["target"], "visual_request": visual_request,
                                     **({"journey": journey_ref} if journey_ref else {})})
         cap = float(self.cfg.managed_verify_budget_usd)
+        verify_model = getattr(self.cfg, "verify_model", None)
         record.update(profile_path=relative, profile_sha256=digest, approved_profile_sha256=approved,
-                      source_sha256=hashlib.sha256(source).hexdigest(), vaults_attached=len(self.cfg.test_vault_ids), cap_usd=cap)
+                      source_sha256=hashlib.sha256(source).hexdigest(), vaults_attached=len(self.cfg.test_vault_ids), cap_usd=cap,
+                      # which model drove the harness, so runs before and after a model change compare (design principle 20)
+                      session_model=dict(verify_model) if verify_model else "implementer agent")
         reserve_budget(ctx, VERIFY_STAGE, cap_usd=cap)
         client = ctx.driver.client
         # An unchanged recipe reuses the environment the app was onboarded in; a changed one is labelled with the app.
@@ -186,7 +189,7 @@ class HostedVerifier:
             rubric_md=None, max_iterations=1, budget_usd=cap, environment_id=environment_id,
             vault_ids=list(self.cfg.test_vault_ids), system_override=te.SYSTEM,
             # The session only runs the harness once: a small model at low effort, not the implementer's (Config.verify_model).
-            model_override=getattr(self.cfg, "verify_model", None),
+            model_override=verify_model,
         )
         record.update(session_id=res.session_id, cost_usd=res.list_cost_usd, stop_reason=res.stop_reason)
         try:

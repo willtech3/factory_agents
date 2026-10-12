@@ -217,7 +217,10 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
         det = {sid: [checks.schema_valid(public(s), ctx.cfg.schemas_dir / "spec.schema.json", ctx.cfg.schemas_dir),
                      checks.spec_traceability(s, decomposition),
                      checks.spec_size_estimate(s, ctx.policy.size_budget_lines),
-                     checks.criteria_describe_product(s)] for sid, s in specs.items()}
+                     checks.criteria_describe_product(s),
+                     # A property of the spec, so it is checked here, before Gate 2: at merge only, an approved spec
+                     # missing an e2e entry fails a check no implementer round can fix (design principle 21).
+                     checks.e2e_coverage(s)] for sid, s in specs.items()}
         owner_notes = "\n\n".join(f"## {w}\n{c}" for w, c in (human_comments_by_item or {}).items()) or None
         verdict = _judge(ctx, outcome, decomposition, specs, round_no, verdict, owner_notes, previous_specs=judged)
         judged = dict(specs)

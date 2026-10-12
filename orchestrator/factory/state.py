@@ -130,10 +130,12 @@ class Policy:
     reviewer_passes_followup: int = 1
     security_review: bool = True         # one security reviewer pass per round beside the general reviewers (needs the agent deployed)
     design_only: bool = False            # stop after Gate 2: real agents for decompose/specify/judge, no code stage, no forge needed
-    # Gates the owner pre-approves for this run ("gate_1", "gate_2"), FACTORY_AUTO_APPROVE. Off by default: a listed gate
-    # still opens (its page and hashes stay for audit) and is approved by "policy" only when nothing in it needs a person:
-    # Gate 1 with no blocking question, Gate 2 with a passing verdict, no blocking issue and no blocking question. Gate
-    # waits were a quarter of the first live runs' wall clock, for approvals of the defaults (post-mortem issue 20).
+    # Benchmark and evaluation runs only (FACTORY_AUTO_APPROVE; post-mortem issue 20): gates pre-approved for the run
+    # ("gate_1", "gate_2"). A listed gate still opens (page and hashes kept) and is approved by "policy" only when nothing
+    # in it needs a person: Gate 1 with no blocking question, Gate 2 with a passing verdict, no blocking issue and no
+    # blocking question. Deliberately not offered in the Console: design and contracts are where a person's review has
+    # the most leverage (design-principles.md 1, 14), and docs/roadmap.md defers automatic approval of real runs until
+    # there is gate telemetry. Every policy decision is recorded as such, which is that telemetry.
     auto_approve: tuple[str, ...] = ()
     preview_wait_seconds: int = 1800     # how long verification waits for the platform to deploy head_sha to its preview
     dev_pipeline_timeout_seconds: int = 3600  # Stage 5: how long to watch the dev pipeline before a DEPLOY_FAILURE gate
