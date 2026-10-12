@@ -823,9 +823,9 @@
   function recoveryCard(r) {
     if (r.resuming) return card("Recovery started", el("p", { role: "status" }, "Your decision is recorded. The controller is starting; this page will follow its progress."));
     const rec = r.recovery, failed = (rec.checks || []).filter(x => !x.passed);
-    const details = el("details", { class: "more" }, el("summary", null, "Judge's explanation and evidence"),
+    const details = el("details", { class: "more" }, el("summary", null, "Full explanation and evidence"),
       el("p", null, rec.summary), el("ul", null, (rec.risks || []).map(x => el("li", null, x))),
-      rec.artifact ? el("a", { href: `/api/artifacts/${r.run_id}/${rec.artifact}`, target: "_blank", rel: "noopener" }, "Open full merge decision") : null);
+      rec.artifact ? el("a", { href: `/api/artifacts/${r.run_id}/${rec.artifact}`, target: "_blank", rel: "noopener" }, "Open full report") : null);
     const labels = { hosted_environment: "Environment baseline", test_plan_commands: "Build and code checks" };
     const notes = el("textarea", { "aria-label": "Recovery instructions", placeholder: "What has been repaired, or what should the implementer change?" });
     const status = el("p", { role: "status", class: "explain" });
