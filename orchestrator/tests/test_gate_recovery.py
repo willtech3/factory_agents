@@ -317,9 +317,10 @@ def test_a_run_moved_to_managed_verification_never_resumes_without_it(tmp_path, 
 def test_a_failed_run_still_cannot_jump_to_other_stages(tmp_path, root):
     park(tmp_path, root)
     ctx = context(tmp_path, root)
-    ctx.event("run.resumed", {"stage": "specifying"})                             # only implementing or gate 2 from failed
-    with pytest.raises(IllegalTransition):
-        ctx.store.state(RUN)
+    before = ctx.store.state(RUN).last_seq
+    with pytest.raises(IllegalTransition):                                       # refused when written, so nothing is
+        ctx.event("run.resumed", {"stage": "specifying"})                         # only implementing or gate 2 from failed
+    assert ctx.store.state(RUN).last_seq == before                                # appended and the run stays readable
 
 
 def test_implementation_guard_remembers_a_hosted_upgrade(tmp_path, root):

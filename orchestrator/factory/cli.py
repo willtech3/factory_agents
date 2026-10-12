@@ -589,6 +589,21 @@ def replay(run_id: str):
                            "cost": st.list_cost_usd, "events": st.last_seq + 1}, indent=2))
 
 
+@app.command("export-events")
+def export_events(run_id: str, out: Path = typer.Option(None, "--out", help="Write here instead of standard output")):
+    """The run's event log as JSONL, one event per line in seq order (the format the eval reference runs keep)."""
+    cfg = cfgmod.load()
+    store = RunStore(cfg.runs_dir)
+    if not store.exists(run_id):
+        raise typer.BadParameter(f"no run {run_id} under {cfg.runs_dir}")
+    text = store.export_events(run_id)
+    if out is None:
+        typer.echo(text, nl=False)
+    else:
+        out.write_text(text)
+        typer.echo(f"{text.count(chr(10))} events written to {out}")
+
+
 @app.command()
 def timing(run_id: str, as_json: bool = typer.Option(False, "--json", help="The full report as JSON")):
     """Where the run's wall clock went: waiting on a person, agents (by stage), the controller, stopped."""
