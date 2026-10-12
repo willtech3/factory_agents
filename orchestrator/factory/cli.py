@@ -40,6 +40,46 @@ app.add_typer(browser_cli, name="browser")
 
 environment_cli = typer.Typer(no_args_is_help=True, help="Validate application recipes and test them in Anthropic-hosted sandboxes.")
 app.add_typer(environment_cli, name="environment")
+eval_cli = typer.Typer(no_args_is_help=True, help="Evals from recorded runs, and the receipts that gate prompt and rubric changes (ADR-0016).")
+app.add_typer(eval_cli, name="eval")
+
+
+@eval_cli.command("export")
+def eval_export(run_id: str, out: Path = typer.Option(..., "--out", help="The dataset directory to add the run's sessions to"),
+                agent: list[str] = typer.Option(None, "--agent", help="Only these roles (repeatable)")):
+    """Add a run's recorded agent sessions to an eval dataset: their inputs, outputs and what the run made of them."""
+    from . import recordings
+
+    cfg = cfgmod.load()
+    store = RunStore(cfg.runs_dir)
+    if not store.exists(run_id):
+        raise typer.BadParameter(f"no run {run_id} under {cfg.runs_dir}")
+    added = recordings.export(store, run_id, out, set(agent) if agent else None)
+    typer.echo(f"{added} recorded sessions added to {out} ({len(recordings.load(out))} in the dataset)")
+
+
+@eval_cli.command("waive")
+def eval_waive(agent: str = typer.Option(..., "--agent", help="The role whose prompt or rubric changed"),
+               reason: str = typer.Option(..., "--reason", help="Why this change needs no eval"),
+               by: str = typer.Option(None, "--by", help="Who decided (default: $USER)")):
+    """Record that a prompt or rubric change goes in without an eval, and why (evals/receipts.json)."""
+    import getpass
+
+    from . import receipts
+    if agent not in receipts.ROLE_FILES:
+        raise typer.BadParameter(f"one of {', '.join(receipts.ROLE_FILES)}")
+    receipts.record(cfgmod.REPO_ROOT, agent, "waived", reason=reason, by=by or getpass.getuser())
+    typer.echo(f"waived: {agent} ({', '.join(receipts.ROLE_FILES[agent])})")
+
+
+@eval_cli.command("gate")
+def eval_gate():
+    """Exit 1 when a prompt or rubric changed since its eval receipt (what CI runs)."""
+    from . import receipts
+    stale = receipts.stale(cfgmod.REPO_ROOT)
+    for role, files in sorted(stale.items()):
+        typer.echo(f"{role}: {', '.join(files)} changed since its eval receipt")
+    raise typer.Exit(1 if stale else 0)
 
 
 @environment_cli.command("check")
@@ -629,6 +669,26 @@ def rules(check: bool = typer.Option(False, "--check", help="Exit 1 when a gener
         raise typer.Exit(1 if stale else 0)
     for path in rules_mod.write(cfgmod.REPO_ROOT):
         typer.echo(f"rendered {path.relative_to(cfgmod.REPO_ROOT)}")
+
+
+@app.command()
+def steps(run_id: str, as_json: bool = typer.Option(False, "--json", help="The projection as JSON")):
+    """The run as its steps table shows it (ADR-0017): pipeline steps with their sessions and cost, live sessions, and what
+    a resume would continue, follow, start again and reuse."""
+    from .projection import project, render
+    from .summary import controller_running
+
+    cfg = cfgmod.load()
+    store = RunStore(cfg.runs_dir)
+    if not store.exists(run_id):
+        raise typer.BadParameter(f"no run {run_id} under {cfg.runs_dir}")
+    view = project(store.steps(run_id), store.state(run_id).finished_sessions, store.events(run_id),
+                   controller_alive=bool(controller_running(cfg.runs_dir, run_id)))
+    if as_json:
+        typer.echo(json.dumps(view, indent=2))
+        return
+    for line in render(view):
+        typer.echo(line)
 
 
 @app.command()

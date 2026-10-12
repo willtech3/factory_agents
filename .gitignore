@@ -9,6 +9,8 @@ __pycache__/
 # Orchestrator runtime state
 runs/
 evals/results/
+# recorded sessions hold repository content and owners' notes (factory eval export --out); keep them out of the repository
+evals/recordings/
 # the verifier's sh -> bash 4+ shim belongs under a run's verify dir; a test that leaks it here fails (tests/conftest.py)
 orchestrator/shell-shim/
 

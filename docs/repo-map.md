@@ -81,7 +81,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 
 | Module | Role |
 |---|---|
-| `cli.py` | The `factory` command: `doctor`, `run`, `gates`, `decide`, `answer`, `status`, `replay`, `timing`, `resume`, `watch`, `runs`, `rules`, `web`, plus the `environment` and `browser` sub-commands |
+| `cli.py` | The `factory` command: `doctor`, `run`, `gates`, `decide`, `answer`, `status`, `replay`, `timing`, `steps`, `resume`, `watch`, `runs`, `rules`, `web`, plus the `eval` (export, waive, gate), the `environment` and `browser` sub-commands |
 | `web/app.py` | The Factory Console: a FastAPI app with Runs, Board, Start a run, Outcomes, Apps and Settings, a JSON API, and gate review pages. It starts runs, resumes and watchers as background `factory` processes |
 | `web/static/` | The Console UI: one HTML page, vanilla JS and CSS, no build step |
 | `web/repositories.py` | Read-only GitHub repository search for the Console's repository picker |
@@ -125,6 +125,9 @@ A human decides a gate by writing to the file queue, either from the Console or 
 | `verification.py` | The one verification pipeline ([ADR-0014](adr/0014-one-verification-pipeline.md)): `verify(target, plan)` returns an `EvidenceBundle` on every target (hosted, local, platform) and `judge(bundle, spec)` returns the merge checks; also preview lookup and test evidence from reports |
 | `plans.py` | The spec's test plan as the controller runs it: structured `{runner, select}` commands and `journey` entries rendered to command text |
 | `local_verifier.py` | The controller's own verification host for the local and platform targets: a clean clone, a per-run virtualenv, each command in its own process group (`LocalVerifier`), and the service started from its manifest (`LocalPreview`) |
+| `projection.py` | The run as its steps table shows it ([ADR-0017](adr/0017-console-projects-the-steps-table.md)): pipeline steps nested with their sessions and cost, live sessions, and what a resume would continue, follow, start again and reuse; the Console's Steps card and `factory steps` read it |
+| `recordings.py` | Evals from recordings ([ADR-0016](adr/0016-evals-from-recordings.md)): a run's recorded sessions (inputs and outputs from their steps) as eval items with what the run made of them, exported by `factory eval export`, and the deterministic grade `evals/run_eval.py --recorded` uses |
+| `receipts.py` | `evals/receipts.json`: per role, the prompt and rubric bytes last cleared by a replay or a waiver; `evals/gate.py` fails CI on a change without one |
 | `rules.py` | The rule registry ([ADR-0015](adr/0015-rule-registry.md)): every rule's id, text, enforcement (check, judge, advice), roles, checks and fix. Renders the `## Rules` block of each agent prompt and the deterministic part of the implementation rubric (`factory rules`), and holds the judges' post-conditions |
 | `checks.py` | Deterministic checks no agent can override: schema validity, DAG, metric coverage, diff scope, protected tests, test weakening, criterion-to-test mapping, command results, manifest, visual evidence; `row_passed`, the one definition of a passing verification row |
 | `security.py` | Deterministic security pre-checks (secret scan, plus dependency audit and SAST when the tools exist) |
