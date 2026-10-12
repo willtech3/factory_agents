@@ -6,9 +6,9 @@ calls (`evaluated_permission == "ask"`) by denying when unattended; break on idl
 when `stop_reason.type != "requires_action"`; fetch outputs from `/mnt/session/outputs/`
 via the Files API with `scope_id`.
 
-Status: written against the documented SDK surface (anthropic >= 1.0,
-`client.beta.{agents,sessions,files}`), not yet exercised against the live API. The
-first spike in docs/roadmap.md is to run `decompose` end to end with this driver.
+Uses `client.beta.{agents,sessions,files}` (anthropic >= 1.0). It has driven every stage of the
+live runs; the reconnect, pagination and acknowledgement handling below come from what those runs
+hit (docs/postmortems/, docs/audits/2026-10-10-factory-review.md).
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import anthropic
+import httpx
 
 from .config import Config
 
@@ -29,8 +30,6 @@ from .config import Config
 SHORT_CALL_TIMEOUT = 120.0
 
 # A dropped event stream is reopened, not fatal. These are the transport errors httpx and the SDK raise for it.
-import httpx
-
 STREAM_RETRYABLE: tuple[type[BaseException], ...] = (httpx.RemoteProtocolError, httpx.ReadError, httpx.ReadTimeout, httpx.ConnectError,
                                                     httpx.WriteError, anthropic.APIConnectionError, anthropic.APITimeoutError)
 STREAM_MAX_RECONNECTS = 40           # with the 2..30 s backoff: well over an hour of retrying before giving up

@@ -18,7 +18,7 @@ from ..forge import Forge
 from ..sessions import SessionContext
 from ..state import WorkItemStage
 from . import RunContext
-from .common import enter_item_stage, persist_outputs, run_session
+from .common import enter_item_stage, git as _git, persist_outputs, run_session
 
 INTEGRATE_DESCRIPTION = """Open the change request (pull request or merge request) for specification {spec_id}.
 Inputs are under /mnt/session/uploads/: pr_description.md (the description the orchestrator rendered from cr_template.md),
@@ -274,5 +274,3 @@ def _numstat_beyond(verifier: Any, branch: str, head_sha: str, paths: list[str])
         return None
 
 
-def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout

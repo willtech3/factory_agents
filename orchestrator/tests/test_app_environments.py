@@ -3,7 +3,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from factory.errors import Refusal
 from fastapi.testclient import TestClient
 
 from conftest import make_config
@@ -129,7 +129,7 @@ def test_cleanup_archives_only_confirmed_leftovers_rechecked_now(setup):
     assert sorted(workspace.archived) == ["env_chat_old", "env_disc_old"]
     assert sorted(out["skipped"]) == ["env_chat_new", "env_cloud"]
     assert out["environments"]["retire"] == []
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(Refusal) as exc:
         environments.cleanup(["env_chat_old"])
     assert exc.value.status_code == 409
 
@@ -139,7 +139,7 @@ def test_one_app_environment_can_be_retired_but_not_one_in_use_or_verified_here(
     onboarding, environments = setup(workspace)
     local_app(onboarding, environment_id="env_browser", repository="https://github.com/me/proof")
     for environment_id, code in (("env_proof", 409), ("env_browser", 409), ("env_cloud", 404), ("env_disc_new", 404)):
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(Refusal) as exc:
             environments.archive(environment_id)
         assert exc.value.status_code == code
     environments.archive("env_synthetic")

@@ -2,6 +2,7 @@
 test_browser_runner.py covers with a scripted browser. Skipped where Python Playwright and a Chromium are not installed
 (the hosted sandbox has both; so does a developer machine after `pip install playwright`)."""
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -10,7 +11,12 @@ import pytest
 from factory import visual
 from factory.sandbox_tools import browser_runner as br
 
-playwright = pytest.importorskip("playwright.sync_api")
+# CI's browser job sets this: there a missing Playwright or a Chromium that will not start is the failure, not a skip.
+REQUIRE_CHROMIUM = os.environ.get("FACTORY_REQUIRE_CHROMIUM") == "1"
+if REQUIRE_CHROMIUM:
+    import playwright.sync_api as playwright  # noqa: F401
+else:
+    playwright = pytest.importorskip("playwright.sync_api")
 
 SECRET = "sk-test-0123456789abcdef"
 PAGE = """<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Chat</title></head><body>
@@ -85,13 +91,10 @@ def _run(tmp_path, base_url, viewport, journey=JOURNEY, secrets=None):
     path.write_text(json.dumps(journey))
     env = {"FACTORY_EVIDENCE_DIR": str(directory), "FACTORY_VISUAL_REQUEST": str(directory / "request.json"), "BASE_URL": base_url,
            **(secrets or {}), "FACTORY_SECRET_NAMES": ",".join(secrets or {})}
-    try:
-        code = br.main(["--journey", str(path)], env=env)
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"no runnable Chromium for Playwright here: {exc}")
+    code = br.main(["--journey", str(path)], env=env)       # any exception is a runner bug, not a missing browser
     report = json.loads((directory / "result.json").read_text())
     if report["status"] == "blocked" and "browser did not start" in report["summary"]:
-        pytest.skip(report["summary"])
+        (pytest.fail if REQUIRE_CHROMIUM else pytest.skip)(report["summary"])   # the runner's report when Chromium cannot launch
     return code, report, visual.collect(directory, request, code)
 
 

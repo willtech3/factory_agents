@@ -43,7 +43,6 @@ import subprocess
 import sys
 import time
 import urllib.request
-import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -53,9 +52,13 @@ from .. import checks, security, size
 from ..hosted_verifier import ENVIRONMENT_CHECK, HostedVerifier, journey_name, preview_record
 from ..budget import reserve_budget
 from ..checks import CheckResult
+from ..config import agent_model
+# One definition each, shared with the hosted harness that runs the same collection and reads the same JUnit reports.
+from ..sandbox_tools.environment_runner import NODE_ID_PLUGIN, collected_node_ids, parse_junit, write_node_id_plugin
 from ..state import WorkItemStage
 from . import RunContext
 from .common import enter_item_stage, persist_outputs, platform_skill, public, require_json, run_session, stamp_provenance, artifact_json_or_none
+from .common import git as _git                # one git helper for every stage
 
 _SHELL: dict[str, tuple[str | None, str | None]] = {}        # per verifier workdir: (bash executable, shim dir)
 
@@ -237,10 +240,6 @@ from the recipe's commands; your sandbox may lack the recipe's network allowlist
 not exercise not_assessed with that reason, never met."""
 
 
-def _git(repo_dir: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=repo_dir, check=True, capture_output=True, text=True).stdout
-
-
 def orchestrator_bin() -> Path | None:
     """The bin directory of the virtual environment the orchestrator itself runs from, or None from a system interpreter.
 
@@ -339,7 +338,7 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-SETUP_CHECK = "verification_setup"
+SETUP_CHECK = checks.SETUP_CHECK
 SETUP_TIMEOUT = 900
 ENVIRONMENTAL_MARKERS = ("address already in use", "eaddrinuse")
 
@@ -482,19 +481,22 @@ class LocalVerifier:
         return results
 
     def collect_test_ids(self, repo: Path, timeout: int = 300) -> list[str] | None:
-        """Every pytest node id the checkout collects (`pytest --collect-only -q` in the per-run environment), or
-        None when pytest cannot collect here (no environment, not a pytest repository, a collection error): the
-        mapping is then unverifiable, not verified."""
+        """Every pytest node id the checkout collects (`pytest --collect-only` in the per-run environment, ids printed by
+        the harness's own plugin so a repository's `addopts = -v` cannot hide them), or None when pytest cannot collect
+        here (no environment, not a pytest repository, a collection error): the mapping is then unverifiable, not verified."""
         if self.setup is not None and not self.setup.passed:
             return None
+        plugin_dir = write_node_id_plugin(self.workdir / "pytest_plugin")
+        env = verification_env(self.env_bin)
+        env["PYTHONPATH"] = str(plugin_dir)      # verification_env drops the orchestrator's PYTHONPATH; only the plugin is added
         try:
-            p = subprocess.run("python -m pytest --collect-only -q", shell=True, cwd=repo, env=verification_env(self.env_bin),
+            p = subprocess.run(f"python -m pytest --collect-only -q -p {NODE_ID_PLUGIN}", shell=True, cwd=repo, env=env,
                                capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return None
         if p.returncode not in (0, 5):          # 5: no tests collected, which is a (possibly empty) answer
             return None
-        return [ln.strip() for ln in p.stdout.splitlines() if NODE_ID_RE.match(ln.strip())]
+        return collected_node_ids(p.stdout)
 
     def run_e2e(self, preview_url: str | None, e2e_entries: list[dict[str, Any]], repo: Path | None = None,
                 target: str = "preview", timeout: int = 900) -> list[dict[str, Any]]:
@@ -649,47 +651,6 @@ def _install_plan(repo: Path, setup_cmd: str | None, python: Path, uv: str | Non
             "description": f"dependencies from pyproject ({', '.join(['project'] + extras)}): {' '.join(deps)}"}
 
 
-from ..sandbox_tools.environment_runner import NODE_ID_RE  # noqa: E402  one definition of a pytest node id
-
-
-def parse_junit(xml: bytes) -> dict[str, list[str]]:
-    """Node ids by outcome from a pytest junit report (junit_family=xunit1, which keeps the `file` attribute).
-
-    A node id is `file::Class::name`: `file` is relative to pytest's rootdir (the checkout), the class chain is what
-    `classname` adds after the module's dotted path, `name` keeps the parametrisation suffix."""
-    out: dict[str, list[str]] = {"passed": [], "failed": [], "skipped": []}
-    try:
-        root = ET.fromstring(xml)
-    except ET.ParseError:
-        return out
-    for tc in root.iter("testcase"):
-        node_id = _node_id(tc.get("file"), tc.get("classname", ""), tc.get("name", ""))
-        tags = {child.tag for child in tc}
-        if tags & {"failure", "error"}:
-            out["failed"].append(node_id)
-        elif "skipped" in tags:
-            out["skipped"].append(node_id)
-        else:
-            out["passed"].append(node_id)
-    return out
-
-
-def _node_id(file: str | None, classname: str, name: str) -> str:
-    if not file:
-        parts = [p for p in classname.split(".") if p]
-        return f"{'/'.join(parts)}.py::{name}" if parts else name
-    module = Path(file).with_suffix("").as_posix().replace("/", ".")
-    if classname == module or not classname:
-        chain: list[str] = []
-    elif classname.startswith(module + "."):
-        chain = classname[len(module) + 1:].split(".")
-    else:                                   # rootdir or package layout differs: everything after the module's last component
-        parts = classname.split(".")
-        stem = Path(file).stem
-        chain = parts[len(parts) - parts[::-1].index(stem):] if stem in parts else []
-    return "::".join([file, *chain, name])
-
-
 def _reported(row: dict[str, Any]) -> dict[str, Any] | None:
     """A command row's test outcomes: its framework-neutral `tests` evidence when it is a report (pytest or Bun, local or
     hosted)."""
@@ -755,8 +716,8 @@ def wait_for_preview(ctx: RunContext, branch: str, head_sha: str, *, poll_second
     """Give the platform's pipeline time to deploy `head_sha` before running e2e against the preview.
 
     Bounded by `policy.preview_wait_seconds`; a preview still `pending` or `unavailable` at the deadline
-    stays that way and `e2e_preview` fails closed (not run is not passed). Polling is the source of truth;
-    a pipeline webhook can shorten the wait but is not relied on.
+    stays that way and `e2e_preview` fails closed (not run is not passed). The forge is polled; nothing
+    pushes deployment state to the controller.
     """
     import time as _t
     sleep = sleep or _t.sleep
@@ -856,7 +817,8 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     for round_no in range(resume_from.round_no if resume_from else 1, max(review_through + 2, (resume_from.round_no + 1) if resume_from else 2)):
         resumed_round = resume_from is not None and round_no == resume_from.round_no
         # ---- implementer (round 1 implements; later rounds respond to findings)
-        uploads = {"spec.json": json.dumps(public(spec), indent=2).encode(), **skill_uploads}
+        uploads = {"spec.json": json.dumps(public(spec), indent=2).encode(), **skill_uploads,
+                   **{f"journeys/{name}.json": content for name, content in sorted(journeys.items())}}
         if spec_md:
             uploads["spec.md"] = spec_md.encode()
         if guidance:
@@ -868,6 +830,10 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         uploads["preview.json"] = json.dumps(preview, indent=2).encode()
         preview_clause = (MANAGED_PREVIEW_CLAUSE if preview.get("mode") == "managed" else PREVIEW_CLAUSE if preview["status"] == "ready"
                           else LOCAL_PREVIEW_CLAUSE if preview.get("mode") == "local" else NO_PREVIEW_CLAUSE)
+        if journeys:
+            preview_clause += (" Previously saved browser journeys are at /mnt/session/uploads/journeys/. "
+                               "Reuse these definitions; do not reconstruct them from the spec prose. Preserve existing assertions "
+                               "unless a review finding requires a targeted correction. The controller carries unchanged journeys forward.")
         if findings:
             uploads["findings.json"] = json.dumps(findings, indent=2).encode()
             review_clause = ("Reviewer findings are at /mnt/session/uploads/findings.json. Respond to every finding "
@@ -901,11 +867,11 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 ctx.event("work_item.stage", {"stage": WorkItemStage.BLOCKED.value}, work_item_id=wid, spec_id=sid)
                 return {"result": "escalate", "reason": res.outputs["blocked.md"].decode(errors="replace")}
             report = require_json(res, "implementation_report.json")
-            stamp_provenance(report, ctx, res, "Implementer", "claude-opus-5-5")
+            stamp_provenance(report, ctx, res, "Implementer", agent_model("implementer"))
             res.outputs["implementation_report.json"] = json.dumps(report, indent=2).encode()
             if findings:
                 response = require_json(res, "review_response.json")
-                stamp_provenance(response, ctx, res, "Implementer", "claude-opus-5-5")
+                stamp_provenance(response, ctx, res, "Implementer", agent_model("implementer"))
                 res.outputs["review_response.json"] = json.dumps(response, indent=2).encode()
             persist_outputs(ctx, "implement", res, prefix=f"{sid}-r{round_no}-", work_item_id=wid, spec_id=sid)
             journeys = latest_journeys(ctx, sid, spec)
@@ -1054,7 +1020,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 metadata={"pass": str(i)}, repository=mount(branch),
             )
             f = require_json(r, "findings.json")
-            stamp_provenance(f, ctx, r, "Adversarial reviewer", "claude-opus-5-5")
+            stamp_provenance(f, ctx, r, "Adversarial reviewer", agent_model("reviewer"))
             r.outputs["findings.json"] = json.dumps(f, indent=2).encode()
             persist_outputs(ctx, "review", r, prefix=review_bindings[i][0], work_item_id=wid, spec_id=sid)
             return tag_pass(f, str(i))
@@ -1082,7 +1048,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                 metadata={"pass": "security"}, repository=mount(branch),
             )
             f = require_json(r, "findings.json")
-            stamp_provenance(f, ctx, r, "Security reviewer", "claude-fable-5-1")
+            stamp_provenance(f, ctx, r, "Security reviewer", agent_model("security_reviewer"))
             r.outputs["findings.json"] = json.dumps(f, indent=2).encode()
             persist_outputs(ctx, "review", r, prefix=security_prefix, work_item_id=wid, spec_id=sid)
             return tag_pass(f, "security")
@@ -1156,7 +1122,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
         verdict["result"] = "another_round"
         verdict["summary_for_human"] = "Overridden: deterministic checks failed. " + verdict["summary_for_human"]
     verdict["deterministic_checks"] = [d.to_dict() for d in det]
-    stamp_provenance(verdict, ctx, res, "Merge judge", "claude-opus-5-5")
+    stamp_provenance(verdict, ctx, res, "Merge judge", agent_model("merge_judge"))
     verdict["_input_hashes"] = input_hashes
     verdict["_head_sha"], verdict["_branch"], verdict["_base_sha"] = head_sha, branch, base_sha
     res.outputs["merge_readiness.json"] = json.dumps(verdict, indent=2).encode()
@@ -1204,13 +1170,8 @@ def record_verification_findings(ctx: RunContext, sid: str, round_no: int, findi
 def _require_recorded_preview_mode(ctx: RunContext) -> None:
     """A run started in managed mode never continues with controller-side execution: a resume without the managed
     configuration would otherwise build a local environment and run the repository on this host."""
-    recorded = None
-    for ev in ctx.store.events(ctx.run_id):
-        if ev.kind == "run.created":
-            recorded = (ev.payload.get("policy") or {}).get("preview_mode", recorded)
-        elif ev.kind == "run.resumed" and ev.payload.get("preview_mode"):
-            recorded = ev.payload["preview_mode"]
-    if recorded == "managed" and ctx.cfg.preview_mode != "managed":
+    from .common import hosted_run
+    if hosted_run(ctx.store.events(ctx.run_id)) and ctx.cfg.preview_mode != "managed":
         raise RuntimeError("this run verifies candidates in a hosted sandbox (preview mode managed); continue it with "
                            "FACTORY_PREVIEW=managed and the same app binding, never with local or platform execution")
 
@@ -1322,7 +1283,7 @@ def deterministic_findings(det: list[Any], command_results: list[dict[str, Any]]
             "category": "security" if name == "secret_scan" else ("test_quality" if name in ("ac_test_mapping", "test_plan_commands", "test_weakening", "protected_tests", "e2e_coverage", "e2e_preview", SETUP_CHECK, ENVIRONMENT_CHECK) else "spec_deviation"),
             "claim": f"Deterministic check `{name}` failed: {d.detail}",
             "evidence": {"locations": ["deterministic_checks.json:1"], **({"reproduction": repro} if repro else {}), "observed": d.detail},
-            "violates": f"orchestrator check {name} (cannot be overridden by any judge)",
+            "violates": [f"orchestrator check {name} (cannot be overridden by any judge)"],
             "refutation_condition": f"`{name}` passes on the orchestrator's next verification of the pushed head",
             "status": "open",
             "suggested_fix": fix,

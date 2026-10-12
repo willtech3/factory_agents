@@ -30,8 +30,8 @@ def test_happy_path_run_state(tmp_path, examples):
     store.append(run_id, "work_item.stage", {"type": "human"}, {"stage": "spec_approved"}, work_item_id="wi-smart-retries")
     st = store.state(run_id)
     assert st.stage == RunStage.GATE_2_SPEC_READINESS
-    # Only the root item is ready: the others are not approved yet.
-    assert [w.work_item_id for w in st.ready_work_items()] == ["wi-smart-retries"]
+    assert st.work_items["wi-smart-retries"].stage == WorkItemStage.SPEC_APPROVED
+    assert {w.stage for wid, w in st.work_items.items() if wid != "wi-smart-retries"} == {WorkItemStage.SPEC_JUDGING}
 
 
 def test_illegal_run_transition(tmp_path):
@@ -50,23 +50,6 @@ def test_illegal_work_item_transition(tmp_path, examples):
     store.append("run_y", "work_item.stage", {"type": "orchestrator"}, {"stage": "merged"}, work_item_id="wi-smart-retries")
     with pytest.raises(IllegalTransition):
         store.state("run_y")
-
-
-def test_dependency_gating(tmp_path, examples):
-    store = RunStore(tmp_path)
-    store.append("run_z", "run.created", {"type": "orchestrator"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o"})
-    store.append("run_z", "artifact.produced", {"type": "agent"}, {"artifact_type": "decomposition", "revision": 1,
-                                                                 "work_items": examples["decomposition"]["work_items"]})
-    for wid in ("wi-smart-retries", "wi-dunning-emails"):
-        for stage in ("spec_drafting", "spec_judging", "spec_approved"):
-            store.append("run_z", "work_item.stage", {"type": "orchestrator"}, {"stage": stage}, work_item_id=wid)
-    st = store.state("run_z")
-    assert [w.work_item_id for w in st.ready_work_items()] == ["wi-smart-retries"]  # emails depends on retries
-    for stage in ("implementing", "reviewing", "merge_judging", "integrating", "cr_open", "merged"):
-        store.append("run_z", "work_item.stage", {"type": "orchestrator"}, {"stage": stage}, work_item_id="wi-smart-retries")
-    st = store.state("run_z")
-    assert [w.work_item_id for w in st.ready_work_items()] == ["wi-dunning-emails"]
-    assert st.work_items["wi-smart-retries"].stage == WorkItemStage.MERGED
 
 
 def test_gate_decision_binds_artifact_hashes():
@@ -107,8 +90,6 @@ def test_deploy_stages_follow_merge(tmp_path, examples):
     st = store.state("run_d")
     assert st.work_items["wi-smart-retries"].stage == WorkItemStage.DEPLOYING_DEV
     assert st.work_items["wi-smart-retries"].dev_pipeline_id == 77
-    # A dependant may start once the upstream item is on the default branch, deploy still in flight.
-    assert [w.work_item_id for w in st.ready_work_items()] == ["wi-dunning-emails"]
     store.append("run_d", "deploy.succeeded", {"type": "platform"}, {"pipeline_id": 77, "environment_url": "https://dev.example.internal"},
                  work_item_id="wi-smart-retries")
     store.append("run_d", "e2e.dev_passed", {"type": "orchestrator"}, {"environment_url": "https://dev.example.internal", "results": []},

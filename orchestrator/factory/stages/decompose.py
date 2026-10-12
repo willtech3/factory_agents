@@ -6,6 +6,7 @@ from typing import Any
 
 from .. import checks
 from ..budget import reserve_budget
+from ..config import agent_model
 from ..gates import Decision, GateKind
 from ..state import RunStage
 from . import RunContext
@@ -38,10 +39,6 @@ def repository_access(ctx: RunContext, outcome: dict[str, Any], mounted: str = R
     return None, ctx.forge.sandbox_git_instructions(url, branch, branch) + " Read it; do not modify or push it.", True
 
 
-def repository_mount(ctx: RunContext, outcome: dict[str, Any]) -> dict[str, Any] | None:
-    return repository_access(ctx, outcome)[0]
-
-
 def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | None = None,
                   prior_decomposition: dict[str, Any] | None = None,
                   retried: bool = False) -> tuple[dict[str, Any], dict[str, str]]:
@@ -71,7 +68,7 @@ def run_decompose(ctx: RunContext, outcome: dict[str, Any], feedback_md: str | N
     if prior_decomposition is not None and int(decomposition.get("revision") or 1) <= int(prior_decomposition.get("revision") or 0):
         # Artefacts are named by revision and the store refuses to overwrite one; the number is the orchestrator's.
         decomposition["revision"] = int(prior_decomposition.get("revision") or 0) + 1
-    stamp_provenance(decomposition, ctx, res, "Decomposer", "claude-opus-5-5",
+    stamp_provenance(decomposition, ctx, res, "Decomposer", agent_model("decomposer"),
                      {"outcome.json": ctx.store.put_artifact(ctx.run_id, "intake", "outcome.json", uploads["outcome.json"])})
     res.outputs["decomposition.json"] = json.dumps(decomposition, indent=2).encode()
     shas = persist_outputs(ctx, "decompose", res, prefix=f"r{decomposition['revision']}-")

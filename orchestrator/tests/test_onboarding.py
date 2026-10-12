@@ -4,7 +4,7 @@ import tarfile
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from factory.errors import Refusal
 from fastapi.testclient import TestClient
 
 from conftest import make_config
@@ -41,10 +41,10 @@ def test_creation_has_no_execution_and_budget_and_host_validation(manager):
     r=create(manager)
     assert r['status']=='connected' and r['remaining_usd']==10 and r['sessions']==[]
     assert len(manager.list())==1
-    with pytest.raises(HTTPException):
+    with pytest.raises(Refusal):
         manager.create(kind='greenfield', name='X', repository_url='https://evil.example/repo/x', description='x',budget_usd=10)
     for cap in (float('nan'),float('inf'),-1,61):
-        with pytest.raises(HTTPException):
+        with pytest.raises(Refusal):
             manager.create(kind='greenfield',name='X',repository_url='https://github.com/example/x',description='x',budget_usd=cap)
 
 
@@ -66,11 +66,11 @@ def test_plan_scope_and_profile_validation(plan,tmp_path,root):
 def test_stale_approval_and_duplicate_operation_do_not_dispatch(manager,plan,monkeypatch):
     r=create(manager); aid=r['app_id']
     manager.update(aid,plan=plan,plan_sha256=fingerprint(plan),status='setup_ready')
-    with pytest.raises(HTTPException) as err:
+    with pytest.raises(Refusal) as err:
         manager.start(aid,'verify','stale')
     assert err.value.status_code==409
     manager.update(aid,status='verifying')
-    with pytest.raises(HTTPException) as err:
+    with pytest.raises(Refusal) as err:
         manager.start(aid,'discover')
     assert err.value.status_code==409
 
@@ -79,9 +79,10 @@ def test_answers_invalidate_review_and_never_become_credentials(manager,plan):
     r=create(manager); aid=r['app_id']; plan['questions']=[{'id':'auth','prompt':'Test login?','required':True}]
     manager.update(aid,plan=plan,plan_sha256=fingerprint(plan))
     manager.answers(aid,{'auth':'Use a synthetic test identity'})
-    r=manager.get(aid)
-    assert r['plan_sha256'] is None and r['credentials']==[]
-    with pytest.raises(HTTPException):
+    assert manager.get(aid)['plan_sha256'] is None
+    stored=json.loads((manager.folder(aid)/'app.json').read_text())     # get() hides undeclared credentials; read the record
+    assert stored['answers']=={'auth':'Use a synthetic test identity'} and not stored.get('credentials')
+    with pytest.raises(Refusal):
         manager.answers(aid,{'unknown':'answer'})
 
 
@@ -157,7 +158,7 @@ def test_recovery_stops_orphans_and_conservatively_accounts(manager,monkeypatch)
     r=manager.recover(aid)
     assert calls[0]['events']==[{'type':'user.interrupt'}]
     assert r['status']=='failed' and r['spent_usd']==4 and r['reserved_usd']==0
-    with pytest.raises(HTTPException): manager.recover(aid)
+    with pytest.raises(Refusal): manager.recover(aid)
 
 
 def test_empty_setup_does_not_create_branch_or_pr(manager,plan):
@@ -171,7 +172,6 @@ def test_empty_setup_does_not_create_branch_or_pr(manager,plan):
 
 
 def test_run_binding_uses_only_verified_recipe_and_explicit_test_vaults(manager,plan,monkeypatch):
-    import base64
     aid=create(manager)['app_id']
     secret={'name':'TEST_KEY','required':True,'allowed_hosts':['example.com'],'injection':'header'}
     profile=json.loads(plan['files'][0]['content']);profile['secrets']=[secret];profile['network']['allowed_hosts']=['example.com']
@@ -179,22 +179,22 @@ def test_run_binding_uses_only_verified_recipe_and_explicit_test_vaults(manager,
     sha=fingerprint(plan)
     manager.update(aid,status='ready',plan=plan,plan_sha256=sha,source_sha='abc',verification={'status':'passed','plan_sha256':sha,'source_sha':'abc','profile_sha256':fingerprint(profile)},
                    credentials=[{'name':'TEST_KEY','id':'c1','vault_id':'test-only-vault','scope_sha256':secret_scope(secret)}, {'name':'OLD_KEY','id':'c2','vault_id':'old-unused-vault'}],vault_id='legacy-vault')
-    def get(path):
-        payload={'test_environment':{'profile':'test_environment.json'}} if 'service_manifest.json' in path else profile
-        return {'encoding':'base64','size':100,'content':base64.b64encode(json.dumps(payload).encode()).decode()}
-    fake=SimpleNamespace(_get=get,file_exists=lambda *args:True,http=SimpleNamespace(close=lambda:None))
+    def read_file(path,ref,max_bytes):
+        assert ref=='main'
+        return json.dumps({'test_environment':{'profile':'test_environment.json'}} if path=='service_manifest.json' else profile).encode()
+    fake=SimpleNamespace(read_file=read_file,file_exists=lambda *args:True,http=SimpleNamespace(close=lambda:None))
     monkeypatch.setattr(manager,'forge',lambda r:fake)
     target={'url':'https://github.com/example/app','default_branch':'main'}
     env=manager.run_settings(aid,target)
     assert env['FACTORY_PREVIEW']=='managed' and env['FACTORY_TEST_VAULT_IDS']=='test-only-vault'
     assert env['FACTORY_TEST_PROFILE_SHA256']==fingerprint(profile)
-    with pytest.raises(HTTPException): manager.run_settings(aid,{**target,'url':'https://github.com/example/other'})
+    with pytest.raises(Refusal): manager.run_settings(aid,{**target,'url':'https://github.com/example/other'})
     profile['name']='changed'
-    with pytest.raises(HTTPException) as exc: manager.run_settings(aid,target)
+    with pytest.raises(Refusal) as exc: manager.run_settings(aid,target)
     assert exc.value.status_code==409 and 'base branch' in exc.value.detail
     profile['name']=json.loads(plan['files'][0]['content'])['name']
     fake.file_exists=lambda ref,path:path!='service_manifest.json'      # an app built before the Factory
-    with pytest.raises(HTTPException) as exc: manager.run_settings(aid,target)
+    with pytest.raises(Refusal) as exc: manager.run_settings(aid,target)
     assert exc.value.status_code==409 and 'has no service_manifest.json' in exc.value.detail
 
 
@@ -204,7 +204,7 @@ def test_setup_feedback_invalidates_review_and_preserves_previous_proposal(manag
     r=manager.feedback(aid,'Fix header lookup without removing the assertion')
     assert r['plan_sha256'] is None and r['plan']==plan and r['status']=='needs_input'
     manager.update(aid,status='verifying')
-    with pytest.raises(HTTPException): manager.feedback(aid,'Different instructions')
+    with pytest.raises(Refusal): manager.feedback(aid,'Different instructions')
 
 
 def test_an_unused_recipe_is_rejected_before_cloud_verification(plan,tmp_path,root):

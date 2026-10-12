@@ -302,13 +302,12 @@ def _bind_onboarded_app(cfg, outcome: dict, explicit_preview: str | None):
     local/platform preview for it is a refusal; a repository no app was onboarded for runs as configured."""
     if not any((cfg.runs_dir / "_apps").glob("app_*/app.json")):
         return cfg
-    from fastapi import HTTPException
-
+    from .errors import Refusal
     from .onboarding import AppOnboarding
 
     try:
         binding = AppOnboarding(cfg).binding_for((outcome.get("target_repositories") or [{}])[0])
-    except HTTPException as e:
+    except Refusal as e:
         typer.echo(f"cannot run: {e.detail}")
         raise typer.Exit(1)
     if binding is None:

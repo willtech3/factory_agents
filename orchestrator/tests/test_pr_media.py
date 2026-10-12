@@ -3,7 +3,7 @@ and how each forge publishes it."""
 import hashlib
 
 import httpx
-from test_forge import Seq, _forge
+from support.forge_http import Seq, github_forge
 
 from factory import pr_media
 from factory.forge import Media
@@ -65,7 +65,7 @@ def test_github_publishes_on_an_orphan_branch_and_links_a_video():
         "GET /repos/will/ledgerline/git/commits/orphan1": {"tree": {"sha": "tree0"}},
         "PATCH /repos/will/ledgerline/git/refs/heads/factory-evidence": {"object": {"sha": "commit-1"}},
     }
-    f, rec = _forge(routes)
+    f, rec = github_forge(routes)
     markdown = f.publish_media("run_x/spec_y/abc", [Media("shot.png", PNG, "image/png", "The picker", "screenshot"),
                                                     Media("demo.webm", WEBM, "video/webm", "Demo: pick and chat", "demo")])
     assert markdown == ("![The picker](https://github.com/will/ledgerline/blob/factory-evidence/run_x/spec_y/abc/shot.png?raw=true)\n\n"

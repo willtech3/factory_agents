@@ -194,16 +194,6 @@ class RunState:
     budget_usd: float | None = None      # the run's cap (run.created), raised by budget.raised; None until run.created
     last_seq: int = -1
 
-    def ready_work_items(self) -> list[WorkItemState]:
-        """Work items whose dependencies are merged and which are approved to implement."""
-        out = []
-        for wi in self.work_items.values():
-            if wi.stage != WorkItemStage.SPEC_APPROVED:
-                continue
-            if all(self.work_items[d].stage in MERGED_STAGES for d in wi.depends_on if d in self.work_items):
-                out.append(wi)
-        return out
-
 
 def _move_run(state: RunState, to: RunStage) -> None:
     if to == state.stage:

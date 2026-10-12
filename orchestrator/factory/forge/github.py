@@ -1,14 +1,14 @@
 """GitHub forge (orchestrator side). The default `Forge` implementation.
 
 REST calls only, through httpx, against api.github.com (or `<FORGE_URL>/api/v3` for GitHub
-Enterprise Server). Pull requests, labels, and comments come from the Pulls and Issues APIs;
+Enterprise Server). Pull requests and labels come from the Pulls and Issues APIs;
 multi-file commits use the Git Data API (blobs, trees, commits, refs) so one commit carries every
 file; pipelines are GitHub Actions workflow runs; preview and dev URLs come from the Deployments
 API (`environment_url` on the latest deployment status).
 
-Status: written against the documented REST API (2022-11-28), exercised only through a fake
-transport in tests. Everything under "pipelines and deployments" is UNVERIFIED live; field names
-are hypotheses until docs/07-personal-e2e-setup.md has been run once. Nothing here deploys.
+Status: written against the documented REST API (2022-11-28). Repositories, branches, commits and pull requests
+have run live (docs/postmortems/2026-10-10-first-live-runs.md); everything under "pipelines and deployments" is
+UNVERIFIED live, its field names hypotheses until the platform preview mode runs once. Nothing here deploys.
 """
 from __future__ import annotations
 
@@ -21,7 +21,6 @@ import httpx
 from . import ChangeRequest, PIPELINE_TERMINAL, ref_slug
 
 EVIDENCE_BRANCH = "factory-evidence"     # orphan, never merged: screenshots and demos for change request descriptions
-BOT_MARKER = "<!-- factory:bot -->"   # prefixed to every comment the orchestrator posts, so it can skip its own
 
 GIT_SETUP = """Git access: the repository is mounted at /workspace/repo (branch {base_branch}) through the platform's
 github_repository resource; clone and push are authenticated by Anthropic's git proxy and no token is visible in the
@@ -81,12 +80,46 @@ class GitHubForge:
                 "private": d.get("private", private), "id": d.get("id")}
 
     # ---- branches & commits (Git Data API)
-    def _ref_sha(self, ref: str) -> str:
+    def ref_sha(self, ref: str) -> str:
         return self._get(f"/git/ref/heads/{ref}")["object"]["sha"]
+
+    def create_branch(self, branch: str, sha: str) -> bool:
+        """Create `branch` at `sha`. False when it already exists (GitHub answers 422)."""
+        r = self.http.post(self._r("/git/refs"), json={"ref": "refs/heads/" + branch, "sha": sha})
+        if r.status_code == 422:
+            return False
+        r.raise_for_status()
+        return True
+
+    def repository_info(self) -> dict[str, Any]:
+        """The repository record: default_branch, archived, disabled and the rest of GET /repos/:owner/:repo."""
+        return self._get("")
+
+    def commit_sha(self, ref: str) -> str:
+        """The commit a branch, tag or sha names."""
+        return self._get("/commits/" + quote(ref, safe=""))["sha"]
+
+    def download_archive(self, commit: str, max_bytes: int) -> bytes:
+        """The tarball of `commit`, streamed and refused (ValueError) as soon as it passes `max_bytes`."""
+        data = bytearray()
+        with self.http.stream("GET", self._r("/tarball/" + commit)) as response:
+            response.raise_for_status()
+            for part in response.iter_bytes():
+                data.extend(part)
+                if len(data) > max_bytes:
+                    raise ValueError("Repository archive exceeds the onboarding size limit")
+        return bytes(data)
+
+    def read_file(self, path: str, ref: str, max_bytes: int) -> bytes:
+        """A file's bytes at `ref` (Contents API), refused (ValueError) when it is not base64 content within `max_bytes`."""
+        obj = self._get("/contents/" + quote(path, safe="/"), ref=ref)
+        if obj.get("encoding") != "base64" or obj.get("size", 0) > max_bytes:
+            raise ValueError("Unsupported setup file")
+        return base64.b64decode(obj["content"])
 
     def commit_files(self, branch: str, message: str, files: dict[str, bytes]) -> str:
         """One commit with every file (create or update) on top of the branch head. Returns the new sha."""
-        head = self._ref_sha(branch)
+        head = self.ref_sha(branch)
         base_tree = self._get(f"/git/commits/{head}")["tree"]["sha"]
         entries = []
         for path, content in files.items():
@@ -171,9 +204,6 @@ class GitHubForge:
     def add_labels(self, cr_id: int, labels: list[str]) -> None:
         self._post(f"/issues/{cr_id}/labels", {"labels": labels})
 
-    def post_comment(self, cr_id: int, body: str) -> None:
-        self._post(f"/issues/{cr_id}/comments", {"body": f"{BOT_MARKER}\n{body}"})
-
     # ---- pipelines (GitHub Actions workflow runs) and deployments. Read-only. UNVERIFIED live.
 
     def latest_pipeline(self, ref: str, sha: str | None = None) -> dict[str, Any] | None:
@@ -237,12 +267,6 @@ class GitHubForge:
                 return env["external_url"]
         return None
 
-    def deployment_for_sha(self, environment_name: str, sha: str) -> dict[str, Any] | None:
-        deps = self._get("/deployments", environment=environment_name, sha=sha, per_page=1)
-        if not deps:
-            return None
-        return _deployment_summary(deps[0], self._latest_status(deps[0]["id"]) or {})
-
     # ---- sessions
     def session_repository_resource(self, repo_url: str, branch: str) -> dict[str, Any] | None:
         """The native `github_repository` resource: Anthropic's git proxy injects the token for clone and push."""
@@ -286,15 +310,4 @@ def _deployment_summary(d: dict[str, Any], st: dict[str, Any]) -> dict[str, Any]
             "environment_url": st.get("environment_url")}
 
 
-def parse_workflow_run_webhook(payload: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalise a GitHub `workflow_run` webhook to the shape `pipeline()` returns. UNVERIFIED live."""
-    run = payload.get("workflow_run")
-    if not run:
-        return None
-    out = _run_summary(run)
-    out["project_path"] = (payload.get("repository") or {}).get("full_name")
-    out["environments"] = []   # the Deployments API, not the webhook, says where a run deployed
-    return out
-
-
-__all__ = ["BOT_MARKER", "GIT_READ_ONLY", "GIT_SETUP", "GitHubForge", "PIPELINE_TERMINAL", "parse_workflow_run_webhook"]
+__all__ = ["GIT_READ_ONLY", "GIT_SETUP", "GitHubForge", "PIPELINE_TERMINAL"]

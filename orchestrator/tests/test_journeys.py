@@ -1,6 +1,6 @@
 """A UI change proved by the factory's own browser runner on a journey that is a run artifact (post-mortem 2026-10-11 §1).
 
-The whole managed loop with the test doubles of test_hosted_verification.py: the implementer writes
+The whole managed loop with the test doubles of tests/support/hosted.py: the implementer writes
 /mnt/session/outputs/journeys/greet.json beside its report, the controller validates it, uploads it with the runner and
 binds its sha256 into the verification record, and the real harness runs the runner on it (a scripted browser stands in
 for Chromium). The change's diff holds no browser-test file; code that answers the factory's evidence protocol is refused."""
@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from test_hosted_verification import (
+from support.hosted import (
     REPORT,
     RUN_ID,
     Driver,
@@ -200,3 +200,13 @@ def test_a_finding_about_the_journeys_own_plumbing_never_stands(tmp_path, root):
     backlog = (tmp_path / "runs" / "_backlog" / "verification-findings.jsonl").read_text().splitlines()
     assert json.loads(backlog[0])["finding"]["claim"] == plumbing["claim"]
     assert any(e.kind == "verification.backlog" for e in ctx.store.events(RUN_ID))
+
+
+def test_corrective_implementers_receive_the_saved_journey_bytes(tmp_path,root):
+    finding={"finding_id":"F-1","severity":"major","category":"correctness","status":"open","target":"change", "claim":"Correct the greeting", "evidence":{"locations":["app/main.py:1"]}}
+    _,driver,_=_loop(tmp_path,root,findings=[finding])
+    authors=[c for c in driver.calls if c.get("stage") != "verify" and c["agent_key"] == "implementer"]
+    assert len(authors)>1
+    for author in authors[1:]:
+        assert author['uploads']['journeys/greet.json']==json.dumps(JOURNEY).encode()
+        assert 'do not reconstruct them from the spec prose' in author['description']

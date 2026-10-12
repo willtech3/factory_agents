@@ -24,7 +24,7 @@ from pathlib import Path
 from collections.abc import Callable, Iterator
 from typing import Any
 
-from .approvals import approval_guidance, subset_problems
+from .approvals import approval_guidance, route_lines, subset_problems
 from .budget import BudgetPaused, last_pause
 from .config import managed_gaps
 from .gates import Decision, Gate, GateDecision, GateKind, parse_budget
@@ -34,6 +34,7 @@ from .stages.common import artifact_json_or_none, gate_decision, public
 from .stages.implement import LocalVerifier, ResumePoint, run_implement_one
 from .stages.integrate import run_integrate
 from .stages.specify import gate_2, run_specify
+from .stages.common import hosted_run, recorded_preview_mode  # noqa: F401  the Console imports recorded_preview_mode from here
 from .state import RunStage, WorkItemStage
 from .surfaces.artifact_pages import render_gate1_page, render_gate2_page
 
@@ -73,20 +74,10 @@ def notes_by_item(comments: str, item_ids: list[str]) -> dict[str, str]:
     """Split a decision's comments into per-item guidance. Lines like `wi-x: text` go to that item; other lines go
     to every item. Used when a gate is approved with notes: approval does not re-run the stage, but the next
     stage's writers should still hear what the human said about each item."""
-    general, per_item = [], {i: [] for i in item_ids}
-    for line in (comments or "").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        head, sep, rest = line.partition(":")
-        if sep and head.strip() in per_item:
-            if rest.strip():
-                per_item[head.strip()].append(rest.strip())     # an empty "wi-x:" line says nothing
-        else:
-            general.append(line)
+    general, per_item = route_lines(comments, {i: i for i in item_ids})
     out = {}
     for i in item_ids:
-        parts = general + per_item[i]
+        parts = general + per_item.get(i, [])
         if parts:
             out[i] = "# Notes from the owner at Gate 1\n" + "\n".join(f"- {p}" for p in parts)
     return out
@@ -447,10 +438,6 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
     return RunStage.COMPLETED
 
 
-def _cr_already_open(ctx: RunContext, spec_id: str) -> bool:
-    return spec_id in _open_change_requests(ctx)
-
-
 def _open_change_requests(ctx: RunContext) -> dict[str, int]:
     """spec_id -> change request id for every change request this run has opened."""
     out: dict[str, int] = {}
@@ -669,17 +656,6 @@ def stopped_at_gate2(events: list[Any]) -> bool:
     return last == RunStage.GATE_2_SPEC_READINESS.value
 
 
-def recorded_preview_mode(events: list[Any]) -> str | None:
-    """The preview mode the run was last driven in: run.created's policy, or a later resume that recorded one."""
-    mode = None
-    for ev in events:
-        if ev.kind == "run.created":
-            mode = (ev.payload.get("policy") or {}).get("preview_mode", mode)
-        elif ev.kind == "run.resumed" and ev.payload.get("preview_mode"):
-            mode = ev.payload["preview_mode"]
-    return mode
-
-
 def recovery_config_problems(cfg: Any) -> list[str]:
     """What stops a recovered run from continuing into managed verification: the usual managed checks, plus the approved
     recipe fingerprint, which a recovery must name explicitly (no base-commit fallback for an upgraded controller)."""
@@ -696,7 +672,7 @@ def preflight(ctx: RunContext, events: list[Any] | None = None, budget_usd: floa
     refusal never records run.failed): a managed run continued without managed verification, and every condition of
     a pending Gate 2 recovery."""
     events = events if events is not None else ctx.store.events(ctx.run_id)
-    if recorded_preview_mode(events) == "managed" and ctx.cfg.preview_mode != "managed":
+    if hosted_run(events) and ctx.cfg.preview_mode != "managed":
         raise RuntimeError(f"run {ctx.run_id} verifies in a hosted sandbox (preview mode managed); resume it with the managed "
                            f"configuration, never with local or platform execution")
     st = ctx.store.state(ctx.run_id)

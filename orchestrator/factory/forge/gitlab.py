@@ -32,13 +32,14 @@ everything you produce under /mnt/session/outputs/, not in the working tree."""
 class GitLabForge:
     kind = "gitlab"
 
-    def __init__(self, base_url: str, token: str, project: str, timeout: float = 30.0):
+    def __init__(self, base_url: str, token: str, project: str, timeout: float = 30.0,
+                 transport: httpx.BaseTransport | None = None):
         self.token = token
         self.url = base_url.rstrip("/")
         self.base = self.url + "/api/v4"
         self.repo = project
         self.project = quote(project, safe="")
-        self.http = httpx.Client(headers={"PRIVATE-TOKEN": token}, timeout=timeout)
+        self.http = httpx.Client(headers={"PRIVATE-TOKEN": token}, timeout=timeout, transport=transport)
 
     def _p(self, path: str) -> str:
         return f"{self.base}/projects/{self.project}{path}"
@@ -135,10 +136,6 @@ class GitLabForge:
         r = self.http.put(self._p(f"/merge_requests/{cr_id}"), json={"add_labels": ",".join(labels)})
         r.raise_for_status()
 
-    def post_comment(self, cr_id: int, body: str) -> None:
-        r = self.http.post(self._p(f"/merge_requests/{cr_id}/notes"), json={"body": body})
-        r.raise_for_status()
-
     # ---- pipelines and environments (Stage 5 observation; read-only)
     # UNVERIFIED against the user's self-hosted instance. Shapes follow the GitLab REST docs
     # (Pipelines API, Jobs API, Environments API, Deployments API) for GitLab 16/17; field names
@@ -213,17 +210,6 @@ class GitLabForge:
                     return e["external_url"]
         return None
 
-    def deployment_for_sha(self, environment_name: str, sha: str) -> dict[str, Any] | None:
-        """Whether `sha` has been deployed to `environment_name`. GET /projects/:id/deployments?environment=...
-        Deployment `status` is one of created, running, success, failed, canceled, blocked."""
-        r = self.http.get(self._p("/deployments"), params={"environment": environment_name, "order_by": "id",
-                                                            "sort": "desc", "per_page": 20})
-        r.raise_for_status()
-        for d in r.json():
-            if d.get("sha") == sha:
-                return _deployment_summary(d)
-        return None
-
     # ---- sessions
     def session_repository_resource(self, repo_url: str, branch: str) -> dict[str, Any] | None:
         """No native GitLab resource exists; the sandbox clones with the vault credential (ADR-0003)."""
@@ -256,21 +242,4 @@ def _deployment_summary(d: dict[str, Any] | None) -> dict[str, Any] | None:
             "created_at": d.get("created_at"), "deployable_id": (d.get("deployable") or {}).get("id")}
 
 
-def parse_pipeline_webhook(payload: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalise a GitLab Pipeline Hook payload (`object_kind: pipeline`) to the shape `pipeline()` returns.
-
-    Returns None for other hook kinds. The webhook endpoint that receives this is part of the Factory
-    Console (not in this repository); the orchestrator reconciles by polling `pipeline()` regardless,
-    because webhooks are not a durable log. UNVERIFIED against the self-hosted instance.
-    """
-    if payload.get("object_kind") != "pipeline":
-        return None
-    a = payload.get("object_attributes") or {}
-    return {"id": a.get("id"), "status": a.get("status"), "ref": a.get("ref"), "sha": a.get("sha"),
-            "web_url": a.get("url"), "created_at": a.get("created_at"), "updated_at": a.get("finished_at"),
-            "project_path": (payload.get("project") or {}).get("path_with_namespace"),
-            "environments": sorted({(b.get("environment") or {}).get("name") for b in payload.get("builds", [])
-                                    if b.get("environment")})}
-
-
-__all__ = ["GIT_READ_ONLY", "GIT_SETUP", "GitLabForge", "PIPELINE_TERMINAL", "parse_pipeline_webhook"]
+__all__ = ["GIT_READ_ONLY", "GIT_SETUP", "GitLabForge", "PIPELINE_TERMINAL"]

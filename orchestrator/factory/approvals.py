@@ -22,8 +22,6 @@ GUIDANCE_HEADER = ("# The owner's notes at Gate 2 approval\n"
                    "Guidance for building the approved spec. The spec stays authoritative: these notes never change its acceptance "
                    "criteria, allowed paths or test plan. Where a note conflicts with the spec, follow the spec and say so in "
                    "implementation_report.json notes.\n\n")
-SUBSET_COPY = ("Only the selected specs are implemented. The others are not built in this run and are not sent back to a "
-               "writer; use Request changes to have them revised.")
 
 
 def subset_problems(specs: dict[str, dict[str, Any]], approved: Iterable[str]) -> list[str]:
@@ -46,32 +44,39 @@ def subset_problems(specs: dict[str, dict[str, Any]], approved: Iterable[str]) -
     return problems
 
 
+def route_lines(comments: str, keys: dict[str, str], drop_addressed_to: tuple[str, ...] = ()
+                ) -> tuple[list[str], dict[str, list[str]]]:
+    """Split an owner's comments into lines for everyone and lines addressed to one target. A line `<key>: text` whose key
+    is in `keys` goes to `keys[key]` (an empty `<key>:` says nothing); a `<key>: text` line whose key is unknown but starts
+    with one of `drop_addressed_to` is dropped; every other non-blank line is for everyone."""
+    general: list[str] = []
+    addressed: dict[str, list[str]] = {}
+    for raw in (comments or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        head, sep, rest = line.partition(":")
+        head = head.strip()
+        if sep and head in keys:
+            if rest.strip():
+                addressed.setdefault(keys[head], []).append(rest.strip())
+        elif not (sep and drop_addressed_to and head.startswith(drop_addressed_to)):
+            general.append(line)
+    return general, addressed
+
+
 def approval_guidance(comments: str, specs: dict[str, dict[str, Any]]) -> dict[str, str]:
     """Per approved spec, the owner's approval notes as markdown: lines addressed `spec_x:` or `wi-x:` go to that spec,
     other lines to every spec. Each is capped at MAX_GUIDANCE_CHARS; specs with nothing to hear are left out."""
     if not (comments or "").strip():
         return {}
-    by_item = {s.get("work_item_id"): sid for sid, s in specs.items()}
-    general: list[str] = []
-    addressed: dict[str, list[str]] = {sid: [] for sid in specs}
-    for raw in comments.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        head, sep, rest = line.partition(":")
-        target = head.strip() if head.strip() in specs else by_item.get(head.strip())
-        if sep and target:
-            if rest.strip():
-                addressed[target].append(rest.strip())
-        elif sep and head.strip().startswith(("spec_", "wi-")):
-            # Notes addressed to an unselected contract must not become instructions
-            # for every selected contract after approve_subset narrows the set.
-            continue
-        else:
-            general.append(line)
+    keys = {s.get("work_item_id"): sid for sid, s in specs.items()} | {sid: sid for sid in specs}
+    # Notes addressed to an unselected contract must not become instructions for every selected contract after
+    # approve_subset narrows the set, so lines naming any other spec or work item are dropped.
+    general, addressed = route_lines(comments, keys, drop_addressed_to=("spec_", "wi-"))
     out = {}
     for sid in specs:
-        lines = general + addressed[sid]
+        lines = general + addressed.get(sid, [])
         if not lines:
             continue
         body = "\n".join(f"- {line}" for line in lines)

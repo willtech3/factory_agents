@@ -49,10 +49,6 @@ class BudgetPaused(Exception):
                 f"Decide gate {self.gate_id} (approve with `budget_usd: N`, or reject), then `factory resume {self.run_id}`.")
 
 
-def spent_usd(ctx: RunContext) -> float:
-    return ctx.store.state(ctx.run_id).list_cost_usd
-
-
 def reserve_budget(ctx: RunContext, stage_key: str, sessions: int = 1, *, extra: dict[str, int] | None = None,
                    cap_usd: float | None = None) -> None:
     """Call right before starting `sessions` sessions of stage `stage_key` (before the batch when they run in
@@ -89,7 +85,7 @@ def pause_for_budget(ctx: RunContext, stage_key: str, sessions: int, cap: float,
                f"({sessions} session{'s' if sessions != 1 else ''}), could cost up to ${cap:.2f}, taking the run to ${needed:.2f}. "
                f"Approve with the new budget (`budget_usd: {math.ceil(needed)}` or more) to continue, or reject to close the run. "
                f"Nothing is running while you decide.")
-    owner = _owner_handle(ctx)
+    owner = owner_handle(ctx)
     gate = Gate(run_id=ctx.run_id, kind=GateKind.BUDGET, artifacts=(ArtifactRef(name=name, sha256=sha),),
                 assignees=tuple([owner] if owner else []), summary=summary, options=(Decision.APPROVE, Decision.REJECT))
     ctx.event("budget.reached", {**record, "gate_id": gate.gate_id, "stage": run_stage.value}, stage="budget")
@@ -101,11 +97,12 @@ def pause_for_budget(ctx: RunContext, stage_key: str, sessions: int, cap: float,
                         sessions=sessions, cap_usd=cap)
 
 
-def _owner_handle(ctx: RunContext) -> str | None:
+def owner_handle(ctx: RunContext) -> str | None:
+    """The outcome owner's handle, the assignee of the run's own gates; None when the outcome does not name one."""
     try:
         outcome = ctx.store.get_json(ctx.run_id, "intake", "outcome.json")
         return (outcome.get("owner") or {}).get("handle")
-    except (FileNotFoundError, ValueError):
+    except (FileNotFoundError, ValueError, AttributeError):
         return None
 
 

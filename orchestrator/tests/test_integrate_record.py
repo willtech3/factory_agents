@@ -6,6 +6,8 @@ import subprocess
 import pytest
 from pathlib import Path
 
+from support.events import assert_log_valid
+
 
 RUN = "run_rec0000001"
 
@@ -32,18 +34,18 @@ def _repo(tmp_path: Path) -> tuple[Path, Path]:
 
 def _passthrough(kw, description=None):
     """An integrator that sends the orchestrator's draft (or `description`) with the facts it was given."""
-    from test_session_cutoff import _result
+    from support.sessions import stage_result
     facts = json.loads(kw['uploads']['pr_facts.json'])
     answer = kw['custom_tools']['open_change_request']({
         'source_branch': facts['source_branch'], 'target_branch': facts['target_branch'], 'title': facts['title'],
         'description_markdown': description if description is not None else kw['uploads']['pr_description.md'].decode(),
         'labels': facts['labels'], 'reviewers': facts['reviewers'], 'draft': facts['draft']}, None)
-    return _result({'cr.json': answer.encode()})
+    return stage_result({'cr.json': answer.encode()})
 
 
 def test_integration_keeps_artifacts_external_and_candidate_unchanged(tmp_path, root, examples):
     from types import SimpleNamespace
-    from test_session_cutoff import _ctx, _result, AutoQueue
+    from support.sessions import AutoQueue, run_after_gate_1
     from factory.gates import Decision
     from factory.stages.integrate import run_integrate
     from factory.state import WorkItemStage
@@ -59,7 +61,7 @@ def test_integration_keeps_artifacts_external_and_candidate_unchanged(tmp_path, 
         assert json.loads(uploads['merge_readiness.json'])['_head_sha'] == judged
         assert json.loads(uploads['pr_lint.json']) == {'problems': []}
         return _passthrough(kw)
-    ctx = _ctx(tmp_path, root, examples, SimpleNamespace(run=run), AutoQueue(Decision.APPROVE))
+    ctx = run_after_gate_1(tmp_path, root, examples, SimpleNamespace(run=run), AutoQueue(Decision.APPROVE))
     for stage in [WorkItemStage.SPEC_DRAFTING, WorkItemStage.SPEC_JUDGING, WorkItemStage.SPEC_APPROVED,
                   WorkItemStage.IMPLEMENTING, WorkItemStage.REVIEWING, WorkItemStage.MERGE_JUDGING]:
         ctx.event('work_item.stage', {'stage': stage.value}, work_item_id=wid)
@@ -81,11 +83,12 @@ def test_integration_keeps_artifacts_external_and_candidate_unchanged(tmp_path, 
     assert record['size']['measured']['hand_written'] == 1 and record['size']['flag'] is None
     opened = ctx.store.get_artifact(ctx.run_id, 'integrate', f"{spec['spec_id']}-pr_description.md").decode()
     assert '1 hand-written lines (app 1, tests 0); no generated files. Estimated 320 (M;' in opened and f"#record-{spec['spec_id']}" in opened
+    assert_log_valid(ctx.store, ctx.run_id, root / "schemas")                       # cr.opened included
 
 
 def test_moved_branch_must_be_reviewed_again(tmp_path, root, examples):
     from types import SimpleNamespace
-    from test_session_cutoff import _ctx, AutoQueue
+    from support.sessions import AutoQueue, run_after_gate_1
     from factory.gates import Decision
     from factory.stages.integrate import run_integrate
     from factory.state import WorkItemStage
@@ -93,7 +96,7 @@ def test_moved_branch_must_be_reviewed_again(tmp_path, root, examples):
     judged = _git(work, 'rev-parse', 'HEAD')
     (work / 'app.py').write_text("print('changed after judgement')\n")
     _git(work, 'commit', '-am', 'unreviewed change')
-    ctx = _ctx(tmp_path, root, examples, None, AutoQueue(Decision.APPROVE))
+    ctx = run_after_gate_1(tmp_path, root, examples, None, AutoQueue(Decision.APPROVE))
     for stage in [WorkItemStage.SPEC_DRAFTING, WorkItemStage.SPEC_JUDGING, WorkItemStage.SPEC_APPROVED,
                   WorkItemStage.IMPLEMENTING, WorkItemStage.REVIEWING, WorkItemStage.MERGE_JUDGING]:
         ctx.event('work_item.stage', {'stage': stage.value}, work_item_id=examples['spec_smart_retries']['work_item_id'])
@@ -106,10 +109,10 @@ def test_moved_branch_must_be_reviewed_again(tmp_path, root, examples):
 
 def test_change_request_target_is_controller_owned(tmp_path, root, examples):
     from types import SimpleNamespace
-    from test_session_cutoff import _ctx, Driver, AutoQueue
+    from support.sessions import AutoQueue, SpecStageDriver, run_after_gate_1
     from factory.gates import Decision
     from factory.stages.integrate import make_open_change_request
-    ctx = _ctx(tmp_path, root, examples, Driver(examples), AutoQueue(Decision.APPROVE))
+    ctx = run_after_gate_1(tmp_path, root, examples, SpecStageDriver(examples), AutoQueue(Decision.APPROVE))
     calls = []
     forge = SimpleNamespace(create_change_request=lambda **kw: calls.append(kw))
     handler = make_open_change_request(ctx, forge, 'spec_test', 'wi-test', 'factory/branch', 'main')
@@ -122,13 +125,13 @@ def test_integrator_uses_forge_receipt_instead_of_agent_report(tmp_path, root, e
     """When the draft needs rewording the integrator runs, and only the forge's receipt proves a PR exists."""
     import pytest
     from types import SimpleNamespace
-    from test_session_cutoff import _ctx, _result, AutoQueue
+    from support.sessions import AutoQueue, run_after_gate_1, stage_result
     from factory import pr_description
     from factory.gates import Decision
     from factory.stages.integrate import run_integrate
     from factory.state import WorkItemStage
     spec = examples['spec_smart_retries']
-    sid, wid = spec['spec_id'], spec['work_item_id']
+    wid = spec['work_item_id']
     lints = []
     real_lint = pr_description.lint
     def lint(*a, **kw):          # the rendered draft needs a rewording; what the integrator sends passes
@@ -139,9 +142,9 @@ def test_integrator_uses_forge_receipt_instead_of_agent_report(tmp_path, root, e
         assert json.loads(kw['uploads']['pr_lint.json'])['problems'] == ["line 3 names a factory id"]
         if opens_pr:
             _passthrough(kw)
-        return _result({'cr.json': b'{"id": 999, "url": "invented"}'})
+        return stage_result({'cr.json': b'{"id": 999, "url": "invented"}'})
     driver = SimpleNamespace(run=run)
-    ctx = _ctx(tmp_path, root, examples, driver, AutoQueue(Decision.APPROVE))
+    ctx = run_after_gate_1(tmp_path, root, examples, driver, AutoQueue(Decision.APPROVE))
     for stage in [WorkItemStage.SPEC_DRAFTING, WorkItemStage.SPEC_JUDGING, WorkItemStage.SPEC_APPROVED,
                   WorkItemStage.IMPLEMENTING, WorkItemStage.REVIEWING, WorkItemStage.MERGE_JUDGING]:
         ctx.event('work_item.stage', {'stage': stage.value}, work_item_id=wid)
@@ -190,11 +193,11 @@ def test_a_clean_description_opens_the_change_request_without_an_agent(tmp_path,
 
 def test_evaluation_pr_is_forced_to_draft_and_labeled(tmp_path, root, examples):
     from types import SimpleNamespace
-    from test_session_cutoff import _ctx, Driver, AutoQueue
+    from support.sessions import AutoQueue, SpecStageDriver, run_after_gate_1
     from factory.gates import Decision
     from factory.stages.integrate import evaluation_banner, make_open_change_request
     from factory.forge import ChangeRequest
-    ctx = _ctx(tmp_path, root, examples, Driver(examples), AutoQueue(Decision.APPROVE))
+    ctx = run_after_gate_1(tmp_path, root, examples, SpecStageDriver(examples), AutoQueue(Decision.APPROVE))
     ctx.evaluation_target = ('evaluation', 'a' * 40)
     calls = []
     def create(**kw):
@@ -205,9 +208,11 @@ def test_evaluation_pr_is_forced_to_draft_and_labeled(tmp_path, root, examples):
     handler = make_open_change_request(ctx, SimpleNamespace(kind='github', create_change_request=create),
                                       'spec_test', 'wi-test', 'factory/branch', 'evaluation', banner=banner)
     handler({'source_branch': 'factory/branch', 'target_branch': 'evaluation', 'title': 'Change',
-             'description_markdown': 'Evidence', 'draft': False}, None)
+             'description_markdown': 'Evidence', 'draft': False, 'labels': ['ui']}, None)
     assert calls[0]['draft'] is True
     assert calls[0]['title'].startswith('[Factory evaluation]')
+    # the controller's labels go on whatever the integrator asked for, so the watcher and people can find factory PRs
+    assert calls[0]['labels'] == sorted({'ui', 'factory', 'spec:spec_test', f'run:{ctx.run_id}'})
     first, second = calls[0]['description'].splitlines()[:2]
     assert 'do not merge' in first and 'a' * 10 in first and first.count('. ') == 0      # one sentence
     assert second == "> Beyond the current `main` it holds 1 file, +12 / −3: `verification/x.py` (+12 / −3)."
@@ -218,11 +223,11 @@ def test_open_change_request_refuses_a_description_written_for_the_factory(tmp_p
     """Post-mortem 2026-10-11 §4: ids, factory vocabulary, costs, first-person judge text, local links and tables are
     refused with the reasons, and nothing reaches the forge until the integrator sends a description that passes."""
     from types import SimpleNamespace
-    from test_session_cutoff import _ctx, Driver, AutoQueue
+    from support.sessions import AutoQueue, SpecStageDriver, run_after_gate_1
     from factory.gates import Decision
     from factory.stages.integrate import make_open_change_request
     from factory.forge import ChangeRequest
-    ctx = _ctx(tmp_path, root, examples, Driver(examples), AutoQueue(Decision.APPROVE))
+    ctx = run_after_gate_1(tmp_path, root, examples, SpecStageDriver(examples), AutoQueue(Decision.APPROVE))
     calls = []
     forge = SimpleNamespace(kind='github', create_change_request=lambda **kw: calls.append(kw) or ChangeRequest(7, 'u', 'b', 'main'))
     url = 'http://127.0.0.1:8772/#/runs/run_budget000001#record-spec_test'

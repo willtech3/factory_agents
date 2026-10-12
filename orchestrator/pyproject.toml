@@ -2,7 +2,7 @@
 name = "factory-orchestrator"
 version = "0.1.0"
 description = "Deterministic outer loop for the factory: drives Managed Agents sessions stage by stage, holds human gates on a tracker or forge, computes deterministic checks, opens change requests (GitHub PRs or GitLab MRs)."
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
   "anthropic>=1.0",
   "pydantic>=2.7",
@@ -14,6 +14,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-cov", "ruff", "fastapi>=0.115", "uvicorn>=0.30"]
 web = ["fastapi>=0.115", "uvicorn>=0.30"]
+# The factory browser runner's real-Chromium tests (tests/test_browser_runner_playwright.py); then
+# `python -m playwright install chromium`. Pinned to the Playwright the hosted sandbox image ships.
+browser = ["playwright==1.56.0"]
 
 [project.scripts]
 factory = "factory.cli:app"
@@ -35,3 +38,13 @@ markers = ["network: installs packages from the index (or a warm uv cache); dese
 
 [tool.ruff]
 line-length = 110
+# The scripts in sandbox_tools/ run inside agent sandboxes with whatever python3 the image has; keep them 3.11-safe.
+per-file-target-version = { "factory/sandbox_tools/*.py" = "py311" }
+
+[tool.ruff.lint]
+# A gate on correctness, not style (CI runs it): pyflakes, syntax errors, import placement, comparisons to None and
+# booleans, bare excepts. The compact `a; b` statements some modules use are a style choice this leaves alone.
+select = ["E4", "E71", "E72", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["F811"]        # a pytest fixture imported into a module and then named as a test's parameter
