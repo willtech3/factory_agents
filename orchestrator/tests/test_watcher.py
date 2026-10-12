@@ -358,8 +358,6 @@ def test_watcher_without_a_forge_reports_the_gap(tmp_path, root, examples):
     assert r.errors and "FORGE_TOKEN" in r.errors[0]["error"] and r.pending == [WID]
 
 
-# ---------------------------------------------------------------- the blocking Stage 5 entry point still composes the same pieces
-
 # ---------------------------------------------------------------- the CLI
 
 def test_cli_watch_once_runs_a_tick(tmp_path, root, examples, monkeypatch):

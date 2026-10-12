@@ -297,6 +297,15 @@ def test_platform_success_path_with_fake_client(client, monkeypatch, tmp_path, r
         assert c.get("/api/platform").json()["ok"] is True
 
 
+def test_file_queue_writes_atomically_and_leaves_no_temp_files(tmp_path):
+    """The Console and the CLI share the gate queue's files: a write lands whole, through a temp file and a rename."""
+    from factory.surfaces.filequeue import FileQueue
+    q = FileQueue(tmp_path / "q")
+    q._save("gates.json", {"a": 1})
+    assert json.loads((tmp_path / "q" / "gates.json").read_text()) == {"a": 1}
+    assert not [p for p in (tmp_path / "q").iterdir() if p.name.startswith(".gates")]   # no temp files left behind
+
+
 def test_a_design_only_run_says_so(client):
     store = client.console.store
     store.append("run_designonly1", "run.created", {"type": "orchestrator"}, {"policy": {"preview_mode": "local"}, "budget_usd": 50, "outcome_id": "o", "title": "D", "design_only": True})
@@ -345,6 +354,7 @@ def test_resume_is_offered_only_for_failed_runs_that_reached_implementation(clie
     assert d["stage"] == "failed" and d["resumable"] is True
     res = client.post(f"/api/runs/{rid2}/resume")
     assert res.status_code == 409 and "not configured" in res.json()["detail"]
+    assert not list((runs_dir / "_logs").glob("resume-*.log"))             # nothing was started
 
 
 def test_budget_pause_is_shown_decided_and_resumed_from_the_console(client, monkeypatch, schemas_dir):
@@ -496,6 +506,7 @@ def test_watch_is_offered_for_live_runs_with_open_pull_requests(client, examples
     assert d["work_items"][0]["cr_url"].endswith("/pull/7") and d["work_items"][0]["merge_sha"] is None
     res = client.post(f"/api/runs/{rid}/watch")
     assert res.status_code == 409 and "FORGE_TOKEN" in res.json()["detail"]
+    assert not list((runs_dir / "_logs").glob("watch-*.log"))              # nothing was started
 
     # a live heartbeat from a watcher that is still running refuses a second one
     (runs_dir / rid / HEARTBEAT).write_text(json.dumps({"pid": os.getpid(), "started_at": "t", "last_poll_at": "t", "pending": [wid],
