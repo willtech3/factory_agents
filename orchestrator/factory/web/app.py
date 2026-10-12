@@ -740,6 +740,7 @@ class Console:
         return env
 
     def recover_run(self, run_id: str, body: RecoveryBody):
+        self.run_detail(run_id)  # validate the identifier and existence before creating a controller lock
         from .. import build_recovery
         from ..runner import controller_lock, RunLocked
         try:
