@@ -799,8 +799,8 @@ def _resume_implementation(ctx: RunContext, outcome: dict[str, Any], events: lis
     spec_md = {sid: _spec_markdown(ctx, s) for sid, s in specs.items()}
     guidance = approved_record(ctx, events, specs)
     points = resume_points(ctx, specs)
-    recovery = next((e.payload for e in reversed(events) if e.kind == "build.recovery"), None)
-    if recovery and recovery["decision"] == "request_changes":
+    recovery = next((e.payload for e in reversed(events) if e.kind == "build.recovery" and e.payload.get("decision") == "request_changes"), None)
+    if recovery:
         sid, n = recovery["spec_id"], recovery["round"] + 1
         if sid in points:
             guidance[sid] = guidance.get(sid, "") + "\n# Build recovery instructions from the owner\n" + recovery["comments"]

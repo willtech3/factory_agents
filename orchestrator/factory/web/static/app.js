@@ -843,7 +843,7 @@
     return card("Your turn", el("div", { class: "recovery", id: "recovery" },
       el("p", { class: "lead-line" }, failed.length ? `${plural(failed.length, "required check")} still failing. The saved work needs a recovery decision.` : "The build needs your decision before it can continue."),
       failed.length ? el("ul", { class: "recovery-blockers" }, failed.map(x => el("li", null, el("b", null, labels[x.check] || words(x.check)), el("span", { class: "explain" }, x.detail)))) : null,
-      el("p", { class: "explain" }, `${(rec.criteria || []).filter(c => c.status === "met").length} of ${(rec.criteria || []).length} acceptance criteria met · candidate ${(rec.head_sha || "").slice(0, 10)}`), details, options), "Build paused for a decision", "call");
+      el("p", { class: "explain" }, `${(rec.criteria || []).length ? `${rec.criteria.filter(c => c.status === "met").length} of ${rec.criteria.length} acceptance criteria met · ` : "Awaiting fresh verification · "}candidate ${(rec.head_sha || "").slice(0, 10)}`), details, options), "Build paused for a decision", "call");
   }
   function visualEvidenceCard(r) {
     const current = r.visual_evidence.filter(e => e.current), earlier = r.visual_evidence.filter(e => !e.current);

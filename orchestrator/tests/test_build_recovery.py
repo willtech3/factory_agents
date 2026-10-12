@@ -138,7 +138,7 @@ def test_recovery_refuses_tampered_gate_snapshot(tmp_path,root,monkeypatch):
     ctx=escalated(tmp_path,root,monkeypatch);rec=br.snapshot(ctx.store,tgr.RUN)
     gate=br.open_gate(ctx.store,ctx.queue,tgr.RUN,rec)
     ctx.queue.record_decision(gate,'approve','will')
-    path=ctx.store.artifact_path(tgr.RUN,'recovery',rec['event_id']+'.json')
+    path=ctx.store.artifact_path(tgr.RUN,'recovery',rec['event_id']+'-'+rec['revision'][:12]+'.json')
     path.write_text(path.read_text()+' ')
     with pytest.raises(ValueError,match='no longer matches'):
         br.apply_decision(ctx.store,ctx.queue,tgr.RUN)
@@ -162,3 +162,47 @@ def test_recovery_rejects_unknown_run_before_creating_directories(tmp_path,root)
         result=client.post(f'/api/runs/{run_id}/recovery',json={'revision':'x','decision':'reject'})
         assert result.status_code == 404
         assert not (tmp_path/'runs'/run_id).exists()
+
+
+def test_new_implementer_block_does_not_show_a_previous_judge(tmp_path,root,monkeypatch):
+    from factory import build_recovery as br
+    ctx=escalated(tmp_path,root,monkeypatch)
+    ctx.store.put_artifact(tgr.RUN,'merge_judge','spec_a-r3-merge_readiness.json',json.dumps({'round':3,'summary_for_human':'old failure','_head_sha':'old','deterministic_checks':[{'check':'build','passed':False}]}).encode())
+    ctx.event('run.resumed',{'stage':'implementing'})
+    ctx.store.put_artifact(tgr.RUN,'implement','spec_a-r4-implementation_report.json',b'{"head_commit":"new"}')
+    ctx.store.put_artifact(tgr.RUN,'implement','spec_a-r4-blocked.md',b'New history conflict')
+    ctx.event('run.escalated',{'reason':'blocked','summary':'New history conflict'},spec_id='spec_a')
+    rec=br.snapshot(ctx.store,tgr.RUN)
+    assert rec['summary']=='New history conflict' and rec['round']==4 and rec['head_sha']=='new'
+    assert rec['checks']==[] and rec['artifact']=='implement/spec_a-r4-blocked.md'
+
+
+def test_recheck_keeps_the_authorized_corrective_review_cycle(tmp_path,root,monkeypatch):
+    from factory import build_recovery as br
+    ctx=escalated(tmp_path,root,monkeypatch)
+    rec=br.snapshot(ctx.store,tgr.RUN);gate=br.open_gate(ctx.store,ctx.queue,tgr.RUN,rec)
+    ctx.queue.record_decision(gate,'request_changes','will','Fix it');br.apply_decision(ctx.store,ctx.queue,tgr.RUN)
+    ctx.event('run.resumed',{'stage':'implementing'})
+    ctx.store.put_artifact(tgr.RUN,'implement','spec_a-r2-implementation_report.json',b'{"head_sha":"new"}')
+    ctx.store.put_artifact(tgr.RUN,'implement','spec_a-r2-review_response.json',b'{"responses":[]}')
+    ctx.event('run.escalated',{'reason':'history conflict'},spec_id='spec_a')
+    rec=br.snapshot(ctx.store,tgr.RUN);gate=br.open_gate(ctx.store,ctx.queue,tgr.RUN,rec)
+    ctx.queue.record_decision(gate,'approve','will','Verify the compatible merge candidate')
+    seen={}
+    def recover(ctx,outcome,specs,spec_md,spec_verdict,resume=None,guidance=None):
+        seen.update(points=resume);return RunStage.IMPLEMENTING
+    monkeypatch.setattr(runner,'implement_and_integrate',recover)
+    assert runner.resume(ctx)==RunStage.IMPLEMENTING
+    assert seen['points']['spec_a'].review_through==2
+    assert seen['points']['spec_a'].report['head_sha']=='new'
+
+
+def test_changed_recovery_evidence_supersedes_the_old_gate(tmp_path,root,monkeypatch):
+    from factory import build_recovery as br
+    ctx=escalated(tmp_path,root,monkeypatch);rec=br.snapshot(ctx.store,tgr.RUN)
+    old=br.open_gate(ctx.store,ctx.queue,tgr.RUN,rec)
+    ctx.store.put_artifact(tgr.RUN,'implement','spec_a-r2-implementation_report.json',b'{"head_commit":"new"}')
+    fresh=br.snapshot(ctx.store,tgr.RUN);new=br.open_gate(ctx.store,ctx.queue,tgr.RUN,fresh)
+    assert old != new and set(ctx.store.state(tgr.RUN).open_gates)=={new}
+    ctx.queue.record_decision(new,'approve','will');br.apply_decision(ctx.store,ctx.queue,tgr.RUN)
+    assert not ctx.store.state(tgr.RUN).open_gates
