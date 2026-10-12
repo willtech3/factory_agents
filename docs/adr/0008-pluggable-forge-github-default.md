@@ -23,6 +23,7 @@ The orchestrator was hard-wired to GitLab: a `GitLabClient`, `GITLAB_*` configur
 - `environments/factory-cloud.yaml` allows `github.com` and `api.github.com`; the GitLab host is a commented alternative.
 - Gate 3 on GitHub is a PR review: `change_request_approved` treats the latest non-comment review per user as that user's position. On a personal repository the owner cannot request a review from themselves (GitHub 422); the forge tolerates it.
 - Pipelines are observed by polling the forge; the webhook parsers this ADR first described were never wired to an endpoint and were removed (2026-10-12).
+- `create_branch` and `render_feedback_md` left the protocol with the design change request ([ADR-0011](0011-no-design-change-requests.md), 2026-10-11).
 - `post_comment` and `deployment_for_sha` had no caller and left the protocol (2026-10-12).
 - Pre-ADR names (`GitLabClient`, `on_mr_merged`) were kept as aliases for one release and removed on 2026-10-11.
 - A repository can be created by the factory (`Forge.repository_exists` / `create_repository`, `ensure_repository`) when the outcome marks it `create: true`; the forge is then bound to the outcome's repository, and `FORGE_REPO` is derived from the outcome's URL when unset.

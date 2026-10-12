@@ -16,13 +16,15 @@ Stochastic measurements follow the methodology in `docs/06-evaluation.md`: at le
 ```
 evals/
   README.md                 this file
-  datasets/                 one directory per dataset: README.md (provenance, labelling, splits) + items.jsonl (sample rows)
+  datasets/                 one directory per dataset: README.md (provenance, labelling, splits) + items.jsonl (sample rows);
+                            factory-bench holds a reference run (sample-app/) instead of items.jsonl
   graders/
     deterministic.py        wraps orchestrator/factory/checks.py for eval use
     stochastic.py           LLM judge with N votes, position swap, bootstrap CI, kappa
-  run_eval.py               runs one stage over one dataset for one agent version; writes results/<timestamp>/
+  run_eval.py               runs one stage over one dataset for one agent version; writes results/<timestamp>-.../
+                            producing is a stub: --from-artifacts grades artifacts made elsewhere
                             --recorded: regrades or replays a dataset of recorded sessions (below)
-  gate.py                   CI: every prompt and rubric has an eval receipt for its exact bytes
+  gate.py                   CI: every graded role's prompt and rubric has an eval receipt for its exact bytes
   receipts.json             per role: the prompt and rubric sha256 last cleared, and how (replayed or waived)
   results/                  gitignored
   recordings/               gitignored: datasets exported from real runs
@@ -43,8 +45,10 @@ python evals/run_eval.py --recorded evals/recordings/live --agent merge_judge --
 configured with the same sessions again and grades both the same way: the output validates on receipt and the judges keep
 their decision rules. It regresses when its credible interval lies wholly below the recorded versions'.
 
-A change to `agents/*.md` or `rubrics/*.md` needs a receipt for its bytes before CI passes (`evals/gate.py`):
-`--replay --receipt` records one for a replay that did not regress, and `factory eval waive --agent <role> --reason
+A change to the prompt or rubric of a graded role (decomposer, spec writer, spec judge, implementer, reviewer, security
+reviewer, merge judge: `ROLE_FILES` in `orchestrator/factory/receipts.py`) needs a receipt for its bytes before CI
+passes (`evals/gate.py`, or `factory eval gate`). The integrator, codebase researcher and app onboarding prompts are not
+gated. `--replay --receipt` records one for a replay that did not regress, and `factory eval waive --agent <role> --reason
 "..."` records a person's decision that the change needs none. Recordings hold repository content and owners' notes:
 keep them out of the repository.
 
@@ -54,16 +58,21 @@ keep them out of the repository.
 |---|---|---|---|---|
 | `outcomes-golden` | decomposer | 30 to 50 business outcomes with reference decompositions | expert rubric scores per criterion (D1 to D8), not reference similarity | internal history (anonymised) plus synthesized then human-validated |
 | `spec-defects` | spec judge | 150 specs, half clean, half with one planted defect each (ambiguity, missing NFR, contradiction, untestable AC, interface mismatch with a sibling, scope leak) | defect type and location; clean/faulty | derived from `outcomes-golden` specs by mutation; human-checked |
-| `spec-from-item` | spec writer | 60 work items with repos | rubric scores S1 to S10 by two humans; kappa reported | subset of `outcomes-golden` |
+| `spec-from-item` | spec writer | 60 work items with repos | rubric scores S1 to S13 by two humans; kappa reported | subset of `outcomes-golden` |
 | `impl-from-spec` | implementer | 80 specs against real repos, each with a **hidden** acceptance test suite the implementer never sees | hidden tests pass/fail per AC; diff scope; protected tests | FeatureBench-style multi-file tasks (Zhou et al. 2602.10975) rewritten as specs, plus internal tasks; post-cutoff items only |
 | `review-mutations` | reviewer, merge judge | 120 implementations: 60 clean, 60 with one injected defect (off-by-one, race, missing error path, spec deviation, security) paired to the clean parent | defect location and category; clean/faulty pairing | mutation of `impl-from-spec` passing solutions |
 | `factory-bench` | end to end | 10 outcomes against 3 synthetic repos (Rails, TypeScript service, Python CLI) with hidden acceptance tests per outcome | outcome achieved (hidden suite), human interventions needed, cost, wall time | built for this purpose; refreshed quarterly to limit contamination |
 | `gate-decisions` | online | every gate decision, edit, and comment in production | human decision, time to decide, edit distance between agent artifact and approved artifact | telemetry |
 
+The table is the target. In this repository so far: `outcomes-golden` (3 sample rows), `spec-defects` (7) and `review-mutations` (5),
+whose rows point at repositories and files that are not in this repository (the grader tests use the og-001 artifacts in
+`examples/ledgerline/`), and `factory-bench`, which holds one reference run (`sample-app`), not a hidden suite.
+`spec-from-item`, `impl-from-spec` and `gate-decisions` have no directory yet.
+
 ## Headline metrics per stage
 
 - **Decomposer:** mean rubric score per criterion (D1 to D8) from a calibrated judge; share of items with any criterion at 0; blocking-question precision (share of blocking questions a human agreed were blocking); Gate 1 approval rate without changes (online).
-- **Spec writer:** mean rubric score S1 to S10; share passing the judge in round 1; rounds to pass; Gate 2 edit distance (online).
+- **Spec writer:** mean rubric score S1 to S13; share passing the judge in round 1; rounds to pass; Gate 2 edit distance (online).
 - **Spec judge:** precision and recall on `spec-defects` by defect type; kappa against human scores on `spec-from-item`; position-swap consistency; false-pass rate on planted blocking defects (the number that matters most).
 - **Implementer:** hidden-test pass rate per AC and per spec; pass^k over 5 runs (reliability, not luck); scope and protected-test violation rate; slice discipline (commits per spec, lines per commit); erosion metrics over consecutive specs on the same repo (SlopCodeBench-style: duplication, complexity delta).
 - **Reviewer:** paired discrimination (flag rate on faulty minus flag rate on clean parent) by defect category; finding precision as judged by the merge judge and by humans on a sample; refutation-condition quality (share meetable); over-rejection rate on clean items.

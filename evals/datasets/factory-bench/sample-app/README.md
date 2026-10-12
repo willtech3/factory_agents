@@ -5,8 +5,8 @@ The first end-to-end run of the factory, kept as a reference. It is **not** a hi
 - `outcome.json`: the outcome the run started from (identical to `examples/sample-app/outcome.json`).
 - Target repository at its pre-change state: `examples/sample-app/` in this repository (the live repository `willtech3/factory-sample-app` was a throwaway copy of it).
 - `reference-run/artifacts/`: every artefact the run persisted, by stage (decomposition, spec rounds, judge verdicts, implementation reports, deterministic checks, test results, reviewer findings per pass, merged findings, review responses, merge readiness, integrator output), with sha256 sidecars.
-- `reference-run/events.jsonl`: the run's full event log (`run_57fde1adc2`, 2026-10-10).
-- `reference-run/pages/`: the Gate 1 and Gate 2 reading pages as the owner saw them.
+- `reference-run/events.jsonl`: the run's full event log (`run_57fde1adc2`, 2026-10-10). A run now keeps its events in `runs/<run_id>/run.db`; `factory export-events <run_id>` writes them in this form.
+- `reference-run/pages/`: the Gate 1 and Gate 2 reading pages as the owner saw them (Gate 2 as approved, the second time it opened).
 - `reference-run/change.patch`: the diff the factory produced (`main...factory/run_57fde1adc2/spec_wi-due-dates-overdue`, judged head `93ced45`, plus the run-record commit).
 - `reference-run/pull_request.json`: the pull request the integrator opened, body included.
 

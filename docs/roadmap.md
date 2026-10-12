@@ -7,7 +7,7 @@ The design is complete enough to iterate on. The order below was chosen so that 
 ## Spike 1: platform plumbing (1 to 2 days)
 Goal: one `decomposer` session end to end on the Ledgerline example outcome against a real (fork of a) repository, following [07-personal-e2e-setup.md](07-personal-e2e-setup.md) with a personal GitHub repository and Linear workspace.
 - `ant apply --dry-run agents environments`, review the plan, apply. Commit `claude-lock.json`.
-- `ANTHROPIC_API_KEY` (and `ANTHROPIC_WORKSPACE_ID`) in `.env`; `factory doctor` reports the agents found on the platform. Start with a **design run** (`factory run --design-only`, or the Console's Start design run) on `examples/sample-app/outcome.json`: decomposer, spec writers, judge, two gates, no repository.
+- `ANTHROPIC_API_KEY` (and `ANTHROPIC_WORKSPACE_ID`) in `.env`; `factory doctor` reports the agents found on the platform. Start with a **design run** (`factory run --design-only`, or **Design only: stop after Gate 2** on the Console's Start a run page) on `examples/sample-app/outcome.json`: decomposer, spec writers, judge, two gates, no repository.
 - Fine-grained GitHub PAT (or `gh auth token`), Linear API key and team id, `factory doctor`.
 - Run `factory run <your outcome.json>`; confirm the `github_repository` resource mounts the repository at `/workspace/repo` and that `git push` from the sandbox works through the proxy.
 - Confirm the Linear mapping live: project and issues appear, the gate comment carries the hashes, a label plus comment is read back as a decision, `feedback.md` renders. Fix GraphQL field names in `surfaces/tracker.py` as needed.
@@ -51,7 +51,7 @@ Goal: confirm the read-only calls Stage 5 and the preview lookup depend on, agai
 
 ## Milestone C: evals that gate changes (week 8)
 - `outcomes-golden` to 12 items, `spec-defects` to 60, `review-mutations` to 40, with human labels and kappa.
-- CI: L0 on every commit; L1 on changes to `agents/` or `rubrics/`.
+- CI: L0 on every commit; L1 on changes to `agents/` or `rubrics/`. CI already refuses a change to a graded role's prompt or rubric without an eval receipt, a replay of recorded sessions or a waiver (`evals/gate.py`, [ADR-0016](adr/0016-evals-from-recordings.md)).
 
 ## Deliberately deferred
 - **Tiered or automatic approval** of any gate. Needs six months of gate telemetry first.
@@ -67,4 +67,4 @@ The live/stub/unused status of each piece is in [repo-map.md](repo-map.md#what-r
 - The Factory Console is local and unauthenticated. It reviews Gates 1 and 2, and shows Gate 3 and Stage 5 only as the watcher records them.
 - `local` preview mode runs tests and the service on the orchestrator host. `managed` mode moves that into a hosted sandbox. Production would use CI or `managed`.
 - Stage 5 is driven by a polling watcher (`factory watch`). There is no forge webhook endpoint yet. A deploy-failure `request_changes` leaves the item at `implementing` with its feedback file and does not start the follow-up round.
-- `merge_findings` matches findings across passes and rounds by category, file, and the first three characters of the line number. That is crude, but good enough until real findings show what collides.
+- `merge_findings` matches findings across passes by category, file, and the first three characters of the line number, and across rounds by the previous finding id a reviewer cites, falling back to the same key. That is crude, but good enough until real findings show what collides.

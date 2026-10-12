@@ -1,6 +1,6 @@
 # The factory in one page
 
-A **run** takes one business outcome and ends with one or more change requests (GitHub pull requests by default, GitLab merge requests as the second forge) that a human reviews and merges, followed by an observed deploy to `dev` that the orchestrator verifies end to end. Between the two sit six agent roles, three human gates, and a deterministic orchestrator that moves artifacts between them. Humans read gates on artifact pages and decide them on the tracker (Linear by default, Jira later), the CLI, or the forge. The deployment platform (CI templates, preview environments, dev) already exists; the factory uses it and never authors it.
+A **run** takes one business outcome and ends with one or more change requests (GitHub pull requests by default, GitLab merge requests as the second forge) that a human reviews and merges, followed by an observed deploy to `dev` that the orchestrator verifies end to end. Between the two sit nine agent roles ([02-agents.md](02-agents.md)), three human gates, and a deterministic orchestrator that moves artifacts between them. Humans read gates on artifact pages and decide them in the Factory Console or the CLI, or on the tracker when one is configured (Linear; Jira is not implemented). Gate 3 is code review on the forge. The deployment platform (CI templates, preview environments, dev) already exists; the factory uses it and never authors it.
 
 ```
                     ┌──────────────┐
@@ -26,7 +26,7 @@ A **run** takes one business outcome and ends with one or more change requests (
                           └── another_round ◄────────────────────────────────────┤
                                                                                   ▼
                                                                          ┌──────────────┐
-                                                                         │  Integrator  │ ──► change request (PR/MR)
+                                                                         │  Controller  │ ──► change request (PR/MR); an integrator only rewords a refused draft
                                                                          └──────────────┘
                                                                                   ▼
                                                                 ▣ GATE 3  human code review + merge on the forge

@@ -19,4 +19,4 @@ Not reference similarity. Per DELTA (Ly et al., ASE 2026), text similarity to a 
 - `test` (60%): touched only for the headline number. Contamination guard: items never appear in skills, memory stores, or prompts.
 
 ## Sample row (`items.jsonl`)
-See the file. Fields: `item_id`, `difficulty`, `outcome` (inline), `repo` {url, sha}, `reference_decomposition_path`, `expected_questions` [], `must_cover_metrics` [], `forbidden` [].
+See the file. Fields: `item_id`, `difficulty`, `outcome` (inline), `repo` {url, sha}, `reference_decomposition_path`, `expected_questions` [], `must_cover_metrics` [], `forbidden` []. The split is a `split` field (`dev` or `test`); `run_eval.py --split` counts a row without one as `test`, and no sample row has one yet.

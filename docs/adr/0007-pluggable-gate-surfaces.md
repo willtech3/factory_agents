@@ -19,7 +19,7 @@ The existing protocols already allowed this: `ApprovalQueue` and `Notifier` in `
 
 ## Why not the alternatives
 - **Tracker only, no pages.** Linear and Jira comments are fine for a summary and a decision but poor for reading a 400-line spec with tables. Pages are cheap and keep the tracker comment short.
-- **Reading and deciding both on the page.** A page would need a backend to record a decision, which is the Factory Console: deferred on purpose (roadmap). The tracker already has auth, audit, notifications, and a mobile app.
+- **Reading and deciding both on the page.** A page would need a backend to record a decision, which is the Factory Console: deferred on purpose (roadmap). (Since built: `factory web` reads the gates and records decisions to the file queue; see decision 1.) The tracker already has auth, audit, notifications, and a mobile app.
 - **Decisions by comment text only, no labels.** Labels are what a board filters on, survive comment edits, and are one click from a phone; the comment carries the reasoning and the subset list.
 
 ## Consequences

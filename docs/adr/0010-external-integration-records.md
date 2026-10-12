@@ -5,3 +5,5 @@ Integration must open the PR at the exact head verified and approved by the merg
 This supersedes the implementation run-record commit in ADR-0007. The forge design-gate branch was removed by [ADR-0011](0011-no-design-change-requests.md).
 
 An owner may explicitly evaluate a run whose implementation was already merged, against a comparison branch pinned to the original approved baseline. The controller records this instruction without changing approved outcome/spec bytes, checks the pin on resume, binds reviews and judgement to both base and candidate, and forces a labeled draft evaluation PR. An ordinary resume continues to target its recorded repository default branch.
+
+Update (2026-10-12): since #25 the artifact links go into the spec's run record (`run_record.py`), and the change request description links that record exactly once (`pr_description.py`). Since #46 the controller opens the change request itself when that description passes its lint; the integrator runs only to reword a refused draft.

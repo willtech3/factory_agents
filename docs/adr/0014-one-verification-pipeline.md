@@ -48,7 +48,7 @@ The code moved to match. `local_verifier.py` holds the controller's own verifica
 ## What this phase did not do
 - **The local target still runs on the controller's host**, in a per-run virtualenv. Running it in a container is a separate change.
 - **Stage 5 keeps its injected e2e runner.** It reads its rows through `plan_of` and `row_passed`, but does not build a bundle. Hosted dev verification is still blocked, as before.
-- **Agent prompts still carry per-mode preview clauses.** Collapsing them into one sentence ("the controller verifies your pushed head; the evidence is in verification.json") belongs to the rule registry (phase 4), which generates prompts.
+- **Agent prompts still carry per-mode preview clauses.** Collapsing them into one sentence ("the controller verifies your pushed head; the evidence is in verification.json") belongs to the rule registry (phase 4), which generates prompts. Phase 4 kept them in the kickoff strings, because they describe each verification host's mechanics, not rules ([ADR-0015](0015-rule-registry.md)).
 
 ## Consequences
 - Specs with `target: local` entries that never passed now fail `e2e_local` on every target. This is the fix, and it can turn an old spec's green round red.

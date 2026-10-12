@@ -24,5 +24,5 @@ Against the self-hosted instance: pipelines-by-sha, jobs and trace, environments
 ## Consequences
 - The factory depends on the platform's pipeline being reliable; a flaky pipeline shows up as `DEPLOY_FAILURE` gates, and the `approve` option (watch the next pipeline once) exists for that.
 - A dev failure after merge produces a follow-up branch and change request, not a revert; reverts remain a human decision on the forge.
-- `test_results.json` handed to the merge judge and integrator now carries `commands`, `e2e`, and `preview` sections.
+- `test_results.json` handed to the merge judge and integrator now carries `commands`, `e2e`, and `preview` sections. Since #25 the integrator no longer receives it; the controller renders the change request's testing section from it (`pr_description.py`).
 - `success_metrics[]` gained optional `measured_at` and `measured_value` so a human can record the outcome later; no agent sets them.

@@ -13,14 +13,15 @@ Where things live, what runs, and what is reference material or not wired up. St
 | `schemas/` | JSON Schema for every artifact passed between stages, plus the onboarding plan and test recipe | **Yes**. Checked by the orchestrator and uploaded to sessions |
 | `rubrics/` | Per-criterion 0–3 rubrics used by the judges and the platform's outcome grader | **Yes**. Uploaded to sessions |
 | `skills/platform-contract/` | What the deployment platform provides and requires. This version describes the personal-GitHub setup | **Yes**. Uploaded to every session and seeded into repositories the factory creates |
+| `skills/security-review/` | The security reviewer's reference: per-stack sink tables and the sources behind its rules | **Yes**. Uploaded to every security review session |
 | `templates/` | The PR description template and the GitHub Actions preview workflow seeded into new repositories | **Yes** |
 | `examples/` | Outcomes and fixtures (see [Examples](#examples)) | Partly. Some are start points or test fixtures |
-| `evals/` | Evaluation plan, dataset specs, graders, and a reference run | Graders are tested. The runner's agent-driving step is a stub |
+| `evals/` | Evaluation plan, dataset specs, graders, a reference run, and the eval receipts that gate changes to the graded roles' prompts and rubrics (`receipts.json`, `gate.py`) | Graders, the replay of recorded sessions and the receipts gate are tested; CI runs `gate.py`. Driving agents over the labelled datasets is a stub |
 | `docs/` | Design, setup guides, ADRs, research, and dated audits and post-mortems | No |
-| `.github/workflows/ci.yml` | Tests on Python 3.12 and 3.13, the ruff gate, and the browser runner against a real Chromium | On every pull request |
+| `.github/workflows/ci.yml` | Tests on Python 3.12 and 3.13, the ruff gate, the eval receipts gate (`evals/gate.py`), and the browser runner against a real Chromium | On every pull request |
 | `.claude/launch.json` | Starts the Console as a Claude Code preview server | Dev convenience |
 
-Local-only files (git-ignored): `.env` (API key, workspace ID, forge token), `runs/` (every run's event log and artifacts), `orchestrator/.venv/`, `orchestrator/shell-shim/` (ignored as a safety net: the verifier's `sh` symlink belongs under each run's verify directory, and `tests/conftest.py` fails any test that leaves it here).
+Local-only files (git-ignored): `.env` (API key, workspace ID, forge token), `runs/` (every run's event log and artifacts), `evals/recordings/` (recorded sessions, which hold repository content and owners' notes), `evals/results/`, `orchestrator/.venv/`, `orchestrator/shell-shim/` (ignored as a safety net: the verifier's `sh` symlink belongs under each run's verify directory, and `tests/conftest.py` fails any test that leaves it here).
 
 ## How the pieces connect
 
@@ -32,7 +33,7 @@ flowchart TB
     runner["runner.py<br/>run loop"]
     stages["stages/<br/>decompose, specify, implement,<br/>integrate, deploy_observe"]
     checks["checks.py, security.py<br/>deterministic checks"]
-    localv["LocalVerifier<br/>preview mode local"]
+    localv["LocalVerifier<br/>preview modes local and platform"]
     store[("runs/run_id/<br/>run.db (events, steps) + artifacts")]
     queue[("runs/_queue/<br/>open gates and decisions")]
   end
@@ -56,7 +57,7 @@ flowchart TB
   console -- "reads" --> store
 ```
 
-The controller never runs inside the sandbox, and agents never call each other. A stage starts a session, uploads its inputs (artifacts, schemas, rubrics, the platform skill, `sandbox_tools/validate.py`), waits for it to finish, downloads its outputs, validates them, runs the deterministic checks, and appends events. Each session is a durable step that records its session id before anything waits on it, so a controller that dies leaves sessions the next one follows ([ADR-0013](adr/0013-durable-runs.md)). Everything the Console shows is derived from the run's events by `state.reduce` and `summary.summarize`, so any run can be replayed (`factory replay`).
+The controller never runs inside the sandbox, and agents never call each other. A stage starts a session, uploads its inputs (artifacts, schemas, rubrics, the platform skill, `sandbox_tools/validate.py`), waits for it to finish, downloads its outputs, validates them, runs the deterministic checks, and appends events. Each session is a durable step that records its session id before anything waits on it, so a controller that dies leaves sessions the next one follows ([ADR-0013](adr/0013-durable-runs.md)). A run's state and status are derived from its events by `state.reduce` and `summary.summarize`, so any run can be replayed (`factory replay`); the Console's Steps card and `factory steps` read the steps table through `projection.project`.
 
 A human decides a gate by writing to the file queue, either from the Console or with `factory decide`. The run process polls the queue and accepts a decision only if it names the same artifact hashes the gate showed ([ADR-0005](adr/0005-gates-bind-to-artifact-hashes.md)).
 
@@ -64,7 +65,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 
 | Place | What runs there | Entered through |
 |---|---|---|
-| Your machine | The Console, `factory run` / `resume` / `watch`, deterministic checks, and in `local` preview mode the app's tests and service (`LocalVerifier`, `LocalPreview` in `stages/implement.py`) | `factory` CLI, `factory web` |
+| Your machine | The Console, `factory run` / `resume` / `watch`, deterministic checks, the app's tests in `local` and `platform` preview modes and its service in `local` mode (`LocalVerifier`, `LocalPreview` in `local_verifier.py`) | `factory` CLI, `factory web` |
 | Managed Agents session | One agent role per session, with the repository mounted at `/workspace/repo` | `sessions.SessionDriver` |
 | Hosted verification sandbox | In `managed` mode, the app's recipe, its tests and its e2e and browser checks for one candidate commit; also app onboarding verification | `hosted_verifier.py`, `test_environments.run_hosted` |
 | GitHub Actions | The target repository's own CI and preview workflow. The factory only reads it | `forge/github.py` (read-only) |
@@ -73,7 +74,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 
 - `local` runs it on your machine. This is what the personal setup has used.
 - `managed` runs it in a hosted sandbox built from the app's onboarded recipe ([09-app-onboarding.md](09-app-onboarding.md)).
-- `platform` (the config default) reads a preview URL from the forge's deployment records ([05-platform-and-deployment.md](05-platform-and-deployment.md)).
+- `platform` (the config default) runs the test commands on your machine and the preview entries against a preview URL read from the forge's deployment records ([05-platform-and-deployment.md](05-platform-and-deployment.md)).
 
 ## Orchestrator modules (`orchestrator/factory/`)
 
@@ -81,10 +82,11 @@ A human decides a gate by writing to the file queue, either from the Console or 
 
 | Module | Role |
 |---|---|
-| `cli.py` | The `factory` command: `doctor`, `run`, `gates`, `decide`, `answer`, `status`, `replay`, `timing`, `steps`, `resume`, `watch`, `runs`, `rules`, `web`, plus the `eval` (export, waive, gate), the `environment` and `browser` sub-commands |
+| `cli.py` | The `factory` command: `doctor`, `run`, `gates`, `decide`, `answer`, `status`, `replay`, `export-events`, `timing`, `steps`, `resume`, `watch`, `runs`, `rules`, `web`, plus the `eval` (export, waive, gate), the `environment` and `browser` sub-commands |
 | `web/app.py` | The Factory Console: a FastAPI app with Runs, Board, Start a run, Outcomes, Apps and Settings, a JSON API, and gate review pages. It starts runs, resumes and watchers as background `factory` processes |
 | `web/static/` | The Console UI: one HTML page, vanilla JS and CSS, no build step |
 | `web/repositories.py` | Read-only GitHub repository search for the Console's repository picker |
+| `errors.py` | `Refusal`: a request refused for a reason the person can act on. The Console answers it with its status code; the CLI prints it |
 
 **Run loop and state**
 
@@ -96,6 +98,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 | `store.py` | One SQLite database per run (`run.db`): the event log, validated as each event is written, and the steps table (the pipeline's steps and one per agent session); the artifact files (each with its sha256) and content-addressed blobs under `runs/<run_id>/`. Imports an older run's `events.jsonl` on first open; `factory export-events` writes it back out |
 | `gates.py` | Gates and in-session questions: the protocols, hash binding, and the composite queue that lets several surfaces decide |
 | `approvals.py` | What a Gate 2 approval may select, and how the owner's notes are routed to each spec |
+| `build_recovery.py` | The build-recovery gate for a spec whose build escalated: a hash-bound snapshot of its last verdict, findings, checks and head, the gate opened on it, and the owner's decision (recheck, request changes, close) recorded for that spec's implement step |
 | `budget.py` | Run budget enforcement. Pauses before the session that would exceed `constraints.budget_usd` |
 | `pr_description.py` | Renders the change request description from `templates/cr_template.md` and lints it (60 lines, no factory ids, vocabulary, costs or local links; post-mortem 2026-10-11) |
 | `pr_media.py` | Chooses the up to three screenshots and one demo a change request may show (passed, approved head, requested viewport, no credential seen) |
@@ -114,7 +117,8 @@ A human decides a gate by writing to the file queue, either from the Console or 
 | `implement.py` | 3. Per spec: implementer, reviewer and security-reviewer passes, then the merge judge, each round and each judgement a step (`implement/<spec>/r<n>`, `implement/<spec>/judge#<k>`; `adopt_rounds` for older runs). Each round verifies its head through `verification`. Also holds the findings merge |
 | `integrate.py` | 4. The orchestrator opens the PR at the exact head the merge judge approved, with the reviewer-first description it rendered and linted; an integrator session runs only to reword a draft the lint refuses. The approved spec, verdicts and the spec's run record stay in Factory's artifact store and are linked from the PR, not committed to the branch ([ADR-0010](adr/0010-external-integration-records.md)) |
 | `deploy_observe.py` | 5. Watches the platform deploy `main` to dev and runs e2e against it. Driven by `watcher.py` |
-| `common.py` | Shared helpers: run a session, persist outputs, provenance, open and wait on gates |
+| `__init__.py` | `RunContext`: what every stage function takes (config, store, session driver, gate queue and notifier, forge, policy, tracker, page publisher) |
+| `common.py` | Shared helpers: run a session as a durable step (`session_step`), persist outputs, provenance, open and wait on gates (found again by identity on a replay) |
 | `watcher.py` (top level) | `factory watch`: follows open PRs to merge (Gate 3), then hands each one to Stage 5 |
 
 **Agents, checks and verification**
@@ -136,7 +140,7 @@ A human decides a gate by writing to the file queue, either from the Console or 
 | `visual.py` | The browser-evidence protocol for UI acceptance criteria (request, wait, collect screenshots) |
 | `browser_worker.py` | `factory browser ...`: lets an interactive Claude Code session with Claude in Chrome answer visual-check requests |
 | `sandbox_tools/validate.py` | Uploaded into every agent session so agents can validate their own artifacts. Never imported by the controller |
-| `sandbox_tools/environment_runner.py` | Uploaded into hosted verification sandboxes. It is the lifecycle harness that runs the recipe |
+| `sandbox_tools/environment_runner.py` | Uploaded into hosted verification sandboxes. It is the lifecycle harness that runs the recipe. `local_verifier.py` imports its test reporters and report readers, so both hosts read the same reports |
 | `sandbox_tools/browser_runner.py` | Uploaded beside the harness when a change has `factory:journey` entries: the factory's own Playwright runner that executes a change's hash-bound journey (blocked versus failed, credential hygiene) |
 
 **Apps**
@@ -164,7 +168,7 @@ Tests live in `orchestrator/tests/`, one file per area. `tests/support/scripted_
 | Status | What |
 |---|---|
 | **Run live** (first live runs on 2026-10-10, see the [post-mortem](postmortems/2026-10-10-first-live-runs.md)) | The session driver and stages 1–4 with the deployed agents. GitHub repository creation, branches, commits and PRs: [factory-sample-app#1](https://github.com/willtech3/factory-sample-app/pull/1) was merged, [factory-switchboard#2](https://github.com/willtech3/factory-switchboard/pull/2) is open. The Console and the file-queue gate surface. `local` and `managed` preview modes. `factory resume`. App onboarding (draft setup PR on `factory-onboarding-proof`) |
-| **Tested, not confirmed live** | `factory watch` and Stage 5 (the personal setup has no dev deploy, so nothing to observe yet). The `platform` preview mode and the GitHub Actions and Deployments reads it depends on. The Linear tracker surface. The Claude in Chrome browser worker (smoke-tested interactively, not unattended). The security reviewer pass (`agents/security_reviewer.md`, registered in `claude-lock.json`) |
+| **Tested, not confirmed live** | `factory watch` and Stage 5 (the personal setup has no dev deploy, so nothing to observe yet). The `platform` preview mode and the GitHub Actions and Deployments reads it depends on. The Linear tracker surface. The Claude in Chrome browser worker (smoke-tested interactively, not unattended). The security reviewer pass (`agents/security_reviewer.md`, registered in `claude-lock.json`). Evals from recordings: `factory eval export` and `evals/run_eval.py --recorded --replay` (every receipt in `evals/receipts.json` is still a waiver) |
 | **Stub** | `ClaudeArtifactPublisher` in `artifact_pages.py` (writes local files). `evals/run_eval.py::produce` (does not drive agents yet) |
 | **Written, never run** | `forge/gitlab.py` and the GitLab vault credential path (ADR-0003) |
 | **Not used by code** | `examples/ledgerline/` is test fixture data only. `examples/greenfield-browser/` is a recipe to try by hand with `factory environment verify` |
