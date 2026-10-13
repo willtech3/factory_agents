@@ -18,10 +18,11 @@ A run written by an older controller has `events.jsonl` and no database: the fir
 leaves the file renamed `events.imported.jsonl` beside the database. `factory export-events` writes the JSONL form back
 out (the eval reference runs keep that format).
 
-Steps (`steps` table) are the durable units of a run: today one per agent session (`stages/common.session_step`). A
-step records the session it started before waiting on it, so a controller that dies is not the end of the session: the
-next controller reattaches by id when it asks for the same work again. A finished step keeps how its session ended and
-its outputs as blobs; it is not reused yet. docs/adr/0013-durable-runs.md has the design and the phases that follow.
+Steps (`steps` table) are the durable units of a run: the pipeline's own steps (`runner.py`, `steps.run_step`) and one
+per agent session (`stages/common.session_step`). A session step records the session it started before waiting on it,
+so a controller that dies is not the end of the session: the next controller reattaches by id when it asks for the same
+work again. A finished step keeps its result (a session's outputs as blobs) and returns it instead of running again,
+which is how `factory resume` replays a run. docs/adr/0013-durable-runs.md has the design.
 """
 from __future__ import annotations
 

@@ -13,7 +13,7 @@ A structured, bounded exchange through artifacts, with execution as the arbiter.
 3. **Reviewer round N+1** judges each prior finding against its own refutation condition (`upheld`/`withdrawn`, one sentence each) and reviews only the new hunks for new findings. No reopening without new evidence.
 4. **Bound:** `review_max_rounds = 2`. After that, the merge judge decides.
 5. **Merge judge** receives everything plus the orchestrator's authoritative test results and deterministic checks. It re-runs reproductions, checks refutations literally, spot-checks withdrawals, and decides `ready` / `another_round` / `escalate`. A failing deterministic check is not negotiable.
-6. **Independent passes:** each review round runs `reviewer_passes` (default 2) separate reviewer sessions; findings are merged by location with the strictest severity.
+6. **Independent passes:** each review round runs `reviewer_passes` (default 2) separate reviewer sessions; findings are merged by location with the strictest severity. Since #46 the count follows the change (`review_plan`): a first round of at most `review_single_pass_lines` (150) hand-written lines gets one pass, a larger one `reviewer_passes`, and a later round `reviewer_passes_followup` (1) over the delta.
 
 ## Why this shape
 - Fresh sessions per round give the independence Song's result requires while still letting the implementer answer, which the brief requires.

@@ -1,8 +1,8 @@
 """Gate 3 and Stage 5 watcher: follow a run's change requests to the merge and the dev deploy.
 
-After the integrator opens a change request the run is complete from the orchestrator's point of view and the
+Once a change request is open the run is complete from the orchestrator's point of view and the
 work item sits at `CR_OPEN`. Review and merge happen on the forge (Gate 3), by people. Nothing in the run loop
-sees that happen, so this module does: `factory watch <run_id>` (and the Console's **Watch** button, which
+sees that happen, so this module does: `factory watch <run_id>` (and the Console's **Watch for merges** button, which
 starts the same command) polls each open change request through the configured forge and
 
 1. records `cr.merged` (or `cr.closed`) and moves the item to `MERGED` (or `CLOSED`) when the forge reports it;
@@ -16,7 +16,8 @@ state from the event log and only appends what the log does not yet hold, so the
 started at will: a merge seen twice is recorded once, an item already deploying is not moved again, a gate left
 open by a dead watcher is picked up rather than re-opened, and a decision recorded but not yet applied is applied.
 What a restart does repeat is an observation that was interrupted mid-pipeline: a new `deploy.started` with the
-next `attempt` number, because the pipeline's outcome was never recorded.
+same `attempt` number (it counts the deploy-failure gates opened since the merge), because the pipeline's outcome
+was never recorded.
 
 Bounded: `watch()` stops when no item is left at `CR_OPEN`, `MERGED`, or `DEPLOYING_DEV`, or at its deadline. One
 tick observes one pipeline at a time, for at most `Policy.dev_pipeline_timeout_seconds`.

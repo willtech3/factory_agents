@@ -14,6 +14,8 @@ Repositories are synthetic (written for this purpose with realistic warts) so th
 ## Outcomes
 10 outcomes, stratified: 3 simple, 5 medium, 2 hard. Each outcome has: `outcome.json`, hidden acceptance suite, a human "intervention script" (pre-written answers to the questions a reasonable agent would ask, and pre-written gate decisions) so runs can be unattended and reproducible, and a cost ceiling.
 
+None of these outcomes is in this repository, and nothing here runs them yet. The one item here is `sample-app/`: the first end-to-end run, kept as a reference to compare later runs against. It has an `outcome.json` but no hidden suite or intervention script ([sample-app/README.md](sample-app/README.md)).
+
 ## Metrics (per outcome, 5 runs each)
 - **Outcome achieved:** hidden suite pass rate at the end of the run (all MRs merged by the harness after `ready`). Reported as a Bayesian credible interval across runs (Hariri et al. 2510.04265), and pass^5 for reliability (Khanal et al. 2603.29231).
 - **Partial credit:** share of hidden acceptance tests passing, since 0/1 hides progress on hard items (Li et al. 2607.08964).

@@ -30,7 +30,7 @@ Examples:
    - for a check rule: the CheckResult names that enforce it, the fix a failed check tells the implementer (with a hosted variant), and the finding category;
    - the implementation-rubric item it is, if any.
 2. **Prompts and the rubric hold generated blocks.**
-   - Each agent prompt ends in a `## Rules` block rendered for its role.
+   - Each agent prompt the registry binds (`rules.AGENT_ROLES`) ends in a `## Rules` block rendered for its role.
    - The deterministic part of `rubrics/implementation.md` is rendered from the check rules. It stays below the grader marker, so the in-session grader still never sees it.
    - `factory rules` re-renders the blocks; `factory rules --check` exits 1 on drift.
    - The test suite fails on drift. Hand-written prose that restated a rule now cites its id instead.

@@ -4,18 +4,18 @@
     python evals/run_eval.py --stage spec_judge --dataset spec-defects --runs 5 --agent-version 4
     python evals/run_eval.py --stage decomposer --dataset outcomes-golden --runs 5 --split test
     python evals/run_eval.py --stage reviewer --dataset review-mutations --runs 3
-    python evals/run_eval.py --recorded runs/_evals/live --agent merge_judge --regrade
-    python evals/run_eval.py --recorded runs/_evals/live --agent merge_judge --replay --runs 3 --receipt
+    python evals/run_eval.py --recorded evals/recordings/live --agent merge_judge --regrade
+    python evals/run_eval.py --recorded evals/recordings/live --agent merge_judge --replay --runs 3 --receipt
 
 `--recorded` grades a dataset of real sessions (`factory eval export <run_id> --out <dir>`, ADR-0016) instead of a
 labelled one: `--regrade` grades the recorded outputs with today's checks, and `--replay` asks the agent version the
 controller is configured with the same sessions again, grades its outputs the same way, and compares the two. With
 `--receipt`, a replay that does not regress records the role's eval receipt (evals/receipts.json, which CI requires
-for every prompt and rubric: evals/gate.py).
+for every graded role's prompt and rubric: evals/gate.py).
 
-Shape of the loop (the stage-specific `produce_*` functions drive a Managed Agents session
-through the orchestrator's SessionDriver with the same prompts production uses, pinned to the
-agent version under test; they are stubs here until the first live spike):
+Shape of the loop for a labelled dataset (`produce` is to drive a Managed Agents session through the
+orchestrator's SessionDriver with the same prompts production uses, pinned to the agent version under
+test; it is still a stub, so `--from-artifacts` grades artifacts made elsewhere):
 
     for item in dataset[split]:
         for run in range(N):
@@ -26,8 +26,8 @@ agent version under test; they are stubs here until the first live spike):
     report: per-metric mean with bootstrap CI; paired discrimination; kappa vs human labels where present
 
 Results go to evals/results/<timestamp>-<stage>-<dataset>-v<agent_version>/ as JSONL plus a summary.json.
-Comparisons between two agent versions are made with `compare.py` (same items, same split, non-overlapping
-credible intervals as the decision rule). This file deliberately does not try to be clever: an eval harness
+Two agent versions are to be compared on the same items and split, with non-overlapping credible intervals as
+the decision rule (no comparison script exists yet). This file deliberately does not try to be clever: an eval harness
 that is hard to read is an eval harness nobody trusts.
 """
 from __future__ import annotations

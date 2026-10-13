@@ -14,12 +14,12 @@ flowchart TD
   g3 --> deploy["Observed deploy to dev<br/>+ end-to-end checks"]
 ```
 
-Each box is its own agent session. Every arrow passes a JSON artifact through the controller, which validates it and runs deterministic checks before the next stage starts. Judges never share a session with the authors they grade. No agent deploys or touches infrastructure. [docs/00-overview.md](docs/00-overview.md) explains the reasoning.
+Each agent works in its own session. Every arrow passes a JSON artifact through the controller, which validates it and runs deterministic checks before the next stage starts. Judges never share a session with the authors they grade. No agent deploys or touches infrastructure. [docs/00-overview.md](docs/00-overview.md) explains the reasoning.
 
-## Status (2026-10-10)
+## Status (2026-10-12)
 
 - **It has run live.** Real runs went from an outcome to a pull request on personal GitHub repositories: [factory-sample-app#1](https://github.com/willtech3/factory-sample-app/pull/1) (merged) and [factory-switchboard#2](https://github.com/willtech3/factory-switchboard/pull/2). Hosted verification and app onboarding have also run against real apps. Findings from those runs are in the [post-mortem](docs/postmortems/2026-10-10-first-live-runs.md).
-- **Not yet proven live:** the dev-deploy stage (the personal setup has no dev environment), the Linear and GitLab integrations, and the security reviewer (its agent is registered in `claude-lock.json`, but no security pass has run live yet). Jira is not implemented and eval-driving is a stub.
+- **Not yet proven live:** the dev-deploy stage (the personal setup has no dev environment), the Linear and GitLab integrations, and the security reviewer (its agent is registered in `claude-lock.json`, but no security pass has run live yet). Jira is not implemented. Replaying recorded sessions as evals (`evals/run_eval.py --recorded --replay`) is tested but has not run live, and driving agents over the labelled eval datasets is a stub.
 
 [docs/repo-map.md](docs/repo-map.md) has the full status table.
 
@@ -33,9 +33,10 @@ Each box is its own agent session. Every arrow passes a JSON artifact through th
 | [`schemas/`](schemas/) | JSON Schema for every artifact the stages hand each other |
 | [`rubrics/`](rubrics/) | The criteria the judges score against |
 | [`skills/platform-contract/`](skills/platform-contract/) | What the deployment platform provides and requires, uploaded to every agent |
+| [`skills/security-review/`](skills/security-review/) | The security reviewer's sink tables and sources, uploaded to every security review session |
 | [`templates/`](templates/) | The PR description template and the preview workflow seeded into new repositories |
-| [`examples/`](examples/) | Outcomes to start runs from (`sample-app`, `switchboard`) and test fixtures (`ledgerline`) |
-| [`evals/`](evals/) | The evaluation plan, datasets, graders, and a reference run |
+| [`examples/`](examples/) | Outcomes to start runs from (`sample-app`, `switchboard`), test fixtures (`ledgerline`), and a hosted-browser recipe to try by hand (`greenfield-browser`) |
+| [`evals/`](evals/) | The evaluation plan, datasets, graders, a reference run, and the eval receipts CI requires for the graded roles' prompts and rubrics |
 | [`docs/`](docs/) | Design, setup guides, decisions (ADRs), research, post-mortems |
 
 [docs/repo-map.md](docs/repo-map.md) covers which module does what, how the pieces connect, where each piece executes, and which code is live, stubbed, or unused.
@@ -46,7 +47,8 @@ Each box is its own agent session. Every arrow passes a JSON artifact through th
 cd orchestrator                          # Python 3.12 or newer
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest -q -m "not network"      # no API key needed; drop -m to include the one package-install test
-.venv/bin/ruff check --config pyproject.toml factory tests ../evals/graders ../evals/run_eval.py   # the lint gate CI runs
+.venv/bin/ruff check --config pyproject.toml factory tests ../evals/graders ../evals/run_eval.py ../evals/gate.py   # the lint gate CI runs
+.venv/bin/python ../evals/gate.py         # the eval receipts gate CI runs (ADR-0016)
 .venv/bin/factory web                     # Factory Console at http://127.0.0.1:8765/
 ```
 
@@ -57,7 +59,7 @@ To run real agents, put `ANTHROPIC_API_KEY` (and `ANTHROPIC_WORKSPACE_ID` if you
 .venv/bin/factory run ../examples/sample-app/outcome.json --design-only
 ```
 
-A full run that opens pull requests also needs a GitHub token and a target repository. Follow [docs/07-personal-e2e-setup.md](docs/07-personal-e2e-setup.md). To change the agents, edit `agents/*.md` and run `ant apply`, as described in [agents/README.md](agents/README.md).
+A full run that opens pull requests also needs a GitHub token and a target repository. Follow [docs/07-personal-e2e-setup.md](docs/07-personal-e2e-setup.md). To change the agents, edit `agents/*.md` and run `ant apply`, as described in [agents/README.md](agents/README.md). A change to a graded role's prompt or rubric needs an eval receipt before CI passes ([evals/README.md](evals/README.md)).
 
 ## Docs
 

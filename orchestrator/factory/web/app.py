@@ -234,7 +234,7 @@ class Console:
         self.cfg = cfg
         self.store = RunStore(cfg.runs_dir)
         self.queue = FileQueue(cfg.runs_dir / "_queue")
-        # run_id -> ((log size, log mtime, controller alive), summary): the history replays a log only when it changed
+        # run_id -> ((newest event seq, controller alive), summary): the history replays a log only when it changed
         self._summaries: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
         self.outcomes_dir = cfg.runs_dir / "_outcomes"
         self.logs_dir = cfg.runs_dir / "_logs"

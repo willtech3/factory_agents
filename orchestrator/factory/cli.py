@@ -7,7 +7,7 @@
     factory answer <question_id> "text"
     factory status <run_id>             # derived state + timeline
     factory replay <run_id>             # re-derive state from the event log (sanity check)
-    factory resume <run_id>             # continue a run that died during implementation or paused at its budget
+    factory resume <run_id>             # continue a stopped, failed or budget-paused run by replaying its pipeline
     factory resume <run_id> --budget 80 # ... raising the run budget (or --outcome file.json to read it from there)
     factory watch <run_id> [--once]     # Gate 3 and Stage 5: follow the run's pull requests to the merge and the dev deploy
     factory runs [--active]             # the run history: every run, its status, and what came out of it
@@ -387,8 +387,8 @@ def _report_final(ctx, run_id: str, final) -> None:
 @app.command()
 def resume(run_id: str, forge: bool = typer.Option(True, help="Talk to the forge (change requests, pipelines)"),
            budget: float | None = typer.Option(None, "--budget", help="New run budget in USD. For a run paused at its budget "
-                                                                   "this is the decision (no gate decision needed); for a "
-                                                                   "failed run it replaces the cap for the rest of the run."),
+                                                                   "this is the decision (no gate decision needed); for any "
+                                                                   "other run it replaces the cap for the rest of the run."),
            outcome_file: Path | None = typer.Option(None, "--outcome", help="Read the new budget from this outcome file's "
                                                                          "constraints.budget_usd instead of --budget"),
            preview: str | None = typer.Option(None, "--preview", help="platform | local | managed; default FACTORY_PREVIEW"),
@@ -396,14 +396,14 @@ def resume(run_id: str, forge: bool = typer.Option(True, help="Talk to the forge
            test_profile_sha256: str | None = typer.Option(None, "--test-profile-sha256", help="managed: fingerprint of the approved test recipe"),
            test_vault: list[str] = typer.Option([], "--test-vault", help="managed: an explicit test-only vault id (repeatable); never the forge's"),
            verify_budget: float | None = typer.Option(None, "--verify-budget", help="managed: USD cap per hosted verification session")):
-    """Continue a run that failed or was stopped during implementation, that paused at its budget, or whose controller
-    was stopped while it waited at Gate 2. Nothing before Gate 2 is re-run for a failed run: the approved specs come
-    from the store, and each one picks up at the round whose work was persisted (a finished implementer session is not
-    repeated; the orchestrator's own verification of its head is). A budget pause applies the owner's decision on the
-    budget gate (approve with `budget_usd: N`, or reject to close) or --budget / --outcome, records the raised cap, and
-    re-enters the stage it interrupted. A run stopped at Gate 2 waits on that same gate, its artefacts verified against
-    the hashes it presented, and continues with the owner's decision; --preview managed then needs the approved recipe
-    fingerprint. One controller per run: a second `factory resume` is refused while the first holds the run's lock."""
+    """Continue a run that stopped, failed, paused at its budget, or escalated in a build the owner has since decided to
+    recover. What is pending is decided first: a build-recovery decision is applied, and a budget pause takes the owner's
+    decision on the budget gate (approve with `budget_usd: N`, or reject to close) or --budget / --outcome and records
+    the raised cap. Then the run's pipeline runs again from the top (ADR-0013): every step that finished returns its
+    recorded result, so a finished agent session is not repeated and the run continues at the first step that did not.
+    A session still working is followed, and a gate still open is waited on, its artefacts verified against the hashes it
+    presented. A failed run that stopped at Gate 2 needs the approved recipe fingerprint to continue with --preview
+    managed. One controller per run: a second `factory resume` is refused while the first holds the run's lock."""
     from .runner import RunLocked, controller_lock
 
     cfg = apply_preview_choice(cfgmod.load(), preview, app_id, test_profile_sha256, test_vault, verify_budget)
@@ -574,6 +574,7 @@ def decide(gate_id: str, decision: str, comment: str = "", spec: list[str] = typ
 
 @app.command()
 def answer(question_id: str, text: str, by: str = "cli-user"):
+    """Answer an agent's open question (`factory gates` lists them). The waiting session resumes with the answer."""
     cfg = cfgmod.load()
     q = _queue(cfg)
     try:
@@ -624,6 +625,7 @@ def run_history_lines(store, runs_dir: Path, *, active: bool = False, summarize=
 
 @app.command()
 def status(run_id: str):
+    """The run's derived state: its stage, cost, each work item, and its last 15 events."""
     cfg = cfgmod.load()
     store = RunStore(cfg.runs_dir)
     st = store.state(run_id)
@@ -636,6 +638,7 @@ def status(run_id: str):
 
 @app.command()
 def replay(run_id: str):
+    """Re-derive the run's state from its event log and print it as JSON (a sanity check on the log)."""
     cfg = cfgmod.load()
     st = RunStore(cfg.runs_dir).state(run_id)
     typer.echo(json.dumps({"stage": st.stage.value, "work_items": {k: v.stage.value for k, v in st.work_items.items()},
@@ -707,7 +710,7 @@ def timing(run_id: str, as_json: bool = typer.Option(False, "--json", help="The 
 
 @app.command()
 def web(host: str = "127.0.0.1", port: int = 8765):
-    """Serve the Factory Console (needs `pip install -e '.[web]'`). It opens on the run history."""
+    """Serve the Factory Console (needs the `web` or `dev` extra). It opens on the run history."""
     try:
         import uvicorn
     except ImportError:  # pragma: no cover

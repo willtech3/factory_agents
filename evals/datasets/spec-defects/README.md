@@ -37,4 +37,4 @@ Labelled specifications for evaluating the **Spec Judge**: does it catch planted
 - Over 11 votes per item (Yagubyan 2606.13685): majority verdict and vote entropy.
 
 ## Sample row (`items.jsonl`)
-Fields: `item_id`, `pair_id`, `kind` (single|set), `spec_paths` [], `decomposition_path`, `outcome_path`, `defect_code`, `location`, `expected_severity`.
+Fields: `item_id`, `pair_id`, `kind` (single|set), `spec_paths` [], `decomposition_path`, `outcome_path`, `defect_code`, `location`, `expected_severity`, and an optional `note`.

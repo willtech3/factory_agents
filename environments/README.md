@@ -1,16 +1,18 @@
 # Environments and credentials
 
-`factory-cloud.yaml` is the single environment every stage session uses. It is applied with the agents:
+`factory-cloud.yaml` is the single environment every stage session uses, apart from the two kinds below. It is applied with the agents:
 
 ```bash
 ant apply --dry-run -v agents environments
 ```
 
+Hosted verification (`FACTORY_PREVIEW=managed`) runs in an environment the controller creates from the app's approved test recipe, and App Onboarding discovery runs in one shared environment with no network. Neither is defined here; see [docs/09-app-onboarding.md](../docs/09-app-onboarding.md#where-execution-happens).
+
 ## Allowed hosts
 
 Networking is `limited`: package managers plus the forge host. The file ships with `github.com` and `api.github.com` (the default forge, [ADR-0008](../docs/adr/0008-pluggable-forge-github-default.md)); the self-hosted GitLab host is a commented alternative for the gitlab forge. Two more hosts must be reachable from the sandbox, because the implementer and reviewer run the spec's `test_plan.e2e` entries against them: the **preview environment domain** (whatever your CI records as the deployment's `environment_url`, typically a wildcard such as `*.preview.example.com`) and, if you want agents to be able to read dev, the **dev host**. Stage 5's dev checks run from the orchestrator, not the sandbox, so the dev host is optional there.
 
-Other platform configuration the orchestrator needs: `FACTORY_SERVICE_MANIFEST_PATH` (the fixed manifest path from the platform contract), `FACTORY_PREVIEW_ENVIRONMENT_PREFIX`, `FACTORY_DEV_ENVIRONMENT`, `FACTORY_DEPLOY_WORKFLOW` (GitHub: the workflow file to scope pipeline lookups to), and the optional `FACTORY_SMOKE_COMMANDS` (semicolon-separated, `$BASE_URL` substituted). See `orchestrator/factory/config.py`.
+Other platform configuration the orchestrator needs: `FACTORY_PREVIEW` (`platform`, the default, reads the forge's deployment record; `local` or `managed`), `FACTORY_SERVICE_MANIFEST_PATH` (the fixed manifest path from the platform contract), `FACTORY_PREVIEW_ENVIRONMENT_PREFIX`, `FACTORY_DEV_ENVIRONMENT`, `FACTORY_DEPLOY_WORKFLOW` (GitHub: the workflow file to scope pipeline lookups to), and the optional `FACTORY_SMOKE_COMMANDS` (semicolon-separated, `$BASE_URL` substituted). See `orchestrator/factory/config.py`.
 
 ## GitHub access (default; no vault)
 

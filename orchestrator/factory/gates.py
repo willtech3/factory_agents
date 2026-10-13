@@ -40,7 +40,7 @@ class Decision(str, Enum):
     APPROVE = "approve"
     REQUEST_CHANGES = "request_changes"   # comments go back to the producing agent as feedback.md
     REJECT = "reject"                     # closes the run (or the work item)
-    APPROVE_SUBSET = "approve_subset"     # Gate 2 only: approve some specs, send others back
+    APPROVE_SUBSET = "approve_subset"     # Gate 2 only: approve some specs; the others are not built in this run
     # DEPLOY_FAILURE gates use: REQUEST_CHANGES (back to IMPLEMENTING with the comments as findings),
     # APPROVE (the failure was the platform's, not the change's: re-observe the next pipeline), REJECT (close the item).
     # BUDGET gates use: APPROVE with the new cap in the comments (`budget_usd: 80`), REJECT (close the run).

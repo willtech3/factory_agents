@@ -21,6 +21,8 @@ A factory run is six stochastic stages, three human decisions, and a codebase. A
 
 **L3 Online.** Production telemetry: gate decisions and time-to-decide, edit distance between agent artifact and approved artifact, rounds to convergence, change-request approval and revert rates, cost per merged MR, escalation reasons. This is the only level that measures the thing that matters (did humans accept the work) and the cheapest, so instrument it from day one.
 
+**Where this stands.** L0 runs. In this repository the L1 datasets are a few sample rows or do not exist yet, and `evals/run_eval.py` does not drive agents over them: its `produce` is a stub, and `--from-artifacts` grades artifacts made elsewhere. `factory-bench` holds one reference run, not a hidden suite. The one eval wired to agents is the replay of recorded sessions ([ADR-0016](adr/0016-evals-from-recordings.md)): a real run's sessions asked again of the configured agent version and graded as the pipeline grades them on receipt (schema validity, the judges' decision rules). It measures regression against what the factory did before, not quality.
+
 ## Deterministic versus stochastic measurement
 
 **Deterministic** metrics are computed from artifacts and git: the L0 checks, counts (work items, criteria, findings, rounds), coverage (criteria with tests), scope violations, cost, time. They are the backbone because they are exact and repeatable.
@@ -51,10 +53,11 @@ The implementer's own tests are never the oracle. Generated tests agree with ind
 3. For reviewer or judge changes: paired discrimination not lower on any defect code where the previous version was above zero.
 4. For model changes: L2 `factory-bench` run, with stage attribution of failures.
 5. A note in the agent file's commit message linking the results directory.
+6. For a change to a graded role's prompt or rubric: an eval receipt for its exact bytes in `evals/receipts.json`, either a replay of recorded sessions that did not regress or a waiver with its reason. CI fails without one (`evals/gate.py`).
 
 ## Open questions the evals should answer first
 
 - Does the second reviewer pass add detection or only cost? (Run `review-mutations` with `reviewer_passes` 1 versus 2.)
-- Does the platform outcome grader's inner loop improve the spec judge's first-round pass rate enough to justify its cost? (Run `spec-from-item` with `max_iterations` 1 versus 4.)
+- Does the platform outcome grader's inner loop improve the spec judge's first-round pass rate enough to justify its cost? (Run `spec-from-item` with `outcome_max_iterations` 1 versus 4.)
 - Is Sonnet 5.5 sufficient for the spec writer when Opus 5.5 is the judge, or do specs improve enough on Opus to pay for themselves in fewer judge rounds?
 - How often does Gate 2 edit a spec the judge passed, and what did the judge miss? (L3, from day one.)

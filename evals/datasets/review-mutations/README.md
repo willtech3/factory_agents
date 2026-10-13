@@ -28,4 +28,4 @@ Paired clean/faulty implementations for evaluating the **Reviewer** and the **Me
 - Over-rejection: share of clean parents the reviewer marks with any blocking finding; share the merge judge then correctly discounts.
 
 ## Sample row (`items.jsonl`)
-Fields: `item_id`, `pair_id`, `spec_path`, `repo` {url, base_sha, head_sha}, `defect_code`, `location`, `expected_category`, `expected_severity`, `hidden_test`.
+Fields: `item_id`, `pair_id`, `spec_path`, `repo` {url, base_sha, head_sha}, `defect_code`, `location`, `expected_category`, `expected_severity`, `hidden_test`, and an optional `note`. A clean parent has `defect_code` `clean` and null location, category and severity.
