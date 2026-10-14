@@ -63,16 +63,23 @@ def _present(ctx: RunContext, files: dict[str, bytes], page_name: str, page_html
 def policy_snapshot(ctx: RunContext) -> dict[str, Any]:
     """What this run was tuned with, recorded on run.created so the Console can show it beside the run."""
     p = ctx.policy
-    return {"run_budget_usd": p.run_budget_usd, "reviewer_passes": p.reviewer_passes, "review_max_rounds": p.review_max_rounds,
-            "auto_approve": list(getattr(p, "auto_approve", ()) or ()),
-            "review_single_pass_lines": getattr(p, "review_single_pass_lines", None),
-            "reviewer_passes_followup": getattr(p, "reviewer_passes_followup", None),
-            "security_review": getattr(p, "security_review", True),
-            # the pass also needs its optional agent deployed; without one it is skipped whatever the policy says
-            "security_review_available": "security_reviewer" in ctx.cfg.agents,
-            "outcome_max_iterations": p.outcome_max_iterations, "stage_budget_usd": dict(p.stage_budget_usd),
-            "preview_mode": ctx.cfg.preview_mode, "design_only": p.design_only,
-            "size_budget_lines": dict(getattr(p, "size_budget_lines", {}) or {})}
+    snap: dict[str, Any] = {
+        "run_budget_usd": p.run_budget_usd, "reviewer_passes": p.reviewer_passes, "review_max_rounds": p.review_max_rounds,
+        "auto_approve": list(getattr(p, "auto_approve", ()) or ()),
+        "review_single_pass_lines": getattr(p, "review_single_pass_lines", None),
+        "reviewer_passes_followup": getattr(p, "reviewer_passes_followup", None),
+        "security_review": getattr(p, "security_review", True),
+        # the pass also needs its optional agent deployed; without one it is skipped whatever the policy says
+        "security_review_available": "security_reviewer" in ctx.cfg.agents,
+        "outcome_max_iterations": p.outcome_max_iterations, "stage_budget_usd": dict(p.stage_budget_usd),
+        "preview_mode": ctx.cfg.preview_mode, "design_only": p.design_only,
+        "size_budget_lines": dict(getattr(p, "size_budget_lines", {}) or {}),
+    }
+    if getattr(ctx.cfg, "app_id", None):
+        snap["app_id"] = ctx.cfg.app_id
+    if getattr(ctx.cfg, "test_profile_sha256", None):
+        snap["test_profile_sha256"] = ctx.cfg.test_profile_sha256
+    return snap
 
 
 def notes_by_item(comments: str, item_ids: list[str]) -> dict[str, str]:
@@ -452,6 +459,18 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
     stopped: dict[str, str] = {}                                                  # spec -> why it did not reach a change request
     remaining = {sid: s for sid, s in specs.items() if sid not in merged_or_open}
     while remaining:
+        blocked_deps = [s for s in list(remaining.values()) if any(dep in stopped for dep in s["dependencies"]["specs"])]
+        for s in blocked_deps:
+            bsid, bwid = s["spec_id"], s["work_item_id"]
+            deps_stopped = sorted(dep for dep in s["dependencies"]["specs"] if dep in stopped)
+            remaining.pop(bsid, None)
+            stopped[bsid] = f"blocked by {', '.join(deps_stopped)}"
+            wi = ctx.store.state(ctx.run_id).work_items.get(bwid)
+            if wi is not None and wi.stage != WorkItemStage.BLOCKED:
+                ctx.event("work_item.stage", {"stage": WorkItemStage.BLOCKED.value, "blocked_by": deps_stopped},
+                          work_item_id=bwid, spec_id=bsid, stage="implement")
+        if not remaining:
+            break
         ready = [s for s in remaining.values()
                  if all(dep in merged_or_open or dep not in specs for dep in s["dependencies"]["specs"])]
         if not ready:
@@ -497,6 +516,10 @@ def _implement_step(ctx: RunContext, spec: dict[str, Any], repo_url: str, cr_by_
     def body() -> dict[str, Any]:
         base_branch, blocker = base_branch_for(ctx, spec, cr_by_spec, default_branch)
         if blocker:
+            wi = ctx.store.state(ctx.run_id).work_items.get(wid)
+            if wi is not None and wi.stage != WorkItemStage.BLOCKED:
+                ctx.event("work_item.stage", {"stage": WorkItemStage.BLOCKED.value, "reason": blocker},
+                          work_item_id=wid, spec_id=sid, stage="implement")
             ctx.event("run.escalated", {"reason": f"{sid}: {blocker}"}, spec_id=sid)
             ctx.notifier.escalated(ctx.run_id, f"{sid}: {blocker}")
             return {"result": "blocked", "reason": blocker}
@@ -507,6 +530,10 @@ def _implement_step(ctx: RunContext, spec: dict[str, Any], repo_url: str, cr_by_
         verdict = run_implement_one(ctx, spec, repo_url, base_branch, verifier, deps, spec_md=spec_md, guidance=guidance,
                                     recovery=recovery, corrective=corrective)
         if verdict["result"] != "ready":
+            wi = ctx.store.state(ctx.run_id).work_items.get(wid)
+            if wi is not None and wi.stage not in (WorkItemStage.BLOCKED, WorkItemStage.ESCALATED):
+                ctx.event("work_item.stage", {"stage": WorkItemStage.ESCALATED.value, "reason": f"merge_judge:{verdict['result']}"},
+                          work_item_id=wid, spec_id=sid, stage="implement")
             ctx.event("run.escalated", {"reason": f"{sid}: merge judge said {verdict['result']}",
                                         "summary": verdict.get("summary_for_human", verdict.get("reason"))}, spec_id=sid)
             ctx.notifier.escalated(ctx.run_id, f"{sid}: {verdict['result']}")

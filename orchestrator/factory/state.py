@@ -73,8 +73,8 @@ WORK_ITEM_TRANSITIONS: dict[WorkItemStage, set[WorkItemStage]] = {
     WorkItemStage.PENDING: {WorkItemStage.SPEC_DRAFTING, WorkItemStage.CLOSED},
     WorkItemStage.SPEC_DRAFTING: {WorkItemStage.SPEC_JUDGING, WorkItemStage.ESCALATED},
     WorkItemStage.SPEC_JUDGING: {WorkItemStage.SPEC_DRAFTING, WorkItemStage.SPEC_APPROVED, WorkItemStage.ESCALATED},
-    WorkItemStage.SPEC_APPROVED: {WorkItemStage.IMPLEMENTING, WorkItemStage.SPEC_DRAFTING, WorkItemStage.CLOSED},
-    WorkItemStage.IMPLEMENTING: {WorkItemStage.REVIEWING, WorkItemStage.BLOCKED, WorkItemStage.ESCALATED},
+    WorkItemStage.SPEC_APPROVED: {WorkItemStage.IMPLEMENTING, WorkItemStage.SPEC_DRAFTING, WorkItemStage.BLOCKED, WorkItemStage.CLOSED},
+    WorkItemStage.IMPLEMENTING: {WorkItemStage.REVIEWING, WorkItemStage.MERGE_JUDGING, WorkItemStage.BLOCKED, WorkItemStage.ESCALATED},
     WorkItemStage.REVIEWING: {WorkItemStage.RESPONDING, WorkItemStage.MERGE_JUDGING, WorkItemStage.ESCALATED},
     # RESPONDING -> MERGE_JUDGING: the orchestrator re-verified a response round and found no reason for another
     # review (the last round's response, or a response to deterministic-only findings whose checks now pass).

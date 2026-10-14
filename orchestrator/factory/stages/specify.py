@@ -31,7 +31,7 @@ from ..config import agent_model
 from ..gates import Decision, GateKind
 from ..state import RunStage, WorkItemStage
 from . import RunContext
-from .common import auto_approval, hosted_planning_clause, make_ask_human, size_clause, open_gate_and_wait, persist_outputs, platform_skill, public, reject_output, require_json, require_valid, rubric_text, run_session, stamp_provenance, would_reuse
+from .common import artifact_json_or_none, auto_approval, enter_item_stage, hosted_planning_clause, make_ask_human, size_clause, open_gate_and_wait, persist_outputs, platform_skill, public, reject_output, require_json, require_valid, rubric_text, run_session, stamp_provenance, would_reuse
 
 WRITER_DESCRIPTION = """Write the specification for work item {work_item_id} ({title}).
 Inputs are under /mnt/session/uploads/ (outcome.json, decomposition.json, work_item.json, sibling_specs/,
@@ -55,6 +55,37 @@ interface a sibling now relies on). Build or run a prototype only when a score y
 JUDGE_REPO_MOUNTED = "The repository is cloned at /workspace/repo for checking paths, commands, and current behaviour."
 JUDGE_REPO_ABSENT = ("The repository is NOT available in this session: rubric.md says how to score the criteria that would "
                      "need it. Do not fail a spec for a path or command you cannot check; note it as unverified.")
+
+
+def _persisted_writer_spec(ctx: RunContext, wid: str, round_no: int) -> dict[str, Any] | None:
+    """Return a previously persisted spec draft for `(wid, round_no)` when both its JSON and non-empty markdown exist
+    in the artifact store, or None if the writer for this round has not completed yet."""
+    spec = artifact_json_or_none(ctx, "specify", f"{wid}-r{round_no}-spec.json")
+    if not isinstance(spec, dict) or not spec.get("spec_id"):
+        return None
+    try:
+        md = ctx.store.get_artifact(ctx.run_id, "specify", f"{wid}-r{round_no}-spec.md").decode(errors="replace").strip()
+    except FileNotFoundError:
+        return None
+    if not md:
+        return None
+    out = dict(spec)
+    out["_markdown"] = md
+    return out
+
+
+def _route_verdict_issues(verdict: dict[str, Any], specs: dict[str, dict]) -> dict[str, list[dict]]:
+    """Route a judge verdict's per-spec and coherence issues to the work items that own them."""
+    issues_by_item: dict[str, list[dict]] = {}
+    spec_to_item = {s["spec_id"]: s["work_item_id"] for s in specs.values()}
+    for ps in verdict.get("per_spec", []):
+        if ps.get("issues") and ps.get("spec_id") in spec_to_item:
+            issues_by_item.setdefault(spec_to_item[ps["spec_id"]], []).extend(ps["issues"])
+    for bucket in (verdict.get("coherence") or {}).values():
+        for issue in bucket or []:
+            for sid in issue.get("related_spec_ids", []):
+                issues_by_item.setdefault(spec_to_item.get(sid, sid), []).append(issue)
+    return issues_by_item
 
 
 def _writer_session(ctx: RunContext, outcome, decomposition, work_item, sibling_specs: dict[str, dict],
@@ -90,8 +121,13 @@ def _writer_session(ctx: RunContext, outcome, decomposition, work_item, sibling_
 
 
 def _write_one(ctx: RunContext, wid: str, round_no: int, session: dict[str, Any]) -> dict[str, Any]:
-    ctx.event("work_item.stage", {"stage": WorkItemStage.SPEC_DRAFTING.value, "spec_round": round_no},
-              work_item_id=wid, stage="specify")
+    reusing = would_reuse(ctx, stage="specify", **session)
+    if not reusing:
+        reused = _persisted_writer_spec(ctx, wid, round_no)
+        if reused is not None:
+            return reused
+        ctx.event("work_item.stage", {"stage": WorkItemStage.SPEC_DRAFTING.value, "spec_round": round_no},
+                  work_item_id=wid, stage="specify")
     res = run_session(ctx, stage="specify", **session)
     spec = require_json(res, "spec.json")
     spec["revision"] = round_no
@@ -104,7 +140,8 @@ def _write_one(ctx: RunContext, wid: str, round_no: int, session: dict[str, Any]
         raise reject_output(res, f"session {res.session_id} wrote spec.json for {wid} but no spec.md; outputs: {sorted(res.outputs)}")
     spec["_markdown"] = markdown
     res.outputs["spec.json"] = json.dumps(public(spec), indent=2).encode()
-    persist_outputs(ctx, "specify", res, prefix=f"{wid}-r{round_no}-", work_item_id=wid)
+    if not reusing:
+        persist_outputs(ctx, "specify", res, prefix=f"{wid}-r{round_no}-", work_item_id=wid)
     return spec
 
 
@@ -201,11 +238,26 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
     items = {w["work_item_id"]: w for w in decomposition["work_items"]}
     specs: dict[str, dict] = {}
     by_item: dict[str, dict] = {}                 # work_item_id -> its current spec (the writer's own prior draft next round)
+    if not human_comments_by_item and (prior_specs or round_offset > 0):
+        for w, s in (prior_specs or {}).items():
+            if w in items and isinstance(s, dict) and s.get("spec_id"):
+                specs[s["spec_id"]] = s
+                by_item[w] = s
+        for r in range(1, round_offset + 1):
+            for w in items:
+                persisted = _persisted_writer_spec(ctx, w, r)
+                if persisted is not None:
+                    specs[persisted["spec_id"]] = persisted
+                    by_item[w] = persisted
     issues_by_item: dict[str, list[dict]] = {}
     verdict: dict[str, Any] | None = previous_verdict
     # The drafts `verdict` scored, by spec id: the next judge gets what changed since (`spec_changes`).
-    judged: dict[str, dict] = {s["spec_id"]: s for s in (prior_specs or {}).values()} if previous_verdict else {}
+    judged: dict[str, dict] = {s["spec_id"]: s for s in (prior_specs or by_item).values()} if previous_verdict else {}
     to_write = set(items)
+    if previous_verdict and not human_comments_by_item and (previous_verdict.get("overall") or {}).get("result") == "revise" and specs:
+        issues_by_item = _route_verdict_issues(previous_verdict, specs)
+        if issues_by_item:
+            to_write = set(issues_by_item)
     first_round = round_offset + 1
 
     for round_no in range(first_round, first_round + ctx.policy.spec_judge_max_rounds):
@@ -217,15 +269,19 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
                                            by_item.get(w) or ((prior_specs or {}).get(w) if round_no == first_round else None))
                         for w in batch}
             # the whole batch, before any writer starts; a writer that already finished (a replay) costs nothing
-            reserve_budget(ctx, "specify", sum(not would_reuse(ctx, stage="specify", **s) for s in sessions.values()))
+            to_reserve = sum(
+                not (would_reuse(ctx, stage="specify", **s) or _persisted_writer_spec(ctx, w, round_no) is not None)
+                for w, s in sessions.items()
+            )
+            if to_reserve:
+                reserve_budget(ctx, "specify", to_reserve)
             with ThreadPoolExecutor(max_workers=min(ctx.policy.parallel_spec_writers, len(batch))) as pool:
                 futures = {pool.submit(steps.carry(_write_one), ctx, w, round_no, sessions[w]): w for w in batch}
                 for fut, w in futures.items():
                     spec = fut.result()
                     specs[spec["spec_id"]] = spec
                     by_item[w] = spec
-                    ctx.event("work_item.stage", {"stage": WorkItemStage.SPEC_JUDGING.value, "spec_id": spec["spec_id"]},
-                              work_item_id=w, stage="specify")
+                    enter_item_stage(ctx, w, spec["spec_id"], WorkItemStage.SPEC_JUDGING)
         # Deterministic pre-checks: schema and traceability, cheap and before the judge spends tokens.
         det = {sid: [checks.schema_valid(public(s), ctx.cfg.schemas_dir / "spec.schema.json", ctx.cfg.schemas_dir),
                      checks.spec_traceability(s, decomposition),
@@ -253,15 +309,7 @@ def run_specify(ctx: RunContext, outcome, decomposition, human_comments_by_item:
         if result == "escalate":
             break
         # Route issues to the specs that own them; cross-spec issues go to every related spec.
-        issues_by_item = {}
-        spec_to_item = {s["spec_id"]: s["work_item_id"] for s in specs.values()}
-        for ps in verdict["per_spec"]:
-            if ps["issues"]:
-                issues_by_item.setdefault(spec_to_item[ps["spec_id"]], []).extend(ps["issues"])
-        for bucket in verdict["coherence"].values():
-            for issue in bucket:
-                for sid in issue.get("related_spec_ids", []):
-                    issues_by_item.setdefault(spec_to_item.get(sid, sid), []).append(issue)
+        issues_by_item = _route_verdict_issues(verdict, specs)
         to_write = set(issues_by_item)
         if not to_write:  # judge said revise but attached no issues to any spec: treat as pass-with-notes
             break
