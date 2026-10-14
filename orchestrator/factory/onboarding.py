@@ -398,8 +398,12 @@ class AppOnboarding:
                     # A remote start followed by failure must never refund unknown spend.
                     active = [s for s in r["sessions"] if not s.get("accounted")]
                     if active:
-                        r["spent_usd"] += r["reserved_usd"]
+                        charged = r["reserved_usd"]
+                        r["spent_usd"] += charged
                         r["cost_warning"] = "The last session's cost is uncertain; its reserved limit was charged."
+                        for s in active:
+                            s.update(accounted=True, cost_usd=None, charged_usd=charged,
+                                     stop_reason=s.get("stop_reason") or "failed")
                     r["reserved_usd"] = 0
                     self.write(r)
 

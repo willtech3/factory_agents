@@ -303,6 +303,7 @@ def local_e2e_runner(ctx: RunContext, outcome: dict[str, Any], default_branch: s
     """`LocalVerifier.run_e2e` bound to a checkout of the default branch, made on first use (a tick that finds no
     merge never clones anything)."""
     from .stages.implement import LocalVerifier
+    from .verification import manifest_or_none
 
     repo_url = (outcome.get("target_repositories") or [{}])[0].get("url") or ctx.cfg.repo_url
     verifier = LocalVerifier(ctx.forge.authenticated_url(repo_url) if ctx.forge is not None else repo_url,
@@ -311,7 +312,9 @@ def local_e2e_runner(ctx: RunContext, outcome: dict[str, Any], default_branch: s
 
     def run_e2e(url: str, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if "repo" not in checkout:
-            checkout["repo"] = verifier.checkout(default_branch)
+            repo = verifier.checkout(default_branch)
+            verifier.prepare_environment(repo, manifest_or_none(repo / ctx.cfg.service_manifest_path))
+            checkout["repo"] = repo
         return verifier.run_e2e(url, entries, repo=checkout["repo"])
 
     return run_e2e

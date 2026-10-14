@@ -259,6 +259,7 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
     carried: dict[str, Any] = {"findings": None, "response": None, "det_only": False,
                                "journeys": _blobs(ctx, latest_journeys(ctx, sid, spec))}
     round_no = 0
+    judge_attempt = 0
     while True:
         round_no += 1
         notes = guidance
@@ -279,12 +280,25 @@ def run_implement_one(ctx: RunContext, spec: dict[str, Any], repo_url: str, base
                        "det_only": False, "journeys": result["journeys"]}
             continue
         if result["next"] == "judge":
-            break
+            recheck = recovery is not None and recovery.get("decision") == "approve" and judge_attempt == 0
+            judge_key = f"implement/{sid}/judge#{epoch}" if judge_attempt == 0 else f"implement/{sid}/judge#{epoch}-r{round_no}"
+            judge_attempt += 1
+            verdict = steps.run_step(ctx, judge_key, {"round": steps.inputs_sha(result), "recheck": recheck},
+                                     lambda r_no=round_no, res=result, rc=recheck: build.judge(r_no, res, rc))
+            if (verdict.get("result") == "another_round"
+                    and round_no <= review_through
+                    and all(d["passed"] for d in result["det"])):
+                mj_findings = _merge_judge_findings(
+                    sid, round_no, result["base_sha"], result["head_sha"], build.branch,
+                    _json_of(ctx, result["findings"]), verdict,
+                )
+                enter_item_stage(ctx, wid, sid, WorkItemStage.IMPLEMENTING, round=round_no + 1, reason="merge_judge_another_round")
+                carried = {"findings": mj_findings, "response": _json_of(ctx, result["response"]),
+                           "det_only": False, "journeys": result["journeys"]}
+                continue
+            return verdict
         carried = {"findings": _json_of(ctx, result["findings"]), "response": _json_of(ctx, result["response"]),
                    "det_only": result["det_only"], "journeys": result["journeys"]}
-    recheck = recovery is not None and recovery.get("decision") == "approve"
-    return steps.run_step(ctx, f"implement/{sid}/judge#{epoch}", {"round": steps.inputs_sha(result), "recheck": recheck},
-                          lambda: build.judge(round_no, result, recheck))
 
 
 def _blobs(ctx: RunContext, files: dict[str, bytes]) -> dict[str, str]:
@@ -888,14 +902,97 @@ def merge_findings(passes: list[dict[str, Any]], spec_id: str, round_no: int, ba
         f["finding_id"] = f"F-{i}"
         findings.append(f)
     return {
-        "review_id": f"rev_{spec_id.replace('spec_', '')}{round_no:02d}{head_sha[:6]}",
+        "review_id": _review_id(spec_id, round_no, head_sha),
         "spec_id": spec_id, "round": round_no,
         "diff_ref": {"base_sha": base_sha, "head_sha": head_sha, "branch": branch},
         "checks_performed": checks_performed, "findings": findings,
         "spec_conformance": list(conformance.values()),
         "scope_check": {k: sorted(v) for k, v in scope.items()},
-        "produced_by": passes[0].get("produced_by", {}),
+        "produced_by": passes[0].get("produced_by", {}) if passes else {
+            "agent_name": "Orchestrator", "agent_id": "orchestrator", "agent_version": 1,
+            "session_id": "sesn_orchestrator", "model": agent_model("reviewer"),
+            "produced_at": "1970-01-01T00:00:00Z", "inputs": [],
+        },
     }
+
+
+def _review_id(spec_id: str, round_no: int, head_sha: str) -> str:
+    """Schema-compliant review_id matching ^rev_[a-z0-9]{8,}$ even when spec_id contains hyphens or underscores."""
+    slug = re.sub(r"[^a-z0-9]", "", spec_id.removeprefix("spec_").lower())
+    sha_part = re.sub(r"[^a-z0-9]", "", (head_sha or "").lower())[:6]
+    body = f"{slug}{round_no:02d}{sha_part}"
+    if len(body) < 8:
+        body += hashlib.sha256(f"{spec_id}:{round_no}:{head_sha}".encode()).hexdigest()[: 8 - len(body)]
+    return f"rev_{body}"
+
+
+def _merge_judge_findings(spec_id: str, round_no: int, base_sha: str, head_sha: str, branch: str,
+                          merged_findings: dict[str, Any] | None, verdict: dict[str, Any]) -> dict[str, Any]:
+    """Ensure the next implementer round has standing blocking findings when the Merge Judge requests another_round."""
+    base = dict(merged_findings) if isinstance(merged_findings, dict) else {
+        "review_id": _review_id(spec_id, round_no, head_sha),
+        "spec_id": spec_id, "round": round_no,
+        "diff_ref": {"base_sha": base_sha, "head_sha": head_sha, "branch": branch},
+        "checks_performed": [{"check": "merge_judge", "method": "merge readiness review", "result": verdict.get("result", "another_round")}],
+        "findings": [], "spec_conformance": [],
+        "scope_check": {"files_outside_allowed_paths": [], "unrelated_changes": []},
+        "produced_by": verdict.get("produced_by", {}),
+    }
+    existing = [dict(f) for f in base.get("findings", [])]
+    by_id = {f["finding_id"]: f for f in existing if "finding_id" in f}
+    next_no = max([int(fid[2:]) for fid in by_id if re.fullmatch(r"F-[0-9]+", fid)] + [0]) + 1
+    for uf in verdict.get("unresolved_findings", []) or []:
+        fid = uf.get("finding_id")
+        if fid in by_id:
+            by_id[fid]["status"] = "upheld"
+            if by_id[fid].get("severity") not in ("blocking", "major"):
+                by_id[fid]["severity"] = "blocking"
+        else:
+            new_id = fid if (isinstance(fid, str) and re.fullmatch(r"(F-[0-9]{1,3}|DET-[a-z0-9_]+)", fid)) else f"F-{next_no}"
+            if new_id == f"F-{next_no}":
+                next_no += 1
+            entry = {
+                "finding_id": new_id,
+                "severity": uf.get("severity") if uf.get("severity") in ("blocking", "major") else "blocking",
+                "category": "spec_deviation",
+                "claim": uf.get("why_unresolved") or verdict.get("summary_for_human") or "Merge judge requested another round.",
+                "evidence": {"locations": ["merge_readiness.json:1"]},
+                "violates": ["merge_readiness"],
+                "refutation_condition": "Address the merge judge's unresolved finding and re-verify.",
+                "status": "open",
+            }
+            existing.append(entry)
+            by_id[new_id] = entry
+    for c in verdict.get("criteria", []) or []:
+        if isinstance(c, dict) and c.get("status") != "met":
+            new_id = f"F-{next_no}"
+            next_no += 1
+            entry = {
+                "finding_id": new_id,
+                "severity": "blocking",
+                "category": "spec_deviation",
+                "claim": f"Acceptance criterion {c.get('ac_id')} is {c.get('status')}: {c.get('evidence', '')}".strip(),
+                "evidence": {"locations": ["merge_readiness.json:1"]},
+                "violates": [str(c.get("ac_id") or "spec")],
+                "refutation_condition": f"Provide passing test/e2e evidence proving {c.get('ac_id')} is met.",
+                "status": "open",
+            }
+            existing.append(entry)
+            by_id[new_id] = entry
+    if not standing_findings(existing):
+        new_id = f"F-{next_no}"
+        existing.append({
+            "finding_id": new_id,
+            "severity": "blocking",
+            "category": "spec_deviation",
+            "claim": verdict.get("summary_for_human") or "Merge judge requested another round.",
+            "evidence": {"locations": ["merge_readiness.json:1"]},
+            "violates": ["merge_readiness"],
+            "refutation_condition": "Address the merge judge's summary and re-verify.",
+            "status": "open",
+        })
+    base["findings"] = existing
+    return base
 
 
 def apply_deterministic(findings: list[dict[str, Any]], det_findings: list[dict[str, Any]]) -> list[dict[str, Any]]:

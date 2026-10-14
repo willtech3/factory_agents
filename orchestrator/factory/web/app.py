@@ -750,6 +750,22 @@ class Console:
                     if verified.get("status") != "passed" or verified.get("profile_sha256") != approved_setup.payload["profile_sha256"]:
                         raise HTTPException(409, "The approved recipe has no passing verification receipt")
                     env["FACTORY_TEST_PROFILE_SHA256"] = approved_setup.payload["profile_sha256"]
+            else:
+                policy = detail.get("policy") or {}
+                recorded_app_id = policy.get("app_id")
+                recorded_sha = policy.get("test_profile_sha256")
+                if not detail.get("design_only") and (recorded_app_id or any((self.cfg.runs_dir / "_apps").glob("app_*/app.json"))):
+                    from ..onboarding import AppOnboarding
+                    try:
+                        binding = AppOnboarding(self.cfg).binding_for(target, recorded_app_id)
+                    except Refusal:
+                        binding = None
+                    if binding:
+                        env.update(binding)
+                if recorded_app_id and not env.get("FACTORY_APP_ID"):
+                    env["FACTORY_APP_ID"] = str(recorded_app_id)
+                if recorded_sha and not env.get("FACTORY_TEST_PROFILE_SHA256"):
+                    env["FACTORY_TEST_PROFILE_SHA256"] = str(recorded_sha)
         return env
 
     def recover_run(self, run_id: str, body: RecoveryBody):

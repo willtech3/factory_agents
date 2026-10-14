@@ -416,6 +416,19 @@ def resume(run_id: str, forge: bool = typer.Option(True, help="Talk to the forge
     events = store.events(run_id)
     st = store.state(run_id)
     design_only = any(ev.kind == "run.created" and ev.payload.get("design_only") for ev in events)
+    from .runner import recorded_preview_mode
+    rec_mode = recorded_preview_mode(events)
+    if not design_only and (rec_mode == "managed" or cfg.preview_mode == "managed"):
+        created_policy = next((ev.payload.get("policy") or {} for ev in events if ev.kind == "run.created"), {})
+        resumed_meta = next((ev.payload for ev in reversed(events) if ev.kind == "run.resumed" and ev.payload.get("preview_mode") == "managed"), {})
+        cfg = apply_preview_choice(
+            cfg,
+            preview or "managed",
+            app_id or resumed_meta.get("app_id") or created_policy.get("app_id"),
+            test_profile_sha256 or resumed_meta.get("test_profile_sha256") or created_policy.get("test_profile_sha256"),
+        )
+        if not cfg.app_id or not cfg.test_profile_sha256:
+            cfg = _bind_onboarded_app(cfg, outcome, explicit_preview=None)
     gaps = cfgmod.missing(cfg, design_only=design_only)
     if gaps:
         typer.echo("cannot resume; missing: " + ", ".join(gaps))

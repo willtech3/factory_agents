@@ -13,6 +13,7 @@ hit (docs/postmortems/, docs/audits/2026-10-10-factory-review.md).
 from __future__ import annotations
 
 import json
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -78,6 +79,7 @@ class SessionDriver:
         self.on_session_started = on_session_started   # the orchestrator records `session.started` so the Console can link to it
         self.on_session_finished = on_session_finished  # interrupted sessions: the orchestrator records `session.finished` with their spend
         self.active: dict[str, dict[str, Any]] = {}     # sessions started by this process that have not finished, by id
+        self._active_lock = threading.Lock()
 
     def interrupt_active(self) -> list[str]:
         """Send `user.interrupt` to every session this driver still has in flight. Called when the orchestrator is
@@ -85,7 +87,10 @@ class SessionDriver:
         for its spend and reported through `on_session_finished` with stop_reason `interrupted` (live run 1's five
         interrupted sessions cost $3.33 that no run total counted; post-mortem issue 16). Returns the ids reached."""
         done = []
-        for sid, info in sorted(self.active.items()):
+        with self._active_lock:
+            snapshot = sorted(self.active.items())
+            self.active.clear()
+        for sid, info in snapshot:
             reached = False
             try:
                 self.client.beta.sessions.events.send(session_id=sid, events=[{"type": "user.interrupt"}], timeout=SHORT_CALL_TIMEOUT)
@@ -99,7 +104,6 @@ class SessionDriver:
                                               "outcome_result": "interrupted", "stop_reason": "interrupted" if reached else "unreachable"})
                 except Exception as e:  # noqa: BLE001  (bookkeeping must not stop the shutdown)
                     print(f"[session] could not record the end of {sid}: {str(e)[:120]}")
-        self.active.clear()
         return done
 
     def interrupt_session(self, session_id: str) -> bool:
@@ -181,8 +185,9 @@ class SessionDriver:
         agent_ref = self.cfg.agents[agent_key]
         if attach_session_id:
             print(f"[session] {stage} {title}: reattaching to {self.cfg.console_session_url(attach_session_id)}")
-            self.active[attach_session_id] = {"agent_id": agent_ref.id, "agent_version": agent_ref.version, "agent_key": agent_key,
-                                              "stage": stage, "run_id": run_id, "work_item_id": work_item_id, "title": title}
+            with self._active_lock:
+                self.active[attach_session_id] = {"agent_id": agent_ref.id, "agent_version": agent_ref.version, "agent_key": agent_key,
+                                                  "stage": stage, "run_id": run_id, "work_item_id": work_item_id, "title": title}
             return self._follow(attach_session_id, agent_ref, run_id, stage, work_item_id, custom_tools)
         session_id = self._create(agent_key=agent_key, title=title, run_id=run_id, stage=stage, uploads=uploads,
                                   description=description, rubric_md=rubric_md, max_iterations=max_iterations,
@@ -248,8 +253,9 @@ class SessionDriver:
             timeout=SHORT_CALL_TIMEOUT,
         )
         print(f"[session] {stage} {title}: {self.cfg.console_session_url(session.id)}")
-        self.active[session.id] = {"agent_id": agent_ref.id, "agent_version": agent_ref.version, "agent_key": agent_key,
-                                   "stage": stage, "run_id": run_id, "work_item_id": work_item_id, "title": title}
+        with self._active_lock:
+            self.active[session.id] = {"agent_id": agent_ref.id, "agent_version": agent_ref.version, "agent_key": agent_key,
+                                       "stage": stage, "run_id": run_id, "work_item_id": work_item_id, "title": title}
         return session.id
 
     def _follow(self, session_id: str, agent_ref: Any, run_id: str, stage: str, work_item_id: str | None,
@@ -385,7 +391,8 @@ class SessionDriver:
             list_cost = None
 
         outputs = self._fetch_outputs(session.id)
-        self.active.pop(session.id, None)
+        with self._active_lock:
+            self.active.pop(session.id, None)
         return StageResult(
             session_id=session.id,
             agent_id=agent_ref.id,
