@@ -289,6 +289,47 @@ def test_dev_e2e_failure_then_request_changes_routes_back_to_implementing(tmp_pa
     assert_log_valid(ctx.store, RUN, schemas_dir)                   # e2e.dev_failed among its events
 
 
+def test_a_reobservation_that_fails_differently_keeps_both_reports(tmp_path, root, examples):
+    """Each failed observation has its own report and each gate presents its own: an approved re-observation whose
+    pipeline fails with a different log does not collide with the first report (immutable artefacts)."""
+    forge = FakeForge(cr_states=("merged",), pipeline=("failed",), log="first failure: migrate")
+    queue = InMemoryQueue()
+    ctx = _ctx(tmp_path, root, forge, queue)
+    outcome = _seed_cr_open(ctx, examples)
+    w = Watcher(ctx, outcome, run_e2e=_ok_e2e, sleep=lambda s: None, heartbeat=False)
+
+    def decide(decision):
+        gate_id, gate = next(iter(ctx.store.state(RUN).open_gates.items()))
+        queue.decide(GateDecision(gate_id=gate_id, decision=decision, decided_by="sam.k",
+                                  artifact_shas=tuple(a["sha256"] for a in gate["artifacts"])))
+        return [a["name"] for a in gate["artifacts"]]
+
+    assert w.tick().gates_opened == [WID]
+    assert decide(Decision.APPROVE) == [f"{SID}-deploy_report.json"]
+    forge.log = "second failure: a different job"
+    assert w.tick().gates_opened == [WID]                      # approve -> second observation -> fails -> gate 2
+    assert decide(Decision.REJECT) == [f"{SID}-o2-deploy_report.json"]
+    assert "migrate" in ctx.store.get_json(RUN, "deploy", f"{SID}-deploy_report.json")["log_excerpt"]
+    assert "different job" in ctx.store.get_json(RUN, "deploy", f"{SID}-o2-deploy_report.json")["log_excerpt"]
+    assert w.tick().decisions_applied == [WID]
+    assert ctx.store.state(RUN).work_items[WID].stage == WorkItemStage.CLOSED
+
+
+def test_each_deploy_send_back_keeps_its_own_feedback(tmp_path, root, examples):
+    from factory.stages.deploy_observe import DeployObservation, apply_deploy_decision
+
+    ctx = _ctx(tmp_path, root, FakeForge())
+    _seed_cr_open(ctx, examples)
+    for stage in ("merged", "deploying_dev"):
+        ctx.event("work_item.stage", {"stage": stage}, work_item_id=WID, spec_id=SID)
+    spec = examples["spec_smart_retries"]
+    for comments in ("add the pgcrypto migration", "the follow-up broke the health check"):
+        assert apply_deploy_decision(ctx, spec, DeployObservation(status="failed"), Decision.REQUEST_CHANGES, comments,
+                                     reobserve_allowed=True) == WorkItemStage.IMPLEMENTING
+    assert "pgcrypto" in ctx.store.get_artifact(RUN, "deploy", f"{SID}-deploy_feedback.md").decode()
+    assert "health check" in ctx.store.get_artifact(RUN, "deploy", f"{SID}-f2-deploy_feedback.md").decode()
+
+
 def test_decided_but_unapplied_gate_is_applied_after_a_restart(tmp_path, root, examples):
     """The watcher recorded gate.decided and died before acting: the next watcher acts on the recorded decision."""
     forge = FakeForge(cr_states=("merged",), pipeline=("failed",))
