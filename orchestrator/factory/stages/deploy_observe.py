@@ -67,7 +67,7 @@ class DeployObservation:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> DeployObservation:
-        """The observation a `DEPLOY_FAILURE` gate was opened on, read back from `<spec_id>-deploy_report.json` when a
+        """The observation a `DEPLOY_FAILURE` gate was opened on, read back from the report that gate presented when a
         restarted watcher finds the gate still open."""
         return cls(status=d.get("status", "failed"), pipeline=d.get("pipeline"), environment_url=d.get("environment_url"),
                    log_excerpt=d.get("log_excerpt") or "", e2e_results=list(d.get("e2e_results") or []))
@@ -141,7 +141,11 @@ def apply_deploy_decision(ctx: RunContext, spec: dict[str, Any], obs: DeployObse
               work_item_id=wid, spec_id=sid, stage="deploy")
     if decision == Decision.REQUEST_CHANGES:
         # The comments become the next implementer round's findings; a new branch and change request follow.
-        ctx.store.put_artifact(ctx.run_id, "deploy", f"{sid}-deploy_feedback.md", _feedback_md(obs, comments).encode())
+        # One file per send-back: a later deploy failure of the follow-up change gets its own, and this one is kept.
+        cycle = sum(1 for ev in ctx.store.events(ctx.run_id) if ev.kind == "work_item.stage" and ev.work_item_id == wid
+                    and ev.payload.get("from") == "deploy_failure")
+        name = f"{sid}-deploy_feedback.md" if cycle == 0 else f"{sid}-f{cycle + 1}-deploy_feedback.md"
+        ctx.store.put_artifact(ctx.run_id, "deploy", name, _feedback_md(obs, comments).encode())
         ctx.event("work_item.stage", {"stage": WorkItemStage.IMPLEMENTING.value, "from": "deploy_failure"},
                   work_item_id=wid, spec_id=sid, stage="deploy", actor="human")
         return WorkItemStage.IMPLEMENTING
@@ -204,22 +208,28 @@ def observe_once(ctx: RunContext, spec: dict[str, Any], merge_sha: str, default_
 
 
 def open_deploy_failure_gate(ctx: RunContext, spec: dict[str, Any], obs: DeployObservation, assignees: list[str]) -> Gate:
-    """Persist the observation as `<spec_id>-deploy_report.json` and open the gate on it. Returns without waiting."""
+    """Persist the observation as its own report (`deploy_report_name`) and open the gate on it. Returns without
+    waiting. Each observation is numbered by the item's `deploy.started` events, so a re-observation that fails
+    differently, or one repeated after a watcher died before opening its gate, never collides with an earlier report."""
     sid = spec["spec_id"]
     report = json.dumps(obs.to_dict(), indent=2).encode()
-    sha = ctx.store.put_artifact(ctx.run_id, "deploy", f"{sid}-deploy_report.json", report)
+    observation = sum(1 for ev in ctx.store.events(ctx.run_id)
+                      if ev.kind == "deploy.started" and ev.work_item_id == spec["work_item_id"])
+    name = deploy_report_name(sid, observation)
+    sha = ctx.store.put_artifact(ctx.run_id, "deploy", name, report)
     what = {"failed": "the dev pipeline failed", "timed_out": "the dev pipeline did not finish in time",
             "no_pipeline": "no dev pipeline was found for the merge commit",
             "succeeded": "the dev deploy succeeded but end-to-end checks failed against the dev URL"}[obs.status]
     summary = (f"{sid}: {what}. Options: request_changes sends the item back to an implementer on a new branch with "
                f"your comments; approve means the failure was the platform's and the next pipeline should be watched; "
                f"reject closes the item. Log excerpt:\n{obs.log_excerpt[-1500:]}")
-    return open_gate(ctx, GateKind.DEPLOY_FAILURE, {f"{sid}-deploy_report.json": sha}, summary, assignees,
+    return open_gate(ctx, GateKind.DEPLOY_FAILURE, {name: sha}, summary, assignees,
                      options=(Decision.REQUEST_CHANGES, Decision.APPROVE, Decision.REJECT), work_item_id=spec["work_item_id"])
 
 
-def deploy_report_name(spec_id: str) -> str:
-    return f"{spec_id}-deploy_report.json"
+def deploy_report_name(spec_id: str, observation: int = 1) -> str:
+    """`<spec_id>-deploy_report.json` for an item's first observation, `<spec_id>-o<n>-deploy_report.json` for the n-th."""
+    return f"{spec_id}-deploy_report.json" if observation <= 1 else f"{spec_id}-o{observation}-deploy_report.json"
 
 
 def _feedback_md(obs: DeployObservation, comments: str) -> str:

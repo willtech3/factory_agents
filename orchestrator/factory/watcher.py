@@ -248,7 +248,10 @@ class Watcher:
                 return
             decision, comments = d.decision, d.comments
         spec = self.spec(wi.spec_id)
-        obs = DeployObservation.from_dict(self.ctx.store.get_json(self.ctx.run_id, "deploy", deploy_report_name(spec["spec_id"])))
+        # the report this gate presented: each failed observation has its own (`open_deploy_failure_gate`)
+        presented = next((a["name"] for a in gate.payload.get("artifacts", []) if a.get("name", "").endswith("deploy_report.json")),
+                         deploy_report_name(spec["spec_id"]))
+        obs = DeployObservation.from_dict(self.ctx.store.get_json(self.ctx.run_id, "deploy", presented))
         result = apply_deploy_decision(self.ctx, spec, obs, decision, comments, reobserve_allowed=attempts <= self.max_reobserve)
         report.decisions_applied.append(wi.work_item_id)
         if result is None:
