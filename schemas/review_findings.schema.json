@@ -199,6 +199,10 @@
             },
             "expected": {
               "type": "string"
+            },
+            "executed": {
+              "type": "boolean",
+              "description": "Security findings: true only when evidence.reproduction was run in this session and evidence.observed is copied from its output."
             }
           }
         },
@@ -273,6 +277,21 @@
             "low"
           ],
           "description": "Security findings: what an attacker gains (data, control, availability)."
+        },
+        "confidence": {
+          "type": "string",
+          "enum": ["proven", "reachable", "pattern"],
+          "description": "Security findings (agents/security_reviewer.md): proven = the reproduction was executed and the impact observed; reachable = the source-to-sink trace is complete but was not executed; pattern = a risky construct whose reachability is unknown, at most minor."
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["introduced", "newly_reachable", "pre_existing"],
+          "description": "Security findings: whether this change introduced the weakness, made a pre-existing one reachable, or only touched code that already had it (pre_existing is at most minor)."
+        },
+        "cvss_vector": {
+          "type": "string",
+          "pattern": "^CVSS:4\\.0/AV:[NALP]/AC:[LH]/AT:[NP]/PR:[NLH]/UI:[NPA]/VC:[HLN]/VI:[HLN]/VA:[HLN]/SC:[HLN]/SI:[HLN]/SA:[HLN]$",
+          "description": "Security findings rated blocking or major: the CVSS 4.0 base vector for the reasonable worst case."
         }
       }
     }
