@@ -48,7 +48,9 @@ jobs:
 
   browser:
     name: browser runner (real Chromium)
-    runs-on: ubuntu-latest
+    # Pinned: Playwright stays at the hosted sandbox's version (pyproject `browser` extra), and 1.56 cannot install
+    # Chromium's system dependencies on ubuntu-latest once that became 26.04. Move both together.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: orchestrator
