@@ -348,6 +348,22 @@ def recorded_preview_mode(events: list[Any]) -> str | None:
     return modes[-1] if modes else None
 
 
+def recorded_app_binding(events: list[Any]) -> tuple[str | None, str | None]:
+    """The onboarded app and approved recipe fingerprint the run was last driven with (run.created's policy, then each
+    resume that recorded them), so a run that stopped before its first hosted verification resumes on the same setup."""
+    app_id = sha = None
+    for ev in events:
+        if ev.kind == "run.created":
+            rec = ev.payload.get("policy") or {}
+        elif ev.kind == "run.resumed":
+            rec = ev.payload
+        else:
+            continue
+        if rec.get("app_id") and rec.get("test_profile_sha256"):
+            app_id, sha = rec["app_id"], rec["test_profile_sha256"]
+    return app_id, sha
+
+
 def hosted_run(events: list[Any]) -> bool:
     """The run has been verified in a hosted sandbox (preview mode managed) at some point, at creation or after a recovery.
     Such a run never continues with execution on the controller's host, whatever this process is configured with."""

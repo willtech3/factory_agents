@@ -285,7 +285,7 @@ def _drive(ctx, pipeline):
     except SystemExit:
         raise
     except Exception as e:  # noqa: BLE001
-        running = sorted(ctx.driver.active) if ctx.driver is not None else []
+        running = ctx.driver.active_ids() if ctx.driver is not None else []
         try:
             ctx.event("run.failed", {"reason": f"{type(e).__name__}: {str(e)[:500]}", "interrupted_sessions": [],
                                      "sessions_left_running": running})

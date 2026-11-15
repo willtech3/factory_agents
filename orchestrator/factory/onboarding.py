@@ -398,8 +398,14 @@ class AppOnboarding:
                     # A remote start followed by failure must never refund unknown spend.
                     active = [s for s in r["sessions"] if not s.get("accounted")]
                     if active:
-                        r["spent_usd"] += r["reserved_usd"]
+                        charge = float(r["reserved_usd"])
+                        r["spent_usd"] = round(r["spent_usd"] + charge, 4)
                         r["cost_warning"] = "The last session's cost is uncertain; its reserved limit was charged."
+                        # Charged now, so a later failure that starts no session cannot charge these again, and the
+                        # Console says "Usage unavailable" rather than "Usage pending" forever.
+                        for row in active:
+                            row.update(accounted=True, charged_usd=charge if row is active[-1] else 0.0,
+                                       stop_reason=row.get("stop_reason") or "failed")
                     r["reserved_usd"] = 0
                     self.write(r)
 

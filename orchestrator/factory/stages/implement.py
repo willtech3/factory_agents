@@ -888,7 +888,7 @@ def merge_findings(passes: list[dict[str, Any]], spec_id: str, round_no: int, ba
         f["finding_id"] = f"F-{i}"
         findings.append(f)
     return {
-        "review_id": f"rev_{spec_id.replace('spec_', '')}{round_no:02d}{head_sha[:6]}",
+        "review_id": review_id(spec_id, round_no, head_sha),
         "spec_id": spec_id, "round": round_no,
         "diff_ref": {"base_sha": base_sha, "head_sha": head_sha, "branch": branch},
         "checks_performed": checks_performed, "findings": findings,
@@ -896,6 +896,13 @@ def merge_findings(passes: list[dict[str, Any]], spec_id: str, round_no: int, ba
         "scope_check": {k: sorted(v) for k, v in scope.items()},
         "produced_by": passes[0].get("produced_by", {}),
     }
+
+
+def review_id(spec_id: str, round_no: int, head_sha: str) -> str:
+    """The merged findings' id, valid for review_findings.schema.json (`^rev_[a-z0-9]{8,}$`): a spec id may carry
+    hyphens (`spec_smart-retries`), which the schema's review id may not."""
+    body = re.sub(r"[^a-z0-9]", "", spec_id.removeprefix("spec_").lower()) + f"{round_no:02d}" + re.sub(r"[^a-z0-9]", "", head_sha.lower())[:6]
+    return "rev_" + body.ljust(8, "0")
 
 
 def apply_deterministic(findings: list[dict[str, Any]], det_findings: list[dict[str, Any]]) -> list[dict[str, Any]]:

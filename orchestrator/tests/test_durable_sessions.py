@@ -47,6 +47,9 @@ class StepDriver:
     def list_cost(self, session_id):
         return 0.4
 
+    def active_ids(self):
+        return sorted(getattr(self, "active", {}))
+
 
 def _run(tmp_path, root, examples, driver):
     return run_after_gate_1(tmp_path, root, examples, driver, AutoQueue(Decision.APPROVE))

@@ -72,7 +72,9 @@ def policy_snapshot(ctx: RunContext) -> dict[str, Any]:
             "security_review_available": "security_reviewer" in ctx.cfg.agents,
             "outcome_max_iterations": p.outcome_max_iterations, "stage_budget_usd": dict(p.stage_budget_usd),
             "preview_mode": ctx.cfg.preview_mode, "design_only": p.design_only,
-            "size_budget_lines": dict(getattr(p, "size_budget_lines", {}) or {})}
+            "size_budget_lines": dict(getattr(p, "size_budget_lines", {}) or {}),
+            # the onboarded app and approved recipe a managed run started with (`recorded_app_binding`)
+            "app_id": getattr(ctx.cfg, "app_id", None), "test_profile_sha256": getattr(ctx.cfg, "test_profile_sha256", None)}
 
 
 def notes_by_item(comments: str, item_ids: list[str]) -> dict[str, str]:
@@ -450,8 +452,22 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
     cr_by_spec: dict[str, int] = _open_change_requests(ctx)                       # finished before a resume
     merged_or_open: set[str] = set(cr_by_spec)
     stopped: dict[str, str] = {}                                                  # spec -> why it did not reach a change request
+    blocked: dict[str, list[str]] = {}                                            # spec -> the stopped specs it waits on
     remaining = {sid: s for sid, s in specs.items() if sid not in merged_or_open}
     while remaining:
+        # A spec that waits, directly or through others, on a spec that stopped cannot run in this pass. It is blocked,
+        # not part of a cycle: drop it to a fixed point so the stopped spec's build-recovery gate still opens below.
+        pruned = True
+        while pruned:
+            pruned = False
+            for sid, s in list(remaining.items()):
+                waits_on = sorted(d for d in s["dependencies"]["specs"] if d in stopped or d in blocked)
+                if waits_on:
+                    blocked[sid] = waits_on
+                    remaining.pop(sid)
+                    pruned = True
+        if not remaining:
+            break
         ready = [s for s in remaining.values()
                  if all(dep in merged_or_open or dep not in specs for dep in s["dependencies"]["specs"])]
         if not ready:
@@ -472,7 +488,8 @@ def implement_and_integrate(ctx: RunContext, outcome: dict[str, Any], specs: dic
 
     if stopped or ctx.store.state(ctx.run_id).stage == RunStage.ESCALATED:
         if ctx.store.state(ctx.run_id).stage != RunStage.ESCALATED:
-            # every escalation came back from a recorded step, which reported it when it ran: the run waits again
+            # every escalation came back from a recorded step, which reported it when it ran: the run waits again.
+            # Only a spec that stopped itself is named, never one blocked behind it (`blocked`).
             sid = sorted(stopped)[0]
             ctx.event("run.escalated", {"reason": f"{sid}: {stopped[sid]}"}, spec_id=sid)
         from . import build_recovery
