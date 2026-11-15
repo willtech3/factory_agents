@@ -546,7 +546,8 @@ class _Build:
                 return None
             if reused_sec is not None:
                 return tag_pass(reused_sec, "security")
-            pre = managed_prechecks(diff["added_lines"]) if managed else security.prechecks(repo, diff["changed"], diff["added_lines"])
+            pre = (managed_prechecks(diff["added_lines"], diff.get("deleted")) if managed
+                   else security.prechecks(repo, diff["changed"], diff["added_lines"], diff.get("deleted")))
             ctx.store.put_artifact(ctx.run_id, "review", security_prefix + "security_prechecks.json", json.dumps(pre, indent=2).encode())
             security_skill = ctx.cfg.skills_dir / "security-review" / "SKILL.md"
             if not security_skill.is_file():
@@ -781,11 +782,11 @@ def is_environmental(results: list[dict[str, Any]]) -> bool:
     return False
 
 
-def managed_prechecks(added_lines_by_file: dict[str, list[str]]) -> dict[str, Any]:
-    """Security pre-checks without executing anything on this host: the secret scan reads the diff text; the dependency
+def managed_prechecks(added_lines_by_file: dict[str, list[str]], deleted_files: list[str] | None = None) -> dict[str, Any]:
+    """Security pre-checks without executing anything on this host: the text checks read the diff; the dependency
     audit and SAST would run repository tooling, which managed mode only does in a hosted sandbox."""
     reason = "not run on the orchestrator host in managed preview mode; the security reviewer audits dependencies and code in its own sandbox"
-    return {"secret_scan": security.secret_scan(added_lines_by_file),
+    return {**security.text_prechecks(added_lines_by_file, deleted_files),
             "dependency_audit": {"tool": None, "status": "skipped", "reason": reason},
             "sast": {"tool": None, "status": "skipped", "reason": reason}}
 
