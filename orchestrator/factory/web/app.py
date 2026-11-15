@@ -705,6 +705,7 @@ class Console:
     def resume_environment(self, run_id: str, detail: dict[str, Any]) -> dict[str, str]:
         """Keep recovery on its recorded verification host and repository, with the approved recipe."""
         from ..runner import recorded_preview_mode
+        from ..stages.common import recorded_app_binding
         events = self.store.events(run_id)
         env = {"FACTORY_RUNS_DIR": str(self.cfg.runs_dir)}
         if self.cfg.forge_token:
@@ -750,6 +751,18 @@ class Console:
                     if verified.get("status") != "passed" or verified.get("profile_sha256") != approved_setup.payload["profile_sha256"]:
                         raise HTTPException(409, "The approved recipe has no passing verification receipt")
                     env["FACTORY_TEST_PROFILE_SHA256"] = approved_setup.payload["profile_sha256"]
+            else:
+                # Stopped before its first hosted verification: the app and recipe it was started (or last resumed) with,
+                # and that app's current test vaults. A recipe that changed since is refused, as above; so is an app whose
+                # setup no longer verifies (`run_settings` raises a Refusal, which answers as an HTTP error). A design-only
+                # run verifies nothing, so it never needs the binding.
+                app_id, approved_sha = recorded_app_binding(events)
+                if app_id and approved_sha and not detail.get("design_only"):
+                    from ..onboarding import AppOnboarding
+                    binding = AppOnboarding(self.cfg).run_settings(app_id, target)
+                    if binding["FACTORY_TEST_PROFILE_SHA256"] != approved_sha:
+                        raise HTTPException(409, "The app's verified recipe changed; recover with the originally approved setup")
+                    env.update(binding)
         return env
 
     def recover_run(self, run_id: str, body: RecoveryBody):
