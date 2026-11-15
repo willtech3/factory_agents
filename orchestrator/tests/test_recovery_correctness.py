@@ -171,7 +171,7 @@ def test_a_failed_onboarding_job_charges_an_unaccounted_session_once(tmp_path, r
 # ---------------------------------------------------------------- Console resume of a managed run
 
 
-def _managed_run(tmp_path, root, *, app_id="app_0123456789ab", sha=SHA):
+def _managed_run(tmp_path, root, *, app_id="app_0123456789ab", sha=SHA, design_only=False):
     runs = tmp_path / "runs"
     cfg = make_config(root, runs, forge_token="ghp_testtoken", forge_repo="", preview_mode="managed",
                       app_id=app_id, test_profile_sha256=sha)
@@ -180,7 +180,7 @@ def _managed_run(tmp_path, root, *, app_id="app_0123456789ab", sha=SHA):
     outcome = {"outcome_id": "out_1", "title": "T", "statement": "S", "owner": {"name": "O", "handle": "o"},
                "target_repositories": [{"url": "https://github.com/acme/sample", "default_branch": "main", "paths_in_scope": []}]}
     ctx.event("run.created", {"outcome_id": "out_1", "title": "T", "policy": runner.policy_snapshot(ctx), "forge": "github",
-                              "gate_surface": "web", "design_only": False, "budget_usd": 150.0})
+                              "gate_surface": "web", "design_only": design_only, "budget_usd": 150.0})
     ctx.store.put_artifact(ctx.run_id, "intake", "outcome.json", json.dumps(outcome).encode())
     ctx.event("stage.entered", {"stage": RunStage.DECOMPOSING.value})
     ctx.event("run.failed", {"reason": "network blip before implementation"})
@@ -220,3 +220,10 @@ def test_console_resume_without_a_recorded_app_stays_unbound(tmp_path, root, mon
     monkeypatch.setattr(AppOnboarding, "run_settings", lambda *a: pytest.fail("no recorded app to bind"))
     env = console.resume_environment(ctx.run_id, console.run_detail(ctx.run_id))
     assert env["FACTORY_PREVIEW"] == "managed" and "FACTORY_APP_ID" not in env
+
+
+def test_console_resume_of_a_design_only_run_never_needs_the_app_binding(tmp_path, root, monkeypatch):
+    console, ctx = _managed_run(tmp_path, root, design_only=True)
+    monkeypatch.setattr(AppOnboarding, "run_settings", lambda *a: pytest.fail("a design-only run verifies nothing"))
+    env = console.resume_environment(ctx.run_id, console.run_detail(ctx.run_id))
+    assert "FACTORY_APP_ID" not in env

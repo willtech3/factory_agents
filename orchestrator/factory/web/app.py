@@ -754,9 +754,10 @@ class Console:
             else:
                 # Stopped before its first hosted verification: the app and recipe it was started (or last resumed) with,
                 # and that app's current test vaults. A recipe that changed since is refused, as above; so is an app whose
-                # setup no longer verifies (`run_settings` raises a Refusal, which answers as an HTTP error).
+                # setup no longer verifies (`run_settings` raises a Refusal, which answers as an HTTP error). A design-only
+                # run verifies nothing, so it never needs the binding.
                 app_id, approved_sha = recorded_app_binding(events)
-                if app_id and approved_sha:
+                if app_id and approved_sha and not detail.get("design_only"):
                     from ..onboarding import AppOnboarding
                     binding = AppOnboarding(self.cfg).run_settings(app_id, target)
                     if binding["FACTORY_TEST_PROFILE_SHA256"] != approved_sha:
