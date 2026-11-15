@@ -5,6 +5,8 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .coverage
+# CI and the docs install with pip from pyproject.toml; a uv lock nothing reads would drift (AGENTS.md)
+uv.lock
 
 # Orchestrator runtime state
 runs/
